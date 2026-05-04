@@ -81,9 +81,7 @@ function isPreLoopPendingForOwner({
   preLoopGate: ReturnType<typeof useOptionalPreLoopSystemCheckGate>;
 }): boolean {
   return Boolean(
-    enabled &&
-      preLoopGate &&
-      (preLoopGate.isChecking || preLoopGate.pendingOwnerKey === ownerKey)
+    enabled && preLoopGate && preLoopGate.pendingOwnerKey === ownerKey
   );
 }
 

@@ -83,7 +83,6 @@ const FILE_NAME_REGEX = /file name/i;
 const GENERATE_PLAN_REGEX = /generate plan/i;
 const NEW_PLAN_REGEX = /new plan/i;
 const CANCEL_REGEX = /cancel/i;
-const CHECKING_REGEX = /checking/i;
 const PLAN_CREATED_WITH_REGEX = /plan will be created with:/i;
 const TARGET_REPO_REGEX = /target repo:/i;
 const TARGET_BRANCH_REGEX = /target branch:/i;
@@ -424,27 +423,31 @@ describe("NewPlanModal", () => {
       );
     });
 
-    it("disables Generate Plan while a pre-loop check is pending", () => {
+    it("does not disable Generate Plan while another owner has a pre-loop check pending", () => {
       mockUsePreLoopGate.mockReturnValue({
         runWithPreLoopSystemCheck: vi.fn(),
         cancelPendingPreLoopAttempt: vi.fn(),
         isChecking: true,
         isDialogOpen: false,
-        pendingOwnerKey: null,
+        pendingOwnerKey: "other-owner",
         pendingCommand: "generate_plan",
       });
 
       render(
         <NewPlanModal
           open={true}
-          source={createMockSource({ id: "prd-1", title: "Dashboard PRD" })}
+          source={createMockSource({
+            id: "prd-1",
+            title: "Dashboard PRD",
+            targetRepo: "org/repo",
+          })}
         />
       );
 
       const submitButton = screen.getByRole("button", {
-        name: CHECKING_REGEX,
+        name: GENERATE_PLAN_REGEX,
       });
-      expect(submitButton).toBeDisabled();
+      expect(submitButton).not.toBeDisabled();
     });
   });
 

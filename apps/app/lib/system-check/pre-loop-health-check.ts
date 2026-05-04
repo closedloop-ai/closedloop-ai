@@ -65,6 +65,8 @@ export type PreLoopMetadata = {
   command: PreLoopCommand;
   documentType?: string;
   documentId?: string | null;
+  /** `undefined` resolves the current preference; `null` explicitly targets Cloud/no local target. */
+  computeTargetId?: string | null;
   ownerKey: string;
 };
 
@@ -175,6 +177,10 @@ export function buildPreLoopAnalyticsProperties({
     documentType: metadata.documentType,
     documentId: metadata.documentId ?? undefined,
     ownerKey: metadata.ownerKey,
+    requestedComputeTargetId:
+      metadata.computeTargetId === undefined
+        ? undefined
+        : metadata.computeTargetId,
     computePreference: target ? "local" : undefined,
     computeTargetId: target?.computeTargetId,
     computeTargetLabel: target?.label,

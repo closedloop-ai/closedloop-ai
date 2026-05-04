@@ -677,4 +677,42 @@ describe("Blocking pre-loop mode", () => {
     expect(onRecheckResult).toHaveBeenCalledWith(changedFailure);
     expect(screen.queryByText("System Check")).not.toBeNull();
   });
+
+  it("restores the visible rows when Re-check is unavailable", async () => {
+    const onRecheckUnavailable = vi.fn();
+    mockQueryFn.mockRejectedValueOnce(new Error("offline"));
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onContinue={vi.fn()}
+          onRecheckUnavailable={onRecheckUnavailable}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      revealedCount: 1,
+    });
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+
+    expect(onRecheckUnavailable).toHaveBeenCalledWith("offline");
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      revealedCount: 1,
+    });
+  });
 });

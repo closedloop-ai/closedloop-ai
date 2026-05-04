@@ -23,13 +23,16 @@ type UseArtifactRunLoopConfig = {
 export type RunLoopParams = {
   command: RunLoopCommand;
   prompt?: string;
-  computeTargetId?: string;
+  computeTargetId?: string | null;
   backendOverride?: boolean;
   repo?: CreateLoopRequest["repo"];
   additionalRepos?: AdditionalRepoRef[];
 };
 
 type RunLoopMutationParams = RunLoopParams & { documentId: string };
+type RunLoopMutationOptions = Parameters<
+  ReturnType<typeof useRunLoop>["mutate"]
+>[1];
 
 /**
  * Generic conflict-resolution machinery for run-loop operations.
@@ -85,6 +88,49 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     | ((targetId: string | null, backendOverride: boolean) => Promise<void>)
     | null
   >(null);
+  const executeOwnerKey = documentId
+    ? `run-loop:${RunLoopCommand.Execute}:${documentId}`
+    : null;
+
+  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
+  const routeConflictError = useCallback((error: unknown): void => {
+    handleRunLoopResponse(error, {
+      onMultipleTargets: (conflict) =>
+        setMultiTargetState({ availableTargets: conflict.availableTargets }),
+      onBackendMismatch: (body) => setBackendMismatchState(body),
+      onSuccess: () => {
+        // unreachable: error handlers only receive thrown errors
+      },
+      onRateLimited: (message) => toast.error(message),
+    });
+  }, []);
+
+  const runLoopMutationWithOptionalPreLoopCheck = useCallback(
+    (params: RunLoopMutationParams, execute: () => void): boolean => {
+      if (
+        params.command !== RunLoopCommand.Execute ||
+        !preLoopGate ||
+        !executeOwnerKey
+      ) {
+        return false;
+      }
+
+      preLoopGate
+        .runWithPreLoopSystemCheck(
+          {
+            command: PreLoopCommand.ExecutePlan,
+            computeTargetId: params.computeTargetId,
+            documentType: "implementation_plan",
+            documentId: params.documentId,
+            ownerKey: executeOwnerKey,
+          },
+          execute
+        )
+        .catch(() => undefined);
+      return true;
+    },
+    [executeOwnerKey, preLoopGate]
+  );
 
   /**
    * Restores the activeCommandRef before replaying a conflicted evaluate command.
@@ -130,11 +176,23 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           return;
         }
         try {
-          await runLoop.mutateAsync({
+          const replayParams = {
             ...baseParams,
             documentId,
             computeTargetId: targetId,
-          });
+          };
+          const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
+            replayParams,
+            () => {
+              runLoop.mutateAsync(replayParams).catch(routeConflictError);
+            }
+          );
+          if (queuedPreLoopCheck) {
+            return;
+          }
+          await runLoop.mutateAsync(replayParams);
+        } catch (error) {
+          routeConflictError(error);
         } finally {
           clearEvaluateActiveCommandAfterReplay();
         }
@@ -147,32 +205,36 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           return;
         }
         try {
-          await runLoop.mutateAsync({
+          const replayParams = {
             ...baseParams,
             documentId,
-            computeTargetId: targetId ?? undefined,
+            computeTargetId: targetId,
             backendOverride,
-          });
+          };
+          const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
+            replayParams,
+            () => {
+              runLoop.mutateAsync(replayParams).catch(routeConflictError);
+            }
+          );
+          if (queuedPreLoopCheck) {
+            return;
+          }
+          await runLoop.mutateAsync(replayParams);
+        } catch (error) {
+          routeConflictError(error);
         } finally {
           clearEvaluateActiveCommandAfterReplay();
         }
       };
     },
-    [documentId, runLoop]
+    [
+      documentId,
+      routeConflictError,
+      runLoop,
+      runLoopMutationWithOptionalPreLoopCheck,
+    ]
   );
-
-  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
-  const routeConflictError = useCallback((error: unknown): void => {
-    handleRunLoopResponse(error, {
-      onMultipleTargets: (conflict) =>
-        setMultiTargetState({ availableTargets: conflict.availableTargets }),
-      onBackendMismatch: (body) => setBackendMismatchState(body),
-      onSuccess: () => {
-        // unreachable: error handlers only receive thrown errors
-      },
-      onRateLimited: (message) => toast.error(message),
-    });
-  }, []);
 
   /**
    * Resolve a multi-target conflict by selecting a specific compute target.
@@ -246,15 +308,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     setBackendMismatchState(null);
   }, []);
 
-  const executeOwnerKey = documentId
-    ? `run-loop:${RunLoopCommand.Execute}:${documentId}`
-    : null;
   const isPreLoopExecutePending = Boolean(
-    executeOwnerKey &&
-      (preLoopGate?.isChecking ||
-        preLoopGate?.pendingOwnerKey === executeOwnerKey)
+    executeOwnerKey && preLoopGate?.pendingOwnerKey === executeOwnerKey
   );
-  type RunLoopMutationOptions = Parameters<typeof runLoop.mutate>[1];
 
   /**
    * Runs Execute Plan through the pre-loop system-check gate while preserving
@@ -263,27 +319,15 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   const runLoopWithPreLoopSystemCheck = useCallback(
     (params: RunLoopMutationParams, options?: RunLoopMutationOptions): void => {
       if (
-        params.command !== RunLoopCommand.Execute ||
-        !preLoopGate ||
-        !executeOwnerKey
+        runLoopMutationWithOptionalPreLoopCheck(params, () =>
+          runLoop.mutate(params, options)
+        )
       ) {
-        runLoop.mutate(params, options);
         return;
       }
-
-      preLoopGate
-        .runWithPreLoopSystemCheck(
-          {
-            command: PreLoopCommand.ExecutePlan,
-            documentType: "implementation_plan",
-            documentId: params.documentId,
-            ownerKey: executeOwnerKey,
-          },
-          () => runLoop.mutate(params, options)
-        )
-        .catch(() => undefined);
+      runLoop.mutate(params, options);
     },
-    [executeOwnerKey, preLoopGate, runLoop]
+    [runLoop, runLoopMutationWithOptionalPreLoopCheck]
   );
 
   /**

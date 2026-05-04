@@ -125,7 +125,8 @@ async function requireQueryData<T>(
 
 /**
  * Owns the global Generate/Execute pre-loop gate, pending command callback,
- * selected-target health lookup, and in-memory failure acknowledgements.
+ * selected or explicitly requested target health lookup, and in-memory failure
+ * acknowledgements.
  */
 export function PreLoopSystemCheckProvider({
   children,
@@ -207,34 +208,59 @@ export function PreLoopSystemCheckProvider({
     [capture]
   );
 
-  const resolveSelectedTarget =
-    useCallback(async (): Promise<PreLoopTarget | null> => {
+  const resolveTarget = useCallback(
+    async (
+      requestedComputeTargetId?: string | null
+    ): Promise<PreLoopTarget | null> => {
+      if (requestedComputeTargetId === null) {
+        return null;
+      }
+      if (requestedComputeTargetId === undefined && !userId) {
+        return null;
+      }
+
+      const targets = await requireQueryData<ComputeTarget[]>(
+        computeTargetsQuery.data,
+        async () => {
+          const result = await computeTargetsQuery.refetch();
+          return {
+            data: result.data,
+            error: result.error instanceof Error ? result.error : null,
+          };
+        }
+      );
+
+      if (requestedComputeTargetId !== undefined) {
+        const requestedTarget = targets.find(
+          (target) => target.id === requestedComputeTargetId
+        );
+        if (!requestedTarget) {
+          throw new Error(
+            `Requested compute target ${requestedComputeTargetId} was not found`
+          );
+        }
+        return {
+          targetKey: getPreLoopTargetKey(requestedComputeTargetId),
+          computeTargetId: requestedComputeTargetId,
+          label: getTargetLabel(requestedTarget),
+          mode: "local_compute_target",
+        };
+      }
+
       if (!userId) {
         return null;
       }
 
-      const [preference, targets] = await Promise.all([
-        requireQueryData<ComputePreferenceResponse>(
-          computePreferenceQuery.data,
-          async () => {
-            const result = await computePreferenceQuery.refetch();
-            return {
-              data: result.data,
-              error: result.error instanceof Error ? result.error : null,
-            };
-          }
-        ),
-        requireQueryData<ComputeTarget[]>(
-          computeTargetsQuery.data,
-          async () => {
-            const result = await computeTargetsQuery.refetch();
-            return {
-              data: result.data,
-              error: result.error instanceof Error ? result.error : null,
-            };
-          }
-        ),
-      ]);
+      const preference = await requireQueryData<ComputePreferenceResponse>(
+        computePreferenceQuery.data,
+        async () => {
+          const result = await computePreferenceQuery.refetch();
+          return {
+            data: result.data,
+            error: result.error instanceof Error ? result.error : null,
+          };
+        }
+      );
 
       const selection = resolveEffectiveComputeTargetSelection({
         preference,
@@ -254,13 +280,15 @@ export function PreLoopSystemCheckProvider({
         label: getTargetLabel(selection.effectiveTarget),
         mode: "local_compute_target",
       };
-    }, [
+    },
+    [
       computePreferenceQuery.data,
       computePreferenceQuery.refetch,
       computeTargetsQuery.data,
       computeTargetsQuery.refetch,
       userId,
-    ]);
+    ]
+  );
 
   const getLatestVersion = useCallback(async (): Promise<string | null> => {
     if (latestReleaseQuery.data) {
@@ -317,11 +345,11 @@ export function PreLoopSystemCheckProvider({
     [expectedMcpUrl, queryClient]
   );
 
-  const evaluatePreLoopTargetHealth =
-    useCallback(async (): Promise<PreLoopHealthEvaluation> => {
+  const evaluatePreLoopTargetHealth = useCallback(
+    async (metadata: PreLoopMetadata): Promise<PreLoopHealthEvaluation> => {
       let target: PreLoopTarget | null = null;
       try {
-        target = await resolveSelectedTarget();
+        target = await resolveTarget(metadata.computeTargetId);
       } catch (error) {
         return {
           status: "unavailable",
@@ -367,7 +395,9 @@ export function PreLoopSystemCheckProvider({
               : "health_check:unknown",
         };
       }
-    }, [fetchHealthCheck, getLatestVersion, resolveSelectedTarget]);
+    },
+    [fetchHealthCheck, getLatestVersion, resolveTarget]
+  );
 
   const runWithPreLoopSystemCheck = useCallback(
     async (
@@ -386,7 +416,7 @@ export function PreLoopSystemCheckProvider({
         metadata,
       });
 
-      const evaluation = await evaluatePreLoopTargetHealth();
+      const evaluation = await evaluatePreLoopTargetHealth(metadata);
       if (evaluation.status === "skip_no_local_target") {
         clearChecking();
         execute();
@@ -587,6 +617,9 @@ export function PreLoopSystemCheckProvider({
     const latestPreference = computePreferenceQuery.data;
     const latestTargets = computeTargetsQuery.data;
     if (!pendingAttempt) {
+      return;
+    }
+    if (pendingAttempt.metadata.computeTargetId !== undefined) {
       return;
     }
     if (!latestPreference) {

@@ -288,6 +288,8 @@ export function HealthCheckDialog({
           ? result.error.message
           : "Health check returned no data"
       );
+      // Restart the stagger against the last known rows so failed re-checks do not leave an empty results panel.
+      setRecheckKey((k) => k + 1);
       return;
     }
     onRecheckResult?.(result.data);
