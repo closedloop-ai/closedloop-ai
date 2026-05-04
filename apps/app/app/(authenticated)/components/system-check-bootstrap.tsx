@@ -8,17 +8,19 @@ import {
 } from "@/lib/engineer/constants";
 import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
 
 export function SystemCheckBootstrap() {
   const { isLoading, shouldRunSystemCheck } = useSystemCheckEligibility();
+  const preLoopGate = useOptionalPreLoopSystemCheckGate();
   const routing = useEngineerRoutingSelection();
   const { data: targets = [] } = useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
     enabled: CLOUD_RELAY_ENABLED,
   });
 
-  if (isLoading || !shouldRunSystemCheck) {
+  if (isLoading || !shouldRunSystemCheck || preLoopGate?.isDialogOpen) {
     return null;
   }
 

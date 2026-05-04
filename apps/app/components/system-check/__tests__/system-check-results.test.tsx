@@ -161,7 +161,7 @@ describe("SystemCheckResults — required/optional partition", () => {
     );
 
     expect(requiredGrid).not.toBeNull();
-    expect(requiredGrid).toHaveClass("lg:grid-cols-4");
+    expect(requiredGrid).toHaveClass("@3xl/checks:grid-cols-4");
 
     expect(getCategoryCard(requiredSection, "CLI").textContent).toContain(
       "Git"

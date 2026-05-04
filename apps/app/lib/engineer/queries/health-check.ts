@@ -85,7 +85,7 @@ function normalizeHealthCheck(check: CheckResult): CheckResult {
     return {
       ...check,
       label: APP_VERSION_CHECK_LABEL,
-      passed: true,
+      passed: check.passed,
       required: true,
     };
   }

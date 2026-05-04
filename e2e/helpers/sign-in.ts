@@ -2,14 +2,6 @@ import type { Page } from "@playwright/test";
 import { gotoAuthenticatedApp } from "./app-bootstrap";
 
 const CONTINUE_BUTTON = /continue/i;
-const SKIP_FOR_NOW = /skip for now/i;
-const SKIP_ANYWAY = /skip anyway/i;
-const GET_STARTED = /get started/i;
-const TEAM_NAME = /team name/i;
-const CREATE_TEAM = /create team/i;
-const PROJECT_NAME = /project name/i;
-const CREATE_PROJECT = /create project/i;
-const GO_TO_MY_TASKS = /go to my tasks/i;
 const SIGN_IN_PATH_PREFIX = "/sign-in";
 
 export async function performSignIn(
@@ -54,27 +46,6 @@ export async function authenticateToApp(
     (url) => !url.pathname.startsWith(SIGN_IN_PATH_PREFIX),
     { waitUntil: "domcontentloaded" }
   );
-
-  if (page.url().includes("/onboarding")) {
-    const skip = page.getByRole("button", { name: SKIP_FOR_NOW });
-
-    await page.getByRole("button", { name: GET_STARTED }).click();
-    await skip.click();
-    await page.getByRole("button", { name: SKIP_ANYWAY }).click();
-
-    await page.getByLabel(TEAM_NAME).fill("E2E Test Team");
-    await page.getByRole("button", { name: CREATE_TEAM }).click();
-
-    await page.getByLabel(PROJECT_NAME).fill("E2E Test Project");
-    await page.getByRole("button", { name: CREATE_PROJECT }).click();
-
-    await skip.click();
-    await skip.click();
-    await skip.click();
-
-    await page.getByRole("button", { name: GO_TO_MY_TASKS }).click();
-    await page.waitForURL("**/my-tasks**");
-  }
 
   await gotoAuthenticatedApp(page);
 }

@@ -8,6 +8,7 @@ import { cookies, headers } from "next/headers";
 import type { ReactNode } from "react";
 import { EngineerTransportBootstrap } from "@/components/engineer/engineer-transport-bootstrap";
 import { env } from "@/env";
+import { PreLoopSystemCheckProvider } from "@/lib/system-check/pre-loop-system-check-provider";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { OnboardingGuard } from "./components/onboarding-guard";
 import { GlobalSidebar } from "./components/sidebar";
@@ -44,10 +45,12 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
           <OnboardingGuard>
             <UserIdentifier />
             <EngineerTransportBootstrap />
-            <SystemCheckBootstrap />
-            <div className="flex h-full max-h-full flex-col overflow-hidden">
-              {children}
-            </div>
+            <PreLoopSystemCheckProvider>
+              <SystemCheckBootstrap />
+              <div className="flex h-full max-h-full flex-col overflow-hidden">
+                {children}
+              </div>
+            </PreLoopSystemCheckProvider>
           </OnboardingGuard>
         </GlobalSidebar>
       </SidebarProvider>

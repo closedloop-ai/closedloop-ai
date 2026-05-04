@@ -17,7 +17,7 @@ import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   useCreateAndGenerateDocument,
   useCreateDocument,
@@ -25,6 +25,8 @@ import {
 } from "@/hooks/queries/use-documents";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
 import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
+import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
+import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import {
@@ -69,6 +71,20 @@ function isCreateSubmitDisabled(
   );
 }
 
+function isPreLoopPendingForOwner({
+  enabled,
+  ownerKey,
+  preLoopGate,
+}: {
+  enabled: boolean;
+  ownerKey: string;
+  preLoopGate: ReturnType<typeof useOptionalPreLoopSystemCheckGate>;
+}): boolean {
+  return Boolean(
+    enabled && preLoopGate && preLoopGate.pendingOwnerKey === ownerKey
+  );
+}
+
 type SubmitCreatePlanArgs = {
   formState: FormState;
   selectedSource: PlanSource | undefined;
@@ -76,6 +92,8 @@ type SubmitCreatePlanArgs = {
   additionalRepos: AdditionalRepoRef[];
   createPlan: ReturnType<typeof useCreateDocument>;
   createAndGeneratePlan: ReturnType<typeof useCreateAndGenerateDocument>;
+  preLoopGate: ReturnType<typeof useOptionalPreLoopSystemCheckGate>;
+  preLoopOwnerKey: string;
   onSuccess: (document: { slug: string }) => void;
 };
 
@@ -86,6 +104,8 @@ function submitCreatePlan({
   additionalRepos,
   createPlan,
   createAndGeneratePlan,
+  preLoopGate,
+  preLoopOwnerKey,
   onSuccess,
 }: SubmitCreatePlanArgs): void {
   const finalFileName = getFinalFileName(
@@ -103,10 +123,26 @@ function submitCreatePlan({
     const submitAdditionalRepos = showPicker
       ? normalizeAdditionalRepos(additionalRepos)
       : undefined;
-    createAndGeneratePlan.mutate(
-      { input: createConfig.input, additionalRepos: submitAdditionalRepos },
-      { onSuccess }
-    );
+    const executeCreateAndGenerate = () => {
+      createAndGeneratePlan.mutate(
+        { input: createConfig.input, additionalRepos: submitAdditionalRepos },
+        { onSuccess }
+      );
+    };
+    if (preLoopGate) {
+      preLoopGate
+        .runWithPreLoopSystemCheck(
+          {
+            command: PreLoopCommand.GeneratePlan,
+            documentType: "implementation_plan",
+            ownerKey: preLoopOwnerKey,
+          },
+          executeCreateAndGenerate
+        )
+        .catch(() => undefined);
+      return;
+    }
+    executeCreateAndGenerate();
     return;
   }
   createPlan.mutate(createConfig.input, { onSuccess });
@@ -118,6 +154,8 @@ export function NewPlanModal({
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
   const router = useRouter();
+  const preLoopOwnerKey = `new-plan:${useId()}`;
+  const preLoopGate = useOptionalPreLoopSystemCheckGate();
   const createPlan = useCreateDocument();
   const createAndGeneratePlan = useCreateAndGenerateDocument();
   const { open, setOpen, isControlled } = useModalOpenState(
@@ -258,6 +296,8 @@ export function NewPlanModal({
       additionalRepos,
       createPlan,
       createAndGeneratePlan,
+      preLoopGate,
+      preLoopOwnerKey,
       onSuccess: (document) => {
         setOpen(false);
         resetForm();
@@ -269,6 +309,7 @@ export function NewPlanModal({
   const handleOpenChange = (newOpen: boolean) => {
     setOpen(newOpen);
     if (!newOpen) {
+      preLoopGate?.cancelPendingPreLoopAttempt(preLoopOwnerKey);
       resetForm();
     }
   };
@@ -280,7 +321,15 @@ export function NewPlanModal({
   };
 
   const showProjectSelector = !selectedSource?.projectId;
-  const isSubmitting = createPlan.isPending || createAndGeneratePlan.isPending;
+  const isPreLoopPendingForThisModal = isPreLoopPendingForOwner({
+    enabled: Boolean(selectedSource),
+    ownerKey: preLoopOwnerKey,
+    preLoopGate,
+  });
+  const isSubmitting =
+    createPlan.isPending ||
+    createAndGeneratePlan.isPending ||
+    isPreLoopPendingForThisModal;
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
@@ -435,7 +484,7 @@ export function NewPlanModal({
             {isSubmitting ? (
               <>
                 <LoaderIcon className="h-4 w-4 animate-spin" />
-                Creating...
+                {isPreLoopPendingForThisModal ? "Checking..." : "Creating..."}
               </>
             ) : (
               <>

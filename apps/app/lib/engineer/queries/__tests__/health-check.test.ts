@@ -144,7 +144,7 @@ describe("getRenderableHealthChecks", () => {
     ]);
   });
 
-  it("normalizes older app-version responses into required advisory rows", () => {
+  it("normalizes app-version responses into required blocking rows", () => {
     const checks = getRenderableHealthChecks(
       {
         checks: [
@@ -168,7 +168,7 @@ describe("getRenderableHealthChecks", () => {
         id: "app-version",
         label: "Gateway Version",
         required: true,
-        passed: true,
+        passed: false,
         version: "0.14.10",
         error: "Update available: 0.14.11",
         remediation: "Open the ClosedLoop Gateway app to update",
