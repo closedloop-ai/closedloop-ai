@@ -53,6 +53,7 @@ export class DesktopComputeProvider implements ComputeProvider {
       parentSessionId: ctx.parentSessionId ?? undefined,
       localRepoPath: ctx.localRepoPath,
       additionalRepos: ctx.additionalRepos,
+      documentId: ctx.documentId ?? undefined,
     });
 
     return { containerId: commandId, s3StateKey: null };
