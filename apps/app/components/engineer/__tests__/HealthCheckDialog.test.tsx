@@ -561,7 +561,10 @@ describe("Blocking pre-loop mode", () => {
 
     await act(async () => {});
     act(() => {
-      vi.advanceTimersByTime(2);
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
     });
     expect(screen.queryByText("System Check")).not.toBeNull();
     unmount();
@@ -581,6 +584,44 @@ describe("Blocking pre-loop mode", () => {
 
     expect(screen.queryByText("System Check")).not.toBeNull();
     expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("renders blocking initial data supplied after the query is mounted", async () => {
+    const Wrapper = createWrapper();
+    const { rerender } = render(
+      <Wrapper>
+        <HealthCheckDialog mode="blocking-pre-loop" onCancel={vi.fn()} />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      isLoading: true,
+      checks: undefined,
+    });
+
+    rerender(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+    await act(async () => {});
+
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      isLoading: false,
+      checks: expect.arrayContaining([
+        expect.objectContaining({ id: "cli", passed: false }),
+      ]),
+    });
   });
 
   it("routes Escape through cancel", async () => {

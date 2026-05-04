@@ -1,6 +1,12 @@
 import { ComputePreference } from "@repo/api/src/types/compute-target";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { PreLoopCommand } from "../pre-loop-health-check";
@@ -15,6 +21,7 @@ const mockUseComputePreference = vi.hoisted(() => vi.fn());
 const mockUseComputeTargets = vi.hoisted(() => vi.fn());
 const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
 const mockHealthCheckDialogRender = vi.hoisted(() => vi.fn());
+const mockUseUser = vi.hoisted(() => vi.fn());
 const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
 
 vi.mock("@repo/analytics/client", () => ({
@@ -26,7 +33,7 @@ vi.mock("@repo/analytics/client", () => ({
 }));
 
 vi.mock("@repo/auth/client", () => ({
-  useUser: () => ({ user: { id: "user-1" } }),
+  useUser: () => mockUseUser(),
 }));
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
@@ -147,7 +154,15 @@ function GateHarness({ execute }: { execute: () => void }) {
       >
         Run
       </button>
+      <button
+        onClick={() => gate.cancelPendingPreLoopAttempt("owner-1")}
+        type="button"
+      >
+        Cancel Owner
+      </button>
       <div data-testid="state">{stateLabel}</div>
+      <div data-testid="is-checking">{String(gate.isChecking)}</div>
+      <div data-testid="is-dialog-open">{String(gate.isDialogOpen)}</div>
     </>
   );
 }
@@ -180,6 +195,7 @@ function createQueryClient() {
 describe("PreLoopSystemCheckProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseUser.mockReturnValue({ user: { id: "user-1" } });
     preference = {
       preferredComputeMode: ComputePreference.Local,
       computeTargetId: "target-1",
@@ -273,6 +289,95 @@ describe("PreLoopSystemCheckProvider", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("cancels a fresh-cache attempt while latest release resolution is pending", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveLatest:
+      | ((result: { data: { version: string }; error: null }) => void)
+      | undefined;
+    const refetchLatest = vi.fn(
+      () =>
+        new Promise<{ data: { version: string }; error: null }>((resolve) => {
+          resolveLatest = resolve;
+        })
+    );
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: undefined,
+      refetch: refetchLatest,
+    });
+    queryClient.setQueryData(
+      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      healthyResult
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(refetchLatest).toHaveBeenCalledOnce();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Owner" }));
+    expect(mockCapture).toHaveBeenCalledWith(
+      "pre_loop_system_check_cancelled",
+      expect.objectContaining({ reason: "owner_cancelled" })
+    );
+
+    act(() => {
+      resolveLatest?.({ data: { version: "1.0.0" }, error: null });
+    });
+    await act(async () => {});
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+  });
+
+  it("cancels before a Cloud preference skip can execute the command", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    const cloudPreference = {
+      preferredComputeMode: ComputePreference.Cloud,
+      computeTargetId: undefined,
+    };
+    let resolvePreference:
+      | ((result: { data: typeof cloudPreference; error: null }) => void)
+      | undefined;
+    const refetchPreference = vi.fn(
+      () =>
+        new Promise<{ data: typeof cloudPreference; error: null }>(
+          (resolve) => {
+            resolvePreference = resolve;
+          }
+        )
+    );
+    mockUseComputePreference.mockImplementation(() => ({
+      data: undefined,
+      refetch: refetchPreference,
+    }));
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(refetchPreference).toHaveBeenCalledOnce();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Owner" }));
+
+    act(() => {
+      resolvePreference?.({ data: cloudPreference, error: null });
+    });
+    await act(async () => {});
+
+    expect(mockCapture).toHaveBeenCalledWith(
+      "pre_loop_system_check_cancelled",
+      expect.objectContaining({ reason: "owner_cancelled" })
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+  });
+
   it("does not use a fresh passing cache from a different compute target", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
@@ -323,6 +428,97 @@ describe("PreLoopSystemCheckProvider", () => {
     await waitFor(() => {
       expect(execute).toHaveBeenCalledOnce();
     });
+  });
+
+  it("cancels an in-flight dialog immediately and does not execute after the health check resolves", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await screen.findByTestId("blocking-dialog");
+    expect(screen.getByTestId("state")).toHaveTextContent("checking");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("is-checking")).toHaveTextContent("false");
+    });
+    expect(screen.getByTestId("is-dialog-open")).toHaveTextContent("true");
+    expect(execute).not.toHaveBeenCalled();
+
+    act(() => {
+      resolveFetch?.(Response.json(healthyResult));
+    });
+    await act(async () => {});
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.getByTestId("blocking-dialog")).toBeInTheDocument();
+  });
+
+  it("does not execute when the provider unmounts before a cached attempt completes", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveLatest:
+      | ((result: { data: { version: string }; error: null }) => void)
+      | undefined;
+    const refetchLatest = vi.fn(
+      () =>
+        new Promise<{ data: { version: string }; error: null }>((resolve) => {
+          resolveLatest = resolve;
+        })
+    );
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: undefined,
+      refetch: refetchLatest,
+    });
+    queryClient.setQueryData(
+      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      healthyResult
+    );
+
+    const { unmount } = renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(refetchLatest).toHaveBeenCalledOnce();
+    });
+    unmount();
+
+    act(() => {
+      resolveLatest?.({ data: { version: "1.0.0" }, error: null });
+    });
+    await act(async () => {});
+
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the authenticated user is not available", () => {
+    mockUseUser.mockReturnValue({ user: undefined });
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(mockWarning).toHaveBeenCalledWith(
+      "System check unavailable",
+      expect.objectContaining({
+        description: expect.stringContaining("was not started"),
+      })
+    );
+    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("blocks on required failures until the dialog reports them resolved", async () => {

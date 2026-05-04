@@ -150,6 +150,14 @@ export function HealthCheckDialog({
     latestVersionOverride !== undefined
       ? latestVersionOverride
       : (latestRelease?.version ?? null);
+  const healthCheckQueryOptions = useMemo(
+    () =>
+      healthCheckOptions(targetKey, expectedMcpUrl, {
+        latestVersion,
+        relayTargetId: isBlockingMode ? relayTargetId : null,
+      }),
+    [expectedMcpUrl, isBlockingMode, latestVersion, relayTargetId, targetKey]
+  );
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
@@ -173,10 +181,7 @@ export function HealthCheckDialog({
   const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    ...healthCheckOptions(targetKey, expectedMcpUrl, {
-      latestVersion,
-      relayTargetId: isBlockingMode ? relayTargetId : null,
-    }),
+    ...healthCheckQueryOptions,
     enabled: shouldEnableHealthCheckQuery({
       latestReleaseLoading: isLatestReleaseLoading,
       latestReleaseQueryEnabled: latestReleaseQueryEnabled && !isBlockingMode,
@@ -186,6 +191,19 @@ export function HealthCheckDialog({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+
+  useEffect(() => {
+    if (!(isBlockingMode && initialData !== undefined)) {
+      return;
+    }
+
+    queryClient.setQueryData(healthCheckQueryOptions.queryKey, initialData);
+  }, [
+    healthCheckQueryOptions.queryKey,
+    initialData,
+    isBlockingMode,
+    queryClient,
+  ]);
   const renderableChecks = useMemo(
     () => getRenderableHealthChecks(data, expectedMcpUrl),
     [data, expectedMcpUrl]
@@ -324,6 +342,7 @@ export function HealthCheckDialog({
 
   const handleCancel = useCallback(() => {
     if (isBlockingMode) {
+      setClosing(true);
       onCancel?.();
       return;
     }

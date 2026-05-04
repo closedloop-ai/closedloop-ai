@@ -3,7 +3,7 @@
  *
  * Covers:
  * - prepareConflictRefs captures additionalRepos in the baseParams closure
- * - selectTarget replay passes additionalRepos through to runLoop.mutateAsync
+ * - selectTarget replay passes additionalRepos through to runLoop.mutate
  * - prepareConflictRefs with no additionalRepos does not include the field in retry
  */
 
@@ -23,7 +23,6 @@ import { useDocumentRunLoop } from "../use-document-run-loop";
 // ---------------------------------------------------------------------------
 
 const mockMutate = vi.fn();
-const mockMutateAsync = vi.fn();
 const mockRunWithPreLoopSystemCheck = vi.fn();
 const mockCancelPendingPreLoopAttempt = vi.fn();
 const mockUseOptionalPreLoopSystemCheckGate = vi.fn();
@@ -31,7 +30,6 @@ const mockUseOptionalPreLoopSystemCheckGate = vi.fn();
 vi.mock("@/hooks/queries/use-loops", () => ({
   useRunLoop: () => ({
     mutate: mockMutate,
-    mutateAsync: mockMutateAsync,
     isPending: false,
   }),
 }));
@@ -89,16 +87,11 @@ describe("useDocumentRunLoop", () => {
   });
 
   describe("prepareConflictRefs + selectTarget — additionalRepos closure", () => {
-    test("selectTarget replay passes additionalRepos from baseParams to mutateAsync", async () => {
+    test("selectTarget replay passes additionalRepos from baseParams to mutate", async () => {
       const additionalRepos = [
         { fullName: "org/extra-repo", branch: "main" },
         { fullName: "org/secondary-repo", branch: "feature" },
       ];
-
-      mockMutateAsync.mockResolvedValue({
-        loopId: "loop-1",
-        status: "PENDING",
-      });
 
       const { result } = renderHook(
         () => useDocumentRunLoop({ documentId: "artifact-123" }),
@@ -114,31 +107,27 @@ describe("useDocumentRunLoop", () => {
       });
 
       // Simulate user resolving the multi-target conflict by selecting a target.
-      // selectTarget is synchronous; the async pendingActionRef fires in the background.
+      // selectTarget is synchronous; the pendingActionRef fires immediately.
       act(() => {
         result.current.selectTarget("target-abc");
       });
 
       await waitFor(() => {
-        expect(mockMutateAsync).toHaveBeenCalledOnce();
+        expect(mockMutate).toHaveBeenCalledOnce();
       });
 
-      expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect(mockMutate).toHaveBeenCalledWith(
         expect.objectContaining({
           documentId: "artifact-123",
           command: RunLoopCommand.Plan,
           computeTargetId: "target-abc",
           additionalRepos,
-        })
+        }),
+        expect.objectContaining({ onError: expect.any(Function) })
       );
     });
 
     test("selectTarget replay does not include additionalRepos when none were in baseParams", async () => {
-      mockMutateAsync.mockResolvedValue({
-        loopId: "loop-3",
-        status: "PENDING",
-      });
-
       const { result } = renderHook(
         () => useDocumentRunLoop({ documentId: "artifact-789" }),
         { wrapper: createWrapperWithClient(queryClient) }
@@ -157,10 +146,10 @@ describe("useDocumentRunLoop", () => {
       });
 
       await waitFor(() => {
-        expect(mockMutateAsync).toHaveBeenCalledOnce();
+        expect(mockMutate).toHaveBeenCalledOnce();
       });
 
-      const callArgs = mockMutateAsync.mock.calls[0][0];
+      const callArgs = mockMutate.mock.calls[0][0];
       expect(callArgs).toMatchObject({
         documentId: "artifact-789",
         command: RunLoopCommand.RequestChanges,
@@ -174,10 +163,6 @@ describe("useDocumentRunLoop", () => {
       const additionalRepos = [{ fullName: "org/extra-repo", branch: "main" }];
       const executeOwnerKey = `run-loop:${RunLoopCommand.Execute}:artifact-123`;
 
-      mockMutateAsync.mockResolvedValue({
-        loopId: "loop-4",
-        status: "PENDING",
-      });
       mockRunWithPreLoopSystemCheck.mockImplementation((_metadata, execute) => {
         execute();
         return Promise.resolve({
@@ -220,23 +205,20 @@ describe("useDocumentRunLoop", () => {
       );
 
       await waitFor(() => {
-        expect(mockMutateAsync).toHaveBeenCalledOnce();
+        expect(mockMutate).toHaveBeenCalledOnce();
       });
-      expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect(mockMutate).toHaveBeenCalledWith(
         expect.objectContaining({
           documentId: "artifact-123",
           command: RunLoopCommand.Execute,
           computeTargetId: "target-abc",
           additionalRepos,
-        })
+        }),
+        expect.objectContaining({ onError: expect.any(Function) })
       );
     });
 
-    test("backend mismatch replay preserves explicit Cloud target through the pre-loop check", async () => {
-      mockMutateAsync.mockResolvedValue({
-        loopId: "loop-5",
-        status: "PENDING",
-      });
+    test("backend mismatch replay preserves explicit Cloud target through the pre-loop check", () => {
       mockRunWithPreLoopSystemCheck.mockImplementation((_metadata, execute) => {
         execute();
         return Promise.resolve({
@@ -259,8 +241,8 @@ describe("useDocumentRunLoop", () => {
         });
       });
 
-      await act(async () => {
-        await result.current.pendingMismatchActionRef.current?.(null, true);
+      act(() => {
+        result.current.pendingMismatchActionRef.current?.(null, true);
       });
 
       expect(mockRunWithPreLoopSystemCheck).toHaveBeenCalledWith(
@@ -273,13 +255,14 @@ describe("useDocumentRunLoop", () => {
         }),
         expect.any(Function)
       );
-      expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect(mockMutate).toHaveBeenCalledWith(
         expect.objectContaining({
           documentId: "artifact-123",
           command: RunLoopCommand.Execute,
           computeTargetId: null,
           backendOverride: true,
-        })
+        }),
+        expect.objectContaining({ onError: expect.any(Function) })
       );
     });
   });

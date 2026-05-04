@@ -81,12 +81,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
 
   /** Command last passed to `prepareConflictRefs` — used to restore evaluate loading state on conflict replay. */
   const pendingConflictCommandRef = useRef<RunLoopCommand | null>(null);
-  const pendingActionRef = useRef<((targetId: string) => Promise<void>) | null>(
-    null
-  );
+  const pendingActionRef = useRef<((targetId: string) => void) | null>(null);
   const pendingMismatchActionRef = useRef<
-    | ((targetId: string | null, backendOverride: boolean) => Promise<void>)
-    | null
+    ((targetId: string | null, backendOverride: boolean) => void) | null
   >(null);
   const executeOwnerKey = documentId
     ? `run-loop:${RunLoopCommand.Execute}:${documentId}`
@@ -171,60 +168,50 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           activeCommandRef.current = null;
         }
       };
-      pendingActionRef.current = async (targetId: string) => {
+      const replayRunLoop = (replayParams: RunLoopMutationParams): void => {
+        runLoop.mutate(replayParams, {
+          onError: routeConflictError,
+          onSettled: clearEvaluateActiveCommandAfterReplay,
+        });
+      };
+      pendingActionRef.current = (targetId: string) => {
         if (!documentId) {
           return;
         }
-        try {
-          const replayParams = {
-            ...baseParams,
-            documentId,
-            computeTargetId: targetId,
-          };
-          const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
-            replayParams,
-            () => {
-              runLoop.mutateAsync(replayParams).catch(routeConflictError);
-            }
-          );
-          if (queuedPreLoopCheck) {
-            return;
-          }
-          await runLoop.mutateAsync(replayParams);
-        } catch (error) {
-          routeConflictError(error);
-        } finally {
-          clearEvaluateActiveCommandAfterReplay();
+
+        const replayParams = {
+          ...baseParams,
+          documentId,
+          computeTargetId: targetId,
+        };
+        const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
+          replayParams,
+          () => replayRunLoop(replayParams)
+        );
+        if (!queuedPreLoopCheck) {
+          replayRunLoop(replayParams);
         }
       };
-      pendingMismatchActionRef.current = async (
+      pendingMismatchActionRef.current = (
         targetId: string | null,
         backendOverride: boolean
       ) => {
         if (!documentId) {
           return;
         }
-        try {
-          const replayParams = {
-            ...baseParams,
-            documentId,
-            computeTargetId: targetId,
-            backendOverride,
-          };
-          const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
-            replayParams,
-            () => {
-              runLoop.mutateAsync(replayParams).catch(routeConflictError);
-            }
-          );
-          if (queuedPreLoopCheck) {
-            return;
-          }
-          await runLoop.mutateAsync(replayParams);
-        } catch (error) {
-          routeConflictError(error);
-        } finally {
-          clearEvaluateActiveCommandAfterReplay();
+
+        const replayParams = {
+          ...baseParams,
+          documentId,
+          computeTargetId: targetId,
+          backendOverride,
+        };
+        const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
+          replayParams,
+          () => replayRunLoop(replayParams)
+        );
+        if (!queuedPreLoopCheck) {
+          replayRunLoop(replayParams);
         }
       };
     },
@@ -249,9 +236,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingActionRef.current?.(targetId).catch(routeConflictError);
+      pendingActionRef.current?.(targetId);
     },
-    [restoreEvaluateActiveCommandBeforeReplay, routeConflictError]
+    [restoreEvaluateActiveCommandBeforeReplay]
   );
 
   /**
@@ -268,15 +255,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingMismatchActionRef
-        .current?.(targetId, true)
-        .catch(routeConflictError);
+      pendingMismatchActionRef.current?.(targetId, true);
     },
-    [
-      backendMismatchState,
-      restoreEvaluateActiveCommandBeforeReplay,
-      routeConflictError,
-    ]
+    [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]
   );
 
   /**
@@ -293,15 +274,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingMismatchActionRef
-        .current?.(targetId, true)
-        .catch(routeConflictError);
+      pendingMismatchActionRef.current?.(targetId, true);
     },
-    [
-      backendMismatchState,
-      restoreEvaluateActiveCommandBeforeReplay,
-      routeConflictError,
-    ]
+    [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]
   );
 
   const dismissBackendMismatch = useCallback(() => {
@@ -334,7 +309,7 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
    * Factory that creates a `handleRequestChanges`-style handler for a given run-loop command.
    *
    * Eliminates boilerplate shared between plan and PRD request-changes flows:
-   * `prepareConflictRefs` → `mutateAsync` → success toast → `routeConflictError` on failure.
+   * `prepareConflictRefs` → `mutate` → success toast → `routeConflictError` on failure.
    *
    * @param command - The RunLoopCommand to send (e.g. RequestChanges, RequestPrdChanges)
    * @param successMessage - Toast text shown on success
@@ -342,25 +317,26 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
    */
   const makeRequestChangesHandler = useCallback(
     (command: RunLoopCommand, successMessage: string) =>
-      async (changes: string): Promise<boolean> => {
+      (changes: string): Promise<boolean> => {
         if (!documentId) {
-          return false;
+          return Promise.resolve(false);
         }
         prepareConflictRefs({ command, prompt: changes });
-        try {
-          await runLoop.mutateAsync(
+        return new Promise<boolean>((resolve) => {
+          runLoop.mutate(
             { documentId, command, prompt: changes },
             {
               onSuccess: () => {
                 toast.success(successMessage);
+                resolve(true);
+              },
+              onError: (error) => {
+                routeConflictError(error);
+                resolve(false);
               },
             }
           );
-          return true;
-        } catch (error) {
-          routeConflictError(error);
-          return false;
-        }
+        });
       },
     [documentId, prepareConflictRefs, runLoop, routeConflictError]
   );

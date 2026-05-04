@@ -40,7 +40,7 @@ import {
   type PreLoopTarget,
 } from "./pre-loop-health-check";
 
-type ExecuteCallback = () => Promise<void> | void;
+type ExecuteCallback = () => void;
 
 type PendingPreLoopAttempt = {
   attemptId: string;
@@ -54,11 +54,46 @@ type PendingPreLoopAttempt = {
   execute: ExecuteCallback;
 };
 
+type ActivePreLoopAttempt = {
+  attemptId: string;
+  metadata: PreLoopMetadata;
+  target?: PreLoopTarget | null;
+  failingRequiredFingerprint?: string;
+  recheckAttempts: number;
+  cancelled: boolean;
+};
+
+type ActivePreLoopAttemptRef = {
+  current: ActivePreLoopAttempt | null;
+};
+
 type HealthCheckFetchResult = {
   data: HealthCheckResponse;
   healthCheckCacheAgeMs: number | null;
   usedCachedHealthCheck: boolean;
 };
+
+type UpdateActivePendingAttemptInput = {
+  attemptId: string;
+  metadata: PreLoopMetadata;
+  target: PreLoopTarget;
+  latestVersion: string | null;
+  healthCheckData?: HealthCheckResponse;
+  execute: ExecuteCallback;
+  openedDialog: boolean;
+};
+
+type UpdatePendingAttemptInput = Pick<
+  UpdateActivePendingAttemptInput,
+  "target" | "latestVersion" | "healthCheckData"
+>;
+
+type AttemptBranchCallbacks = {
+  wasCancelled: () => boolean;
+  clearActiveAttempt: () => void;
+};
+
+const BLOCKING_DIALOG_CANCEL_DISMISS_MS = 250;
 
 type CachedHealthCheckFetchResult = HealthCheckFetchResult & {
   dataUpdatedAt: number;
@@ -130,6 +165,43 @@ function formatUnavailableReason(scope: string, error: unknown): string {
     : `${scope}:unknown`;
 }
 
+function isActivePreLoopAttemptCancelled(
+  activeAttempt: ActivePreLoopAttempt | null,
+  attemptId: string
+): boolean {
+  return (
+    !activeAttempt ||
+    activeAttempt.attemptId !== attemptId ||
+    activeAttempt.cancelled
+  );
+}
+
+function hasPreLoopAttemptBeenCancelled({
+  activeAttempt,
+  pendingAttempt,
+  attemptId,
+  openedDialog,
+}: {
+  activeAttempt: ActivePreLoopAttempt | null;
+  pendingAttempt: PendingPreLoopAttempt | null;
+  attemptId: string;
+  openedDialog: boolean;
+}): boolean {
+  return (
+    isActivePreLoopAttemptCancelled(activeAttempt, attemptId) ||
+    (openedDialog && pendingAttempt?.attemptId !== attemptId)
+  );
+}
+
+function clearActivePreLoopAttempt(
+  activeAttemptRef: ActivePreLoopAttemptRef,
+  attemptId: string
+): void {
+  if (activeAttemptRef.current?.attemptId === attemptId) {
+    activeAttemptRef.current = null;
+  }
+}
+
 async function requireQueryData<T>(
   currentData: T | undefined,
   refetch: () => Promise<{ data: T | undefined; error: Error | null }>
@@ -161,7 +233,11 @@ export function PreLoopSystemCheckProvider({
   const userId = user?.id ?? "";
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
   const isCheckingRef = useRef(false);
+  const activeAttemptRef = useRef<ActivePreLoopAttempt | null>(null);
   const pendingAttemptRef = useRef<PendingPreLoopAttempt | null>(null);
+  const pendingRemovalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const [isChecking, setIsChecking] = useState(false);
   const [pendingAttempt, setPendingAttempt] =
     useState<PendingPreLoopAttempt | null>(null);
@@ -195,11 +271,32 @@ export function PreLoopSystemCheckProvider({
     setIsChecking(false);
   }, []);
 
-  const executeAttempt = useCallback((attempt: PendingPreLoopAttempt) => {
-    pendingAttemptRef.current = null;
+  const clearPendingAttemptState = useCallback((delayMs = 0) => {
+    if (pendingRemovalTimerRef.current) {
+      clearTimeout(pendingRemovalTimerRef.current);
+      pendingRemovalTimerRef.current = null;
+    }
+
+    if (delayMs > 0) {
+      pendingRemovalTimerRef.current = setTimeout(() => {
+        pendingRemovalTimerRef.current = null;
+        setPendingAttempt(null);
+      }, delayMs);
+      return;
+    }
+
     setPendingAttempt(null);
-    attempt.execute();
   }, []);
+
+  const executeAttempt = useCallback(
+    (attempt: PendingPreLoopAttempt) => {
+      clearActivePreLoopAttempt(activeAttemptRef, attempt.attemptId);
+      pendingAttemptRef.current = null;
+      clearPendingAttemptState();
+      attempt.execute();
+    },
+    [clearPendingAttemptState]
+  );
 
   const warnAndBlockUnavailable = useCallback(
     ({
@@ -319,7 +416,7 @@ export function PreLoopSystemCheckProvider({
       throw result.error;
     }
     return result.data?.version ?? null;
-  }, [latestReleaseQuery]);
+  }, [latestReleaseQuery.data, latestReleaseQuery.refetch]);
 
   const getFreshCachedHealthCheck = useCallback(
     ({
@@ -456,6 +553,126 @@ export function PreLoopSystemCheckProvider({
     [expectedMcpUrl, getFreshCachedHealthCheck]
   );
 
+  const updateActivePendingAttempt = useCallback(
+    ({
+      attemptId,
+      metadata,
+      target,
+      latestVersion,
+      healthCheckData,
+      execute,
+      openedDialog,
+    }: UpdateActivePendingAttemptInput): boolean => {
+      if (
+        isActivePreLoopAttemptCancelled(activeAttemptRef.current, attemptId)
+      ) {
+        return false;
+      }
+
+      const current = pendingAttemptRef.current;
+      if (openedDialog && current?.attemptId !== attemptId) {
+        return false;
+      }
+
+      const summary = healthCheckData
+        ? getRequiredFailureSummary(healthCheckData, expectedMcpUrl)
+        : null;
+      const nextAttempt = {
+        attemptId,
+        metadata,
+        target,
+        healthCheckData: healthCheckData ?? current?.healthCheckData,
+        latestVersion,
+        failingRequiredFingerprint:
+          summary?.fingerprint ?? current?.failingRequiredFingerprint,
+        failingCheckIds: summary?.checkIds ?? current?.failingCheckIds ?? [],
+        recheckAttempts: current?.recheckAttempts ?? 0,
+        execute,
+      };
+      activeAttemptRef.current = {
+        attemptId,
+        metadata,
+        target,
+        failingRequiredFingerprint: nextAttempt.failingRequiredFingerprint,
+        recheckAttempts: nextAttempt.recheckAttempts,
+        cancelled: false,
+      };
+      pendingAttemptRef.current = nextAttempt;
+      setPendingAttempt(nextAttempt);
+      return true;
+    },
+    [expectedMcpUrl]
+  );
+
+  const finishSkippedNoLocalTarget = useCallback(
+    ({
+      attemptId,
+      execute,
+      wasCancelled,
+      clearActiveAttempt,
+    }: AttemptBranchCallbacks & {
+      attemptId: string;
+      execute: ExecuteCallback;
+    }): PreLoopHealthCheckOutcome => {
+      clearChecking();
+      if (wasCancelled()) {
+        clearActiveAttempt();
+        return { status: "cancelled", attemptId };
+      }
+
+      clearActiveAttempt();
+      execute();
+      return { status: "skipped_no_local_target", attemptId };
+    },
+    [clearChecking]
+  );
+
+  const finishUnavailablePreLoopEvaluation = useCallback(
+    ({
+      attemptId,
+      metadata,
+      evaluation,
+      latestVersion,
+      wasCancelled,
+      clearActiveAttempt,
+      updatePendingAttempt,
+    }: AttemptBranchCallbacks & {
+      attemptId: string;
+      metadata: PreLoopMetadata;
+      evaluation: Extract<PreLoopHealthEvaluation, { status: "unavailable" }>;
+      latestVersion: string | null;
+      updatePendingAttempt: (input: UpdatePendingAttemptInput) => void;
+    }): PreLoopHealthCheckOutcome => {
+      clearChecking();
+      if (wasCancelled()) {
+        clearActiveAttempt();
+        return { status: "cancelled", attemptId };
+      }
+
+      let openedUnavailableDialog = false;
+      if (evaluation.target) {
+        updatePendingAttempt({
+          target: evaluation.target,
+          latestVersion,
+          healthCheckData: buildUnavailableHealthCheck(evaluation.reason),
+        });
+        openedUnavailableDialog = true;
+      }
+
+      const outcome = warnAndBlockUnavailable({
+        attemptId,
+        metadata,
+        target: evaluation.target,
+        reason: evaluation.reason,
+      });
+      if (!openedUnavailableDialog) {
+        clearActiveAttempt();
+      }
+      return outcome;
+    },
+    [clearChecking, warnAndBlockUnavailable]
+  );
+
   const evaluatePreLoopTargetHealth = useCallback(
     async (
       metadata: PreLoopMetadata,
@@ -544,15 +761,33 @@ export function PreLoopSystemCheckProvider({
       }
 
       const attemptId = createPreLoopAttemptId();
-      isCheckingRef.current = true;
-      setIsChecking(true);
       capture(PreLoopAnalyticsEvent.CommandAttempted, {
         attemptId,
         metadata,
       });
+      if (!userId) {
+        return warnAndBlockUnavailable({
+          attemptId,
+          metadata,
+          reason: "auth_unavailable",
+        });
+      }
+
+      activeAttemptRef.current = {
+        attemptId,
+        metadata,
+        target: null,
+        recheckAttempts: 0,
+        cancelled: false,
+      };
+      isCheckingRef.current = true;
+      setIsChecking(true);
 
       let openedDialog = false;
       let latestVersionForAttempt: string | null = null;
+      const clearActiveAttempt = () => {
+        clearActivePreLoopAttempt(activeAttemptRef, attemptId);
+      };
       const updatePendingAttempt = ({
         target,
         latestVersion,
@@ -562,33 +797,27 @@ export function PreLoopSystemCheckProvider({
         latestVersion: string | null;
         healthCheckData?: HealthCheckResponse;
       }) => {
-        latestVersionForAttempt = latestVersion;
-        const current = pendingAttemptRef.current;
-        if (openedDialog && current?.attemptId !== attemptId) {
-          return;
-        }
-
-        const summary = healthCheckData
-          ? getRequiredFailureSummary(healthCheckData, expectedMcpUrl)
-          : null;
-        const nextAttempt = {
+        const updated = updateActivePendingAttempt({
           attemptId,
           metadata,
           target,
-          healthCheckData: healthCheckData ?? current?.healthCheckData,
           latestVersion,
-          failingRequiredFingerprint:
-            summary?.fingerprint ?? current?.failingRequiredFingerprint,
-          failingCheckIds: summary?.checkIds ?? current?.failingCheckIds ?? [],
-          recheckAttempts: current?.recheckAttempts ?? 0,
+          healthCheckData,
           execute,
-        };
-        openedDialog = true;
-        pendingAttemptRef.current = nextAttempt;
-        setPendingAttempt(nextAttempt);
+          openedDialog,
+        });
+        if (updated) {
+          latestVersionForAttempt = latestVersion;
+          openedDialog = true;
+        }
       };
       const wasDialogCancelled = () =>
-        openedDialog && pendingAttemptRef.current?.attemptId !== attemptId;
+        hasPreLoopAttemptBeenCancelled({
+          activeAttempt: activeAttemptRef.current,
+          pendingAttempt: pendingAttemptRef.current,
+          attemptId,
+          openedDialog,
+        });
 
       const evaluation = await evaluatePreLoopTargetHealth(
         metadata,
@@ -597,35 +826,28 @@ export function PreLoopSystemCheckProvider({
         }
       );
       if (evaluation.status === "skip_no_local_target") {
-        clearChecking();
-        execute();
-        return { status: "skipped_no_local_target", attemptId };
+        return finishSkippedNoLocalTarget({
+          attemptId,
+          execute,
+          wasCancelled: wasDialogCancelled,
+          clearActiveAttempt,
+        });
       }
       if (evaluation.status === "unavailable") {
-        clearChecking();
-        if (wasDialogCancelled()) {
-          return { status: "cancelled", attemptId };
-        }
-        if (evaluation.target) {
-          const healthCheckData = buildUnavailableHealthCheck(
-            evaluation.reason
-          );
-          updatePendingAttempt({
-            target: evaluation.target,
-            latestVersion: latestVersionForAttempt,
-            healthCheckData,
-          });
-        }
-        return warnAndBlockUnavailable({
+        return finishUnavailablePreLoopEvaluation({
           attemptId,
           metadata,
-          target: evaluation.target,
-          reason: evaluation.reason,
+          evaluation,
+          latestVersion: latestVersionForAttempt,
+          wasCancelled: wasDialogCancelled,
+          clearActiveAttempt,
+          updatePendingAttempt,
         });
       }
 
       if (wasDialogCancelled()) {
         clearChecking();
+        clearActiveAttempt();
         return { status: "cancelled", attemptId };
       }
 
@@ -645,8 +867,9 @@ export function PreLoopSystemCheckProvider({
       };
 
       if (summary.checkIds.length === 0) {
+        clearActiveAttempt();
         pendingAttemptRef.current = null;
-        setPendingAttempt(null);
+        clearPendingAttemptState();
         clearChecking();
         execute();
         return { status: "executed", attemptId };
@@ -664,30 +887,65 @@ export function PreLoopSystemCheckProvider({
     [
       capture,
       clearChecking,
+      clearPendingAttemptState,
       expectedMcpUrl,
-      warnAndBlockUnavailable,
       evaluatePreLoopTargetHealth,
+      finishSkippedNoLocalTarget,
+      finishUnavailablePreLoopEvaluation,
+      updateActivePendingAttempt,
+      userId,
+      warnAndBlockUnavailable,
     ]
   );
 
   const cancelPendingAttempt = useCallback(
     (reason: string, ownerKey?: string) => {
-      const attempt = pendingAttemptRef.current;
-      if (!attempt || (ownerKey && attempt.metadata.ownerKey !== ownerKey)) {
+      const pendingAttempt = pendingAttemptRef.current;
+      const activeAttempt = activeAttemptRef.current;
+      const metadata = pendingAttempt?.metadata ?? activeAttempt?.metadata;
+      if (!metadata || (ownerKey && metadata.ownerKey !== ownerKey)) {
         return;
       }
+      if (activeAttempt?.cancelled && !pendingAttempt) {
+        return;
+      }
+
+      const attemptId = pendingAttempt?.attemptId ?? activeAttempt?.attemptId;
+      if (!attemptId) {
+        return;
+      }
+      const target = pendingAttempt?.target ?? activeAttempt?.target;
+      const failingRequiredFingerprint =
+        pendingAttempt?.failingRequiredFingerprint ??
+        activeAttempt?.failingRequiredFingerprint;
+      const recheckAttempts =
+        pendingAttempt?.recheckAttempts ?? activeAttempt?.recheckAttempts ?? 0;
+
       capture(PreLoopAnalyticsEvent.SystemCheckCancelled, {
-        attemptId: attempt.attemptId,
-        metadata: attempt.metadata,
-        target: attempt.target,
-        failingRequiredFingerprint: attempt.failingRequiredFingerprint,
-        recheckAttempts: attempt.recheckAttempts,
+        attemptId,
+        metadata,
+        target,
+        failingRequiredFingerprint,
+        recheckAttempts,
         reason,
       });
+
+      if (activeAttempt?.attemptId === attemptId) {
+        activeAttemptRef.current = {
+          ...activeAttempt,
+          target,
+          failingRequiredFingerprint,
+          recheckAttempts,
+          cancelled: true,
+        };
+      }
       pendingAttemptRef.current = null;
-      setPendingAttempt(null);
+      clearPendingAttemptState(
+        pendingAttempt ? BLOCKING_DIALOG_CANCEL_DISMISS_MS : 0
+      );
+      clearChecking();
     },
-    [capture]
+    [capture, clearChecking, clearPendingAttemptState]
   );
 
   const cancelPendingPreLoopAttempt = useCallback(
@@ -812,6 +1070,11 @@ export function PreLoopSystemCheckProvider({
 
   useEffect(() => {
     return () => {
+      if (pendingRemovalTimerRef.current) {
+        clearTimeout(pendingRemovalTimerRef.current);
+        pendingRemovalTimerRef.current = null;
+      }
+      activeAttemptRef.current = null;
       pendingAttemptRef.current = null;
       isCheckingRef.current = false;
     };
