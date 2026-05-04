@@ -1,5 +1,7 @@
 "use client";
 
+import type { Artifact } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
 import type {
   DocumentStatus,
@@ -40,6 +42,7 @@ import {
   CalendarIcon,
   ChevronRightIcon,
   EllipsisIcon,
+  GitPullRequestIcon,
   Loader2Icon,
 } from "lucide-react";
 import Link from "next/link";
@@ -74,9 +77,23 @@ import { LoopCell } from "./loop-cell";
 // ---- Unified row item type ----
 
 export type DocumentRowItem =
-  | { kind: "artifact"; data: DocumentWithWorkstream }
-  | { kind: "feature"; data: DocumentWithWorkstream }
-  | { kind: "project"; data: ProjectWithDetails };
+  | {
+      kind: "artifact";
+      data: DocumentWithWorkstream;
+      children?: DocumentRowItem[];
+    }
+  | {
+      kind: "feature";
+      data: DocumentWithWorkstream;
+      children?: DocumentRowItem[];
+    }
+  | { kind: "project"; data: ProjectWithDetails; children?: DocumentRowItem[] }
+  | {
+      /** PR or Deployment artifact displayed as a branch row in the tree view. */
+      kind: "branch";
+      data: Artifact;
+      children?: DocumentRowItem[];
+    };
 
 // ---- Edit handlers context ----
 
@@ -168,6 +185,20 @@ function NameCell({
           </div>
         )}
       </div>
+    );
+  }
+
+  // Branch rows (PR / Deployment): PR icon + name
+  if (item.kind === "branch") {
+    return (
+      <BranchNameCell
+        hasChevron={hasChevron}
+        href={href}
+        indented={indented}
+        isExpanded={isExpanded}
+        item={item}
+        onToggleExpand={onToggleExpand}
+      />
     );
   }
 
@@ -299,6 +330,20 @@ function TypeCell({ item }: { item: DocumentRowItem }) {
       </div>
     );
   }
+  if (item.kind === "branch") {
+    const label =
+      item.data.type === ArtifactType.PullRequest ? "Pull Request" : "Deploy";
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+        <Badge
+          className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
+          variant="secondary"
+        >
+          {label}
+        </Badge>
+      </div>
+    );
+  }
   const colors = DOCUMENT_TYPE_COLORS[item.data.type];
   const label = DOCUMENT_TYPE_BADGE_LABELS[item.data.type];
   return (
@@ -340,6 +385,13 @@ function ParentCell({ item: _item }: { item: DocumentRowItem }) {
 
 function DueDateCell({ item }: { item: DocumentRowItem }) {
   const { onUpdateDueDate } = useContext(RowEditContext);
+  if (item.kind === "branch") {
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2 text-muted-foreground text-xs">
+        —
+      </div>
+    );
+  }
   // Projects use targetDate; artifacts/features use updatedAt as a placeholder
   const date =
     item.kind === "project"
@@ -385,6 +437,13 @@ function DueDateCell({ item }: { item: DocumentRowItem }) {
 
 function AssigneeCell({ item }: { item: DocumentRowItem }) {
   const { onUpdateAssignee, teamMembers } = useContext(RowEditContext);
+  if (item.kind === "branch") {
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2 text-muted-foreground text-xs">
+        —
+      </div>
+    );
+  }
   const assignee = item.data.assignee ?? null;
 
   const trigger = (
@@ -449,6 +508,13 @@ function AssigneeCell({ item }: { item: DocumentRowItem }) {
 
 function PriorityCell({ item }: { item: DocumentRowItem }) {
   const { onUpdatePriority } = useContext(RowEditContext);
+  if (item.kind === "branch") {
+    return (
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2 text-muted-foreground text-xs">
+        —
+      </div>
+    );
+  }
   const priority = item.data.priority ?? null;
 
   if (!onUpdatePriority) {
@@ -599,7 +665,7 @@ function ProjectCell({ item }: { item: DocumentRowItem }) {
 
   if (item.kind === "project") {
     project = item.data;
-  } else if (item.data.project) {
+  } else if (item.kind !== "branch" && item.data.project) {
     project = {
       id: item.data.project.id,
       name: item.data.project.name,
@@ -722,6 +788,9 @@ export function DocumentRow({
     if (item.kind === "feature") {
       return getFeatureRoute(item.data);
     }
+    if (item.kind === "branch") {
+      return `/build/${item.data.id}`;
+    }
     return getDocumentRoute(item.data);
   }
 
@@ -797,4 +866,62 @@ export function getDocumentRowGridTemplateColumns(
     ...Array.from({ length: visibleColumnCount }, () => "124px"),
     "56px",
   ].join(" ");
+}
+
+// ---- Branch name cell (extracted to keep NameCell cognitive complexity in bounds) ----
+
+function BranchNameCell({
+  item,
+  hasChevron,
+  isExpanded,
+  onToggleExpand,
+  indented,
+  href,
+}: {
+  item: Extract<DocumentRowItem, { kind: "branch" }>;
+  hasChevron: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  indented?: boolean;
+  href?: string | null;
+}) {
+  const isPullRequest = item.data.type === ArtifactType.PullRequest;
+  const className =
+    "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-3";
+
+  return (
+    <div className={className}>
+      {indented && <div className="w-7 shrink-0" />}
+      {hasChevron && (
+        <button
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
+          onClick={() => {
+            if (onToggleExpand) {
+              onToggleExpand();
+            }
+          }}
+          tabIndex={onToggleExpand ? 0 : -1}
+          type="button"
+        >
+          <ChevronRightIcon
+            className={`h-4 w-4 text-muted-foreground ${isExpanded ? "rotate-90" : ""} transition-transform`}
+          />
+        </button>
+      )}
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+        <GitPullRequestIcon
+          className={`h-4 w-4 ${isPullRequest ? "text-emerald-500" : "text-blue-500"}`}
+        />
+      </div>
+      {href ? (
+        <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
+          <TruncatedTitle text={item.data.name} />
+        </Link>
+      ) : (
+        <div className="ml-1.5 min-w-0 flex-1">
+          <TruncatedTitle text={item.data.name} />
+        </div>
+      )}
+    </div>
+  );
 }

@@ -34,7 +34,7 @@ const FLAT_SORT_COLUMNS = [
 type FlatSortColumn = (typeof FLAT_SORT_COLUMNS)[number];
 
 function getItemDisplayName(item: DocumentRowItem): string {
-  if (item.kind === "project") {
+  if (item.kind === "project" || item.kind === "branch") {
     return item.data.name;
   }
   return item.data.title;
@@ -64,11 +64,19 @@ function compareByPriority(a: DocumentRowItem, b: DocumentRowItem): number {
 }
 
 function compareByProject(a: DocumentRowItem, b: DocumentRowItem): number {
-  const aProject =
-    a.kind === "project" ? a.data.name : (a.data.project?.name ?? "");
-  const bProject =
-    b.kind === "project" ? b.data.name : (b.data.project?.name ?? "");
+  const aProject = getItemProjectName(a);
+  const bProject = getItemProjectName(b);
   return aProject.localeCompare(bProject);
+}
+
+function getItemProjectName(item: DocumentRowItem): string {
+  if (item.kind === "project") {
+    return item.data.name;
+  }
+  if (item.kind === "branch") {
+    return "";
+  }
+  return item.data.project?.name ?? "";
 }
 
 const SORT_COMPARATORS: Partial<
