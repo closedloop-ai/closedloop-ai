@@ -7,6 +7,7 @@ const RE_ADD_TEAM = /add team/i;
 const RE_YOUR_TEAMS = /your teams/i;
 const RE_GET_STARTED = /get started/i;
 const RE_SKIP_FOR_NOW = /skip for now/i;
+const RE_SKIP_ANYWAY = /skip anyway/i;
 const RE_TEAM_NAME = /team name/i;
 const RE_CREATE_TEAM = /create team/i;
 const RE_PROJECT_NAME = /project name/i;
@@ -96,6 +97,7 @@ async function waitForAuthenticatedEntry(
 async function completeOnboarding(page: Page) {
   await page.getByRole("button", { name: RE_GET_STARTED }).click();
   await page.getByRole("button", { name: RE_SKIP_FOR_NOW }).click();
+  await page.getByRole("button", { name: RE_SKIP_ANYWAY }).click();
 
   await page.getByLabel(RE_TEAM_NAME).fill(`E2E Test Team ${Date.now()}`);
   await page.getByRole("button", { name: RE_CREATE_TEAM }).click();

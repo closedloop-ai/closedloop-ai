@@ -5,7 +5,11 @@ import {
   DocumentType,
   type DocumentWithWorkstream,
 } from "@repo/api/src/types/document";
-import type { TreeNode } from "@repo/api/src/types/project-tree";
+import type {
+  ExternalParentLink,
+  TreeChild,
+  TreeNode,
+} from "@repo/api/src/types/project-tree";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -116,14 +120,14 @@ const TYPE_ORDER: Record<DocumentType, number> = {
 const UNASSIGNED_KEY_PREFIX = "unassigned:" as const;
 
 function getItemTypeOrder(item: DocumentRowItem): number {
-  if (item.kind === "project") {
+  if (item.kind === "project" || item.kind === "branch") {
     return 99;
   }
   return TYPE_ORDER[item.data.type] ?? 99;
 }
 
 function getItemTitle(item: DocumentRowItem): string {
-  if (item.kind === "project") {
+  if (item.kind === "project" || item.kind === "branch") {
     return item.data.name;
   }
   return item.data.title;
@@ -141,9 +145,12 @@ function deriveGroupTitle(
     return workstreamTitle;
   }
   const prd = items.find(
-    (i) => i.kind !== "project" && i.data.type === DocumentType.Prd
+    (i) =>
+      i.kind !== "project" &&
+      i.kind !== "branch" &&
+      i.data.type === DocumentType.Prd
   );
-  if (prd && prd.kind !== "project") {
+  if (prd && prd.kind !== "project" && prd.kind !== "branch") {
     return prd.data.title;
   }
   return "Unassigned";
@@ -204,6 +211,7 @@ function groupByWorkstream(
 type DisplayGroup = {
   groupKey: string;
   root: DocumentRowItem;
+  /** Direct children of root. Each child may itself have nested children. */
   children: DocumentRowItem[];
 };
 
@@ -227,7 +235,88 @@ function treeEntityToRowItem(
     const doc = documentMap.get(entity.id);
     return doc ? toRowItem(doc) : null;
   }
-  return null; // PR / Deployment artifact — no row type yet
+  if (
+    entity.type === ArtifactType.PullRequest ||
+    entity.type === ArtifactType.Deployment
+  ) {
+    return { kind: "branch", data: entity };
+  }
+  return null;
+}
+
+/**
+ * Build a recursive tree from the flat DFS-ordered children array returned by the API.
+ * Each TreeChild has a `depth` field (1 = direct child of root, 2 = grandchild, etc.).
+ *
+ * Uses a stack indexed by depth: stack[depth] = the children array that owns the
+ * current node at that depth. stack[0] = root's direct children.
+ * A visited-node set guards against cycles in malformed API data.
+ *
+ * Returns the direct children of the root, each of which may have nested children.
+ */
+function buildNestedChildrenFromDFS(
+  treeChildren: TreeChild[],
+  documentMap: Map<string, DocumentWithWorkstream>,
+  seenIds: Set<string>
+): DocumentRowItem[] {
+  const visitedInNode = new Set<string>();
+  const directChildren: DocumentRowItem[] = [];
+  const childrenStack: DocumentRowItem[][] = [directChildren];
+
+  for (const child of treeChildren) {
+    if (visitedInNode.has(child.id)) {
+      continue;
+    }
+    visitedInNode.add(child.id);
+
+    const depth = child.depth; // 1 = direct child, 2 = grandchild, etc.
+
+    // Truncate the stack to the level that will own this child.
+    // stack[depth - 1] is the children array of the parent at depth - 1.
+    if (depth < childrenStack.length) {
+      childrenStack.length = depth;
+    }
+
+    const childItem = treeEntityToRowItem(child, documentMap);
+    if (!childItem) {
+      // When an intermediate child is filtered out, clear its stack slot
+      // so deeper descendants don't silently attach to the wrong parent.
+      childrenStack.length = depth;
+      continue;
+    }
+
+    // Only mark as seen after confirming the child is placeable.
+    seenIds.add(child.id);
+
+    // Append the child to its parent's children array.
+    const parentChildren = childrenStack[depth - 1];
+    if (parentChildren) {
+      parentChildren.push(childItem);
+    }
+
+    // Push this child's own children array onto the stack so that any
+    // subsequent deeper nodes become its children.
+    const ownChildren: DocumentRowItem[] = [];
+    childItem.children = ownChildren;
+    childrenStack[depth] = ownChildren;
+  }
+
+  pruneEmptyChildren(directChildren);
+  return directChildren;
+}
+
+/** Remove empty children arrays from row items to keep them clean. */
+function pruneEmptyChildren(items: DocumentRowItem[]): void {
+  for (const item of items) {
+    if (!item.children) {
+      continue;
+    }
+    if (item.children.length === 0) {
+      item.children = undefined;
+    } else {
+      pruneEmptyChildren(item.children);
+    }
+  }
 }
 
 function groupByProjectTree(
@@ -245,14 +334,11 @@ function groupByProjectTree(
     }
     seenIds.add(node.root.id);
 
-    const children: DocumentRowItem[] = [];
-    for (const child of node.children) {
-      seenIds.add(child.id);
-      const childItem = treeEntityToRowItem(child, documentMap);
-      if (childItem) {
-        children.push(childItem);
-      }
-    }
+    const children = buildNestedChildrenFromDFS(
+      node.children,
+      documentMap,
+      seenIds
+    );
     groups.push({ groupKey: node.root.id, root, children });
   }
 
@@ -268,6 +354,59 @@ function groupByProjectTree(
   }
 
   return groups;
+}
+
+type ParentEntry = { title: string; href: string | null };
+
+/**
+ * Build a map from child entity id to its immediate parent's title and href.
+ * Uses the depth field from TreeChild to identify the correct immediate parent
+ * for each descendant. Cross-project parents fill in entries that are absent
+ * from the in-project tree.
+ */
+function buildParentMap(
+  treeData: { nodes: TreeNode[]; externalParents: ExternalParentLink[] } | null
+): Map<string, ParentEntry> {
+  const map = new Map<string, ParentEntry>();
+  if (!treeData) {
+    return map;
+  }
+  for (const node of treeData.nodes) {
+    buildNodeParentEntries(node, map);
+  }
+  for (const entry of treeData.externalParents) {
+    if (map.has(entry.childId) || !isDocumentArtifact(entry.parent)) {
+      continue;
+    }
+    map.set(entry.childId, {
+      title: entry.parent.name,
+      href: getArtifactRoute(entry.parent),
+    });
+  }
+  return map;
+}
+
+function buildNodeParentEntries(
+  node: TreeNode,
+  map: Map<string, ParentEntry>
+): void {
+  // parentStack[depth] holds the artifact name/href at that depth.
+  // depth 0 = root, depth 1 = direct child, depth 2 = grandchild, etc.
+  const parentStack: ParentEntry[] = [
+    { title: node.root.name, href: getArtifactRoute(node.root) },
+  ];
+  for (const child of node.children) {
+    const depth = child.depth;
+    // Trim the stack so parentStack[depth - 1] is the immediate parent.
+    if (depth < parentStack.length) {
+      parentStack.length = depth;
+    }
+    const immediateParent = parentStack[depth - 1];
+    if (immediateParent) {
+      map.set(child.id, immediateParent);
+    }
+    parentStack[depth] = { title: child.name, href: getArtifactRoute(child) };
+  }
 }
 
 // ---- Filter items by category ----
@@ -349,6 +488,25 @@ function groupFlatItemsByMode(
   }));
 }
 
+/** Recursively collect visible items from a nested children list. */
+function collectVisibleChildren(
+  children: DocumentRowItem[],
+  isGroupExpanded: (key: string) => boolean
+): DocumentRowItem[] {
+  const items: DocumentRowItem[] = [];
+  for (const child of children) {
+    items.push(child);
+    if (
+      child.children &&
+      child.children.length > 0 &&
+      isGroupExpanded(child.data.id)
+    ) {
+      items.push(...collectVisibleChildren(child.children, isGroupExpanded));
+    }
+  }
+  return items;
+}
+
 function flattenGroupedSections(
   sections: GroupedSection[],
   isGroupedView: boolean,
@@ -359,7 +517,7 @@ function flattenGroupedSections(
     for (const group of section.groups) {
       items.push(group.root);
       if (isGroupedView && isGroupExpanded(group.groupKey)) {
-        items.push(...group.children);
+        items.push(...collectVisibleChildren(group.children, isGroupExpanded));
       }
     }
   }
@@ -374,7 +532,7 @@ function flattenDisplayGroups(
   for (const group of groups) {
     items.push(group.root);
     if (isGroupExpanded(group.groupKey)) {
-      items.push(...group.children);
+      items.push(...collectVisibleChildren(group.children, isGroupExpanded));
     }
   }
   return items;
@@ -393,6 +551,13 @@ const SORT_COLUMNS = [
 
 type SortColumn = (typeof SORT_COLUMNS)[number];
 
+function getItemSortType(item: DocumentRowItem): string {
+  if (item.kind === "artifact" || item.kind === "branch") {
+    return item.data.type;
+  }
+  return "FEATURE";
+}
+
 const ITEM_SORT_CONFIGS: Record<string, SortConfig<DocumentRowItem>> = {
   title: {
     key: "title",
@@ -401,8 +566,8 @@ const ITEM_SORT_CONFIGS: Record<string, SortConfig<DocumentRowItem>> = {
   type: {
     key: "type",
     comparator: (a, b) => {
-      const aType = a.kind === "artifact" ? a.data.type : "FEATURE";
-      const bType = b.kind === "artifact" ? b.data.type : "FEATURE";
+      const aType = getItemSortType(a);
+      const bType = getItemSortType(b);
       return aType.localeCompare(bType);
     },
   },
@@ -522,37 +687,12 @@ export function DocumentsView({
   const { data: treeData, isLoading: isLoadingTree } =
     useProjectTree(projectId);
 
-  // Build parent map: child entity id → parent title + optional parent artifact route.
-  // In-project tree parents take precedence; cross-project parents (returned in
-  // `treeData.externalParents`) fill in for items whose parent lives elsewhere.
-  const parentMap = useMemo((): Map<
-    string,
-    { title: string; href: string | null }
-  > => {
-    if (!treeData) {
-      return new Map();
-    }
-    const map = new Map<string, { title: string; href: string | null }>();
-    for (const node of treeData.nodes) {
-      const parentHref = getArtifactRoute(node.root);
-      for (const child of node.children) {
-        map.set(child.id, { title: node.root.name, href: parentHref });
-      }
-    }
-    for (const entry of treeData.externalParents) {
-      if (map.has(entry.childId)) {
-        continue;
-      }
-      if (!isDocumentArtifact(entry.parent)) {
-        continue;
-      }
-      map.set(entry.childId, {
-        title: entry.parent.name,
-        href: getArtifactRoute(entry.parent),
-      });
-    }
-    return map;
-  }, [treeData]);
+  // Build parent map: child entity id → immediate parent title + route.
+  // Uses depth field from TreeChild to find the correct immediate parent for each
+  // descendant, rather than mapping all descendants to the root.
+  // Cross-project parents (returned in `treeData.externalParents`) fill in for
+  // items whose parent lives outside this project.
+  const parentMap = useMemo(() => buildParentMap(treeData ?? null), [treeData]);
 
   // Build groups for "All" view, sorted by root item when a sort is active.
   // Uses project tree structure when available; falls back to workstream grouping while loading.
@@ -974,17 +1114,19 @@ export function DocumentsView({
               Move to Project
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem
-            onClick={() => {
-              if (menuState) {
-                handleRequestDelete(menuState.item);
-              }
-            }}
-            variant="destructive"
-          >
-            <TrashIcon className="h-4 w-4 text-destructive" />
-            Delete
-          </DropdownMenuItem>
+          {menuState?.item.kind !== "branch" && (
+            <DropdownMenuItem
+              onClick={() => {
+                if (menuState) {
+                  handleRequestDelete(menuState.item);
+                }
+              }}
+              variant="destructive"
+            >
+              <TrashIcon className="h-4 w-4 text-destructive" />
+              Delete
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -1107,22 +1249,36 @@ function TreeGroupRows({
         visibleColumns={visibleColumns}
       />
       {isOpen &&
-        children.map((child, childIndex) => (
-          <DocumentRow
-            editHandlers={editHandlers}
-            extendIndentedBottomBorderLeft={childIndex === children.length - 1}
-            indented
-            isSelected={selectedIds.has(child.data.id)}
-            item={child}
-            key={child.data.id}
-            onMoreMenu={handleMoreMenu}
-            onSelectionChange={handleSelectionChange}
-            parentHref={parentMap.get(child.data.id)?.href}
-            parentTitle={parentMap.get(child.data.id)?.title}
-            showCheckbox={false}
-            visibleColumns={visibleColumns}
-          />
-        ))}
+        collectVisibleChildren(children, isGroupExpanded).map(
+          (child, childIndex, visibleList) => (
+            <DocumentRow
+              editHandlers={child.kind === "branch" ? undefined : editHandlers}
+              extendIndentedBottomBorderLeft={
+                childIndex === visibleList.length - 1
+              }
+              indented
+              isExpanded={
+                child.children && child.children.length > 0
+                  ? isGroupExpanded(child.data.id)
+                  : false
+              }
+              isSelected={selectedIds.has(child.data.id)}
+              item={child}
+              key={child.data.id}
+              onMoreMenu={child.kind === "branch" ? undefined : handleMoreMenu}
+              onSelectionChange={handleSelectionChange}
+              onToggleExpand={
+                child.children && child.children.length > 0
+                  ? () => toggleGroup(child.data.id)
+                  : undefined
+              }
+              parentHref={parentMap.get(child.data.id)?.href}
+              parentTitle={parentMap.get(child.data.id)?.title}
+              showCheckbox={false}
+              visibleColumns={visibleColumns}
+            />
+          )
+        )}
     </div>
   );
 }

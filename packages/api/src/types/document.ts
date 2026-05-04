@@ -189,9 +189,12 @@ export type PullRequestInfo = {
 };
 
 export function pickPullRequestForRepo(
-  pullRequests: PullRequestInfo[],
+  pullRequests: PullRequestInfo[] | null | undefined,
   repoFullName: string | null | undefined
 ): PullRequestInfo | null {
+  if (!pullRequests || pullRequests.length === 0) {
+    return null;
+  }
   return (
     (repoFullName
       ? pullRequests.find((pr) => pr.repoFullName === repoFullName)
