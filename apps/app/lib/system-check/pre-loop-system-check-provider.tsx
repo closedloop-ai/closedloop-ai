@@ -60,6 +60,10 @@ type HealthCheckFetchResult = {
   usedCachedHealthCheck: boolean;
 };
 
+type CachedHealthCheckFetchResult = HealthCheckFetchResult & {
+  dataUpdatedAt: number;
+};
+
 type PreLoopHealthEvaluation =
   | { status: "skip_no_local_target" }
   | { status: "unavailable"; reason: string; target?: PreLoopTarget | null }
@@ -118,6 +122,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 
 function getTargetLabel(target: ComputeTarget): string {
   return target.machineName || target.ownerName || target.id;
+}
+
+function formatUnavailableReason(scope: string, error: unknown): string {
+  return error instanceof Error
+    ? `${scope}:${error.message}`
+    : `${scope}:unknown`;
 }
 
 async function requireQueryData<T>(
@@ -311,6 +321,83 @@ export function PreLoopSystemCheckProvider({
     return result.data?.version ?? null;
   }, [latestReleaseQuery]);
 
+  const getFreshCachedHealthCheck = useCallback(
+    ({
+      target,
+      latestVersion,
+    }: {
+      target: PreLoopTarget;
+      latestVersion?: string | null;
+    }): HealthCheckFetchResult | null => {
+      const now = Date.now();
+      const toCachedResult = (
+        data: unknown,
+        dataUpdatedAt: number
+      ): CachedHealthCheckFetchResult | null => {
+        if (
+          data === undefined ||
+          !isPreLoopHealthCheckFresh({ dataUpdatedAt, now })
+        ) {
+          return null;
+        }
+
+        return {
+          data: data as HealthCheckResponse,
+          dataUpdatedAt,
+          healthCheckCacheAgeMs: now - dataUpdatedAt,
+          usedCachedHealthCheck: true,
+        };
+      };
+
+      if (latestVersion !== undefined) {
+        const options = healthCheckOptions(target.targetKey, expectedMcpUrl, {
+          relayTargetId: target.computeTargetId,
+          latestVersion,
+        });
+        const queryState = queryClient.getQueryState<HealthCheckResponse>(
+          options.queryKey
+        );
+        const cachedResult = toCachedResult(
+          queryState?.data,
+          queryState?.dataUpdatedAt ?? 0
+        );
+        if (!cachedResult) {
+          return null;
+        }
+
+        const { dataUpdatedAt: _dataUpdatedAt, ...result } = cachedResult;
+        return result;
+      }
+
+      const queryKeyPrefix = healthCheckOptions(
+        target.targetKey,
+        expectedMcpUrl,
+        {
+          relayTargetId: target.computeTargetId,
+        }
+      ).queryKey.slice(0, 3);
+      const cachedResults = queryClient
+        .getQueryCache()
+        .findAll({ queryKey: queryKeyPrefix })
+        .map((query) =>
+          toCachedResult(query.state.data, query.state.dataUpdatedAt)
+        )
+        .filter((result): result is CachedHealthCheckFetchResult =>
+          Boolean(result)
+        )
+        .sort((left, right) => right.dataUpdatedAt - left.dataUpdatedAt);
+
+      const cachedResult = cachedResults[0];
+      if (!cachedResult) {
+        return null;
+      }
+
+      const { dataUpdatedAt: _dataUpdatedAt, ...result } = cachedResult;
+      return result;
+    },
+    [expectedMcpUrl, queryClient]
+  );
+
   const fetchHealthCheck = useCallback(
     async ({
       target,
@@ -319,29 +406,18 @@ export function PreLoopSystemCheckProvider({
       target: PreLoopTarget;
       latestVersion: string | null;
     }): Promise<HealthCheckFetchResult> => {
+      const cachedResult = getFreshCachedHealthCheck({
+        target,
+        latestVersion,
+      });
+      if (cachedResult) {
+        return cachedResult;
+      }
+
       const options = healthCheckOptions(target.targetKey, expectedMcpUrl, {
         relayTargetId: target.computeTargetId,
         latestVersion,
       });
-      const queryState = queryClient.getQueryState<HealthCheckResponse>(
-        options.queryKey
-      );
-      const now = Date.now();
-
-      if (
-        queryState?.data &&
-        isPreLoopHealthCheckFresh({
-          dataUpdatedAt: queryState.dataUpdatedAt,
-          now,
-        })
-      ) {
-        return {
-          data: queryState.data,
-          healthCheckCacheAgeMs: now - queryState.dataUpdatedAt,
-          usedCachedHealthCheck: true,
-        };
-      }
-
       const data = await withTimeout(
         queryClient.fetchQuery(options),
         PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS
@@ -352,7 +428,32 @@ export function PreLoopSystemCheckProvider({
         usedCachedHealthCheck: false,
       };
     },
-    [expectedMcpUrl, queryClient]
+    [expectedMcpUrl, getFreshCachedHealthCheck, queryClient]
+  );
+
+  const getFreshPassingCachedHealthCheck = useCallback(
+    (
+      target: PreLoopTarget,
+      latestVersion?: string | null
+    ): HealthCheckFetchResult | null => {
+      const cachedResult = getFreshCachedHealthCheck({
+        target,
+        latestVersion,
+      });
+      if (!cachedResult) {
+        return null;
+      }
+
+      if (
+        getRequiredFailureSummary(cachedResult.data, expectedMcpUrl).checkIds
+          .length > 0
+      ) {
+        return null;
+      }
+
+      return cachedResult;
+    },
+    [expectedMcpUrl, getFreshCachedHealthCheck]
   );
 
   const evaluatePreLoopTargetHealth = useCallback(
@@ -369,10 +470,7 @@ export function PreLoopSystemCheckProvider({
       } catch (error) {
         return {
           status: "unavailable",
-          reason:
-            error instanceof Error
-              ? `target_resolution:${error.message}`
-              : "target_resolution:unknown",
+          reason: formatUnavailableReason("target_resolution", error),
         };
       }
 
@@ -380,22 +478,38 @@ export function PreLoopSystemCheckProvider({
         return { status: "skip_no_local_target" };
       }
 
-      onTargetReady?.(target, null);
+      const hasPassingCacheForSelectedTarget = Boolean(
+        getFreshPassingCachedHealthCheck(target)
+      );
+      if (!hasPassingCacheForSelectedTarget) {
+        onTargetReady?.(target, null);
+      }
 
       let latestVersion: string | null = null;
       try {
         latestVersion = await getLatestVersion();
-        onTargetReady?.(target, latestVersion);
       } catch (error) {
         return {
           status: "unavailable",
           target,
-          reason:
-            error instanceof Error
-              ? `latest_release:${error.message}`
-              : "latest_release:unknown",
+          reason: formatUnavailableReason("latest_release", error),
         };
       }
+
+      const exactCachedResult = getFreshPassingCachedHealthCheck(
+        target,
+        latestVersion
+      );
+      if (exactCachedResult) {
+        return {
+          status: "available",
+          target,
+          latestVersion,
+          healthResult: exactCachedResult,
+        };
+      }
+
+      onTargetReady?.(target, latestVersion);
 
       try {
         return {
@@ -408,14 +522,16 @@ export function PreLoopSystemCheckProvider({
         return {
           status: "unavailable",
           target,
-          reason:
-            error instanceof Error
-              ? `health_check:${error.message}`
-              : "health_check:unknown",
+          reason: formatUnavailableReason("health_check", error),
         };
       }
     },
-    [fetchHealthCheck, getLatestVersion, resolveTarget]
+    [
+      fetchHealthCheck,
+      getFreshPassingCachedHealthCheck,
+      getLatestVersion,
+      resolveTarget,
+    ]
   );
 
   const runWithPreLoopSystemCheck = useCallback(

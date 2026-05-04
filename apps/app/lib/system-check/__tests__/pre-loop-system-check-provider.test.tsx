@@ -14,6 +14,7 @@ const mockWarning = vi.hoisted(() => vi.fn());
 const mockUseComputePreference = vi.hoisted(() => vi.fn());
 const mockUseComputeTargets = vi.hoisted(() => vi.fn());
 const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
+const mockHealthCheckDialogRender = vi.hoisted(() => vi.fn());
 const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
 
 vi.mock("@repo/analytics/client", () => ({
@@ -63,19 +64,22 @@ vi.mock("@/components/engineer/HealthCheckDialog", () => ({
     onCancel: () => void;
     onRecheckUnavailable: (reason: string) => void;
     onResolvedAfterRecheck: () => void;
-  }) => (
-    <div data-testid="blocking-dialog">
-      <button onClick={onCancel} type="button">
-        Cancel
-      </button>
-      <button onClick={onResolvedAfterRecheck} type="button">
-        Resolved
-      </button>
-      <button onClick={() => onRecheckUnavailable("offline")} type="button">
-        Recheck Unavailable
-      </button>
-    </div>
-  ),
+  }) => {
+    mockHealthCheckDialogRender();
+    return (
+      <div data-testid="blocking-dialog">
+        <button onClick={onCancel} type="button">
+          Cancel
+        </button>
+        <button onClick={onResolvedAfterRecheck} type="button">
+          Resolved
+        </button>
+        <button onClick={() => onRecheckUnavailable("offline")} type="button">
+          Recheck Unavailable
+        </button>
+      </div>
+    );
+  },
 }));
 
 const healthyResult = {
@@ -217,11 +221,85 @@ describe("PreLoopSystemCheckProvider", () => {
       expect(execute).toHaveBeenCalledOnce();
     });
     expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mockCapture).toHaveBeenCalledWith(
       "pre_loop_command_attempted",
       expect.objectContaining({ loopCommand: "execute_plan" })
     );
+  });
+
+  it("waits for latest release without opening the dialog when the selected target has a fresh passing cache", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveLatest:
+      | ((result: { data: { version: string }; error: null }) => void)
+      | undefined;
+    const refetchLatest = vi.fn(
+      () =>
+        new Promise<{ data: { version: string }; error: null }>((resolve) => {
+          resolveLatest = resolve;
+        })
+    );
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: undefined,
+      refetch: refetchLatest,
+    });
+    queryClient.setQueryData(
+      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      healthyResult
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(refetchLatest).toHaveBeenCalledOnce();
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
+
+    resolveLatest?.({ data: { version: "1.0.0" }, error: null });
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not use a fresh passing cache from a different compute target", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    const refetchLatest = vi.fn(
+      () =>
+        new Promise<{ data: { version: string }; error: null }>(() => {
+          // Keep latest release pending so this test only observes the selected-target cache preflight.
+        })
+    );
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: undefined,
+      refetch: refetchLatest,
+    });
+    queryClient.setQueryData(
+      healthCheckOptions("compute-target:target-2", EXPECTED_MCP_URL, {
+        relayTargetId: "target-2",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      healthyResult
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await screen.findByTestId("blocking-dialog");
+    expect(refetchLatest).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("opens the blocking dialog while the health check request is still running", async () => {
