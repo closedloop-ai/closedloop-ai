@@ -14,7 +14,7 @@ const mockWarning = vi.hoisted(() => vi.fn());
 const mockUseComputePreference = vi.hoisted(() => vi.fn());
 const mockUseComputeTargets = vi.hoisted(() => vi.fn());
 const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
-const EXPECTED_MCP_URL = "https://mcp.closedloop.ai/mcp";
+const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
 
 vi.mock("@repo/analytics/client", () => ({
   useAnalytics: () => ({
@@ -31,6 +31,12 @@ vi.mock("@repo/auth/client", () => ({
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: {
     warning: mockWarning,
+  },
+}));
+
+vi.mock("@/env", () => ({
+  env: {
+    NEXT_PUBLIC_MCP_SERVER_URL: EXPECTED_MCP_URL,
   },
 }));
 
