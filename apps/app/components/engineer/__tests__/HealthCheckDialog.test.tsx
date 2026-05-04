@@ -308,6 +308,35 @@ describe("Dismissal behavior", () => {
 
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  it("runs one health-check request per Re-check click", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+
+    mockQueryFn.mockClear();
+    mockQueryFn.mockResolvedValueOnce(failingData);
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+
+    expect(mockQueryFn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("MCP rendering", () => {

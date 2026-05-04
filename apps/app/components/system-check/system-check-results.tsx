@@ -245,8 +245,8 @@ function SystemCheckRow({
         )}
       </div>
       {(check.error || !check.passed) && check.remediation && (
-        <p className="pl-6 text-muted-foreground text-xs">
-          <span className="select-all font-mono text-[11px]">
+        <p className="mt-1 ml-6 rounded border border-destructive/20 bg-destructive/10 px-2 py-1 text-xs">
+          <span className="select-all font-mono text-[11px] text-foreground/80">
             {check.remediation}
           </span>
         </p>

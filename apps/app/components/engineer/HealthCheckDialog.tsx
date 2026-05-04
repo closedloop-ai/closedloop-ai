@@ -127,6 +127,7 @@ export function HealthCheckDialog({
   const [savingWorktree, setSavingWorktree] = useState(false);
   const [revealedCount, setRevealedCount] = useState(0);
   const [recheckKey, setRecheckKey] = useState(0);
+  const [recheckRevealSuspended, setRecheckRevealSuspended] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const resolvedCallbackFired = useRef(false);
@@ -229,7 +230,11 @@ export function HealthCheckDialog({
   // structurally identical (TanStack Query structural sharing preserves the
   // same data reference in that case).
   useEffect(() => {
-    if (recheckKey < 0 || !(failureDetected && renderableChecks)) {
+    if (
+      recheckRevealSuspended ||
+      recheckKey < 0 ||
+      !(failureDetected && renderableChecks)
+    ) {
       return;
     }
 
@@ -253,7 +258,7 @@ export function HealthCheckDialog({
       revealTimers.current.forEach(clearTimeout);
       revealTimers.current = [];
     };
-  }, [failureDetected, recheckKey, renderableChecks]);
+  }, [failureDetected, recheckKey, recheckRevealSuspended, renderableChecks]);
 
   // Phase 1: after all revealed + all pass → show success screen
   useEffect(() => {
@@ -287,11 +292,9 @@ export function HealthCheckDialog({
 
   const handleRecheck = useCallback(async () => {
     onRecheckClick?.();
+    setRecheckRevealSuspended(true);
     setRevealedCount(0);
     setShowSuccess(false);
-    await queryClient.invalidateQueries({
-      queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl, latestVersion),
-    });
     const result = await refetch();
     if (result.error || !result.data) {
       onRecheckUnavailable?.(
@@ -300,22 +303,17 @@ export function HealthCheckDialog({
           : "Health check returned no data"
       );
       // Restart the stagger against the last known rows so failed re-checks do not leave an empty results panel.
+      setRecheckRevealSuspended(false);
       setRecheckKey((k) => k + 1);
       return;
     }
     onRecheckResult?.(result.data);
-    // Bump recheckKey to re-trigger stagger even if data is structurally identical
+    // Restart the stagger once after the final refetch result. The reveal
+    // effect is suspended while the query data changes so it cannot start a
+    // partial pass and then restart from this key bump.
+    setRecheckRevealSuspended(false);
     setRecheckKey((k) => k + 1);
-  }, [
-    expectedMcpUrl,
-    latestVersion,
-    onRecheckClick,
-    onRecheckResult,
-    onRecheckUnavailable,
-    queryClient,
-    refetch,
-    targetKey,
-  ]);
+  }, [onRecheckClick, onRecheckResult, onRecheckUnavailable, refetch]);
 
   const handleContinue = useCallback(() => {
     if (isBlockingMode) {
