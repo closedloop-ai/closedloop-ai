@@ -82,11 +82,9 @@ export function ChatPanel({
         className
       )}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-3">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-muted-foreground text-xs uppercase tracking-wide">
-            Chat
-          </span>
+          <span className="font-semibold text-base text-foreground">Chat</span>
           {hasProviderBadge ? (
             <ProviderBadge provider={currentProvider ?? ""} />
           ) : null}
