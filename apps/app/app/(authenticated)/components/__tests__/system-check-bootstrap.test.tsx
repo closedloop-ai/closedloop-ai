@@ -5,11 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockUseSystemCheckEligibility = vi.fn();
 const mockUseEngineerRoutingSelection = vi.fn();
 const mockUseComputeTargets = vi.fn();
+const mockHealthCheckDialog = vi.hoisted(() => vi.fn());
 
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
-  HealthCheckDialog: () => (
-    <div data-testid="health-check-dialog">Health Check Dialog</div>
-  ),
+  HealthCheckDialog: (props: { targetKey?: string }) => {
+    mockHealthCheckDialog(props);
+    return (
+      <div data-target-key={props.targetKey} data-testid="health-check-dialog">
+        Health Check Dialog
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/lib/engineer/routing-store", () => ({
@@ -74,5 +80,39 @@ describe("SystemCheckBootstrap", () => {
     render(<SystemCheckBootstrap />);
 
     expect(screen.getByTestId("health-check-dialog")).toBeInTheDocument();
+  });
+
+  it("uses a stable Local Gateway target key while the compute target id hydrates", () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: null,
+      source: "auto",
+      updatedAt: Date.now(),
+    });
+
+    const { rerender } = render(<SystemCheckBootstrap />);
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-target-key",
+      "local-gateway"
+    );
+
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: "target-1",
+      source: "auto",
+      updatedAt: Date.now(),
+    });
+
+    rerender(<SystemCheckBootstrap />);
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-target-key",
+      "local-gateway"
+    );
   });
 });

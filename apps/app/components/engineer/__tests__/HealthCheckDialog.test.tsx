@@ -281,7 +281,7 @@ describe("Dismissal behavior", () => {
 
   it("Continue button is always enabled and dismisses the dialog", async () => {
     const Wrapper = createWrapper();
-    render(
+    const { unmount } = render(
       <Wrapper>
         <HealthCheckDialog />
       </Wrapper>
@@ -307,6 +307,20 @@ describe("Dismissal behavior", () => {
     });
 
     expect(screen.queryByRole("dialog")).toBeNull();
+
+    unmount();
+    mockQueryFn.mockClear();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).toBeNull();
+    expect(mockQueryFn).not.toHaveBeenCalled();
   });
 
   it("runs one health-check request per Re-check click", async () => {
@@ -583,6 +597,49 @@ describe("Blocking pre-loop mode", () => {
     await act(async () => {});
 
     expect(screen.queryByText("System Check")).not.toBeNull();
+    expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("blocking mode still opens after the ambient dialog was continued", async () => {
+    const Wrapper = createWrapper();
+    const { unmount } = render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      screen.getByRole("button", { name: /continue/i }).click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    unmount();
+    mockQueryFn.mockClear();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
     expect(mockQueryFn).not.toHaveBeenCalled();
   });
 

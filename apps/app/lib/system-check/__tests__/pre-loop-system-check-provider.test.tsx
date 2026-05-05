@@ -462,6 +462,68 @@ describe("PreLoopSystemCheckProvider", () => {
     expect(screen.getByTestId("blocking-dialog")).toBeInTheDocument();
   });
 
+  it("does not let a cancelled in-flight result clear checking for a newer attempt", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    const resolveFetches: Array<(response: Response) => void> = [];
+    vi.mocked(globalThis.fetch).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveFetches.push(resolve);
+        })
+    );
+
+    const { rerender } = renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await screen.findByTestId("blocking-dialog");
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("is-checking")).toHaveTextContent("false");
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    });
+
+    preference = {
+      preferredComputeMode: ComputePreference.Local,
+      computeTargetId: "target-2",
+    };
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <PreLoopSystemCheckProvider>
+          <GateHarness execute={execute} />
+        </PreLoopSystemCheckProvider>
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByTestId("blocking-dialog");
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByTestId("is-checking")).toHaveTextContent("true");
+
+    act(() => {
+      resolveFetches[0]?.(Response.json(healthyResult));
+    });
+    await act(async () => {});
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.getByTestId("is-checking")).toHaveTextContent("true");
+
+    act(() => {
+      resolveFetches[1]?.(Response.json(healthyResult));
+    });
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+  });
+
   it("does not execute when the provider unmounts before a cached attempt completes", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
@@ -514,9 +576,11 @@ describe("PreLoopSystemCheckProvider", () => {
     expect(mockWarning).toHaveBeenCalledWith(
       "System check unavailable",
       expect.objectContaining({
-        description: expect.stringContaining("was not started"),
+        description: expect.stringContaining("verify your session"),
       })
     );
+    const [, options] = mockWarning.mock.calls[0];
+    expect(options.description).not.toContain("compute target");
     expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });

@@ -271,6 +271,17 @@ export function PreLoopSystemCheckProvider({
     setIsChecking(false);
   }, []);
 
+  const clearCheckingForAttempt = useCallback(
+    (attemptId: string) => {
+      const activeAttempt = activeAttemptRef.current;
+      if (activeAttempt && activeAttempt.attemptId !== attemptId) {
+        return;
+      }
+      clearChecking();
+    },
+    [clearChecking]
+  );
+
   const clearPendingAttemptState = useCallback((delayMs = 0) => {
     if (pendingRemovalTimerRef.current) {
       clearTimeout(pendingRemovalTimerRef.current);
@@ -304,11 +315,13 @@ export function PreLoopSystemCheckProvider({
       metadata,
       target,
       reason,
+      description,
     }: {
       attemptId: string;
       metadata: PreLoopMetadata;
       target?: PreLoopTarget | null;
       reason: string;
+      description?: string;
     }): PreLoopHealthCheckOutcome => {
       capture(PreLoopAnalyticsEvent.SystemCheckUnavailable, {
         attemptId,
@@ -318,6 +331,7 @@ export function PreLoopSystemCheckProvider({
       });
       toast.warning("System check unavailable", {
         description:
+          description ??
           "We could not verify the selected local compute target, so the command was not started.",
       });
       return { status: "blocked_unavailable", attemptId };
@@ -614,7 +628,7 @@ export function PreLoopSystemCheckProvider({
       attemptId: string;
       execute: ExecuteCallback;
     }): PreLoopHealthCheckOutcome => {
-      clearChecking();
+      clearCheckingForAttempt(attemptId);
       if (wasCancelled()) {
         clearActiveAttempt();
         return { status: "cancelled", attemptId };
@@ -624,7 +638,7 @@ export function PreLoopSystemCheckProvider({
       execute();
       return { status: "skipped_no_local_target", attemptId };
     },
-    [clearChecking]
+    [clearCheckingForAttempt]
   );
 
   const finishUnavailablePreLoopEvaluation = useCallback(
@@ -643,7 +657,7 @@ export function PreLoopSystemCheckProvider({
       latestVersion: string | null;
       updatePendingAttempt: (input: UpdatePendingAttemptInput) => void;
     }): PreLoopHealthCheckOutcome => {
-      clearChecking();
+      clearCheckingForAttempt(attemptId);
       if (wasCancelled()) {
         clearActiveAttempt();
         return { status: "cancelled", attemptId };
@@ -670,7 +684,7 @@ export function PreLoopSystemCheckProvider({
       }
       return outcome;
     },
-    [clearChecking, warnAndBlockUnavailable]
+    [clearCheckingForAttempt, warnAndBlockUnavailable]
   );
 
   const evaluatePreLoopTargetHealth = useCallback(
@@ -770,6 +784,8 @@ export function PreLoopSystemCheckProvider({
           attemptId,
           metadata,
           reason: "auth_unavailable",
+          description:
+            "We could not verify your session, so the command was not started. Try again after the page finishes loading.",
         });
       }
 
@@ -846,7 +862,7 @@ export function PreLoopSystemCheckProvider({
       }
 
       if (wasDialogCancelled()) {
-        clearChecking();
+        clearCheckingForAttempt(attemptId);
         clearActiveAttempt();
         return { status: "cancelled", attemptId };
       }
@@ -870,12 +886,12 @@ export function PreLoopSystemCheckProvider({
         clearActiveAttempt();
         pendingAttemptRef.current = null;
         clearPendingAttemptState();
-        clearChecking();
+        clearCheckingForAttempt(attemptId);
         execute();
         return { status: "executed", attemptId };
       }
 
-      clearChecking();
+      clearCheckingForAttempt(attemptId);
       updatePendingAttempt({
         target,
         healthCheckData: healthResult.data,
@@ -886,7 +902,7 @@ export function PreLoopSystemCheckProvider({
     },
     [
       capture,
-      clearChecking,
+      clearCheckingForAttempt,
       clearPendingAttemptState,
       expectedMcpUrl,
       evaluatePreLoopTargetHealth,
