@@ -20,6 +20,7 @@ import {
   resolveComputeTarget,
 } from "./compute-target-resolver";
 import { isDispatchError } from "./loop-desktop";
+import { classifyLaunchFailure } from "./loop-dispatch-utils";
 import { launchLoop } from "./loop-orchestrator";
 import { getDefaultPrompt } from "./prompts";
 
@@ -50,47 +51,6 @@ export type LaunchPlanLoopOptions = {
   repoOverride?: { fullName: string; branch: string };
   metadata?: JsonObject;
 };
-
-const CALLBACK_UNAVAILABLE_DISPATCH_REASONS = new Set([
-  "callback_unavailable",
-  "callback_unreachable",
-  "cloud_callback_unavailable",
-  "cloud_callback_unreachable",
-]);
-
-function isCallbackUnavailableDispatchReason(
-  reason: string | undefined
-): boolean {
-  if (!reason || typeof reason !== "string") {
-    return false;
-  }
-  const normalizedReason = reason.trim().toLowerCase();
-  if (CALLBACK_UNAVAILABLE_DISPATCH_REASONS.has(normalizedReason)) {
-    return true;
-  }
-  return (
-    normalizedReason.includes("callback") &&
-    (normalizedReason.includes("unavailable") ||
-      normalizedReason.includes("unreachable") ||
-      normalizedReason.includes("not_reachable") ||
-      normalizedReason.includes("not reachable"))
-  );
-}
-
-function classifyLaunchFailure(
-  error: unknown
-): "callback_unavailable" | "launch_failed" {
-  // Backward compatibility: older desktop/relay versions may not provide a
-  // structured dispatchReason. In that case, degrade to generic launch_failed
-  // instead of requiring a matched desktop rollout.
-  if (
-    isDispatchError(error) &&
-    isCallbackUnavailableDispatchReason(error.dispatchReason)
-  ) {
-    return "callback_unavailable";
-  }
-  return "launch_failed";
-}
 
 /**
  * Resolve compute target, resolve loop context, create a PLAN loop record,
