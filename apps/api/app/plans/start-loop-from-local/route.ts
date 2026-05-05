@@ -9,6 +9,7 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { documentExecutionService } from "@/app/documents/execution-service";
+import { handleLoopServiceError } from "@/app/loops/loop-error-responses";
 import { repoSchema } from "@/app/loops/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
@@ -166,7 +167,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         })
       );
     } catch (error) {
-      return errorResponse("Failed to start plan loop", error);
+      return handleLoopServiceError(error, "Failed to start plan loop");
     }
   },
   { requiredScopes: ["write"] }

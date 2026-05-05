@@ -1,3 +1,4 @@
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 
@@ -37,6 +38,7 @@ vi.mock("@/lib/loops/launch-plan-loop", () => {
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { documentExecutionService } from "@/app/documents/execution-service";
+import { LoopAlreadyActiveError } from "@/app/loops/service";
 import { POST } from "@/app/plans/start-loop-from-local/route";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
 import {
@@ -118,5 +120,34 @@ describe("POST /plans/start-loop-from-local", () => {
     expect(json.error).toBe(
       "Loop dispatch failed. The desktop app may be disconnected."
     );
+  });
+
+  it("returns a structured 409 when launch creation hits an active-loop conflict", async () => {
+    vi.mocked(launchPlanLoop).mockRejectedValue(
+      new LoopAlreadyActiveError(
+        "loop-existing",
+        LoopCommand.Plan,
+        LoopStatus.Running
+      )
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/plans/start-loop-from-local",
+        body: requestBody,
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(409);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.data).toEqual({
+      error: "loop_already_active",
+      loopId: "loop-existing",
+      command: "PLAN",
+      status: "RUNNING",
+    });
   });
 });
