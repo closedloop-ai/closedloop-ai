@@ -203,14 +203,17 @@ const TERMINAL_STATUSES = new Set<LoopStatus>([
 ]);
 
 /**
- * Loop statuses that the partial unique index `loops_active_artifact_command_key`
- * (migration 20260505111856_replace_loop_active_index_drop_artifact_version)
- * treats as "currently holding an (artifact_id, command) slot." This is the
- * **index-blocking tier**: the DB physically refuses a duplicate insert for any
- * row in this set. The narrower **operationally-active tier** lives in
- * `findOperationallyActiveLoop` and is strictly a subset; the reap step bridges
- * the two so any row in this set but not in the operational set is eventually
- * marked FAILED.
+ * Loop statuses that the partial unique index `loops_active_artifact_command_version_key`
+ * (migration 20260319195219_add_partial_unique_loop_artifact_command_version)
+ * treats as "currently holding an (artifact_id, command, artifact_version) slot."
+ * This is the **index-blocking tier**: the DB physically refuses a duplicate
+ * insert for any row in this set. The narrower **operationally-active tier**
+ * lives in `findOperationallyActiveLoop` and is strictly a subset; the reap step
+ * bridges the two so any row in this set but not in the operational set is
+ * eventually marked FAILED.
+ *
+ * Phase 1 (PLN-477) enforces the broader (artifact_id, command) invariant in
+ * application code only; Phase 2 (FEA-906) will widen the DB index to match.
  */
 const ACTIVE_LOOP_STATUSES: LoopStatus[] = [
   LoopStatus.Pending,
@@ -1564,12 +1567,14 @@ export const loopsService = {
   /**
    * **Index-blocking tier** (per S1).
    *
-   * Find any loop the partial unique index `loops_active_artifact_command_key`
-   * would refuse a duplicate of. No staleness filter — by construction this is
-   * a superset of `findOperationallyActiveLoop`. Used by the post-P2002 catch
-   * path so a structured 409 can always describe what the DB rejected on, even
-   * when the colliding row falls into one of the orphan-shaped subsets the
-   * operational predicate ignores.
+   * Find any loop the partial unique index would refuse a duplicate of. The
+   * Phase 1 app-level gate is broader (artifact_id, command); the live DB index
+   * is narrower (artifact_id, command, artifact_version). This query reflects
+   * the app-level invariant — by construction a superset of
+   * `findOperationallyActiveLoop` — and is used by the post-P2002 catch path so
+   * a structured 409 can always describe what the DB rejected on, even when the
+   * colliding row falls into one of the orphan-shaped subsets the operational
+   * predicate ignores.
    */
   async findIndexBlockingLoop(
     documentId: string,

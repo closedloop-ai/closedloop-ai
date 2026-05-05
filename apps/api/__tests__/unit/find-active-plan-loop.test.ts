@@ -11,9 +11,11 @@
  *       PENDING with null containerId, > 30s   → does not block
  *       PENDING with non-null containerId      → does not block
  *
- *   - `loopsService.findIndexBlockingLoop` — mirrors the partial unique index
- *     `loops_active_artifact_command_key`. By construction a strict superset of
- *     the operational predicate. Used by the post-P2002 catch path.
+ *   - `loopsService.findIndexBlockingLoop` — mirrors the Phase 1 app-level
+ *     active-loop invariant on (artifact_id, command). By construction a strict
+ *     superset of the operational predicate. Used by the post-P2002 catch path
+ *     to surface a structured 409 from the live partial unique index
+ *     `loops_active_artifact_command_version_key` until Phase 2 widens it.
  */
 
 import { vi } from "vitest";
