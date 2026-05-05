@@ -461,7 +461,7 @@ export const documentExecutionService = {
     }
     const documentId = documentIdResult.documentId;
 
-    const activeLoop = await loopsService.findActiveLoopForDocumentAndCommand(
+    const activeLoop = await loopsService.findOperationallyActiveLoop(
       documentId,
       LoopCommand.Plan,
       organizationId

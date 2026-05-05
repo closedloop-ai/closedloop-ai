@@ -184,6 +184,64 @@ const TERMINAL_STATUSES = new Set<LoopStatus>([
 ]);
 
 /**
+ * Loop statuses that the partial unique index `loops_active_artifact_command_key`
+ * (migration 20260505111856_replace_loop_active_index_drop_artifact_version)
+ * treats as "currently holding an (artifact_id, command) slot." This is the
+ * **index-blocking tier**: the DB physically refuses a duplicate insert for any
+ * row in this set. The narrower **operationally-active tier** lives in
+ * `findOperationallyActiveLoop` and is strictly a subset; the reap step bridges
+ * the two so any row in this set but not in the operational set is eventually
+ * marked FAILED.
+ */
+const ACTIVE_LOOP_STATUSES: LoopStatus[] = [
+  LoopStatus.Pending,
+  LoopStatus.Claimed,
+  LoopStatus.Running,
+];
+
+/**
+ * Age threshold beyond which a PENDING loop with no containerId is treated as
+ * an orphan (silently-failed dispatch). Used by the reap step and by the
+ * operationally-active lookup so the two stay in lockstep.
+ */
+const STALE_PENDING_THRESHOLD_MS = 30_000;
+
+/**
+ * Name of the partial unique index enforcing per-(artifact, command) loop
+ * uniqueness. Used to narrow P2002 detection so an unrelated unique violation
+ * (e.g. event idempotency) is never translated into LoopAlreadyActiveError.
+ */
+const LOOP_ACTIVE_INDEX_NAME = "loops_active_artifact_command_key";
+
+/** Type guard for Prisma's `P2002` (unique constraint) error code. */
+function isPrismaUniqueConstraintError(
+  error: unknown
+): error is Error & { code: "P2002"; meta?: { target?: string | string[] } } {
+  return (
+    error instanceof Error && (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+/**
+ * True iff the error is a P2002 raised by the loops active-index. Other unique
+ * constraints (loop_events idempotency, etc.) return false and pass through
+ * unchanged.
+ */
+function isLoopActiveIndexViolation(error: unknown): boolean {
+  if (!isPrismaUniqueConstraintError(error)) {
+    return false;
+  }
+  const target = error.meta?.target;
+  if (typeof target === "string") {
+    return target === LOOP_ACTIVE_INDEX_NAME;
+  }
+  if (Array.isArray(target)) {
+    return target.includes(LOOP_ACTIVE_INDEX_NAME);
+  }
+  return false;
+}
+
+/**
  * Validate a JSON value as a Loop["repo"] shape, returning null on mismatch.
  */
 function parseRepo(value: unknown): Loop["repo"] {
@@ -347,12 +405,15 @@ export const loopsService = {
     input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
     // Reap stale PENDING rows for this (artifactId, command) slice before the
-    // gate check runs. A PENDING row without a containerId that is older than
-    // 30 seconds has never been acknowledged by any runner — the relay/dispatch
-    // step silently failed. Flip these to FAILED so they no longer count against
-    // the concurrency gate or block the LoopAlreadyActive check.
+    // gate check runs. A PENDING row without a containerId older than
+    // STALE_PENDING_THRESHOLD_MS has never been acknowledged by any runner —
+    // the relay/dispatch step silently failed. Flip these to FAILED so they no
+    // longer count against the concurrency gate or block the LoopAlreadyActive
+    // check.
     if (input.documentId && input.command) {
-      const stalenessThreshold = new Date(Date.now() - 30_000);
+      const stalenessThreshold = new Date(
+        Date.now() - STALE_PENDING_THRESHOLD_MS
+      );
       await withDb((db) =>
         db.loop.updateMany({
           where: {
@@ -381,9 +442,7 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: {
-            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
-          },
+          status: { in: ACTIVE_LOOP_STATUSES },
         },
       })
     );
@@ -400,12 +459,13 @@ export const loopsService = {
     // check if there is already an active loop for this (documentId, command) pair.
     // This prevents duplicate active loops from being created in the common path.
     if (input.command !== LoopCommand.Chat && input.documentId != null) {
-      const existingLoop =
-        await loopsService.findActiveLoopForDocumentAndCommand(
-          input.documentId,
-          input.command,
-          organizationId
-        );
+      // Pre-insert gate: operationally-active tier. Excludes orphan-shaped
+      // rows so users aren't told "blocked" by a silently-failed dispatch.
+      const existingLoop = await loopsService.findOperationallyActiveLoop(
+        input.documentId,
+        input.command,
+        organizationId
+      );
       if (existingLoop) {
         throw new LoopAlreadyActiveError(
           existingLoop.id,
@@ -439,21 +499,21 @@ export const loopsService = {
       );
     } catch (error) {
       // P2002 backstop: a concurrent request may have inserted between our
-      // pre-insert check and this insert. Re-read and throw LoopAlreadyActiveError
-      // so the caller gets a structured error rather than a raw Prisma error.
+      // pre-insert check and this insert. Use the **index-blocking tier** here
+      // so we can describe whatever the DB rejected on — including orphan-shaped
+      // rows the operational predicate would have ignored. Narrow to the loops
+      // index by name so unrelated unique constraints (e.g. loop_events
+      // idempotency) pass through unchanged.
       if (
-        error instanceof Error &&
-        "code" in error &&
-        (error as { code: string }).code === "P2002" &&
+        isLoopActiveIndexViolation(error) &&
         input.command !== LoopCommand.Chat &&
         input.documentId != null
       ) {
-        const existingLoop =
-          await loopsService.findActiveLoopForDocumentAndCommand(
-            input.documentId,
-            input.command,
-            organizationId
-          );
+        const existingLoop = await loopsService.findIndexBlockingLoop(
+          input.documentId,
+          input.command,
+          organizationId
+        );
         if (existingLoop) {
           throw new LoopAlreadyActiveError(
             existingLoop.id,
@@ -722,9 +782,7 @@ export const loopsService = {
           // Only update loops that are still in a pre-terminal state.
           // Prevents overwriting metadata on already-completed/cancelled loops
           // if the launch path is delayed.
-          status: {
-            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
-          },
+          status: { in: ACTIVE_LOOP_STATUSES },
         },
         data: {
           containerId: data.containerId,
@@ -842,7 +900,9 @@ export const loopsService = {
       return;
     }
 
-    const stalenessThreshold = new Date(Date.now() - 30_000);
+    const stalenessThreshold = new Date(
+      Date.now() - STALE_PENDING_THRESHOLD_MS
+    );
     await withDb((db) =>
       db.loop.updateMany({
         where: {
@@ -874,7 +934,8 @@ export const loopsService = {
       return;
     }
 
-    const activeLoop = await loopsService.findActiveLoopForDocumentAndCommand(
+    // Pre-insert sibling gate: operationally-active tier.
+    const activeLoop = await loopsService.findOperationallyActiveLoop(
       artifactId,
       command as LoopCommand,
       organizationId
@@ -912,9 +973,7 @@ export const loopsService = {
         where: {
           userId,
           organizationId,
-          status: {
-            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
-          },
+          status: { in: ACTIVE_LOOP_STATUSES },
         },
       })
     );
@@ -969,24 +1028,21 @@ export const loopsService = {
         })
       );
     } catch (error) {
-      // P2002 backstop: a concurrent request may have inserted between our
-      // sibling gate and this insert. Re-read and throw LoopAlreadyActiveError
-      // so the caller gets a structured error rather than a raw Prisma error.
-      // Mirrors create()'s backstop. Chat is excluded from the partial unique
+      // P2002 backstop: mirrors create()'s catch path. Use the **index-blocking
+      // tier** so we describe whatever the DB rejected on, not the narrower
+      // operational set. Narrowed by constraint name to avoid swallowing
+      // unrelated unique violations. Chat is excluded from the partial unique
       // index by migration design, so the Chat exemption applies here too.
       if (
-        error instanceof Error &&
-        "code" in error &&
-        (error as { code: string }).code === "P2002" &&
+        isLoopActiveIndexViolation(error) &&
         parent.command !== LoopCommand.Chat &&
         parent.artifactId != null
       ) {
-        const existingLoop =
-          await loopsService.findActiveLoopForDocumentAndCommand(
-            parent.artifactId,
-            parent.command as LoopCommand,
-            organizationId
-          );
+        const existingLoop = await loopsService.findIndexBlockingLoop(
+          parent.artifactId,
+          parent.command as LoopCommand,
+          organizationId
+        );
         if (existingLoop != null && existingLoop.id !== parent.id) {
           throw new LoopAlreadyActiveError(
             existingLoop.id,
@@ -1074,11 +1130,7 @@ export const loopsService = {
         })
       );
     } catch (error) {
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        (error as { code: string }).code === "P2002"
-      ) {
+      if (isPrismaUniqueConstraintError(error)) {
         if (runner) {
           throw new ReplayDetectedError();
         }
@@ -1465,21 +1517,31 @@ export const loopsService = {
   },
 
   /**
-   * Find an active loop for a document and any command (org-scoped).
-   * Returns the most recently created blocking loop, or null if none exist.
+   * **Operationally-active tier** (per S1).
    *
-   * Staleness rules (per PRD):
+   * Find a loop that, from the user's perspective, is currently doing work on
+   * `(documentId, command)`. Used for the pre-insert gate and any UX-facing
+   * "is a loop running?" question. Strictly narrower than `findIndexBlockingLoop`
+   * — orphan-shaped rows are excluded so a silently-failed dispatch does not
+   * permanently block retries.
+   *
+   * Staleness rules:
    * - RUNNING always blocks
    * - CLAIMED with containerId always blocks
    * - CLAIMED without containerId never blocks (regardless of age)
-   * - PENDING younger than 30s without containerId blocks
+   * - PENDING with containerId never blocks (the dispatch wrote one but the
+   *   row hasn't transitioned yet — treated as transient)
+   * - PENDING without containerId, younger than STALE_PENDING_THRESHOLD_MS
+   *   blocks; older rows are reaped by `reapStalePendingLoops`.
    */
-  async findActiveLoopForDocumentAndCommand(
+  async findOperationallyActiveLoop(
     documentId: string,
     command: LoopCommand,
     organizationId: string
   ): Promise<Loop | null> {
-    const stalenessThreshold = new Date(Date.now() - 30_000);
+    const stalenessThreshold = new Date(
+      Date.now() - STALE_PENDING_THRESHOLD_MS
+    );
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
@@ -1487,14 +1549,48 @@ export const loopsService = {
           command,
           organizationId,
           OR: [
-            { status: "RUNNING" },
-            { status: "CLAIMED", containerId: { not: null } },
+            { status: LoopStatus.Running },
+            { status: LoopStatus.Claimed, containerId: { not: null } },
             {
-              status: "PENDING",
+              status: LoopStatus.Pending,
               containerId: null,
               createdAt: { gte: stalenessThreshold },
             },
           ],
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!loop) {
+      return null;
+    }
+
+    return toLoop(loop);
+  },
+
+  /**
+   * **Index-blocking tier** (per S1).
+   *
+   * Find any loop the partial unique index `loops_active_artifact_command_key`
+   * would refuse a duplicate of. No staleness filter — by construction this is
+   * a superset of `findOperationallyActiveLoop`. Used by the post-P2002 catch
+   * path so a structured 409 can always describe what the DB rejected on, even
+   * when the colliding row falls into one of the orphan-shaped subsets the
+   * operational predicate ignores.
+   */
+  async findIndexBlockingLoop(
+    documentId: string,
+    command: LoopCommand,
+    organizationId: string
+  ): Promise<Loop | null> {
+    const loop = await withDb((db) =>
+      db.loop.findFirst({
+        where: {
+          artifactId: documentId,
+          command,
+          organizationId,
+          status: { in: ACTIVE_LOOP_STATUSES },
         },
         orderBy: { createdAt: "desc" },
       })
@@ -1558,9 +1654,7 @@ export const loopsService = {
         where: {
           id,
           organizationId,
-          status: {
-            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
-          },
+          status: { in: ACTIVE_LOOP_STATUSES },
         },
         data: { metadata },
       })

@@ -147,6 +147,85 @@ describe("loopsService.create", () => {
       expect(isLoopAlreadyActiveError(err)).toBe(false);
       expect((err as { code?: string }).code).toBe("P2002");
     });
+
+    // S1 regression: before the two-tier split, the catch path used the
+    // operationally-active predicate, which excludes orphan-shaped rows. A
+    // P2002 caused by a CLAIMED-with-null-containerId row therefore returned
+    // a generic 500 instead of the structured 409.
+    it("converts P2002 to LoopAlreadyActiveError when the colliding row is CLAIMED with null containerId", async () => {
+      handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
+      // First call: pre-insert gate (operational) — returns null for this shape.
+      // Second call: post-P2002 catch path (index-blocking) — must find it.
+      handles.loopFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(
+        buildPrismaLoop({
+          id: "loop-claimed-no-container",
+          status: "CLAIMED",
+          containerId: null,
+        })
+      );
+
+      const err = (await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e)) as LoopAlreadyActiveError;
+
+      expect(isLoopAlreadyActiveError(err)).toBe(true);
+      expect(err.existingLoopId).toBe("loop-claimed-no-container");
+      expect(err.existingStatus).toBe("CLAIMED");
+
+      // The catch-path query must be the index-blocking shape (no OR /
+      // staleness clause). Otherwise it would return null for this row.
+      const catchCall = handles.loopFindFirst.mock.calls[1][0] as {
+        where: Record<string, unknown>;
+      };
+      expect(catchCall.where).not.toHaveProperty("OR");
+      expect(catchCall.where).toMatchObject({
+        status: {
+          in: expect.arrayContaining(["PENDING", "CLAIMED", "RUNNING"]),
+        },
+      });
+    });
+
+    it("converts P2002 to LoopAlreadyActiveError when the colliding row is PENDING older than the staleness threshold", async () => {
+      handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
+      handles.loopFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(
+        buildPrismaLoop({
+          id: "loop-stale-pending",
+          status: "PENDING",
+          containerId: null,
+          createdAt: new Date(Date.now() - 60_000),
+        })
+      );
+
+      const err = (await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e)) as LoopAlreadyActiveError;
+
+      expect(isLoopAlreadyActiveError(err)).toBe(true);
+      expect(err.existingLoopId).toBe("loop-stale-pending");
+    });
+
+    it("does not swallow P2002 raised by an unrelated unique constraint", async () => {
+      // A P2002 from a different index (e.g. loop_events idempotency) must
+      // pass through unchanged. Otherwise the catch path could misreport an
+      // unrelated failure as a duplicate-loop error.
+      handles.loopCreate.mockRejectedValueOnce(
+        makeP2002Error({ target: "loop_events_idempotency_key" })
+      );
+      // Pre-insert gate finds nothing — so we reach the create call and the
+      // P2002 catch path. The catch path should *not* call findFirst again
+      // (constraint name doesn't match) and should rethrow the raw error.
+      handles.loopFindFirst.mockResolvedValueOnce(null);
+
+      const err = await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e);
+
+      expect(isLoopAlreadyActiveError(err)).toBe(false);
+      expect((err as { code?: string }).code).toBe("P2002");
+      // Critical: only the pre-insert gate's findFirst call — no second
+      // catch-path lookup since the constraint name didn't match.
+      expect(handles.loopFindFirst).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("staleness reaper", () => {
