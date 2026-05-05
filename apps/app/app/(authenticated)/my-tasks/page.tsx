@@ -2,17 +2,24 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import { Input } from "@repo/design-system/components/ui/input";
-import { BoxIcon, SearchIcon } from "lucide-react";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@repo/design-system/components/ui/toggle-group";
+import { SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import {
+  DocumentsView,
+  type FilterCategory,
+} from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/documents-view";
+import { useProjectFilters } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/use-project-filters";
 import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
-import { DeleteRowActions } from "@/components/document-table/delete-row-actions";
 import type {
   DocumentRowItem,
   RowEditHandlers,
 } from "@/components/document-table/document-row";
 import { FilterPopover } from "@/components/document-table/filter-popover";
-import { FlatDocumentTable } from "@/components/document-table/flat-document-table";
 import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {
   useDeleteDocument,
@@ -23,21 +30,26 @@ import { useLoopSummaries } from "@/hooks/queries/use-loops";
 import { useProjects } from "@/hooks/queries/use-projects";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import {
+  DocumentColumn,
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
 import { useGroupBy } from "@/hooks/use-group-by";
-import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { useMergedProjectTrees } from "@/hooks/use-merged-project-trees";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
-import { useTableFilters } from "@/hooks/use-table-filters";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
-import { buildFeatureListParams } from "./utils";
+import { buildArtifactListParams } from "./utils";
 
 const VIEW_KEY = "my-tasks-view";
 const COLUMN_VISIBILITY_KEY = "table:columns:my-tasks";
+const STORAGE_KEY = "my-tasks-artifacts";
+
+const COLUMN_DEFAULTS = {
+  [DocumentColumn.Type]: true,
+};
 
 export default function MyTasksPage() {
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
@@ -46,40 +58,44 @@ export default function MyTasksPage() {
     "list"
   );
   const [filterText, setFilterText] = useState("");
+  const [filterCategory, setFilterCategory] = useState<FilterCategory>("all");
   const { data: projects = [] } = useProjects();
   const assigneeId = currentUser?.id ?? null;
   const listParams = useMemo(
-    () => buildFeatureListParams(assigneeId),
+    () => buildArtifactListParams(assigneeId),
     [assigneeId]
   );
-  const { data: rawFeatures = [], isLoading: isFeaturesLoading } = useDocuments(
-    listParams,
-    { enabled: !!assigneeId && !isUserLoading }
-  );
+  const { data: rawArtifacts = [], isLoading: isArtifactsLoading } =
+    useDocuments(listParams, {
+      enabled: !!assigneeId && !isUserLoading,
+    });
 
   const isListView = view === "list";
 
   // ---- Column visibility ----
 
-  const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
+  const { visibility, toggleColumn } = useColumnVisibility({
     storageKey: COLUMN_VISIBILITY_KEY,
+    defaults: COLUMN_DEFAULTS,
   });
   const visibleColumns = useMemo(
-    () => MY_TASKS_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
-    [userVisibility]
+    () => MY_TASKS_DEFAULT_COLUMNS.filter((c) => visibility[c] !== false),
+    [visibility]
   );
 
   const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:my-tasks");
 
   // ---- Edit handlers ----
 
-  const updateFeatureMutation = useUpdateDocument();
-  const deleteFeatureMutation = useDeleteDocument();
+  const updateArtifactMutation = useUpdateDocument();
+  const deleteArtifactMutation = useDeleteDocument();
 
   const orgUsers = useOrgUsersAsPopoverUsers();
 
-  const featureIds = useMemo(() => rawFeatures.map((f) => f.id), [rawFeatures]);
-  const { data: loopSummaries } = useLoopSummaries(featureIds);
+  const artifactIds = useMemo(() => rawArtifacts.map((artifact) => artifact.id), [
+    rawArtifacts,
+  ]);
+  const { data: loopSummaries } = useLoopSummaries(artifactIds);
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
@@ -87,64 +103,68 @@ export default function MyTasksPage() {
       loopVariant: "my-tasks",
       loopSummaries,
       onUpdateAssignee: (id, assigneeId) =>
-        updateFeatureMutation.mutate({ id, assigneeId }),
+        updateArtifactMutation.mutate({ id, assigneeId }),
       onUpdatePriority: (id, priority: Priority) =>
-        updateFeatureMutation.mutate({ id, priority }),
+        updateArtifactMutation.mutate({ id, priority }),
       onUpdateStatus: (id, status) =>
-        updateFeatureMutation.mutate({ id, status }),
+        updateArtifactMutation.mutate({ id, status }),
     }),
-    [orgUsers, loopSummaries, updateFeatureMutation.mutate]
+    [orgUsers, loopSummaries, updateArtifactMutation]
   );
 
   const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {
-    const result = await deleteFeatureMutation.mutateAsync(item.data.id);
+    const result = await deleteArtifactMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
 
   // ---- Items & filters ----
 
-  const allItems: DocumentRowItem[] = useMemo(
-    () => rawFeatures.map((f) => ({ kind: "feature" as const, data: f })),
-    [rawFeatures]
-  );
-
-  const filtersReturn = useTableFilters({
-    items: allItems,
+  const filtersReturn = useProjectFilters({
+    documents: rawArtifacts,
+    filterCategory,
     currentUserId: currentUser?.id,
   });
 
-  const displayItems = useMemo(() => {
-    let filtered = rawFeatures;
-    if (filterText.trim()) {
-      const q = filterText.toLowerCase().trim();
-      filtered = rawFeatures.filter(
-        (f) =>
-          f.title.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q)
-      );
-    }
-    let items: DocumentRowItem[] = filtered.map((f) => ({
-      kind: "feature" as const,
-      data: f,
-    }));
-    if (filtersReturn.isAnyFilterActive) {
-      items = filtersReturn.applyFilters(items);
-    }
-    return items;
-  }, [
-    rawFeatures,
-    filterText,
-    filtersReturn.isAnyFilterActive,
-    filtersReturn.applyFilters,
-  ]);
-
-  const parentTitleMap = useItemsParentTitles(allItems);
-
-  const kanbanFeatures = useMemo(
+  const filterCurrentUser = useMemo(
     () =>
-      displayItems
-        .filter((item) => item.kind === "feature")
-        .map((item) => item.data),
-    [displayItems]
+      currentUser
+        ? {
+            id: currentUser.id,
+            name:
+              [currentUser.firstName, currentUser.lastName]
+                .filter(Boolean)
+                .join(" ") || currentUser.email,
+            avatarUrl: currentUser.avatarUrl ?? undefined,
+          }
+        : null,
+    [currentUser]
+  );
+
+  // ---- Merged project trees for cross-project nesting ----
+
+  const projectIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const doc of rawArtifacts) {
+      if (doc.projectId) {
+        ids.add(doc.projectId);
+      }
+    }
+    return Array.from(ids);
+  }, [rawArtifacts]);
+
+  const { data: mergedTreeData, isLoading: isTreeDataLoading } =
+    useMergedProjectTrees(projectIds);
+
+  // ---- Kanban data ----
+
+  const kanbanArtifacts = useMemo(
+    () =>
+      filtersReturn.rootItems.flatMap((item) =>
+        item.kind === "artifact" || item.kind === "feature"
+          ? [item.data]
+          : []
+      ),
+    [filtersReturn.rootItems]
   );
 
   return (
@@ -156,8 +176,29 @@ export default function MyTasksPage() {
 
         {/* Title bar */}
         <div className={isListView ? "border-b" : ""}>
-          <div className="flex min-w-fit shrink-0 items-center justify-between gap-3 px-4 py-3">
-            <h1 className="font-semibold text-xl">My Tasks</h1>
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <h1 className="font-semibold text-xl">My Tasks</h1>
+              {isListView && (
+                <ToggleGroup
+                  onValueChange={(value) => {
+                    if (value) {
+                      setFilterCategory(value as FilterCategory);
+                    }
+                  }}
+                  size="sm"
+                  type="single"
+                  value={filterCategory}
+                  variant="outline"
+                >
+                  <ToggleGroupItem value="all">All</ToggleGroupItem>
+                  <ToggleGroupItem value="documents">PRDs</ToggleGroupItem>
+                  <ToggleGroupItem value="features">Features</ToggleGroupItem>
+                  <ToggleGroupItem value="plans">Plans</ToggleGroupItem>
+                  <ToggleGroupItem value="branches">Branches</ToggleGroupItem>
+                </ToggleGroup>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <div className="relative min-w-[200px] max-w-[350px]">
                 <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
@@ -171,13 +212,16 @@ export default function MyTasksPage() {
                   value={filterText}
                 />
               </div>
-              <FilterPopover
-                filtersReturn={filtersReturn}
-                hideAssignee
-                teamMembers={[]}
-                teamMembersError={null}
-                teamMembersLoading={false}
-              />
+              {filterCategory !== "branches" && (
+                <FilterPopover
+                  currentUser={filterCurrentUser}
+                  filtersReturn={filtersReturn}
+                  hideAssignee
+                  teamMembers={[]}
+                  teamMembersError={null}
+                  teamMembersLoading={false}
+                />
+              )}
               <TableViewMenu
                 columns={isListView ? MY_TASKS_DEFAULT_COLUMNS : undefined}
                 groupBy={isListView ? groupBy : undefined}
@@ -191,6 +235,7 @@ export default function MyTasksPage() {
           </div>
           {filtersReturn.isAnyFilterActive && (
             <ActiveFiltersBar
+              currentUser={filterCurrentUser}
               filtersReturn={filtersReturn}
               hideAssignee
               teamMembers={[]}
@@ -204,9 +249,9 @@ export default function MyTasksPage() {
         {!isListView && (
           <div className="min-h-0 flex-1 overflow-hidden">
             <MyTasksKanban
+              artifacts={kanbanArtifacts}
               assigneeId={assigneeId}
-              features={kanbanFeatures}
-              isLoading={isFeaturesLoading}
+              isLoading={isArtifactsLoading}
               isUserLoading={isUserLoading}
             />
           </div>
@@ -214,8 +259,8 @@ export default function MyTasksPage() {
 
         {/* Content — list view, no tasks yet */}
         {isListView &&
-          rawFeatures.length === 0 &&
-          !isFeaturesLoading &&
+          rawArtifacts.length === 0 &&
+          !isArtifactsLoading &&
           !isUserLoading && (
             <div className="p-4">
               <MyTasksEmptyState projects={projects} />
@@ -224,24 +269,28 @@ export default function MyTasksPage() {
 
         {/* Content — list view, table */}
         {isListView &&
-          (rawFeatures.length > 0 || isFeaturesLoading || isUserLoading) && (
-            <div className="flex-1 overflow-auto">
-              <FlatDocumentTable
+          (rawArtifacts.length > 0 || isArtifactsLoading || isUserLoading) && (
+            <main className="flex-1 overflow-auto">
+              <DocumentsView
+                applyProjectFilters={
+                  filtersReturn.isAnyFilterActive
+                    ? filtersReturn.applyFilters
+                    : undefined
+                }
+                documents={rawArtifacts}
                 editHandlers={editHandlers}
-                emptyDescription="Try adjusting your filters."
-                emptyIcon={BoxIcon}
-                emptyTitle="No matching tasks"
+                filterCategory={filterCategory}
+                filterText={filterText}
                 groupBy={groupBy}
-                groupExpansionKey="table:expand:my-tasks-status"
-                items={displayItems}
-                moreMenuContent={(_item, onRequestDelete) => (
-                  <DeleteRowActions onDelete={onRequestDelete} />
-                )}
+                isFilterActive={filtersReturn.isAnyFilterActive}
+                isTreeDataLoading={isTreeDataLoading}
+                onClearFilters={filtersReturn.clearAllFilters}
                 onDelete={handleDelete}
-                parentTitleMap={parentTitleMap}
+                storageKey={STORAGE_KEY}
+                treeData={mergedTreeData}
                 visibleColumns={visibleColumns}
               />
-            </div>
+            </main>
           )}
       </div>
     </div>

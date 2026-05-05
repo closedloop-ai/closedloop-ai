@@ -80,18 +80,14 @@ import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
 import { CreateDocumentModal } from "./components/create-document-modal";
 import { CreateFeatureModal } from "./components/create-feature-modal";
-import { DocumentsView } from "./components/documents-view";
+import {
+  DocumentsView,
+  type FilterCategory,
+} from "./components/documents-view";
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
 import { useProjectFilters } from "./use-project-filters";
-
-export type FilterCategory =
-  | "all"
-  | "documents"
-  | "features"
-  | "plans"
-  | "branches";
 
 /** Workstream states that indicate an async workflow is actively running. */
 const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([

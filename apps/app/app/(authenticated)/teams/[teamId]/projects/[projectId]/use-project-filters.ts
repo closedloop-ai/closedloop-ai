@@ -7,7 +7,7 @@ import {
 import { useMemo } from "react";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { useTableFilters } from "@/hooks/use-table-filters";
-import type { FilterCategory } from "./page";
+import type { FilterCategory } from "./components/documents-view";
 
 // ---- Category helpers ----
 
