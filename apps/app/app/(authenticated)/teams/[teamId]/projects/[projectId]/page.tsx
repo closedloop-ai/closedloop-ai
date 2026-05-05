@@ -74,6 +74,7 @@ import {
   DocumentColumn,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useFilterCurrentUser } from "@/hooks/use-filter-current-user";
 import { useGroupBy } from "@/hooks/use-group-by";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
@@ -220,20 +221,7 @@ export default function ProjectDetailPage() {
     currentUserId: currentUser?.id,
   });
 
-  const filterCurrentUser = useMemo(
-    () =>
-      currentUser
-        ? {
-            id: currentUser.id,
-            name:
-              [currentUser.firstName, currentUser.lastName]
-                .filter(Boolean)
-                .join(" ") || currentUser.email,
-            avatarUrl: currentUser.avatarUrl ?? undefined,
-          }
-        : null,
-    [currentUser]
-  );
+  const filterCurrentUser = useFilterCurrentUser(currentUser);
 
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();

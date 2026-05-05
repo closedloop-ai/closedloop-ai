@@ -34,10 +34,13 @@ import {
   MY_TASKS_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useFilterCurrentUser } from "@/hooks/use-filter-current-user";
 import { useGroupBy } from "@/hooks/use-group-by";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useMergedProjectTrees } from "@/hooks/use-merged-project-trees";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
+import { matchesFilter } from "@/lib/document-filter";
+import { isNavigableDocument } from "@/lib/document-navigation";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
@@ -92,9 +95,10 @@ export default function MyTasksPage() {
 
   const orgUsers = useOrgUsersAsPopoverUsers();
 
-  const artifactIds = useMemo(() => rawArtifacts.map((artifact) => artifact.id), [
-    rawArtifacts,
-  ]);
+  const artifactIds = useMemo(
+    () => rawArtifacts.map((artifact) => artifact.id),
+    [rawArtifacts]
+  );
   const { data: loopSummaries } = useLoopSummaries(artifactIds);
 
   const editHandlers: RowEditHandlers = useMemo(
@@ -109,7 +113,7 @@ export default function MyTasksPage() {
       onUpdateStatus: (id, status) =>
         updateArtifactMutation.mutate({ id, status }),
     }),
-    [orgUsers, loopSummaries, updateArtifactMutation]
+    [orgUsers, loopSummaries, updateArtifactMutation.mutate]
   );
 
   const handleDelete = async (item: DocumentRowItem): Promise<boolean> => {
@@ -125,20 +129,7 @@ export default function MyTasksPage() {
     currentUserId: currentUser?.id,
   });
 
-  const filterCurrentUser = useMemo(
-    () =>
-      currentUser
-        ? {
-            id: currentUser.id,
-            name:
-              [currentUser.firstName, currentUser.lastName]
-                .filter(Boolean)
-                .join(" ") || currentUser.email,
-            avatarUrl: currentUser.avatarUrl ?? undefined,
-          }
-        : null,
-    [currentUser]
-  );
+  const filterCurrentUser = useFilterCurrentUser(currentUser);
 
   // ---- Merged project trees for cross-project nesting ----
 
@@ -153,19 +144,27 @@ export default function MyTasksPage() {
   }, [rawArtifacts]);
 
   const { data: mergedTreeData, isLoading: isTreeDataLoading } =
-    useMergedProjectTrees(projectIds);
+    useMergedProjectTrees(projectIds, { enabled: isListView });
 
   // ---- Kanban data ----
 
-  const kanbanArtifacts = useMemo(
-    () =>
-      filtersReturn.rootItems.flatMap((item) =>
-        item.kind === "artifact" || item.kind === "feature"
-          ? [item.data]
-          : []
-      ),
-    [filtersReturn.rootItems]
-  );
+  const kanbanArtifacts = useMemo(() => {
+    const docItems = filtersReturn.rootItems.filter(isDocumentRowItem);
+    let filtered = filterText.trim()
+      ? docItems.filter((item) => matchesFilter(item.data, filterText))
+      : docItems;
+    if (filtersReturn.isAnyFilterActive) {
+      filtered = filtersReturn.applyFilters(filtered).filter(isDocumentRowItem);
+    }
+    return filtered
+      .map((item) => item.data)
+      .filter((doc) => isNavigableDocument(doc));
+  }, [
+    filterText,
+    filtersReturn.applyFilters,
+    filtersReturn.isAnyFilterActive,
+    filtersReturn.rootItems,
+  ]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -295,4 +294,10 @@ export default function MyTasksPage() {
       </div>
     </div>
   );
+}
+
+function isDocumentRowItem(
+  item: DocumentRowItem
+): item is Extract<DocumentRowItem, { kind: "feature" | "artifact" }> {
+  return item.kind === "feature" || item.kind === "artifact";
 }

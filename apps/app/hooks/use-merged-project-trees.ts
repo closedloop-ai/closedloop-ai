@@ -17,25 +17,37 @@ import { useApiClient } from "@/hooks/use-api-client";
  * Tree node IDs are entity IDs and are unique across projects, so the merge is
  * a straightforward concatenation. `externalParents` from any project are
  * preserved.
+ *
+ * @param projectIds - Project IDs to fetch trees for.
+ * @param options.enabled - When false, no fetches are issued and `data` is null.
+ *   Defaults to true. Use this to defer fetching until the consumer panel is
+ *   actually visible (per `apps/app/CLAUDE.md` on-mount fetch convention).
  */
-export function useMergedProjectTrees(projectIds: string[]): {
+export function useMergedProjectTrees(
+  projectIds: string[],
+  options?: { enabled?: boolean }
+): {
   data: ProjectTreeResponse | null;
   isLoading: boolean;
 } {
   const apiClient = useApiClient();
+  const enabled = options?.enabled !== false;
 
   return useQueries({
     queries: projectIds.map((projectId) => ({
       queryKey: projectTreeKeys.detail(projectId),
       queryFn: () =>
         apiClient.get<ProjectTreeResponse>(`/projects/${projectId}/tree`),
+      enabled,
     })),
     combine: (results) => ({
-      data: mergeProjectTrees(
-        projectIds.length,
-        results.map((r) => r.data)
-      ),
-      isLoading: results.some((r) => r.isLoading),
+      data: enabled
+        ? mergeProjectTrees(
+            projectIds.length,
+            results.map((r) => r.data)
+          )
+        : null,
+      isLoading: enabled && results.some((r) => r.isLoading),
     }),
   });
 }
