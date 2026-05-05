@@ -15,7 +15,7 @@ vi.mock("@/app/documents/[id]/run-loop/run-loop-helpers", () => ({
 }));
 
 vi.mock("@/lib/loops/prompts", () => ({
-  getDefaultPrompt: vi.fn(() => "default-plan-prompt"),
+  buildLoopPrompt: vi.fn(() => "default-plan-prompt"),
 }));
 
 vi.mock("@/app/loops/service", () => ({

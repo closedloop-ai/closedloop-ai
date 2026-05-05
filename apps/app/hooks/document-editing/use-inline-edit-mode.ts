@@ -37,7 +37,10 @@ export function useInlineEditMode({
       if (readOnly) {
         return;
       }
-      if (event && editor) {
+      // The editor instance can be stale immediately after a version bump
+      // remounts <CollaborativeEditor key={currentVersion}> — guard against
+      // the destroyed view before reading click coordinates.
+      if (event && editor && !editor.isDestroyed) {
         const coords = editor.view.posAtCoords({
           left: event.clientX,
           top: event.clientY,
@@ -48,6 +51,12 @@ export function useInlineEditMode({
     },
     [readOnly, editor]
   );
+
+  const exitEditMode = useCallback(() => {
+    setIsEditing(false);
+    hasFocusedRef.current = false;
+    pendingFocusPosRef.current = null;
+  }, []);
 
   const effectiveIsEditing = isEditing && !readOnly;
 
@@ -70,5 +79,6 @@ export function useInlineEditMode({
   return {
     isEditing: effectiveIsEditing,
     enterEditMode,
+    exitEditMode,
   };
 }

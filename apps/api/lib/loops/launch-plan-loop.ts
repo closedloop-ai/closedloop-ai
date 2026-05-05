@@ -22,7 +22,7 @@ import {
 import { isDispatchError } from "./loop-desktop";
 import { classifyLaunchFailure } from "./loop-dispatch-utils";
 import { launchLoop } from "./loop-orchestrator";
-import { getDefaultPrompt } from "./prompts";
+import { buildLoopPrompt } from "./prompts";
 
 export type LaunchPlanLoopResult =
   | { ok: true; loopResponse: CreateLoopResponse }
@@ -123,7 +123,7 @@ export async function launchPlanLoop(
     );
 
   const command = COMMAND_MAP.plan;
-  const prompt = getDefaultPrompt(command);
+  const prompt = buildLoopPrompt(command);
 
   const loopResponse = await loopsService.create(organizationId, userId, {
     command,

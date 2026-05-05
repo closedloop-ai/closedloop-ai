@@ -22,7 +22,7 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
-import { getDefaultPrompt } from "@/lib/loops/prompts";
+import { buildLoopPrompt } from "@/lib/loops/prompts";
 import {
   badRequestResponse,
   conflictResponse,
@@ -168,7 +168,11 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
       }
 
       const command = COMMAND_MAP[body.command];
-      const prompt = body.prompt || getDefaultPrompt(command);
+      const prompt = buildLoopPrompt(
+        command,
+        body.prompt,
+        resolvedAdditionalRepos
+      );
 
       const loopResponse = await loopsService.create(
         user.organizationId,
