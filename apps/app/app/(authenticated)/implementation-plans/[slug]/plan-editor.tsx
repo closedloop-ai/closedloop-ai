@@ -228,10 +228,13 @@ export function PlanEditor({
       <EditorToolbarActions
         canRestoreVersion={true}
         canSaveVersion={currentVersion === plan.latestVersion}
+        hasUnsavedChanges={contentController.hasUnsavedChanges}
         isRestoring={isPending}
         isSaving={contentController.isSaving}
         onRestoreVersion={contentController.restoreVersion}
-        onSaveVersion={contentController.saveContent}
+        onSaveVersion={() =>
+          contentController.saveContent(undefined, false, editMode.exitEditMode)
+        }
         onToggleComments={setShowComments}
         openThreadCount={session.openThreadCount}
         showComments={showComments}

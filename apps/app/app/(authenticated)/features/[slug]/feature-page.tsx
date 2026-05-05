@@ -218,10 +218,19 @@ export function FeaturePage({
                             canSaveVersion={
                               currentVersion === feature.latestVersion
                             }
+                            hasUnsavedChanges={
+                              contentController.hasUnsavedChanges
+                            }
                             isRestoring={contentController.isSaving}
                             isSaving={contentController.isSaving}
                             onRestoreVersion={contentController.restoreVersion}
-                            onSaveVersion={contentController.saveContent}
+                            onSaveVersion={() =>
+                              contentController.saveContent(
+                                undefined,
+                                false,
+                                editMode.exitEditMode
+                              )
+                            }
                             onToggleComments={setShowComments}
                             openThreadCount={session.openThreadCount}
                             showComments={showComments}
