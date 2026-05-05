@@ -5,6 +5,7 @@ import {
   DocumentStatus,
   DocumentType,
 } from "@repo/api/src/types/document";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { ArtifactType, withDb } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
 import { artifactLinksService } from "../artifact-links/service";
@@ -460,10 +461,10 @@ export const documentExecutionService = {
     }
     const documentId = documentIdResult.documentId;
 
-    const activeLoop = await loopsService.findActivePlanLoopForDocument(
+    const activeLoop = await loopsService.findActiveLoopForDocumentAndCommand(
       documentId,
-      organizationId,
-      input.computeTargetId
+      LoopCommand.Plan,
+      organizationId
     );
     if (activeLoop) {
       const existingLocalRepoPath =

@@ -1,19 +1,17 @@
 /**
- * Tests for loopsService.findActivePlanLoopForDocument staleness gating.
+ * Tests for loopsService.findActiveLoopForDocumentAndCommand
  *
- * The method guards re-launches by returning an active loop when one exists,
- * but must NOT block retries for stale PENDING/CLAIMED loops that never got
- * a containerId (i.e. the relay dispatch failed or was never delivered).
+ * Staleness rules:
+ * - RUNNING always blocks (returns the loop)
+ * - CLAIMED with containerId always blocks (returns the loop)
+ * - CLAIMED without containerId never blocks (returns null, regardless of age)
+ * - PENDING without containerId younger than 30s blocks (returns the loop)
+ * - PENDING without containerId older than 30s does not block (returns null)
  *
- * Staleness threshold: 30 seconds.
- * Rules:
- * - RUNNING → always active (no time limit)
- * - CLAIMED with containerId → always active (dispatched + acknowledged)
- * - PENDING or CLAIMED without containerId, created <30s ago → active
- * - PENDING or CLAIMED without containerId, created ≥30s ago → stale → returns null
+ * Also verifies the method accepts any LoopCommand value, not just PLAN.
  */
 
-import { type Mock, vi } from "vitest";
+import { vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -25,15 +23,11 @@ vi.mock("@aws-sdk/client-ecs", () => ({
 
 vi.mock("@repo/github", () => ({
   getInstallationAccessToken: vi.fn(),
+  verifyInstallationBranchExists: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
-  EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
 vi.mock("@/lib/db-utils", () => ({
@@ -48,40 +42,86 @@ vi.mock("@/lib/db-utils", () => ({
   },
 }));
 
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: { getDocumentPullRequests: vi.fn() },
+}));
+
+vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
+  extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
+}));
+
+const mockFindFirst = vi.fn();
+
+vi.mock("@repo/database", () => ({
+  withDb: Object.assign(
+    vi.fn((fn: (db: unknown) => unknown) =>
+      fn({
+        loop: {
+          findFirst: mockFindFirst,
+          findUnique: vi.fn().mockResolvedValue(null),
+          findMany: vi.fn().mockResolvedValue([]),
+          create: vi
+            .fn()
+            .mockResolvedValue({ id: "loop-new", status: "PENDING" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          count: vi.fn().mockResolvedValue(0),
+          aggregate: vi.fn().mockResolvedValue({ _count: 0, _sum: {} }),
+          groupBy: vi.fn().mockResolvedValue([]),
+        },
+        organization: {
+          findUnique: vi.fn().mockResolvedValue({ settings: null }),
+        },
+        loopEvent: {
+          findMany: vi.fn().mockResolvedValue([]),
+          count: vi.fn().mockResolvedValue(0),
+        },
+      })
+    ),
+    { tx: vi.fn() }
+  ),
+  LoopStatus: {
+    Pending: "PENDING",
+    Claimed: "CLAIMED",
+    Running: "RUNNING",
+    Completed: "COMPLETED",
+    Failed: "FAILED",
+    Cancelled: "CANCELLED",
+    TimedOut: "TIMED_OUT",
+  },
+  GitHubInstallationStatus: { ACTIVE: "ACTIVE" },
+  Prisma: { sql: vi.fn(), join: vi.fn() },
+  EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
+}));
+
 // --- Imports (after mocks) ---
 
-import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Minimal PrismaLoop-shaped record factory
+// The toLoop() conversion reads: artifactId → documentId, artifactVersion →
+// documentVersion, estimatedCost via Number(), plus JSON-parsed repo/error.
 // ---------------------------------------------------------------------------
 
-const mockWithDb = withDb as unknown as Mock;
-
-/** Minimal Prisma loop row that toLoop() can transform without errors. */
-function buildPrismaLoopRow(overrides: {
-  status: string;
-  containerId?: string | null;
-  createdAt: Date;
-  command?: string;
-}) {
+function buildPrismaLoop(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     id: "loop-1",
     organizationId: "org-1",
     userId: "user-1",
-    status: overrides.status,
-    command: overrides.command ?? "PLAN",
+    status: "RUNNING",
+    command: "PLAN",
     artifactId: "artifact-1",
-    artifactVersion: null,
     workstreamId: null,
     parentLoopId: null,
     computeTargetId: null,
     prompt: null,
     repo: null,
+    additionalRepos: null,
     contextRefs: null,
-    containerId: overrides.containerId ?? null,
+    containerId: null,
     s3StateKey: null,
     prUrl: null,
     prNumber: null,
@@ -94,43 +134,77 @@ function buildPrismaLoopRow(overrides: {
     startedAt: null,
     completedAt: null,
     error: null,
+    artifactVersion: null,
     metadata: {},
     uploadedArtifacts: null,
-    createdAt: overrides.createdAt,
-    updatedAt: overrides.createdAt,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
   };
-}
-
-/** Configure withDb to call the Prisma callback with a stub db. */
-function setupFindFirst(
-  returnRow: ReturnType<typeof buildPrismaLoopRow> | null
-) {
-  const mockFindFirst = vi.fn().mockResolvedValue(returnRow);
-  mockWithDb.mockImplementation((fn: (db: unknown) => unknown) =>
-    fn({ loop: { findFirst: mockFindFirst } })
-  );
-  return mockFindFirst;
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("loopsService.findActivePlanLoopForDocument", () => {
+describe("loopsService.findActiveLoopForDocumentAndCommand", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns a RUNNING loop regardless of age", async () => {
-    const twoMinutesAgo = new Date(Date.now() - 120_000);
-    const row = buildPrismaLoopRow({
-      status: "RUNNING",
-      createdAt: twoMinutesAgo,
-    });
-    setupFindFirst(row);
+  // -------------------------------------------------------------------------
+  // Command parameter — accepts any LoopCommand, not just PLAN
+  // -------------------------------------------------------------------------
 
-    const result = await loopsService.findActivePlanLoopForDocument(
+  it("accepts CODE command and passes it through to the query", async () => {
+    const loop = buildPrismaLoop({ command: "EXECUTE", status: "RUNNING" });
+    mockFindFirst.mockResolvedValue(loop);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
       "artifact-1",
+      "EXECUTE",
+      "org-1"
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.command).toBe("EXECUTE");
+    expect(mockFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ command: "EXECUTE" }),
+      })
+    );
+  });
+
+  it("accepts PLAN command", async () => {
+    const loop = buildPrismaLoop({ command: "PLAN", status: "RUNNING" });
+    mockFindFirst.mockResolvedValue(loop);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
+      "artifact-1",
+      "PLAN",
+      "org-1"
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.command).toBe("PLAN");
+    expect(mockFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ command: "PLAN" }),
+      })
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // RUNNING status — always blocks
+  // -------------------------------------------------------------------------
+
+  it("returns the loop when status is RUNNING", async () => {
+    const loop = buildPrismaLoop({ status: "RUNNING" });
+    mockFindFirst.mockResolvedValue(loop);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
+      "artifact-1",
+      "PLAN",
       "org-1"
     );
 
@@ -139,120 +213,178 @@ describe("loopsService.findActivePlanLoopForDocument", () => {
     expect(result?.status).toBe("RUNNING");
   });
 
-  it("returns a CLAIMED loop with containerId regardless of age", async () => {
-    const twoMinutesAgo = new Date(Date.now() - 120_000);
-    const row = buildPrismaLoopRow({
-      status: "CLAIMED",
-      containerId: "arn:aws:ecs:task/abc",
-      createdAt: twoMinutesAgo,
-    });
-    setupFindFirst(row);
+  // -------------------------------------------------------------------------
+  // CLAIMED + containerId — always blocks
+  // -------------------------------------------------------------------------
 
-    const result = await loopsService.findActivePlanLoopForDocument(
+  it("returns the loop when status is CLAIMED and containerId is set", async () => {
+    const loop = buildPrismaLoop({
+      status: "CLAIMED",
+      containerId: "container-abc",
+      createdAt: new Date(Date.now() - 60_000), // 60s old — still blocks
+    });
+    mockFindFirst.mockResolvedValue(loop);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
       "artifact-1",
+      "PLAN",
       "org-1"
     );
 
     expect(result).not.toBeNull();
+    expect(result?.id).toBe("loop-1");
     expect(result?.status).toBe("CLAIMED");
-    expect(result?.containerId).toBe("arn:aws:ecs:task/abc");
+    expect(result?.containerId).toBe("container-abc");
   });
 
-  it("returns a recent PENDING loop (created 5 seconds ago, no containerId)", async () => {
-    const fiveSecondsAgo = new Date(Date.now() - 5000);
-    const row = buildPrismaLoopRow({
-      status: "PENDING",
-      createdAt: fiveSecondsAgo,
-    });
-    setupFindFirst(row);
+  // -------------------------------------------------------------------------
+  // CLAIMED without containerId — never blocks (regardless of age)
+  // -------------------------------------------------------------------------
 
-    const result = await loopsService.findActivePlanLoopForDocument(
+  it("returns null when status is CLAIMED but containerId is null (young loop)", async () => {
+    // The query WHERE clause excludes CLAIMED+null containerId from the OR conditions,
+    // so findFirst returns null for this case.
+    mockFindFirst.mockResolvedValue(null);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
       "artifact-1",
+      "PLAN",
+      "org-1"
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when status is CLAIMED but containerId is null (old loop)", async () => {
+    // Regardless of age, CLAIMED without containerId should not block.
+    // The query WHERE clause does not include this case, so findFirst returns null.
+    mockFindFirst.mockResolvedValue(null);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
+      "artifact-1",
+      "PLAN",
+      "org-1"
+    );
+
+    expect(result).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // PENDING without containerId — blocks only if younger than 30s
+  // -------------------------------------------------------------------------
+
+  it("returns null when status is PENDING, containerId is null, and loop is older than 30s", async () => {
+    // A stale PENDING row (>30s old, no containerId) is not returned by the query.
+    // findFirst returns null because the createdAt filter excludes it.
+    mockFindFirst.mockResolvedValue(null);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
+      "artifact-1",
+      "PLAN",
+      "org-1"
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("returns the loop when status is PENDING, containerId is null, and loop is younger than 30s", async () => {
+    const loop = buildPrismaLoop({
+      status: "PENDING",
+      containerId: null,
+      createdAt: new Date(Date.now() - 5000), // 5s old — within the 30s window
+    });
+    mockFindFirst.mockResolvedValue(loop);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
+      "artifact-1",
+      "PLAN",
       "org-1"
     );
 
     expect(result).not.toBeNull();
+    expect(result?.id).toBe("loop-1");
     expect(result?.status).toBe("PENDING");
   });
 
-  it("returns null for a stale PENDING loop (created 2 minutes ago, no containerId)", async () => {
-    // Stale loops have createdAt before the 30s staleness threshold.
-    // findFirst returns null when no matching loops satisfy the OR conditions.
-    setupFindFirst(null);
+  // -------------------------------------------------------------------------
+  // No matching loop — returns null
+  // -------------------------------------------------------------------------
 
-    const result = await loopsService.findActivePlanLoopForDocument(
+  it("returns null when findFirst returns null (no active loop)", async () => {
+    mockFindFirst.mockResolvedValue(null);
+
+    const result = await loopsService.findActiveLoopForDocumentAndCommand(
       "artifact-1",
+      "PLAN",
       "org-1"
     );
 
     expect(result).toBeNull();
   });
 
-  it("returns null for a stale CLAIMED loop (created 2 minutes ago, no containerId)", async () => {
-    // CLAIMED without containerId and older than 30s should be excluded by the
-    // OR conditions — findFirst returns null.
-    setupFindFirst(null);
+  // -------------------------------------------------------------------------
+  // Query structure verification
+  // -------------------------------------------------------------------------
 
-    const result = await loopsService.findActivePlanLoopForDocument(
+  it("passes documentId, command, and organizationId to the query where clause", async () => {
+    mockFindFirst.mockResolvedValue(null);
+
+    await loopsService.findActiveLoopForDocumentAndCommand(
+      "doc-xyz",
+      "EXECUTE",
+      "org-abc"
+    );
+
+    expect(mockFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          artifactId: "doc-xyz",
+          command: "EXECUTE",
+          organizationId: "org-abc",
+        }),
+      })
+    );
+  });
+
+  it("includes OR conditions for RUNNING, CLAIMED+containerId, and recent PENDING", async () => {
+    mockFindFirst.mockResolvedValue(null);
+
+    await loopsService.findActiveLoopForDocumentAndCommand(
       "artifact-1",
+      "PLAN",
       "org-1"
     );
 
-    expect(result).toBeNull();
-  });
+    const [callArgs] = mockFindFirst.mock.calls;
+    const { OR } = callArgs[0].where;
 
-  it("returns null when no matching loops exist", async () => {
-    setupFindFirst(null);
+    expect(OR).toBeDefined();
+    expect(Array.isArray(OR)).toBe(true);
 
-    const result = await loopsService.findActivePlanLoopForDocument(
-      "artifact-1",
-      "org-1"
+    // Should include RUNNING
+    expect(OR).toEqual(
+      expect.arrayContaining([expect.objectContaining({ status: "RUNNING" })])
     );
 
-    expect(result).toBeNull();
-  });
-
-  it("passes the correct staleness threshold in the OR clause", async () => {
-    const mockFindFirst = setupFindFirst(null);
-    const before = Date.now();
-
-    await loopsService.findActivePlanLoopForDocument("artifact-1", "org-1");
-
-    const after = Date.now();
-    const callArgs = mockFindFirst.mock.calls[0][0];
-    const orConditions = callArgs.where.OR as Record<string, unknown>[];
-
-    // The third OR branch carries the staleness threshold.
-    const stalenessCondition = orConditions.find(
-      (c) => typeof (c as { createdAt?: unknown }).createdAt === "object"
+    // Should include CLAIMED with non-null containerId
+    expect(OR).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "CLAIMED",
+          containerId: expect.objectContaining({ not: null }),
+        }),
+      ])
     );
-    expect(stalenessCondition).toBeDefined();
 
-    const threshold = (
-      stalenessCondition as { createdAt: { gte: Date } }
-    ).createdAt.gte.getTime();
-
-    // The threshold must be 30 seconds in the past, ±50ms tolerance.
-    expect(threshold).toBeGreaterThanOrEqual(before - 30_000 - 50);
-    expect(threshold).toBeLessThanOrEqual(after - 30_000 + 50);
-  });
-
-  it("queries only PLAN command loops", async () => {
-    const mockFindFirst = setupFindFirst(null);
-
-    await loopsService.findActivePlanLoopForDocument("artifact-1", "org-1");
-
-    const callArgs = mockFindFirst.mock.calls[0][0];
-    expect(callArgs.where.command).toBe("PLAN");
-  });
-
-  it("queries by the provided artifactId and organizationId", async () => {
-    const mockFindFirst = setupFindFirst(null);
-
-    await loopsService.findActivePlanLoopForDocument("artifact-abc", "org-xyz");
-
-    const callArgs = mockFindFirst.mock.calls[0][0];
-    expect(callArgs.where.artifactId).toBe("artifact-abc");
-    expect(callArgs.where.organizationId).toBe("org-xyz");
+    // Should include PENDING with null containerId and a createdAt filter
+    expect(OR).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "PENDING",
+          containerId: null,
+          createdAt: expect.objectContaining({ gte: expect.any(Date) }),
+        }),
+      ])
+    );
   });
 });

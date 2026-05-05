@@ -35,6 +35,18 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
   extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock("@/lib/db-utils", () => ({
+  basicUserSelect: {
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+    },
+  },
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
@@ -90,13 +102,16 @@ function createMockResumeDb(
     .mockResolvedValue(makeParentFixture(parentOverrides));
   const mockCount = vi.fn().mockResolvedValue(0);
   const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
+  const mockUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
 
   mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
     const mockDb = {
       loop: {
         findUnique: mockFindUnique,
+        findFirst: vi.fn().mockResolvedValue(null),
         count: mockCount,
         create: mockCreate,
+        updateMany: mockUpdateMany,
       },
       organization: { findUnique: mockOrgFindUnique },
       ...extraModels,

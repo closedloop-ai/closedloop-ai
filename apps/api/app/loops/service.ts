@@ -108,6 +108,32 @@ export function isConcurrentLoopLimitError(
   return error instanceof ConcurrentLoopLimitError;
 }
 
+export class LoopAlreadyActiveError extends Error {
+  readonly existingLoopId: string;
+  readonly existingCommand: LoopCommand;
+  readonly existingStatus: LoopStatus;
+  constructor(
+    existingLoopId: string,
+    existingCommand: LoopCommand,
+    existingStatus: LoopStatus
+  ) {
+    super(
+      `A ${existingCommand} loop is already active (id: ${existingLoopId}, status: ${existingStatus}). ` +
+        "Cancel or wait for the existing loop to complete before starting a new one."
+    );
+    this.name = "LoopAlreadyActiveError";
+    this.existingLoopId = existingLoopId;
+    this.existingCommand = existingCommand;
+    this.existingStatus = existingStatus;
+  }
+}
+
+export function isLoopAlreadyActiveError(
+  error: unknown
+): error is LoopAlreadyActiveError {
+  return error instanceof LoopAlreadyActiveError;
+}
+
 /**
  * Valid status transitions for loops.
  * Key = current status, Value = set of allowed next statuses.
@@ -320,6 +346,30 @@ export const loopsService = {
     userId: string,
     input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
+    // Reap stale PENDING rows for this (artifactId, command) slice before the
+    // gate check runs. A PENDING row without a containerId that is older than
+    // 30 seconds has never been acknowledged by any runner — the relay/dispatch
+    // step silently failed. Flip these to FAILED so they no longer count against
+    // the concurrency gate or block the LoopAlreadyActive check.
+    if (input.documentId && input.command) {
+      const stalenessThreshold = new Date(Date.now() - 30_000);
+      await withDb((db) =>
+        db.loop.updateMany({
+          where: {
+            artifactId: input.documentId,
+            command: input.command,
+            status: LoopStatus.Pending,
+            containerId: null,
+            createdAt: { lt: stalenessThreshold },
+          },
+          data: {
+            status: LoopStatus.Failed,
+            completedAt: new Date(),
+          },
+        })
+      );
+    }
+
     // Enforce per-user concurrency limit.
     // NOTE: This is a soft limit with a known TOCTOU window — two concurrent
     // requests could both read count=4 and both proceed. The risk is low
@@ -346,26 +396,74 @@ export const loopsService = {
       await authorizeAdditionalRepos(input.additionalRepos, organizationId);
     }
 
-    const loop = await withDb((db) =>
-      db.loop.create({
-        data: {
-          organizationId,
-          userId,
-          command: input.command,
-          artifactId: input.documentId ?? null,
-          workstreamId: input.workstreamId ?? null,
-          parentLoopId: input.parentLoopId ?? null,
-          computeTargetId: input.computeTargetId ?? null,
-          prompt: input.prompt ?? null,
-          repo: input.repo ?? undefined,
-          additionalRepos: input.additionalRepos ?? undefined,
-          contextRefs: input.contextRefs ?? undefined,
-          artifactVersion: input.documentVersion ?? null,
-          metadata: input.metadata ?? undefined,
-          status: LoopStatus.Pending,
-        },
-      })
-    );
+    // Pre-insert concurrency gate: for any non-Chat command with a documentId,
+    // check if there is already an active loop for this (documentId, command) pair.
+    // This prevents duplicate active loops from being created in the common path.
+    if (input.command !== LoopCommand.Chat && input.documentId != null) {
+      const existingLoop =
+        await loopsService.findActiveLoopForDocumentAndCommand(
+          input.documentId,
+          input.command,
+          organizationId
+        );
+      if (existingLoop) {
+        throw new LoopAlreadyActiveError(
+          existingLoop.id,
+          existingLoop.command,
+          existingLoop.status
+        );
+      }
+    }
+
+    let loop: { id: string; status: string };
+    try {
+      loop = await withDb((db) =>
+        db.loop.create({
+          data: {
+            organizationId,
+            userId,
+            command: input.command,
+            artifactId: input.documentId ?? null,
+            workstreamId: input.workstreamId ?? null,
+            parentLoopId: input.parentLoopId ?? null,
+            computeTargetId: input.computeTargetId ?? null,
+            prompt: input.prompt ?? null,
+            repo: input.repo ?? undefined,
+            additionalRepos: input.additionalRepos ?? undefined,
+            contextRefs: input.contextRefs ?? undefined,
+            artifactVersion: input.documentVersion ?? null,
+            metadata: input.metadata ?? undefined,
+            status: LoopStatus.Pending,
+          },
+        })
+      );
+    } catch (error) {
+      // P2002 backstop: a concurrent request may have inserted between our
+      // pre-insert check and this insert. Re-read and throw LoopAlreadyActiveError
+      // so the caller gets a structured error rather than a raw Prisma error.
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error as { code: string }).code === "P2002" &&
+        input.command !== LoopCommand.Chat &&
+        input.documentId != null
+      ) {
+        const existingLoop =
+          await loopsService.findActiveLoopForDocumentAndCommand(
+            input.documentId,
+            input.command,
+            organizationId
+          );
+        if (existingLoop) {
+          throw new LoopAlreadyActiveError(
+            existingLoop.id,
+            existingLoop.command,
+            existingLoop.status
+          );
+        }
+      }
+      throw error;
+    }
 
     log.info("Loop created", {
       loopId: loop.id,
@@ -695,16 +793,14 @@ export const loopsService = {
   },
 
   /**
-   * Create a resumed Loop from a parent.
-   * The new loop inherits context from the parent but starts fresh.
+   * Validate that a parent loop exists and can be resumed.
+   * Throws if parent is not found, not owned by user, or in non-resumable status.
    */
-  async resume(
+  async validateParentForResume(
     parentLoopId: string,
     organizationId: string,
-    userId: string,
-    input: ResumeLoopRequest,
-    computeTargetId?: string
-  ): Promise<CreateLoopResponse> {
+    userId: string
+  ): Promise<PrismaLoop> {
     const parent = await withDb((db) =>
       db.loop.findUnique({
         where: { id: parentLoopId, organizationId },
@@ -715,7 +811,6 @@ export const loopsService = {
       throw new Error(`Parent loop not found: ${parentLoopId}`);
     }
 
-    // Only the original loop creator can resume it
     if (parent.userId !== userId) {
       throw new Error("You can only resume your own loops");
     }
@@ -731,6 +826,84 @@ export const loopsService = {
         `Cannot resume loop in ${parent.status} status. Only CANCELLED, COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
       );
     }
+
+    return parent;
+  },
+
+  /**
+   * Reap stale PENDING rows for a (artifactId, command) slice before gate check.
+   * This prevents a stale PENDING row from blocking a resumed loop create.
+   */
+  async reapStalePendingLoops(
+    artifactId: string | null,
+    command: string | null
+  ): Promise<void> {
+    if (artifactId == null || command == null) {
+      return;
+    }
+
+    const stalenessThreshold = new Date(Date.now() - 30_000);
+    await withDb((db) =>
+      db.loop.updateMany({
+        where: {
+          artifactId,
+          command: command as LoopCommand,
+          status: LoopStatus.Pending,
+          containerId: null,
+          createdAt: { lt: stalenessThreshold },
+        },
+        data: {
+          status: LoopStatus.Failed,
+          completedAt: new Date(),
+        },
+      })
+    );
+  },
+
+  /**
+   * Check for an active sibling loop (same artifact, command, non-Chat).
+   * Throws LoopAlreadyActiveError if found (excluding parent).
+   */
+  async checkSiblingLoopGate(
+    parentId: string,
+    command: string,
+    artifactId: string | null,
+    organizationId: string
+  ): Promise<void> {
+    if (command === LoopCommand.Chat || artifactId == null) {
+      return;
+    }
+
+    const activeLoop = await loopsService.findActiveLoopForDocumentAndCommand(
+      artifactId,
+      command as LoopCommand,
+      organizationId
+    );
+    if (activeLoop != null && activeLoop.id !== parentId) {
+      throw new LoopAlreadyActiveError(
+        activeLoop.id,
+        activeLoop.command,
+        activeLoop.status
+      );
+    }
+  },
+
+  /**
+   * Create a resumed Loop from a parent.
+   * The new loop inherits context from the parent but starts fresh.
+   */
+  async resume(
+    parentLoopId: string,
+    organizationId: string,
+    userId: string,
+    input: ResumeLoopRequest,
+    computeTargetId?: string
+  ): Promise<CreateLoopResponse> {
+    const parent = await loopsService.validateParentForResume(
+      parentLoopId,
+      organizationId,
+      userId
+    );
 
     // Enforce per-user concurrency limit (same as create())
     const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
@@ -750,6 +923,17 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    // Reap stale PENDING rows before gate check
+    await loopsService.reapStalePendingLoops(parent.artifactId, parent.command);
+
+    // Check sibling concurrency gate
+    await loopsService.checkSiblingLoopGate(
+      parent.id,
+      parent.command,
+      parent.artifactId,
+      organizationId
+    );
+
     const parsedAdditionalRepos = parseAdditionalRepos(parent.additionalRepos);
     if (parent.additionalRepos != null && parsedAdditionalRepos === null) {
       throw new Error(
@@ -764,24 +948,55 @@ export const loopsService = {
     // Do NOT copy parent.s3StateKey — the child loop gets its own key when
     // launched (via ECS claim or desktop persistence). Copying the parent's
     // key creates a window where the child reads/writes the parent's storage.
-    const loop = await withDb((db) =>
-      db.loop.create({
-        data: {
-          organizationId,
-          userId,
-          command: parent.command,
-          artifactId: parent.artifactId,
-          workstreamId: parent.workstreamId,
-          parentLoopId: parent.id,
-          prompt: input.prompt ?? parent.prompt,
-          repo: parent.repo ?? undefined,
-          additionalRepos: parsedAdditionalRepos ?? undefined,
-          contextRefs: parent.contextRefs ?? undefined,
-          computeTargetId: computeTargetId ?? null,
-          status: LoopStatus.Pending,
-        },
-      })
-    );
+    let loop: { id: string; status: string };
+    try {
+      loop = await withDb((db) =>
+        db.loop.create({
+          data: {
+            organizationId,
+            userId,
+            command: parent.command,
+            artifactId: parent.artifactId,
+            workstreamId: parent.workstreamId,
+            parentLoopId: parent.id,
+            prompt: input.prompt ?? parent.prompt,
+            repo: parent.repo ?? undefined,
+            additionalRepos: parsedAdditionalRepos ?? undefined,
+            contextRefs: parent.contextRefs ?? undefined,
+            computeTargetId: computeTargetId ?? null,
+            status: LoopStatus.Pending,
+          },
+        })
+      );
+    } catch (error) {
+      // P2002 backstop: a concurrent request may have inserted between our
+      // sibling gate and this insert. Re-read and throw LoopAlreadyActiveError
+      // so the caller gets a structured error rather than a raw Prisma error.
+      // Mirrors create()'s backstop. Chat is excluded from the partial unique
+      // index by migration design, so the Chat exemption applies here too.
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error as { code: string }).code === "P2002" &&
+        parent.command !== LoopCommand.Chat &&
+        parent.artifactId != null
+      ) {
+        const existingLoop =
+          await loopsService.findActiveLoopForDocumentAndCommand(
+            parent.artifactId,
+            parent.command as LoopCommand,
+            organizationId
+          );
+        if (existingLoop != null && existingLoop.id !== parent.id) {
+          throw new LoopAlreadyActiveError(
+            existingLoop.id,
+            existingLoop.command,
+            existingLoop.status
+          );
+        }
+      }
+      throw error;
+    }
 
     log.info("Loop resumed", {
       loopId: loop.id,
@@ -1250,34 +1465,33 @@ export const loopsService = {
   },
 
   /**
-   * Find an active (PENDING/CLAIMED/RUNNING) PLAN loop for an artifact.
-   * Returns the most recently created one, or null if none exist.
+   * Find an active loop for a document and any command (org-scoped).
+   * Returns the most recently created blocking loop, or null if none exist.
+   *
+   * Staleness rules (per PRD):
+   * - RUNNING always blocks
+   * - CLAIMED with containerId always blocks
+   * - CLAIMED without containerId never blocks (regardless of age)
+   * - PENDING younger than 30s without containerId blocks
    */
-  async findActivePlanLoopForDocument(
+  async findActiveLoopForDocumentAndCommand(
     documentId: string,
-    organizationId: string,
-    computeTargetId?: string
+    command: LoopCommand,
+    organizationId: string
   ): Promise<Loop | null> {
-    // RUNNING/CLAIMED with a containerId are genuinely active (dispatched
-    // and acknowledged by the desktop). PENDING loops are only in-flight
-    // briefly (<30s) while the API dispatches them. Older PENDING loops
-    // without a containerId are stuck (relay failed) and must not block
-    // new launches.
-    // Scope to the caller's compute target so a loop running on another
-    // user's desktop doesn't block this user's Start Planning.
     const stalenessThreshold = new Date(Date.now() - 30_000);
     const loop = await withDb((db) =>
       db.loop.findFirst({
         where: {
           artifactId: documentId,
+          command,
           organizationId,
-          command: "PLAN",
-          ...(computeTargetId ? { computeTargetId } : {}),
           OR: [
             { status: "RUNNING" },
             { status: "CLAIMED", containerId: { not: null } },
             {
-              status: { in: ["PENDING", "CLAIMED"] },
+              status: "PENDING",
+              containerId: null,
               createdAt: { gte: stalenessThreshold },
             },
           ],
@@ -1291,81 +1505,6 @@ export const loopsService = {
     }
 
     return toLoop(loop);
-  },
-
-  /**
-   * Create a loop only if no row already exists for the same
-   * (documentId, command, documentVersion) combination.
-   * Uses createManyAndReturn + skipDuplicates to push dedup atomically to the DB,
-   * eliminating the TOCTOU window in a plain findFirst → create sequence.
-   * Returns the new loop, or null if a duplicate was detected and skipped.
-   */
-  async createIfNotExists(
-    organizationId: string,
-    userId: string,
-    input: CreateLoopRequest & { documentVersion: number; documentId: string }
-  ): Promise<CreateLoopResponse | null> {
-    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
-    const activeCount = await withDb((db) =>
-      db.loop.count({
-        where: {
-          userId,
-          organizationId,
-          status: {
-            in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
-          },
-        },
-      })
-    );
-
-    if (activeCount >= maxConcurrentLoops) {
-      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
-    }
-
-    if (input.additionalRepos) {
-      await authorizeAdditionalRepos(input.additionalRepos, organizationId);
-    }
-
-    const [loop] = await withDb((db) =>
-      db.loop.createManyAndReturn({
-        data: [
-          {
-            organizationId,
-            userId,
-            command: input.command,
-            artifactId: input.documentId,
-            workstreamId: input.workstreamId ?? null,
-            parentLoopId: input.parentLoopId ?? null,
-            computeTargetId: input.computeTargetId ?? null,
-            prompt: input.prompt ?? null,
-            repo: input.repo ?? undefined,
-            additionalRepos: input.additionalRepos ?? undefined,
-            contextRefs: input.contextRefs ?? undefined,
-            artifactVersion: input.documentVersion,
-            metadata: input.metadata ?? undefined,
-            status: LoopStatus.Pending,
-          },
-        ],
-        skipDuplicates: true,
-        select: { id: true, status: true },
-      })
-    );
-
-    if (!loop) {
-      return null;
-    }
-
-    log.info("Loop created", {
-      loopId: loop.id,
-      organizationId,
-      userId,
-      command: input.command,
-    });
-
-    return {
-      loopId: loop.id,
-      status: loop.status as LoopStatus,
-    };
   },
 
   /**

@@ -167,6 +167,13 @@ export type ResumeLoopRequest = {
   computeTargetId?: string;
 };
 
+export type LoopAlreadyActiveBody = {
+  error: "loop_already_active";
+  loopId: string;
+  command: string;
+  status: string;
+};
+
 export type LoopListFilters = {
   status?: LoopStatus;
   command?: LoopCommand;
