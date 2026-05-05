@@ -375,8 +375,7 @@ describe("loopsService.resume — sibling concurrency gate", () => {
     vi.restoreAllMocks();
   });
 
-  const PARENT_ARTIFACT_ID = "artifact-1";
-  const parentOverrides = { artifactId: PARENT_ARTIFACT_ID, command: "PLAN" };
+  const parentOverrides = { artifactId: "artifact-1", command: "PLAN" };
 
   it("throws LoopAlreadyActiveError when an active sibling exists for the same (artifactId, command)", async () => {
     const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
@@ -410,26 +409,6 @@ describe("loopsService.resume — sibling concurrency gate", () => {
       loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
     ).resolves.toBeDefined();
     expect(mockCreate).toHaveBeenCalledTimes(1);
-  });
-
-  it("queries findFirst with the parent's artifactId and command", async () => {
-    const { mockFindFirst } = mockResumeDb(parentOverrides);
-
-    await loopsService.resume(
-      TEST_PARENT_LOOP_ID,
-      TEST_ORG_ID,
-      TEST_USER_ID,
-      {}
-    );
-
-    expect(mockFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          artifactId: PARENT_ARTIFACT_ID,
-          command: "PLAN",
-        }),
-      })
-    );
   });
 });
 

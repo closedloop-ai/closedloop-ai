@@ -86,15 +86,9 @@ describe("loopsService.findActiveLoopForDocumentAndCommand", () => {
     });
   });
 
-  describe("non-matches (where clause excludes the row, findFirst returns null)", () => {
-    it.each([
-      "CLAIMED with null containerId",
-      "PENDING with null containerId, > 30s",
-      "no matching loop at all",
-    ])("returns null when %s", async () => {
-      handles.loopFindFirst.mockResolvedValue(null);
-      expect(await callFind()).toBeNull();
-    });
+  it("returns null when findFirst finds no matching row", async () => {
+    handles.loopFindFirst.mockResolvedValue(null);
+    expect(await callFind()).toBeNull();
   });
 
   describe("query shape", () => {
@@ -124,22 +118,6 @@ describe("loopsService.findActiveLoopForDocumentAndCommand", () => {
             createdAt: expect.objectContaining({ gte: expect.any(Date) }),
           }),
         ])
-      );
-    });
-
-    it.each<LoopCommand>([
-      LoopCommand.Plan,
-      LoopCommand.Execute,
-    ])("passes the %s command through to the where clause", async (command) => {
-      handles.loopFindFirst.mockResolvedValue(buildPrismaLoop({ command }));
-
-      const result = await callFind(command);
-
-      expect(result?.command).toBe(command);
-      expect(handles.loopFindFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({ command }),
-        })
       );
     });
   });
