@@ -81,7 +81,10 @@ const NEW_LOOP_FIXTURE = {
 /** Mock org lookup — returns null settings so fetchOrgLoopLimit uses defaults. */
 const mockOrgFindUnique = vi.fn().mockResolvedValue({ settings: null });
 
-function mockResumeDb(parentOverrides?: Record<string, unknown>) {
+function createMockResumeDb(
+  parentOverrides?: Record<string, unknown>,
+  extraModels?: Record<string, unknown>
+) {
   const mockFindUnique = vi
     .fn()
     .mockResolvedValue(makeParentFixture(parentOverrides));
@@ -96,11 +99,40 @@ function mockResumeDb(parentOverrides?: Record<string, unknown>) {
         create: mockCreate,
       },
       organization: { findUnique: mockOrgFindUnique },
+      ...extraModels,
     };
     return callback(mockDb);
   });
 
   return { mockCreate, mockCount, mockFindUnique };
+}
+
+function mockResumeDb(parentOverrides?: Record<string, unknown>) {
+  return createMockResumeDb(parentOverrides);
+}
+
+/**
+ * Like mockResumeDb but also wires gitHubInstallationRepository.findMany
+ * so authorizeAdditionalRepos calls resolve correctly.
+ */
+function mockResumeDbWithInstallationRepos(
+  parentOverrides?: Record<string, unknown>,
+  installationRepos?: unknown[]
+) {
+  const mockFindManyInstallationRepos = vi
+    .fn()
+    .mockResolvedValue(installationRepos ?? []);
+
+  const base = createMockResumeDb(parentOverrides, {
+    gitHubInstallationRepository: {
+      findMany: mockFindManyInstallationRepos,
+    },
+  });
+
+  return {
+    ...base,
+    mockFindManyInstallationRepos,
+  };
 }
 
 describe("loopsService.resume", () => {
@@ -188,15 +220,141 @@ describe("loopsService.resume", () => {
 
     expect(mockCreate).not.toHaveBeenCalled();
   });
+
+  it("inherits additionalRepos from parent and authorizes them on resume", async () => {
+    const additionalRepos = [{ fullName: "acme/frontend", branch: "main" }];
+    const installationRepo = makeInstallationRepo("acme/frontend");
+
+    const { mockCreate, mockFindManyInstallationRepos } =
+      mockResumeDbWithInstallationRepos({ additionalRepos }, [
+        installationRepo,
+      ]);
+
+    mockVerifyBranch.mockResolvedValue(true);
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data).toMatchObject({
+      additionalRepos,
+      status: LoopStatus.Pending,
+    });
+
+    expect(mockFindManyInstallationRepos).toHaveBeenCalledTimes(1);
+    expect(mockFindManyInstallationRepos).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          fullName: { in: ["acme/frontend"] },
+        }),
+      })
+    );
+  });
+
+  it("authorizes all repos and includes both in create payload when parent has multiple additionalRepos", async () => {
+    const additionalRepos = [
+      { fullName: "acme/a", branch: "main" },
+      { fullName: "acme/b", branch: "dev" },
+    ];
+    const installationRepoA = makeInstallationRepo("acme/a");
+    const installationRepoB = makeInstallationRepo("acme/b");
+
+    const { mockCreate, mockFindManyInstallationRepos } =
+      mockResumeDbWithInstallationRepos({ additionalRepos }, [
+        installationRepoA,
+        installationRepoB,
+      ]);
+
+    mockVerifyBranch.mockResolvedValue(true);
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data).toMatchObject({
+      additionalRepos,
+      status: LoopStatus.Pending,
+    });
+
+    expect(mockFindManyInstallationRepos).toHaveBeenCalledTimes(1);
+    expect(mockFindManyInstallationRepos).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          fullName: { in: expect.arrayContaining(["acme/a", "acme/b"]) },
+        }),
+      })
+    );
+
+    expect(mockVerifyBranch).toHaveBeenCalledTimes(2);
+    expect(mockVerifyBranch).toHaveBeenCalledWith("12345", "acme", "a", "main");
+    expect(mockVerifyBranch).toHaveBeenCalledWith("12345", "acme", "b", "dev");
+  });
+
+  it("omits additionalRepos from create payload and skips authorization when parent.additionalRepos is null", async () => {
+    const { mockCreate, mockFindManyInstallationRepos } =
+      mockResumeDbWithInstallationRepos({ additionalRepos: null });
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    expect(mockFindManyInstallationRepos).not.toHaveBeenCalled();
+
+    // Prisma treats undefined and a missing key identically (both skip the
+    // column write), but null would write NULL to the Json? column.
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data.additionalRepos).toBeUndefined();
+  });
+
+  it("throws before authorization or loop creation when parent.additionalRepos is malformed", async () => {
+    const { mockCreate, mockFindManyInstallationRepos } =
+      mockResumeDbWithInstallationRepos({
+        additionalRepos: [{ fullName: "acme/x" }],
+      });
+
+    await expect(
+      loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+    ).rejects.toThrow();
+
+    expect(mockFindManyInstallationRepos).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("throws before authorization or loop creation when parent.additionalRepos is a non-array value", async () => {
+    const { mockCreate, mockFindManyInstallationRepos } =
+      mockResumeDbWithInstallationRepos({
+        additionalRepos: "not-an-array",
+      });
+
+    await expect(
+      loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+    ).rejects.toThrow(
+      `Loop ${TEST_PARENT_LOOP_ID} has malformed additionalRepos data and cannot be resumed. Operator action required.`
+    );
+
+    expect(mockFindManyInstallationRepos).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
 });
 
 const TEST_ORG_ID_AUTH = "org-auth-111";
 
 /** A minimal GitHubInstallationRepository fixture. */
-const makeInstallationRepo = (
+function makeInstallationRepo(
   fullName: string,
   overrides?: Record<string, unknown>
-) => {
+) {
   const [owner, name] = fullName.split("/");
   return {
     id: `repo-id-${fullName}`,
@@ -214,7 +372,7 @@ const makeInstallationRepo = (
     },
     ...overrides,
   };
-};
+}
 
 describe("authorizeAdditionalRepos", () => {
   beforeEach(() => {
