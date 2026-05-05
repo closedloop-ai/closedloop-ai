@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/loops-api",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "type": "module",
   "repository": {
     "type": "git",
@@ -67,6 +67,12 @@
       "import": "./dist/execution-result.js",
       "require": "./dist/execution-result.cjs",
       "default": "./dist/execution-result.js"
+    },
+    "./multi-repo-policy": {
+      "types": "./src/multi-repo-policy.ts",
+      "import": "./dist/multi-repo-policy.js",
+      "require": "./dist/multi-repo-policy.cjs",
+      "default": "./dist/multi-repo-policy.js"
     },
     "./tokens": {
       "types": "./src/tokens.ts",

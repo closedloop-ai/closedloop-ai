@@ -12,6 +12,7 @@ export default defineConfig({
     "src/error-codes.ts",
     "src/events.ts",
     "src/execution-result.ts",
+    "src/multi-repo-policy.ts",
     "src/tokens.ts",
   ],
   format: ["esm", "cjs"],
