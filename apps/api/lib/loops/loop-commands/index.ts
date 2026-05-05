@@ -34,4 +34,5 @@ const COMMAND_HANDLERS: Record<LoopCommand, LoopCommandHandler | undefined> = {
   [LoopCommand.EvaluateCode]: evaluateCodeHandler,
   [LoopCommand.EvaluateFeature]: evaluateFeatureHandler,
   [LoopCommand.Bootstrap]: undefined,
+  [LoopCommand.Manual]: undefined,
 };

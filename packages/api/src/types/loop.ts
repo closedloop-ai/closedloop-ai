@@ -280,3 +280,18 @@ export {
   RepoExecutionResultsSchema,
   SUPPORTED_EXECUTION_RESULT_SCHEMA_VERSIONS,
 } from "@closedloop-ai/loops-api/execution-result";
+
+export type LoopEventReceivedResponse = {
+  received: true;
+  ignored?: true;
+};
+
+export const ManualLoopEventType = {
+  Output: "output",
+  Progress: "progress",
+  Completed: "completed",
+  Error: "error",
+  Cancelled: "cancelled",
+} as const;
+export type ManualLoopEventType =
+  (typeof ManualLoopEventType)[keyof typeof ManualLoopEventType];

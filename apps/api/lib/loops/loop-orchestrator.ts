@@ -782,6 +782,10 @@ async function ingestLoopArtifacts(
   if (!loop.documentId) {
     return;
   }
+  // MANUAL loops have no S3 state or compute target artifacts to ingest.
+  if (loop.command === LoopCommand.Manual) {
+    return;
+  }
   if (!(loop.s3StateKey || loop.computeTargetId)) {
     return;
   }

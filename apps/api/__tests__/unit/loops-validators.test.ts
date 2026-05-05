@@ -1,6 +1,14 @@
+import { LoopEventType } from "@closedloop-ai/loops-api/events";
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { describe, expect, it } from "vitest";
 import {
   loopEventPayloadValidator,
+  loopMetadataUpdateValidator,
+  manualEventPayloadValidator,
+  manualEventValidator,
+  normalizeLoopEvent,
+  TERMINAL_LOOP_EVENTS,
+  TERMINAL_LOOP_STATUSES,
   validateNormalizedEvent,
 } from "@/app/loops/validators";
 
@@ -284,5 +292,255 @@ describe("validateNormalizedEvent — error event validation", () => {
       timestamp: "2026-01-01T00:00:00.000Z",
     });
     expect(result).toBeNull();
+  });
+});
+
+describe("normalizeLoopEvent", () => {
+  it("flattens envelope format { type, data } into a flat LoopEvent", () => {
+    const body = {
+      type: "output",
+      data: { chunk: "hello", timestamp: "2026-01-01T00:00:00.000Z" },
+    };
+    const result = normalizeLoopEvent(body);
+    expect(result).toEqual({
+      type: "output",
+      chunk: "hello",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("returns flattened format unchanged when no data wrapper is present", () => {
+    const body = {
+      type: "output",
+      chunk: "hello",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    };
+    const result = normalizeLoopEvent(body);
+    expect(result).toEqual(body);
+  });
+
+  it("returns the body as-is when data is null (no envelope unwrapping)", () => {
+    const body = { type: "progress", data: null };
+    const result = normalizeLoopEvent(body);
+    expect(result).toEqual(body);
+  });
+
+  it("returns the body as-is when data is a primitive (not an object)", () => {
+    const body = { type: "progress", data: "string-value" };
+    const result = normalizeLoopEvent(body);
+    expect(result).toEqual(body);
+  });
+
+  it("merges data fields over the top-level type key in envelope format", () => {
+    const body = {
+      type: "completed",
+      data: { summary: "all done", tokensUsed: 100 },
+    };
+    const result = normalizeLoopEvent(body);
+    expect(result).toMatchObject({
+      type: "completed",
+      summary: "all done",
+      tokensUsed: 100,
+    });
+  });
+
+  it("preserves outer type when data contains a conflicting type field", () => {
+    const body = {
+      type: "output",
+      data: { type: "evil", chunk: "hello" },
+    };
+    const result = normalizeLoopEvent(body);
+    expect(result).toMatchObject({
+      type: "output",
+      chunk: "hello",
+    });
+  });
+});
+
+describe("TERMINAL_LOOP_STATUSES", () => {
+  it("contains Completed, Failed, Cancelled, TimedOut", () => {
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Completed)).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Failed)).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Cancelled)).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.TimedOut)).toBe(true);
+  });
+
+  it("does not contain non-terminal statuses Running, Pending, Claimed", () => {
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Running)).toBe(false);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Pending)).toBe(false);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Claimed)).toBe(false);
+  });
+});
+
+describe("TERMINAL_LOOP_EVENTS", () => {
+  it("contains completed, error, cancelled", () => {
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Completed)).toBe(true);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Error)).toBe(true);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Cancelled)).toBe(true);
+  });
+
+  it("does not contain non-terminal event types", () => {
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Output)).toBe(false);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Progress)).toBe(false);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Started)).toBe(false);
+  });
+});
+
+describe("manualEventPayloadValidator", () => {
+  it("accepts envelope format with an allowed manual event type", () => {
+    const result = manualEventPayloadValidator.safeParse({
+      type: "output",
+      data: { chunk: "hello" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts flattened format with an allowed manual event type", () => {
+    const result = manualEventPayloadValidator.safeParse({
+      type: "progress",
+      percent: 42,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects runner-only event type 'started'", () => {
+    const result = manualEventPayloadValidator.safeParse({
+      type: "started",
+      data: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects runner-only event type 'tool_call'", () => {
+    const result = manualEventPayloadValidator.safeParse({
+      type: "tool_call",
+      data: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects runner-only event type 'artifact_created'", () => {
+    const result = manualEventPayloadValidator.safeParse({
+      type: "artifact_created",
+      data: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts all five allowed manual event types", () => {
+    const types = ["output", "progress", "completed", "error", "cancelled"];
+    for (const type of types) {
+      const result = manualEventPayloadValidator.safeParse({
+        type,
+        data: {},
+      });
+      expect(result.success, `expected '${type}' to be accepted`).toBe(true);
+    }
+  });
+});
+
+describe("manualEventValidator (envelope-only)", () => {
+  it("rejects flattened format (envelope-only validator requires data key)", () => {
+    const result = manualEventValidator.safeParse({
+      type: "output",
+      chunk: "hello",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts valid envelope with empty data", () => {
+    const result = manualEventValidator.safeParse({
+      type: "completed",
+      data: {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects extra top-level keys in strict envelope mode", () => {
+    const result = manualEventValidator.safeParse({
+      type: "output",
+      data: { chunk: "hi" },
+      extraKey: "not allowed",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("loopMetadataUpdateValidator", () => {
+  it("accepts a valid prUrl", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      prUrl: "https://github.com/acme/repo/pull/42",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-URL prUrl", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      prUrl: "not-a-url",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a prUrl longer than 2048 characters", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      prUrl: `https://github.com/${"a".repeat(2050)}`,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a valid branchName with alphanumerics, dots, slashes, hyphens", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      branchName: "feature/my-branch.v2",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a branchName with shell metacharacters", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      branchName: "feat/bad;rm -rf /",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a branchName longer than 256 characters", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      branchName: "a".repeat(257),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a summary string within the 10000-character limit", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      summary: "Work is done.",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a summary string exceeding 10000 characters", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      summary: "x".repeat(10_001),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts an empty object (all fields optional)", () => {
+    const result = loopMetadataUpdateValidator.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown fields (strict mode)", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      unknownField: "value",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts all three fields together", () => {
+    const result = loopMetadataUpdateValidator.safeParse({
+      prUrl: "https://github.com/acme/repo/pull/7",
+      branchName: "feat/some-branch",
+      summary: "Implemented the thing.",
+    });
+    expect(result.success).toBe(true);
   });
 });

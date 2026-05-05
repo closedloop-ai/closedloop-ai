@@ -81,6 +81,7 @@ export const MULTI_REPO_POLICY: Readonly<
   [LoopCommand.EvaluateCode]: NO_PEERS,
   [LoopCommand.EvaluateFeature]: NO_PEERS,
   [LoopCommand.Bootstrap]: NO_PEERS,
+  [LoopCommand.Manual]: NO_PEERS,
 });
 
 export function getMultiRepoPolicy(command: string): MultiRepoCommandPolicy {

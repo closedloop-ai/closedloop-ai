@@ -24,13 +24,18 @@ import {
   type ApiKeyScope,
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
+import { registerAddLoopEvent } from "./tools/add-loop-event.js";
+import { registerCancelLoop } from "./tools/cancel-loop.js";
+import { registerCompleteLoop } from "./tools/complete-loop.js";
 import { registerCreateArtifactLink } from "./tools/create-artifact-link.js";
 import { registerCreateDocument } from "./tools/create-document.js";
 import { registerCreateDocumentThread } from "./tools/create-document-thread.js";
 import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
+import { registerCreateLoop } from "./tools/create-loop.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
+import { registerFailLoop } from "./tools/fail-loop.js";
 import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
 import { registerGetDocument } from "./tools/get-document.js";
 import { registerGetDocumentComments } from "./tools/get-document-comments.js";
@@ -348,6 +353,31 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   },
   { name: "list-loops", register: registerListLoops },
   { name: "get-loop", register: registerGetLoop },
+  {
+    name: "create-loop",
+    register: registerCreateLoop,
+    requiresWrite: true,
+  },
+  {
+    name: "add-loop-event",
+    register: registerAddLoopEvent,
+    requiresWrite: true,
+  },
+  {
+    name: "complete-loop",
+    register: registerCompleteLoop,
+    requiresWrite: true,
+  },
+  {
+    name: "fail-loop",
+    register: registerFailLoop,
+    requiresWrite: true,
+  },
+  {
+    name: "cancel-loop",
+    register: registerCancelLoop,
+    requiresWrite: true,
+  },
   { name: "list-users", register: registerListUsers },
   { name: "get-dashboard-stats", register: registerGetDashboardStats },
   { name: "list-artifact-links", register: registerListArtifactLinks },

@@ -108,6 +108,24 @@ export function isConcurrentLoopLimitError(
   return error instanceof ConcurrentLoopLimitError;
 }
 
+export class NestedManualLoopError extends Error {
+  constructor(documentId: string) {
+    super(
+      "Cannot create a manual loop while a platform-managed loop is already " +
+        "running for this document (" +
+        documentId +
+        "). Wait for the existing loop to complete or cancel it first."
+    );
+    this.name = "NestedManualLoopError";
+  }
+}
+
+export function isNestedManualLoopError(
+  error: unknown
+): error is NestedManualLoopError {
+  return error instanceof NestedManualLoopError;
+}
+
 /**
  * Valid status transitions for loops.
  * Key = current status, Value = set of allowed next statuses.
@@ -346,6 +364,30 @@ export const loopsService = {
       await authorizeAdditionalRepos(input.additionalRepos, organizationId);
     }
 
+    const isManual = input.command === LoopCommand.Manual;
+
+    // Nested-loop prevention: reject manual loop creation when a platform-managed
+    // loop is active for the same document + user. Checks PENDING and CLAIMED in
+    // addition to RUNNING so a queued/claimed platform loop also blocks manual creation.
+    if (isManual && input.documentId) {
+      const activeNonManual = await withDb((db) =>
+        db.loop.count({
+          where: {
+            userId,
+            organizationId,
+            artifactId: input.documentId,
+            status: {
+              in: [LoopStatus.Pending, LoopStatus.Claimed, LoopStatus.Running],
+            },
+            command: { not: LoopCommand.Manual },
+          },
+        })
+      );
+      if (activeNonManual > 0) {
+        throw new NestedManualLoopError(input.documentId);
+      }
+    }
+
     const loop = await withDb((db) =>
       db.loop.create({
         data: {
@@ -362,7 +404,8 @@ export const loopsService = {
           contextRefs: input.contextRefs ?? undefined,
           artifactVersion: input.documentVersion ?? null,
           metadata: input.metadata ?? undefined,
-          status: LoopStatus.Pending,
+          status: isManual ? LoopStatus.Running : LoopStatus.Pending,
+          startedAt: isManual ? new Date() : undefined,
         },
       })
     );
@@ -428,6 +471,23 @@ export const loopsService = {
       additionalRepos,
       primaryPullRequest,
     };
+  },
+
+  async findManualLoopById(
+    id: string,
+    organizationId: string
+  ): Promise<
+    | { loop: LoopDetail; error?: undefined }
+    | { loop?: undefined; error: "not_found" | "not_manual" }
+  > {
+    const loop = await this.findById(id, organizationId);
+    if (!loop) {
+      return { error: "not_found" };
+    }
+    if (loop.command !== LoopCommand.Manual) {
+      return { error: "not_manual" };
+    }
+    return { loop };
   },
 
   /**
@@ -1403,6 +1463,62 @@ export const loopsService = {
           AND (tokens_input < ${tokensInput} OR tokens_output < ${tokensOutput})
       `)
     );
+  },
+
+  /**
+   * Update loop fields from a manual-loop PATCH request.
+   * Updates prUrl, branchName on the loop row and stores summary in metadata JSON.
+   * Only updates loops owned by the requesting user's org.
+   */
+  async updateManualLoopFields(
+    id: string,
+    organizationId: string,
+    fields: { prUrl?: string; branchName?: string; summary?: string }
+  ): Promise<Loop | null> {
+    const current = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id, organizationId },
+      })
+    );
+
+    if (!current) {
+      return null;
+    }
+
+    const updateData: Record<string, unknown> = {};
+    if (fields.prUrl !== undefined) {
+      updateData.prUrl = fields.prUrl;
+    }
+    if (fields.branchName !== undefined) {
+      updateData.branchName = fields.branchName;
+    }
+    if (fields.summary !== undefined) {
+      const existingMetadata =
+        (current.metadata as Record<string, unknown>) ?? {};
+      updateData.metadata = { ...existingMetadata, summary: fields.summary };
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return toLoop(current);
+    }
+
+    // updateMany enforces org scoping — id alone is the primary key.
+    const result = await withDb((db) =>
+      db.loop.updateMany({
+        where: { id, organizationId },
+        data: updateData,
+      })
+    );
+
+    if (result.count === 0) {
+      return null;
+    }
+
+    const updated = await withDb((db) =>
+      db.loop.findUnique({ where: { id, organizationId } })
+    );
+
+    return updated ? toLoop(updated) : null;
   },
 
   /**
