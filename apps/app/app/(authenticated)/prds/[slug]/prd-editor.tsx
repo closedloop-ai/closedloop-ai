@@ -225,10 +225,19 @@ export function PRDEditor({
                             canSaveVersion={
                               currentVersion === prd.latestVersion
                             }
+                            hasUnsavedChanges={
+                              contentController.hasUnsavedChanges
+                            }
                             isRestoring={isPending}
                             isSaving={contentController.isSaving}
                             onRestoreVersion={contentController.restoreVersion}
-                            onSaveVersion={contentController.saveContent}
+                            onSaveVersion={() =>
+                              contentController.saveContent(
+                                undefined,
+                                false,
+                                editMode.exitEditMode
+                              )
+                            }
                             onToggleComments={setShowComments}
                             openThreadCount={session.openThreadCount}
                             showComments={showComments}
