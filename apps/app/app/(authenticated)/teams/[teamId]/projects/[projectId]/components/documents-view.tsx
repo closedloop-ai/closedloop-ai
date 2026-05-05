@@ -422,77 +422,50 @@ export function DocumentsView({
 
   // Build groups for "All" view, sorted by root item when a sort is active.
   // Uses project tree structure when available; falls back to workstream grouping while loading.
-  const groups: DisplayGroup[] = useMemo(() => {
-    const ungrouped: DisplayGroup[] = treeData
-      ? groupByProjectTree(treeData.nodes, filteredDocuments)
-      : toDisplayGroups(groupByWorkstream(filteredDocuments));
-
-    // Apply project filters to root items — children are preserved regardless
-    const filtered = applyProjectFilters
-      ? ungrouped.filter((g) => applyProjectFilters([g.root]).length > 0)
-      : ungrouped;
-
-    if (!sortBy) {
-      return filtered;
-    }
-    const config = ITEM_SORT_CONFIGS[sortBy];
-    if (!config?.comparator) {
-      return filtered;
-    }
-    const { comparator } = config;
-    const dirMultiplier = sortDir === "asc" ? 1 : -1;
-    return [...filtered].sort(
-      (a, b) => comparator(a.root, b.root) * dirMultiplier
-    );
-  }, [filteredDocuments, sortBy, sortDir, treeData, applyProjectFilters]);
+  const groups: DisplayGroup[] = useMemo(
+    () =>
+      buildSortedGroups({
+        treeData: treeData ?? null,
+        filteredDocuments,
+        applyProjectFilters,
+        sortBy,
+        sortDir,
+      }),
+    [filteredDocuments, sortBy, sortDir, treeData, applyProjectFilters]
+  );
 
   // Build flat items for filtered views
-  const flatItems: DocumentRowItem[] = useMemo(() => {
-    let items: DocumentRowItem[] = filteredDocuments.map(toRowItem);
-    // Apply project filters (assignee, status, priority, date)
-    if (applyProjectFilters) {
-      items = applyProjectFilters(items);
-    }
-    if (sortBy) {
-      const config = ITEM_SORT_CONFIGS[sortBy];
-      if (config) {
-        return sortTableData(items, sortBy, ITEM_SORT_CONFIGS, sortDir);
-      }
-    }
-    return items;
-  }, [filteredDocuments, sortBy, sortDir, applyProjectFilters]);
+  const flatItems: DocumentRowItem[] = useMemo(
+    () =>
+      buildFlatItems(filteredDocuments, applyProjectFilters, sortBy, sortDir),
+    [filteredDocuments, sortBy, sortDir, applyProjectFilters]
+  );
 
   // Build sections when a grouping mode is active
-  const groupedSections: GroupedSection[] = useMemo(() => {
-    if (groupBy === GroupByMode.None) {
-      return [];
-    }
-    if (isGroupedView) {
-      return groupDisplayGroupsByMode(groups, groupBy);
-    }
-    return groupFlatItemsByMode(flatItems, groupBy);
-  }, [groupBy, isGroupedView, groups, flatItems]);
+  const groupedSections: GroupedSection[] = useMemo(
+    () => buildGroupedSections(groupBy, isGroupedView, groups, flatItems),
+    [groupBy, isGroupedView, groups, flatItems]
+  );
 
-  const renderedItems = useMemo((): DocumentRowItem[] => {
-    if (groupBy !== GroupByMode.None) {
-      return flattenGroupedSections(
+  const renderedItems = useMemo(
+    (): DocumentRowItem[] =>
+      buildRenderedItems({
+        groupBy,
         groupedSections,
         isGroupedView,
-        isGroupExpanded
-      );
-    }
-    if (!isGroupedView) {
-      return flatItems;
-    }
-    return flattenDisplayGroups(groups, isGroupExpanded);
-  }, [
-    groupBy,
-    groupedSections,
-    isGroupedView,
-    flatItems,
-    groups,
-    isGroupExpanded,
-  ]);
+        flatItems,
+        groups,
+        isGroupExpanded,
+      }),
+    [
+      groupBy,
+      groupedSections,
+      isGroupedView,
+      flatItems,
+      groups,
+      isGroupExpanded,
+    ]
+  );
 
   const isSourceEmpty = filteredDocuments.length === 0;
   const isPostFilterEmpty = renderedItems.length === 0;
@@ -1124,4 +1097,111 @@ function resolveTreeData(
     treeData: providedTreeData,
     isLoadingTree: providedLoading ?? false,
   };
+}
+
+/**
+ * Build the sorted DisplayGroup list for the "All" view. Uses the project tree
+ * structure when available; falls back to workstream grouping while loading.
+ * Project filters are applied to root items only — children are preserved.
+ */
+function buildSortedGroups({
+  treeData,
+  filteredDocuments,
+  applyProjectFilters,
+  sortBy,
+  sortDir,
+}: {
+  treeData: ProjectTreeResponse | null;
+  filteredDocuments: DocumentWithWorkstream[];
+  applyProjectFilters?: (items: DocumentRowItem[]) => DocumentRowItem[];
+  sortBy: SortColumn | null;
+  sortDir: "asc" | "desc";
+}): DisplayGroup[] {
+  const ungrouped: DisplayGroup[] = treeData
+    ? groupByProjectTree(treeData.nodes, filteredDocuments)
+    : toDisplayGroups(groupByWorkstream(filteredDocuments));
+
+  const filtered = applyProjectFilters
+    ? ungrouped.filter((g) => applyProjectFilters([g.root]).length > 0)
+    : ungrouped;
+
+  if (!sortBy) {
+    return filtered;
+  }
+  const config = ITEM_SORT_CONFIGS[sortBy];
+  if (!config?.comparator) {
+    return filtered;
+  }
+  const { comparator } = config;
+  const dirMultiplier = sortDir === "asc" ? 1 : -1;
+  return [...filtered].sort(
+    (a, b) => comparator(a.root, b.root) * dirMultiplier
+  );
+}
+
+/** Build the flat (filtered + sorted) DocumentRowItem list for filtered views. */
+function buildFlatItems(
+  filteredDocuments: DocumentWithWorkstream[],
+  applyProjectFilters:
+    | ((items: DocumentRowItem[]) => DocumentRowItem[])
+    | undefined,
+  sortBy: SortColumn | null,
+  sortDir: "asc" | "desc"
+): DocumentRowItem[] {
+  let items: DocumentRowItem[] = filteredDocuments.map(toRowItem);
+  if (applyProjectFilters) {
+    items = applyProjectFilters(items);
+  }
+  if (sortBy) {
+    const config = ITEM_SORT_CONFIGS[sortBy];
+    if (config) {
+      return sortTableData(items, sortBy, ITEM_SORT_CONFIGS, sortDir);
+    }
+  }
+  return items;
+}
+
+/** Build grouped sections when a grouping mode (status/assignee/priority) is active. */
+function buildGroupedSections(
+  groupBy: GroupByMode,
+  isGroupedView: boolean,
+  groups: DisplayGroup[],
+  flatItems: DocumentRowItem[]
+): GroupedSection[] {
+  if (groupBy === GroupByMode.None) {
+    return [];
+  }
+  if (isGroupedView) {
+    return groupDisplayGroupsByMode(groups, groupBy);
+  }
+  return groupFlatItemsByMode(flatItems, groupBy);
+}
+
+/** Flatten the grouping output into the final ordered row list for rendering. */
+function buildRenderedItems({
+  groupBy,
+  groupedSections,
+  isGroupedView,
+  flatItems,
+  groups,
+  isGroupExpanded,
+}: {
+  groupBy: GroupByMode;
+  groupedSections: GroupedSection[];
+  isGroupedView: boolean;
+  flatItems: DocumentRowItem[];
+  groups: DisplayGroup[];
+  isGroupExpanded: (key: string) => boolean;
+}): DocumentRowItem[] {
+  if (groupBy !== GroupByMode.None) {
+    return flattenGroupedSections(
+      groupedSections,
+      isGroupedView,
+      isGroupExpanded
+    );
+  }
+  if (!isGroupedView) {
+    return flatItems;
+  }
+  return flattenDisplayGroups(groups, isGroupExpanded);
 }
