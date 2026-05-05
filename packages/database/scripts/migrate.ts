@@ -75,6 +75,16 @@ function isP3018Output(message: string): boolean {
   return P3018_PATTERN.test(message);
 }
 
+function parsePrismaErrorCode(message: string): string {
+  if (isP3009Output(message)) {
+    return "P3009";
+  }
+  if (isP3018Output(message)) {
+    return "P3018";
+  }
+  return "P3005";
+}
+
 function parseFailedMigrationName(message: string): string | null {
   const match = MIGRATION_NAME_PATTERN.exec(message);
   return match?.[1] ?? match?.[2] ?? null;
@@ -117,7 +127,10 @@ function resolveFailedMigration(
 /**
  * Attempts to run prisma migrate deploy with automatic recovery:
  *
- * - Preview schemas: P3005/P3009 → drop and recreate schema, then retry.
+ * - Preview schemas: P3005/P3009/P3018 → drop and recreate schema, then retry.
+ *   Reset is always safe for ephemeral preview schemas, and covers cases like a
+ *   migration directory being renamed/regenerated after it was already applied,
+ *   which leaves the schema state mismatched with `_prisma_migrations`.
  * - Non-preview schemas: P3009/P3018 (failed migration) → mark as rolled-back
  *   so the next deploy can re-apply. Safe because PostgreSQL DDL is transactional.
  */
@@ -142,10 +155,12 @@ async function runMigrateWithRetry(
     const combined = `${stderr}\n${stdout}`;
 
     const isPreviewRecoverable =
-      isP3005Output(combined) || isP3009Output(combined);
+      isP3005Output(combined) ||
+      isP3009Output(combined) ||
+      isP3018Output(combined);
 
     if (isPreviewRecoverable && isPreviewSchema(schema)) {
-      const code = isP3009Output(combined) ? "P3009" : "P3005";
+      const code = parsePrismaErrorCode(combined);
       console.log(`↪ Preview schema ${schema} hit ${code}, resetting...`);
       await resetSchema(databaseUrl, schema);
       runMigrateDeploy(databaseUrl);

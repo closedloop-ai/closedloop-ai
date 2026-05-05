@@ -18,7 +18,7 @@ import type { ComputeTargetError } from "./compute-target-resolver";
 import { resolveComputeTargetWithPreferences } from "./compute-target-resolver";
 import type { DispatchErrorCode } from "./loop-dispatch-utils";
 import { dispatchAndClassify } from "./loop-dispatch-utils";
-import { getDefaultPrompt } from "./prompts";
+import { buildLoopPrompt } from "./prompts";
 
 export type LaunchPlanLoopResult =
   | { ok: true; loopResponse: CreateLoopResponse }
@@ -84,7 +84,7 @@ export async function launchPlanLoop(
     );
 
   const command = COMMAND_MAP.plan;
-  const prompt = getDefaultPrompt(command);
+  const prompt = buildLoopPrompt(command);
 
   const loopResponse = await loopsService.create(organizationId, userId, {
     command,

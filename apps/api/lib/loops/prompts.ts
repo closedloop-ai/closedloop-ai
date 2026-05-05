@@ -1,14 +1,84 @@
-import { LoopCommand } from "@repo/api/src/types/loop";
+import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 
-export function getDefaultPrompt(command: LoopCommand): string {
+/**
+ * Build the final prompt for a loop spawn.
+ *
+ * Composes a base prompt — the caller's `bodyPrompt` if provided, otherwise
+ * the command's default instructions — with an optional peer-repo preamble.
+ * The preamble is layered on top of whatever base prompt is used, so a
+ * command that always supplies its own body prompt (e.g. REQUEST_PRD_CHANGES,
+ * whose body prompt is the user's amend message) still gets peer awareness
+ * when peers are inherited from a parent loop.
+ *
+ * Per-command peer awareness lives entirely in `getPeerPreamble`. PLAN and
+ * EXECUTE get their peer awareness via the run-loop.sh harness and
+ * `--add-dir` at the runtime layer instead, so they return "" here.
+ *
+ * When `additionalRepos` is empty/undefined the result is byte-identical to
+ * the pre-feature baseline — either the body prompt verbatim or the legacy
+ * default instructions verbatim.
+ */
+export function buildLoopPrompt(
+  command: LoopCommand,
+  bodyPrompt?: string,
+  additionalRepos?: readonly AdditionalRepoRef[]
+): string {
+  const base = bodyPrompt || getBaseInstructions(command);
+  return getPeerPreamble(command, additionalRepos) + base;
+}
+
+function getBaseInstructions(command: LoopCommand): string {
   switch (command) {
     case LoopCommand.Decompose:
       return FEATURE_DECOMPOSE_INSTRUCTIONS;
     case LoopCommand.GeneratePrd:
-      return GENERATE_PRD_INSTRUCTIONS;
+      return GENERATE_PRD_INSTRUCTIONS_BASE;
     default:
       return "";
   }
+}
+
+function getPeerPreamble(
+  command: LoopCommand,
+  additionalRepos?: readonly AdditionalRepoRef[]
+): string {
+  if (!additionalRepos || additionalRepos.length === 0) {
+    return "";
+  }
+  // Direct-claude commands need the prompt-side preamble. PLAN and EXECUTE
+  // get their peer awareness via run-loop.sh + --add-dir at the runtime
+  // layer (see PLN-459 / PLN-460), so the prompt-side preamble is omitted
+  // for them to avoid duplication.
+  switch (command) {
+    case LoopCommand.GeneratePrd:
+    case LoopCommand.RequestPrdChanges:
+      return buildPreambleString(additionalRepos);
+    default:
+      return "";
+  }
+}
+
+function buildPreambleString(
+  additionalRepos: readonly AdditionalRepoRef[]
+): string {
+  const lines = additionalRepos.map(
+    (p) => `- \`${p.fullName}\` @ \`${p.branch}\``
+  );
+  return `## Additional repositories (peer mounts)
+
+This loop has access to ${additionalRepos.length} read-only peer ${additionalRepos.length === 1 ? "repository" : "repositories"} alongside the primary target repo. The runtime has cloned each peer to a local directory; actual mount paths are listed in a "## Mounted paths" section appended to this prompt at spawn time.
+
+Peer repositories provided:
+${lines.join("\n")}
+
+When grounding the PRD's Technical Considerations and cross-repo concerns:
+1. Read each peer worktree to identify shared types, API contracts, event schemas, package boundaries, or other integration surfaces relevant to the requested feature.
+2. Cite specific file paths from each peer where they ground the PRD's claims — quote real symbols and code locations rather than describing peers in the abstract.
+3. Treat peers as **read-only**. Any writes inside peer directories are scratch and discarded on cleanup; do not author code or files there.
+
+---
+
+`;
 }
 
 const FEATURE_DECOMPOSE_INSTRUCTIONS = String.raw`You are an expert product manager who decomposes Product Requirements Documents into independent, implementable features.
@@ -380,7 +450,7 @@ As an engineering manager, I want to receive automated alerts when team capacity
 </examples>
 `;
 
-const GENERATE_PRD_INSTRUCTIONS = `You are an expert product manager who creates comprehensive Product Requirements Documents (PRDs).
+const GENERATE_PRD_INSTRUCTIONS_BASE = `You are an expert product manager who creates comprehensive Product Requirements Documents (PRDs).
 
 Your output will be reviewed by a human PM, then fed into downstream agents that decompose the PRD into features and generate implementation plans. Completeness and specificity directly affect the quality of those downstream artifacts.
 
