@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: [
     "src/artifacts.ts",
+    "src/bootstrap-result.ts",
     "src/bundles.ts",
     "src/commands.ts",
     "src/common.ts",

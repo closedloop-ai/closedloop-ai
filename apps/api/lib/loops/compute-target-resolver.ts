@@ -185,3 +185,57 @@ export async function fetchUserComputePreferences(
     preferredComputeTargetId: user?.preferredComputeTargetId ?? undefined,
   };
 }
+
+export type ComputeTargetError =
+  | "compute_target_not_found"
+  | "compute_target_offline"
+  | "no_online_targets"
+  | "multiple_targets";
+
+export type ResolveWithPreferencesResult =
+  | { ok: true; computeTargetId: string | undefined }
+  | { ok: false; error: ComputeTargetError };
+
+export async function resolveComputeTargetWithPreferences(
+  organizationId: string,
+  userId: string,
+  computeTargetIdHint?: string
+): Promise<ResolveWithPreferencesResult> {
+  let preferredComputeMode: string | undefined;
+  let preferredComputeTargetId: string | undefined;
+
+  if (!computeTargetIdHint) {
+    const prefs = await fetchUserComputePreferences(userId);
+    preferredComputeMode = prefs.preferredComputeMode;
+    preferredComputeTargetId = prefs.preferredComputeTargetId;
+  }
+
+  const ctResult = await resolveComputeTarget(
+    organizationId,
+    userId,
+    computeTargetIdHint,
+    preferredComputeMode,
+    undefined,
+    preferredComputeTargetId
+  );
+
+  if (ctResult.reason === "resolved") {
+    return { ok: true, computeTargetId: ctResult.target.id };
+  }
+  if (ctResult.reason === "cloud_resolved") {
+    return { ok: true, computeTargetId: undefined };
+  }
+  if (ctResult.reason === "no_online_targets") {
+    return { ok: false, error: "no_online_targets" };
+  }
+  if (ctResult.reason === "multiple_targets") {
+    return { ok: false, error: "multiple_targets" };
+  }
+  if (
+    ctResult.reason === "hint_not_found" ||
+    ctResult.reason === "no_targets"
+  ) {
+    return { ok: false, error: "compute_target_not_found" };
+  }
+  return { ok: false, error: "compute_target_offline" };
+}
