@@ -1039,31 +1039,60 @@ function computeMoveEntities(
   item: DocumentRowItem,
   treeData: ProjectTreeResponse | null | undefined
 ): MoveResolution {
-  const treeNode = treeData?.nodes.find((n) => n.root.id === item.data.id);
-  if (treeNode && treeNode.children.length > 0) {
-    const rootProjectId =
-      item.kind === "artifact" || item.kind === "feature"
-        ? item.data.projectId
-        : undefined;
+  if (!(item.kind === "artifact" || item.kind === "feature")) {
+    return { kind: "none" };
+  }
+  const descendantIds = collectDescendantIds(item.data.id, treeData ?? null);
+  if (descendantIds.length > 0) {
     const entities: MovableEntity[] = [
-      { id: item.data.id, projectId: rootProjectId },
-      ...treeNode.children.map((child) => ({ id: child.id })),
+      { id: item.data.id, projectId: item.data.projectId },
+      ...descendantIds.map((id) => ({ id })),
     ];
     return { kind: "bulk", entities };
   }
-  if (item.kind === "artifact" || item.kind === "feature") {
-    return {
-      kind: "single",
-      entity: { id: item.data.id, projectId: item.data.projectId },
-    };
-  }
-  return { kind: "none" };
+  return {
+    kind: "single",
+    entity: { id: item.data.id, projectId: item.data.projectId },
+  };
 }
 
 /**
- * Returns the pair of documents to merge when exactly two non-feature documents
- * are selected. Returns null otherwise. Features are excluded because merge is
- * not supported for feature-typed docs.
+ * Walk the tree starting at `rootId` and return every transitive descendant
+ * id. Works whether `rootId` is a TreeNode root or any nested child — uses
+ * the flat children list's `parentId` chain to traverse the subtree.
+ */
+function collectDescendantIds(
+  rootId: string,
+  treeData: ProjectTreeResponse | null
+): string[] {
+  if (!treeData) {
+    return [];
+  }
+  const node = treeData.nodes.find(
+    (n) => n.root.id === rootId || n.children.some((c) => c.id === rootId)
+  );
+  if (!node) {
+    return [];
+  }
+  const descendants: string[] = [];
+  const queue: string[] = [rootId];
+  while (queue.length > 0) {
+    const parentId = queue.shift();
+    for (const child of node.children) {
+      if (child.parentId === parentId) {
+        descendants.push(child.id);
+        queue.push(child.id);
+      }
+    }
+  }
+  return descendants;
+}
+
+/**
+ * Returns the pair of documents to merge when exactly two documents are
+ * selected. Returns null otherwise. The merge service rejects Templates
+ * server-side (`Cannot merge TEMPLATE artifacts`); other type combinations
+ * including Features are allowed.
  */
 function findMergeCandidates(
   selectedIds: Set<string>,
@@ -1075,7 +1104,7 @@ function findMergeCandidates(
   const ids = Array.from(selectedIds);
   const d1 = documents.find((d) => d.id === ids[0]);
   const d2 = documents.find((d) => d.id === ids[1]);
-  if (d1 && d2 && !(isFeatureDoc(d1) || isFeatureDoc(d2))) {
+  if (d1 && d2) {
     return [d1, d2];
   }
   return null;
