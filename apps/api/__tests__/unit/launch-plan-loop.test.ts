@@ -5,8 +5,7 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 vi.mock("@/lib/loops/compute-target-resolver", () => ({
-  fetchUserComputePreferences: vi.fn(),
-  resolveComputeTarget: vi.fn(),
+  resolveComputeTargetWithPreferences: vi.fn(),
 }));
 
 vi.mock("@/app/documents/[id]/run-loop/run-loop-helpers", () => ({
@@ -31,10 +30,7 @@ vi.mock("@/lib/loops/loop-orchestrator", () => ({
 import { beforeEach, describe, expect, it } from "vitest";
 import { resolveLoopContext } from "@/app/documents/[id]/run-loop/run-loop-helpers";
 import { loopsService } from "@/app/loops/service";
-import {
-  fetchUserComputePreferences,
-  resolveComputeTarget,
-} from "@/lib/loops/compute-target-resolver";
+import { resolveComputeTargetWithPreferences } from "@/lib/loops/compute-target-resolver";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
 import { DispatchError } from "@/lib/loops/loop-desktop";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
@@ -54,13 +50,9 @@ const baseOptions = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(fetchUserComputePreferences).mockResolvedValue({
-    preferredComputeMode: "LOCAL",
-    preferredComputeTargetId: undefined,
-  });
-  vi.mocked(resolveComputeTarget).mockResolvedValue({
-    reason: "resolved",
-    target: { id: "target-1" } as any,
+  vi.mocked(resolveComputeTargetWithPreferences).mockResolvedValue({
+    ok: true,
+    computeTargetId: "target-1",
   });
   vi.mocked(resolveLoopContext).mockResolvedValue({
     workstream: null,
