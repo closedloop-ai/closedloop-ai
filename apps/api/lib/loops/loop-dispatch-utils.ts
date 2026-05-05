@@ -9,7 +9,7 @@ import { log } from "@repo/observability/log";
 import { isDispatchError } from "./loop-desktop";
 import { launchLoop } from "./loop-orchestrator";
 
-export type DispatchError = "callback_unavailable" | "launch_failed";
+export type DispatchErrorCode = "callback_unavailable" | "launch_failed";
 
 export const CALLBACK_UNAVAILABLE_DISPATCH_REASONS = new Set([
   "callback_unavailable",
@@ -37,7 +37,7 @@ export function isCallbackUnavailableDispatchReason(
   );
 }
 
-export function classifyLaunchFailure(error: unknown): DispatchError {
+export function classifyLaunchFailure(error: unknown): DispatchErrorCode {
   // Backward compatibility: older desktop/relay versions may not provide a
   // structured dispatchReason. In that case, degrade to generic launch_failed
   // instead of requiring a matched desktop rollout.
@@ -52,7 +52,7 @@ export function classifyLaunchFailure(error: unknown): DispatchError {
 
 export type DispatchAndClassifyResult =
   | { ok: true }
-  | { ok: false; error: DispatchError };
+  | { ok: false; error: DispatchErrorCode };
 
 export async function dispatchAndClassify(
   loopId: string,

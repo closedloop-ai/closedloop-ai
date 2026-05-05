@@ -10,14 +10,17 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { ConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
 import type { ComputeTargetError } from "./compute-target-resolver";
 import { resolveComputeTargetWithPreferences } from "./compute-target-resolver";
-import type { DispatchError } from "./loop-dispatch-utils";
+import type { DispatchErrorCode } from "./loop-dispatch-utils";
 import { dispatchAndClassify } from "./loop-dispatch-utils";
 
 export type LaunchBootstrapLoopResult =
   | { ok: true; loopId: string; status: string }
   | {
       ok: false;
-      error: ComputeTargetError | DispatchError | "concurrent_limit_exceeded";
+      error:
+        | ComputeTargetError
+        | DispatchErrorCode
+        | "concurrent_limit_exceeded";
     };
 
 export type LaunchBootstrapLoopOptions = {

@@ -16,7 +16,7 @@ import type { StartPlanLoopFromLocalResult } from "@/app/documents/document-util
 import { loopsService } from "@/app/loops/service";
 import type { ComputeTargetError } from "./compute-target-resolver";
 import { resolveComputeTargetWithPreferences } from "./compute-target-resolver";
-import type { DispatchError } from "./loop-dispatch-utils";
+import type { DispatchErrorCode } from "./loop-dispatch-utils";
 import { dispatchAndClassify } from "./loop-dispatch-utils";
 import { getDefaultPrompt } from "./prompts";
 
@@ -24,7 +24,7 @@ export type LaunchPlanLoopResult =
   | { ok: true; loopResponse: CreateLoopResponse }
   | {
       ok: false;
-      error: ComputeTargetError | DispatchError;
+      error: ComputeTargetError | DispatchErrorCode;
     };
 
 type ArtifactWithRegenerationContext = Extract<
