@@ -1,21 +1,15 @@
 import type { Loop } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import type { Loop as PrismaLoop } from "@repo/database";
 
 /**
- * Prisma-shaped loop record (artifactId / artifactVersion) used by mocks of
- * `db.loop.{findFirst,findUnique,create}`. The API-shaped equivalent is
- * `buildLoop` below — use that for service return values, this for db rows.
+ * Canonical Prisma `Loop` row for mocks of `db.loop.{findFirst,findUnique,create}`.
+ * For API-shaped payloads / service returns, use `buildLoop` below (`Loop` from
+ * `@repo/api/src/types/loop`, i.e. `documentId` not `artifactId`).
  */
-export type PrismaLoopRecord = Record<string, unknown> & {
-  id: string;
-  status: string;
-  command: string;
-  artifactId: string | null;
-};
-
 export function buildPrismaLoop(
-  overrides: Partial<PrismaLoopRecord> = {}
-): PrismaLoopRecord {
+  overrides: Partial<PrismaLoop> = {}
+): PrismaLoop {
   return {
     id: "loop-1",
     organizationId: "org-1",

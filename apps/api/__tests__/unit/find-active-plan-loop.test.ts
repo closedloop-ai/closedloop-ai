@@ -42,6 +42,7 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () =>
 );
 
 import { LoopCommand } from "@repo/api/src/types/loop";
+import type { Loop as PrismaLoop } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { buildPrismaLoop } from "../fixtures/loop";
@@ -61,7 +62,7 @@ describe("loopsService.findActiveLoopForDocumentAndCommand", () => {
   beforeEach(() => resetLoopsServiceHandles(handles));
 
   describe("active-loop matches", () => {
-    it.each<[string, Record<string, unknown>]>([
+    it.each<[string, Partial<PrismaLoop>]>([
       ["RUNNING", { status: "RUNNING" }],
       [
         "CLAIMED with containerId",
