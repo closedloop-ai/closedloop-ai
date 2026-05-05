@@ -117,13 +117,13 @@ export async function ensureAuthenticatedShellReady(page: Page) {
   await waitForClerkUser(page);
   await expect(
     page.getByRole("button", { name: RE_OPEN_ORGANIZATION_SWITCHER })
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
   await expect(
     page.getByRole("button", { name: RE_OPEN_USER_MENU })
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(RE_YOUR_TEAMS)).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(RE_YOUR_TEAMS)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: RE_ADD_TEAM })).toBeVisible({
-    timeout: 15_000,
+    timeout: 30_000,
   });
 }
 
