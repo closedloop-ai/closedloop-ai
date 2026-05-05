@@ -1,3 +1,5 @@
+import { LoopEventType } from "@closedloop-ai/loops-api/events";
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { describe, expect, it } from "vitest";
 import {
   loopEventPayloadValidator,
@@ -357,30 +359,30 @@ describe("normalizeLoopEvent", () => {
 
 describe("TERMINAL_LOOP_STATUSES", () => {
   it("contains Completed, Failed, Cancelled, TimedOut", () => {
-    expect(TERMINAL_LOOP_STATUSES.has("COMPLETED")).toBe(true);
-    expect(TERMINAL_LOOP_STATUSES.has("FAILED")).toBe(true);
-    expect(TERMINAL_LOOP_STATUSES.has("CANCELLED")).toBe(true);
-    expect(TERMINAL_LOOP_STATUSES.has("TIMED_OUT")).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Completed)).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Failed)).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Cancelled)).toBe(true);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.TimedOut)).toBe(true);
   });
 
   it("does not contain non-terminal statuses Running, Pending, Claimed", () => {
-    expect(TERMINAL_LOOP_STATUSES.has("RUNNING")).toBe(false);
-    expect(TERMINAL_LOOP_STATUSES.has("PENDING")).toBe(false);
-    expect(TERMINAL_LOOP_STATUSES.has("CLAIMED")).toBe(false);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Running)).toBe(false);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Pending)).toBe(false);
+    expect(TERMINAL_LOOP_STATUSES.has(LoopStatus.Claimed)).toBe(false);
   });
 });
 
 describe("TERMINAL_LOOP_EVENTS", () => {
   it("contains completed, error, cancelled", () => {
-    expect(TERMINAL_LOOP_EVENTS.has("completed")).toBe(true);
-    expect(TERMINAL_LOOP_EVENTS.has("error")).toBe(true);
-    expect(TERMINAL_LOOP_EVENTS.has("cancelled")).toBe(true);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Completed)).toBe(true);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Error)).toBe(true);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Cancelled)).toBe(true);
   });
 
   it("does not contain non-terminal event types", () => {
-    expect(TERMINAL_LOOP_EVENTS.has("output")).toBe(false);
-    expect(TERMINAL_LOOP_EVENTS.has("progress")).toBe(false);
-    expect(TERMINAL_LOOP_EVENTS.has("started")).toBe(false);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Output)).toBe(false);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Progress)).toBe(false);
+    expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Started)).toBe(false);
   });
 });
 

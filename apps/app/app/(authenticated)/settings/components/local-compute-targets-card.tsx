@@ -1,5 +1,7 @@
 "use client";
 
+import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useUser } from "@repo/auth/client";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -51,9 +53,6 @@ import {
   healthCheckOptions,
 } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
-import { resolveTargetLabel } from "@/lib/engineer/routing-label";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
-import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
 import {
   getSecurityLabel,
   getTargetSecurity,
@@ -125,31 +124,35 @@ function getSystemCheckSummary(
 function getStatusDescription(
   hasHealthCheckResult: boolean,
   dataUpdatedAt: number,
-  shouldRunSystemCheck: boolean
+  isHealthCheckFetching: boolean,
+  isEligible: boolean,
+  targetName: string
 ): string {
   if (hasHealthCheckResult) {
     return `Last checked ${formatLastChecked(dataUpdatedAt)}`;
   }
 
-  if (shouldRunSystemCheck) {
-    return "Checks run automatically for the active execution target.";
+  if (isHealthCheckFetching) {
+    return `Checking ${targetName}.`;
   }
 
-  return "Select an online relay target or connect via the desktop client to enable system checks.";
+  if (isEligible) {
+    return `Run a check for ${targetName}.`;
+  }
+
+  return "System checks require this target to be online.";
 }
 
 function renderStatusIcon({
   hasHealthCheckResult,
   hasPassingResult,
   isHealthCheckFetching,
-  systemCheckLoading,
 }: {
   hasHealthCheckResult: boolean;
   hasPassingResult: boolean;
   isHealthCheckFetching: boolean;
-  systemCheckLoading: boolean;
 }) {
-  if (isHealthCheckFetching || systemCheckLoading) {
+  if (isHealthCheckFetching) {
     return <Loader2 className="size-4 animate-spin text-muted-foreground" />;
   }
 
@@ -164,9 +167,170 @@ function renderStatusIcon({
   return <Info className="size-4 text-muted-foreground" />;
 }
 
+function getSummaryBadgeClassName({
+  hasHealthCheckResult,
+  hasPassingResult,
+  isHealthCheckFetching,
+  isEligible,
+}: {
+  hasHealthCheckResult: boolean;
+  hasPassingResult: boolean;
+  isHealthCheckFetching: boolean;
+  isEligible: boolean;
+}): string {
+  if (isHealthCheckFetching) {
+    return "border-primary/30 bg-primary/10 text-primary";
+  }
+  if (hasPassingResult) {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  }
+  if (hasHealthCheckResult) {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  if (!isEligible) {
+    return "border-border bg-background/70 text-muted-foreground";
+  }
+  return "border-primary/20 bg-primary/5 text-primary";
+}
+
+function ComputeTargetSystemCheck({
+  expectedMcpUrl,
+  isLatestVersionLoading,
+  latestVersion,
+  target,
+}: {
+  expectedMcpUrl: string | null;
+  isLatestVersionLoading: boolean;
+  latestVersion: string | null;
+  target: ComputeTarget;
+}) {
+  const [open, setOpen] = useState(false);
+  const healthCheckTargetKey = getHealthCheckTargetKey({
+    mode: EngineerRoutingMode.CloudRelay,
+    computeTargetId: target.id,
+  });
+  const healthCheckQueryKey = queryKeys.healthCheck(
+    healthCheckTargetKey,
+    expectedMcpUrl,
+    latestVersion
+  );
+  const {
+    data: healthCheckData,
+    dataUpdatedAt,
+    refetch: refetchHealthCheck,
+  } = useQuery({
+    ...healthCheckOptions(healthCheckTargetKey, expectedMcpUrl, {
+      relayTargetId: target.id,
+      latestVersion,
+    }),
+    enabled: false,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const isHealthCheckFetching =
+    useIsFetching({ queryKey: healthCheckQueryKey }) > 0;
+  const isEligible = target.isOnline;
+  const canRunHealthCheck = isEligible && !isLatestVersionLoading;
+
+  const handleRunCheck = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+
+    if (!canRunHealthCheck) {
+      return;
+    }
+
+    await refetchHealthCheck();
+  };
+
+  const renderableChecks = getRenderableHealthChecks(
+    healthCheckData,
+    expectedMcpUrl
+  );
+  const failureCount = getFailureCount(renderableChecks);
+  const summary = getSystemCheckSummary(
+    renderableChecks,
+    isHealthCheckFetching,
+    isEligible
+  );
+  const hasHealthCheckResult = healthCheckData !== undefined;
+  const hasPassingResult = healthCheckData !== undefined && failureCount === 0;
+  const statusDescription = getStatusDescription(
+    hasHealthCheckResult,
+    dataUpdatedAt,
+    isHealthCheckFetching,
+    isEligible,
+    target.machineName
+  );
+  const summaryBadgeClassName = getSummaryBadgeClassName({
+    hasHealthCheckResult,
+    hasPassingResult,
+    isHealthCheckFetching,
+    isEligible,
+  });
+
+  return (
+    <Collapsible onOpenChange={setOpen} open={open}>
+      <div className="-mx-3 mt-3 border-t bg-muted/15 px-4 py-4">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <CollapsibleTrigger className="group flex min-w-0 items-start gap-3 rounded-sm text-left">
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted/55 text-muted-foreground transition-colors group-hover:bg-muted group-hover:text-foreground">
+              <ChevronDown className="size-4 transition-transform group-data-[state=closed]:-rotate-90" />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                {renderStatusIcon({
+                  hasHealthCheckResult,
+                  hasPassingResult,
+                  isHealthCheckFetching,
+                })}
+                <p className="font-medium text-sm">System Check</p>
+                <Badge
+                  className={`h-6 rounded-md px-2 font-medium text-xs tabular-nums ${summaryBadgeClassName}`}
+                  variant="outline"
+                >
+                  {summary}
+                </Badge>
+              </div>
+              <p className="text-muted-foreground text-sm">
+                {statusDescription}
+              </p>
+            </div>
+          </CollapsibleTrigger>
+
+          <Button
+            className="w-full shrink-0 gap-1.5 md:w-auto"
+            disabled={!canRunHealthCheck || isHealthCheckFetching}
+            onClick={handleRunCheck}
+            size="sm"
+            variant="outline"
+          >
+            <RefreshCw
+              className={`size-3.5 ${isHealthCheckFetching ? "animate-spin" : ""}`}
+            />
+            {hasHealthCheckResult ? "Re-check" : "Run check"}
+          </Button>
+        </div>
+
+        <CollapsibleContent className="mt-4 border-t pt-4">
+          {healthCheckData ? (
+            <SystemCheckResults checks={renderableChecks} />
+          ) : (
+            <p className="text-muted-foreground text-sm">
+              {isEligible
+                ? "Run a system check to inspect this compute target."
+                : "System checks are available when this compute target is online."}
+            </p>
+          )}
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 export function LocalComputeTargetsCard() {
   const { user } = useUser();
-  const [systemCheckOpen, setSystemCheckOpen] = useState(false);
+  const userId = user?.id ?? "";
   const [updatingTargets, setUpdatingTargets] = useState<Set<string>>(
     new Set()
   );
@@ -175,9 +339,10 @@ export function LocalComputeTargetsCard() {
   });
   const { data: latestDesktopRelease, isLoading: isDesktopReleaseLoading } =
     useLatestElectronRelease();
-  const deleteTarget = useDeleteComputeTarget(user?.id ?? "");
+  const deleteTarget = useDeleteComputeTarget(userId);
   const toggleSharing = useToggleComputeTargetSharing();
   const desktopUpdateUrl = latestDesktopRelease?.downloadUrl ?? null;
+  const latestDesktopVersion = latestDesktopRelease?.version ?? null;
 
   const handleUpdateIsUpdatingChange = useCallback(
     (targetId: string, isUpdating: boolean) => {
@@ -222,63 +387,13 @@ export function LocalComputeTargetsCard() {
   const handleUpdateExpired = useCallback((machineName: string) => {
     toast.warning(`Update command expired for ${machineName}. Please retry.`);
   }, []);
-  const { isLoading: systemCheckLoading, shouldRunSystemCheck } =
-    useSystemCheckEligibility();
-  const routing = useEngineerRoutingSelection();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
-  const healthCheckTargetKey = getHealthCheckTargetKey(routing);
-  const healthCheckQueryKey = queryKeys.healthCheck(
-    healthCheckTargetKey,
-    expectedMcpUrl
-  );
-  const {
-    data: healthCheckData,
-    dataUpdatedAt,
-    refetch: refetchHealthCheck,
-  } = useQuery({
-    ...healthCheckOptions(healthCheckTargetKey, expectedMcpUrl),
-    enabled: shouldRunSystemCheck && !systemCheckLoading,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  });
-  const isHealthCheckFetching =
-    useIsFetching({ queryKey: healthCheckQueryKey }) > 0;
 
   const handleDelete = (id: string, machineName: string) => {
     deleteTarget.mutate(id, {
       onSuccess: () => toast.success(`Removed ${machineName}`),
     });
   };
-
-  const handleRecheck = async (event: MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-
-    if (!shouldRunSystemCheck) {
-      return;
-    }
-
-    await refetchHealthCheck();
-  };
-
-  const activeTargetLabel = resolveTargetLabel(routing, targets);
-  const renderableChecks = getRenderableHealthChecks(
-    healthCheckData,
-    expectedMcpUrl
-  );
-  const failureCount = getFailureCount(renderableChecks);
-  const summary = getSystemCheckSummary(
-    renderableChecks,
-    isHealthCheckFetching,
-    shouldRunSystemCheck
-  );
-  const hasHealthCheckResult = healthCheckData !== undefined;
-  const hasPassingResult = healthCheckData !== undefined && failureCount === 0;
-  const statusDescription = getStatusDescription(
-    hasHealthCheckResult,
-    dataUpdatedAt,
-    shouldRunSystemCheck
-  );
 
   let content: React.ReactNode;
   if (isLoading) {
@@ -420,6 +535,13 @@ export function LocalComputeTargetsCard() {
                   }
                 />
               </div>
+
+              <ComputeTargetSystemCheck
+                expectedMcpUrl={expectedMcpUrl}
+                isLatestVersionLoading={isDesktopReleaseLoading}
+                latestVersion={latestDesktopVersion}
+                target={target}
+              />
             </div>
           );
         })}
@@ -439,70 +561,7 @@ export function LocalComputeTargetsCard() {
           execution.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {content}
-
-        <div className="border-border/70 border-t pt-6">
-          <Collapsible onOpenChange={setSystemCheckOpen} open={systemCheckOpen}>
-            <div className="rounded-lg border bg-muted/20">
-              <div className="flex items-start justify-between gap-3 p-4">
-                <CollapsibleTrigger className="group flex min-w-0 flex-1 items-start gap-3 text-left">
-                  <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex items-center gap-2">
-                      {renderStatusIcon({
-                        hasHealthCheckResult,
-                        hasPassingResult,
-                        isHealthCheckFetching,
-                        systemCheckLoading,
-                      })}
-                      <p className="font-medium text-sm">System Check</p>
-                    </div>
-                    <p className="text-sm">{summary}</p>
-                    <p className="text-muted-foreground text-xs">
-                      {statusDescription}
-                      {activeTargetLabel && (
-                        <> &middot; Target: {activeTargetLabel}</>
-                      )}
-                    </p>
-                  </div>
-                </CollapsibleTrigger>
-
-                <Button
-                  className="shrink-0 gap-1.5"
-                  disabled={
-                    !shouldRunSystemCheck ||
-                    systemCheckLoading ||
-                    isHealthCheckFetching
-                  }
-                  onClick={handleRecheck}
-                  size="sm"
-                  variant="outline"
-                >
-                  <RefreshCw
-                    className={`size-3.5 ${isHealthCheckFetching ? "animate-spin" : ""}`}
-                  />
-                  Re-check
-                </Button>
-              </div>
-
-              <CollapsibleContent className="border-border/70 border-t px-4 pb-4">
-                <div className="pt-4">
-                  {healthCheckData ? (
-                    <SystemCheckResults checks={renderableChecks} />
-                  ) : (
-                    <p className="text-muted-foreground text-sm">
-                      {shouldRunSystemCheck
-                        ? "Waiting for the first system check result."
-                        : "System checks are available when the desktop client is connected."}
-                    </p>
-                  )}
-                </div>
-              </CollapsibleContent>
-            </div>
-          </Collapsible>
-        </div>
-      </CardContent>
+      <CardContent className="space-y-6">{content}</CardContent>
     </Card>
   );
 }

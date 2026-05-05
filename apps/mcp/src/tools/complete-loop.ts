@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { LoopStatus } from "@repo/api/src/types/loop.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
@@ -89,7 +90,13 @@ export function registerCompleteLoop(
             {
               type: "text" as const,
               text: JSON.stringify(
-                { loopId, status: "COMPLETED", prUrl, branchName, summary },
+                {
+                  loopId,
+                  status: LoopStatus.Completed,
+                  prUrl,
+                  branchName,
+                  summary,
+                },
                 null,
                 2
               ),

@@ -30,13 +30,23 @@ import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
-import type { CheckResult } from "@/lib/engineer/queries/health-check";
+import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
+import type {
+  CheckResult,
+  HealthCheckResponse,
+} from "@/lib/engineer/queries/health-check";
 import {
   getRenderableHealthChecks,
   healthCheckOptions,
 } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { updateRepoSettings } from "@/lib/engineer/queries/repos";
+import {
+  markAmbientSystemCheckTargetDismissed,
+  markAmbientSystemCheckTargetShown,
+  resetAmbientSystemCheckVisibilityForTests,
+  useAmbientSystemCheckVisibility,
+} from "@/lib/system-check/ambient-system-check-visibility-store";
 
 /** Stagger delay (ms) between each check row revealing its result */
 const REVEAL_STAGGER = 120;
@@ -46,30 +56,113 @@ const SUCCESS_SCREEN_DELAY = 300;
 const SUCCESS_DISMISS_DELAY = 1200;
 /** Duration of the Radix dialog exit animation (matches duration-200 on DialogContent) */
 const EXIT_ANIMATION_MS = 250;
+const LATEST_RELEASE_STALE_TIME_MS = 5 * 60 * 1000;
 
-const shownTargetKeys = new Set<string>();
+type HealthCheckDialogMode = "ambient" | "blocking-pre-loop";
 
-export function resetHealthCheckDialogVisibilityForTests(): void {
-  shownTargetKeys.clear();
+type HealthCheckDialogProps = Readonly<{
+  targetKey?: string;
+  targetLabel?: string;
+  mode?: HealthCheckDialogMode;
+  initialData?: HealthCheckResponse;
+  relayTargetId?: string | null;
+  latestVersionOverride?: string | null;
+  onCancel?: () => void;
+  onResolvedAfterRecheck?: () => void;
+  onRecheckClick?: () => void;
+  onRecheckResult?: (data: HealthCheckResponse) => void;
+  onRecheckUnavailable?: (reason: string) => void;
+}>;
+
+function shouldEnableLatestReleaseQuery({
+  canOpen,
+  mounted,
+}: Readonly<{
+  canOpen: boolean;
+  mounted: boolean;
+}>): boolean {
+  return mounted && canOpen;
 }
 
+function shouldEnableHealthCheckQuery({
+  latestReleaseLoading,
+  latestReleaseQueryEnabled,
+}: Readonly<{
+  latestReleaseLoading: boolean;
+  latestReleaseQueryEnabled: boolean;
+}>): boolean {
+  return latestReleaseQueryEnabled && !latestReleaseLoading;
+}
+
+function getDisplayTargetLabel(targetLabel: string | undefined): string | null {
+  if (!targetLabel) {
+    return null;
+  }
+
+  return targetLabel.trim().toLowerCase() === "localhost"
+    ? "Local Gateway"
+    : targetLabel;
+}
+
+export function resetHealthCheckDialogVisibilityForTests(): void {
+  resetAmbientSystemCheckVisibilityForTests();
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This dialog coordinates the existing ambient system-check flow plus the new blocking pre-loop mode without splitting shared UI state.
 export function HealthCheckDialog({
   targetKey = "default",
   targetLabel,
-}: Readonly<{ targetKey?: string; targetLabel?: string }>) {
+  mode = "ambient",
+  initialData,
+  relayTargetId = null,
+  latestVersionOverride,
+  onCancel,
+  onResolvedAfterRecheck,
+  onRecheckClick,
+  onRecheckResult,
+  onRecheckUnavailable,
+}: HealthCheckDialogProps) {
+  const isBlockingMode = mode === "blocking-pre-loop";
   const [mounted, setMounted] = useState(false);
-  const [failureDetected, setFailureDetected] = useState(false);
+  const [failureDetected, setFailureDetected] = useState(isBlockingMode);
   const [closing, setClosing] = useState(false);
   const [removed, setRemoved] = useState(false);
   const [worktreePath, setWorktreePath] = useState("");
   const [savingWorktree, setSavingWorktree] = useState(false);
   const [revealedCount, setRevealedCount] = useState(0);
   const [recheckKey, setRecheckKey] = useState(0);
+  const [recheckRevealSuspended, setRecheckRevealSuspended] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const canOpenThisMount = useRef(!shownTargetKeys.has(targetKey));
+  const resolvedCallbackFired = useRef(false);
+  const ambientVisibility = useAmbientSystemCheckVisibility(targetKey);
+  const canOpenThisMount = useRef(
+    isBlockingMode || !ambientVisibility.hasBeenShown
+  );
   const queryClient = useQueryClient();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
+  const displayTargetLabel = getDisplayTargetLabel(targetLabel);
+  const latestReleaseQueryEnabled = shouldEnableLatestReleaseQuery({
+    canOpen: !isBlockingMode && canOpenThisMount.current,
+    mounted,
+  });
+  const { data: latestRelease, isLoading: isLatestReleaseLoading } =
+    useLatestElectronRelease({
+      enabled: latestReleaseQueryEnabled,
+      staleTime: LATEST_RELEASE_STALE_TIME_MS,
+    });
+  const latestVersion =
+    latestVersionOverride !== undefined
+      ? latestVersionOverride
+      : (latestRelease?.version ?? null);
+  const healthCheckQueryOptions = useMemo(
+    () =>
+      healthCheckOptions(targetKey, expectedMcpUrl, {
+        latestVersion,
+        relayTargetId: isBlockingMode ? relayTargetId : null,
+      }),
+    [expectedMcpUrl, isBlockingMode, latestVersion, relayTargetId, targetKey]
+  );
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
@@ -93,16 +186,35 @@ export function HealthCheckDialog({
   const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    ...healthCheckOptions(targetKey, expectedMcpUrl),
-    enabled: mounted && canOpenThisMount.current,
+    ...healthCheckQueryOptions,
+    enabled: shouldEnableHealthCheckQuery({
+      latestReleaseLoading: isLatestReleaseLoading,
+      latestReleaseQueryEnabled: latestReleaseQueryEnabled && !isBlockingMode,
+    }),
+    initialData,
     refetchOnMount: "always" as const,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+
+  useEffect(() => {
+    if (!(isBlockingMode && initialData !== undefined)) {
+      return;
+    }
+
+    queryClient.setQueryData(healthCheckQueryOptions.queryKey, initialData);
+  }, [
+    healthCheckQueryOptions.queryKey,
+    initialData,
+    isBlockingMode,
+    queryClient,
+  ]);
   const renderableChecks = useMemo(
     () => getRenderableHealthChecks(data, expectedMcpUrl),
     [data, expectedMcpUrl]
   );
+  const isBlockingInitialLoad = isBlockingMode && data === undefined;
+  const showLoadingChecks = isLoading || isBlockingInitialLoad;
 
   // Auto-dismiss after all checks are revealed and all required pass
   const allRevealed =
@@ -112,9 +224,13 @@ export function HealthCheckDialog({
   const allRequiredPassed = allRevealed && !hasRequiredFailure;
 
   // Latch failureDetected — once a required failure is seen, open the dialog.
-  // Defers the module-flag write so React StrictMode's throwaway mount
+  // Defers the visibility-store write so React StrictMode's throwaway mount
   // cannot consume the one-shot flag.
   useEffect(() => {
+    if (isBlockingMode) {
+      return;
+    }
+
     if (!canOpenThisMount.current) {
       return;
     }
@@ -124,20 +240,32 @@ export function HealthCheckDialog({
     }
 
     const timer = setTimeout(() => {
-      shownTargetKeys.add(targetKey);
+      markAmbientSystemCheckTargetShown(targetKey);
     }, 0);
 
     setFailureDetected(true);
 
     return () => clearTimeout(timer);
-  }, [hasRequiredFailure, targetKey]);
+  }, [hasRequiredFailure, isBlockingMode, targetKey]);
+
+  useEffect(() => {
+    if (isBlockingMode || !failureDetected || !ambientVisibility.isDismissed) {
+      return;
+    }
+
+    setClosing(true);
+  }, [ambientVisibility.isDismissed, failureDetected, isBlockingMode]);
 
   // Staggered reveal: only run when dialog is showing (failure detected).
   // recheckKey ensures the stagger re-triggers even when the response is
   // structurally identical (TanStack Query structural sharing preserves the
   // same data reference in that case).
   useEffect(() => {
-    if (recheckKey < 0 || !(failureDetected && renderableChecks)) {
+    if (
+      recheckRevealSuspended ||
+      recheckKey < 0 ||
+      !(failureDetected && renderableChecks)
+    ) {
       return;
     }
 
@@ -161,7 +289,7 @@ export function HealthCheckDialog({
       revealTimers.current.forEach(clearTimeout);
       revealTimers.current = [];
     };
-  }, [failureDetected, recheckKey, renderableChecks]);
+  }, [failureDetected, recheckKey, recheckRevealSuspended, renderableChecks]);
 
   // Phase 1: after all revealed + all pass → show success screen
   useEffect(() => {
@@ -184,25 +312,57 @@ export function HealthCheckDialog({
 
     const timer = setTimeout(() => {
       setClosing(true);
+      if (isBlockingMode && !resolvedCallbackFired.current) {
+        resolvedCallbackFired.current = true;
+        onResolvedAfterRecheck?.();
+      }
     }, SUCCESS_DISMISS_DELAY);
 
     return () => clearTimeout(timer);
-  }, [failureDetected, showSuccess]);
+  }, [failureDetected, isBlockingMode, onResolvedAfterRecheck, showSuccess]);
 
   const handleRecheck = useCallback(async () => {
+    onRecheckClick?.();
+    setRecheckRevealSuspended(true);
     setRevealedCount(0);
     setShowSuccess(false);
-    await queryClient.invalidateQueries({
-      queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
-    });
-    await refetch();
-    // Bump recheckKey to re-trigger stagger even if data is structurally identical
+    const result = await refetch();
+    if (result.error || !result.data) {
+      onRecheckUnavailable?.(
+        result.error instanceof Error
+          ? result.error.message
+          : "Health check returned no data"
+      );
+      // Restart the stagger against the last known rows so failed re-checks do not leave an empty results panel.
+      setRecheckRevealSuspended(false);
+      setRecheckKey((k) => k + 1);
+      return;
+    }
+    onRecheckResult?.(result.data);
+    // Restart the stagger once after the final refetch result. The reveal
+    // effect is suspended while the query data changes so it cannot start a
+    // partial pass and then restart from this key bump.
+    setRecheckRevealSuspended(false);
     setRecheckKey((k) => k + 1);
-  }, [expectedMcpUrl, queryClient, refetch, targetKey]);
+  }, [onRecheckClick, onRecheckResult, onRecheckUnavailable, refetch]);
 
   const handleContinue = useCallback(() => {
+    if (isBlockingMode) {
+      return;
+    }
+    markAmbientSystemCheckTargetDismissed(targetKey);
     setClosing(true);
-  }, []);
+  }, [isBlockingMode, targetKey]);
+
+  const handleCancel = useCallback(() => {
+    if (isBlockingMode) {
+      setClosing(true);
+      onCancel?.();
+      return;
+    }
+    markAmbientSystemCheckTargetDismissed(targetKey);
+    setClosing(true);
+  }, [isBlockingMode, onCancel, targetKey]);
 
   const handleSaveWorktree = useCallback(async () => {
     const trimmed = worktreePath.trim();
@@ -222,7 +382,11 @@ export function HealthCheckDialog({
       // Re-run health checks to pick up the change
       setRevealedCount(0);
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl),
+        queryKey: queryKeys.healthCheck(
+          targetKey,
+          expectedMcpUrl,
+          latestVersion
+        ),
       });
       await refetch();
       setRecheckKey((k) => k + 1);
@@ -233,7 +397,14 @@ export function HealthCheckDialog({
     } finally {
       setSavingWorktree(false);
     }
-  }, [expectedMcpUrl, queryClient, refetch, targetKey, worktreePath]);
+  }, [
+    expectedMcpUrl,
+    latestVersion,
+    queryClient,
+    refetch,
+    targetKey,
+    worktreePath,
+  ]);
 
   if (!(alive && (canOpenThisMount.current || failureDetected))) {
     return null;
@@ -263,9 +434,9 @@ export function HealthCheckDialog({
   return (
     <Dialog open={dialogOpen}>
       <DialogContent
-        className="max-w-md!"
-        onEscapeKeyDown={() => handleContinue()}
-        onInteractOutside={() => handleContinue()}
+        className="max-h-[calc(100dvh-2rem)] max-w-2xl! grid-rows-[auto_1fr_auto]"
+        onEscapeKeyDown={() => handleCancel()}
+        onInteractOutside={() => handleCancel()}
         showCloseButton={false}
       >
         <DialogHeader>
@@ -277,11 +448,11 @@ export function HealthCheckDialog({
           </div>
           <DialogDescription>
             Verifying that all required tools and configuration are in place.
-            {targetLabel && (
+            {displayTargetLabel && (
               <>
                 {" "}
                 <span className="font-medium text-foreground">
-                  Target: {targetLabel}
+                  Target: {displayTargetLabel}
                 </span>
               </>
             )}
@@ -297,7 +468,7 @@ export function HealthCheckDialog({
           </div>
         ) : (
           <>
-            <div className="space-y-4 py-2">
+            <div className="min-h-0 space-y-4 overflow-y-auto py-2">
               <SystemCheckResults
                 afterRequired={AfterRequiredContent({
                   showWorktreeSetup,
@@ -311,15 +482,20 @@ export function HealthCheckDialog({
                     : undefined,
                 })}
                 checks={renderableChecks}
-                isLoading={isLoading}
+                isLoading={showLoadingChecks}
                 revealedCount={revealedCount}
               />
             </div>
 
             <DialogFooter className="gap-2">
+              {isBlockingMode ? (
+                <Button onClick={handleCancel} size="sm" variant="outline">
+                  Cancel
+                </Button>
+              ) : null}
               <Button
                 className="gap-1.5"
-                disabled={isFetching}
+                disabled={isFetching || isBlockingInitialLoad}
                 onClick={handleRecheck}
                 size="sm"
                 variant="outline"
@@ -329,7 +505,11 @@ export function HealthCheckDialog({
                 />
                 Re-check
               </Button>
-              <Button onClick={handleContinue} size="sm">
+              <Button
+                disabled={isBlockingMode}
+                onClick={handleContinue}
+                size="sm"
+              >
                 Continue
               </Button>
             </DialogFooter>

@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, beforeEach, describe, test } from "node:test";
 
-import { LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
+import {
+  LoopArtifactFile,
+  LoopArtifactType,
+} from "@closedloop-ai/loops-api/artifacts";
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import { MULTI_REPO_POLICY } from "@closedloop-ai/loops-api/multi-repo-policy";
 
 import {
   buildClaudeDirectArgs,
@@ -25,6 +30,7 @@ import {
   getWorkspaceStateRestorePrefixes,
   getWorkspaceStateUploadPrefixes,
   HarnessError,
+  isPeerWriteEnabled,
   parsePrInfo,
   parseTokenUsage,
   parseTokenUsageFromJsonl,
@@ -42,6 +48,7 @@ import {
   writeContextPackFiles,
   writeExecutionResult,
   writeExecutionResultV2,
+  writeFeatureEvaluationPrdFile,
   writePrdFile,
 } from "./harness-agent.mjs";
 
@@ -211,6 +218,137 @@ test("buildClaudeDirectArgs with EVALUATE_PRD invokes judges:run-judges with art
 });
 
 // ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — buildClaudeDirectArgs skill invocation tests
+// ---------------------------------------------------------------------------
+
+test("buildClaudeDirectArgs with EVALUATE_FEATURE invokes judges:run-judges with artifact-type feature", () => {
+  const workDir = makeTempDir();
+  resetConfig({ command: "EVALUATE_FEATURE" });
+
+  const { cmd, args } = buildClaudeDirectArgs(workDir, null);
+
+  assert.equal(cmd, "claude");
+
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
+  assert.ok(
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes("--artifact-type feature"),
+    `prompt must contain --artifact-type feature; got: ${prompt}`
+  );
+  assert.ok(
+    prompt.includes(`--workdir ${workDir}`),
+    `prompt must contain --workdir <workDir>; got: ${prompt}`
+  );
+  // --artifact-type feature is embedded in the prompt string, not a separate argv entry
+  assert.equal(
+    args.indexOf("--artifact-type"),
+    -1,
+    "args must NOT contain --artifact-type as a separate flag (it belongs inside the prompt)"
+  );
+  // Feature evaluation is repo-less — no REPO_PATH= in the prompt
+  assert.ok(
+    !prompt.includes("REPO_PATH="),
+    `prompt must NOT contain REPO_PATH= for EVALUATE_FEATURE (feature evaluation is repo-less); got: ${prompt}`
+  );
+});
+
+test("buildClaudeDirectArgs with EVALUATE_FEATURE uses symphonyWD (run directory) for --workdir when provided", () => {
+  const workDir = makeTempDir();
+  const symphonyWD = makeTempDir();
+  resetConfig({ command: "EVALUATE_FEATURE" });
+
+  const { args } = buildClaudeDirectArgs(workDir, symphonyWD);
+
+  const prompt = args.find(
+    (a) => typeof a === "string" && a.includes("judges:run-judges")
+  );
+  assert.ok(
+    prompt !== undefined,
+    `args must contain a prompt referencing judges:run-judges; got: ${JSON.stringify(args)}`
+  );
+  assert.ok(
+    prompt.includes(`--workdir ${symphonyWD}`),
+    `prompt must contain --workdir <symphonyWD> when symphonyWD is provided; got: ${prompt}`
+  );
+  assert.ok(
+    !prompt.includes(`--workdir ${workDir}`),
+    `prompt must NOT contain --workdir <workDir> when symphonyWD is provided (symphonyWD is the run directory); got: ${prompt}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — validateConfig and validateSecrets tests
+// ---------------------------------------------------------------------------
+
+describe("EVALUATE_FEATURE validation", () => {
+  for (const scenario of [
+    {
+      name: "validateConfig does not require targetRepo",
+      config: { command: "EVALUATE_FEATURE", targetRepo: undefined },
+      validate: validateConfig,
+    },
+    {
+      name: "validateSecrets does not require githubToken",
+      config: {
+        command: "EVALUATE_FEATURE",
+        targetRepo: null,
+        anthropicApiKey: "sk-test",
+        githubToken: null,
+      },
+      validate: validateSecrets,
+    },
+  ]) {
+    test(scenario.name, () => {
+      resetConfig(scenario.config);
+
+      assert.doesNotThrow(() => scenario.validate());
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// EVALUATE_FEATURE — artifact upload list includes FeatureJudges
+// ---------------------------------------------------------------------------
+
+// Verify LoopArtifactFile.FeatureJudges is referenced in the
+// CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES array via source inspection
+// (the array is a local const, not exported).
+test("CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES includes LoopArtifactFile.FeatureJudges", () => {
+  const harnessSource = fs.readFileSync(
+    new URL("./harness-agent.mjs", import.meta.url),
+    "utf-8"
+  );
+
+  // Match the array literal body so we verify the identifier is inside this
+  // specific array, not elsewhere in the file (a comment, dead code, etc.).
+  const arrayMatch =
+    /const\s+CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES\s*=\s*\[([\s\S]*?)\]/.exec(
+      harnessSource
+    );
+  assert.ok(
+    arrayMatch !== null,
+    "harness-agent.mjs must declare const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [...]"
+  );
+  const arrayBody = arrayMatch[1];
+  assert.ok(
+    arrayBody.includes("LoopArtifactFile.FeatureJudges"),
+    "CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES array body must contain LoopArtifactFile.FeatureJudges"
+  );
+
+  // Confirm the resolved file name matches what the backend expects.
+  assert.equal(
+    LoopArtifactFile.FeatureJudges,
+    "feature-judges.json",
+    "LoopArtifactFile.FeatureJudges must resolve to feature-judges.json"
+  );
+});
+
+// ---------------------------------------------------------------------------
 // (d) validateConfig does not push targetRepo to requiredEnv for EVALUATE_PRD
 // ---------------------------------------------------------------------------
 
@@ -309,6 +447,41 @@ test("validatePreRunInputs does not throw for EVALUATE_PRD with non-empty artifa
   };
 
   assert.doesNotThrow(() => validatePreRunInputs("EVALUATE_PRD", contextPack));
+});
+
+test("validatePreRunInputs requires a non-empty FEATURE artifact for EVALUATE_FEATURE", () => {
+  assert.throws(
+    () =>
+      validatePreRunInputs("EVALUATE_FEATURE", {
+        artifacts: [
+          {
+            id: "prd-1",
+            type: LoopArtifactType.Prd,
+            content: "source prd content",
+          },
+        ],
+      }),
+    (err) => {
+      assert.ok(err instanceof HarnessError, "must be a HarnessError");
+      assert.equal(err.code, ERROR_CODES.preRunValidation);
+      assert.match(err.message, /FEATURE artifact/);
+      return true;
+    }
+  );
+});
+
+test("validatePreRunInputs accepts EVALUATE_FEATURE with a non-empty FEATURE artifact", () => {
+  assert.doesNotThrow(() =>
+    validatePreRunInputs("EVALUATE_FEATURE", {
+      artifacts: [
+        {
+          id: "feature-1",
+          type: LoopArtifactType.Feature,
+          content: "feature content",
+        },
+      ],
+    })
+  );
 });
 
 describe("writeContextPackFiles context directory", () => {
@@ -998,6 +1171,36 @@ describe("writePrdFile", () => {
     });
     assert.ok(result);
     assert.equal(fs.readFileSync(result, "utf-8"), "PRD text");
+  });
+
+  test("feature evaluation writes FEATURE artifact even when a PRD artifact is present", () => {
+    const dir = makeTempDir();
+    const result = writeFeatureEvaluationPrdFile(dir, {
+      artifacts: [
+        { id: "prd-1", type: LoopArtifactType.Prd, content: "Source PRD" },
+        {
+          id: "feature-1",
+          type: LoopArtifactType.Feature,
+          content: "Feature artifact",
+        },
+      ],
+    });
+
+    assert.ok(result);
+    assert.equal(fs.readFileSync(result, "utf-8"), "Feature artifact");
+  });
+
+  test("feature evaluation ignores prompt and PRD fallback when selecting content", () => {
+    const dir = makeTempDir();
+    const result = writeFeatureEvaluationPrdFile(dir, {
+      prompt: "Prompt text",
+      artifacts: [
+        { id: "prd-1", type: LoopArtifactType.Prd, content: "Source PRD" },
+      ],
+    });
+
+    assert.equal(result, null);
+    assert.ok(!fs.existsSync(path.join(dir, LoopArtifactFile.Prd)));
   });
 
   test("prompt takes priority over PRD artifact", () => {
@@ -2844,4 +3047,501 @@ describe("buildEventResult", () => {
       "sessionId must equal capturedSessionId"
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-repo policy: parameterized matrix across LoopCommand
+// ---------------------------------------------------------------------------
+
+const PEER_ENABLED_COMMANDS = Object.entries(MULTI_REPO_POLICY)
+  .filter(([, policy]) => policy.supportsAdditionalRepos)
+  .map(([command]) => command);
+
+const PEER_DISABLED_COMMANDS = Object.entries(MULTI_REPO_POLICY)
+  .filter(([, policy]) => !policy.supportsAdditionalRepos)
+  .map(([command]) => command);
+
+// PLAN and EXECUTE go through buildRunLoopArgs, which buildCommand() resolves
+// by calling findRunLoop() — that lookup is host-dependent (plugin install
+// path) and would throw HarnessError(runLoopNotFound) in a clean environment.
+// We exercise the run-loop path via buildRunLoopArgs directly below.
+const USES_RUN_LOOP = new Set([LoopCommand.Plan, LoopCommand.Execute]);
+
+/** Count occurrences of `--add-dir` flags in a Claude argv array. */
+function countAddDirFlags(args) {
+  return args.filter((token) => token === "--add-dir").length;
+}
+
+/**
+ * Resolved peer metadata as produced by `buildPeerLocalPaths` from the
+ * orchestration site. `buildCommand` and `buildClaudeDirectArgs` both accept
+ * this shape directly so that --add-dir paths and the mount-paths footer
+ * derive from a single source.
+ */
+function makePeerMetadata() {
+  return [
+    {
+      fullName: "org/peer-a",
+      branch: "main",
+      localPath: "/workspace/peers/org--peer-a",
+    },
+    {
+      fullName: "org/peer-b",
+      branch: "develop",
+      localPath: "/workspace/peers/org--peer-b",
+    },
+  ];
+}
+
+describe("MULTI_REPO_POLICY ↔ buildCommand peer wiring", () => {
+  for (const command of PEER_ENABLED_COMMANDS) {
+    if (USES_RUN_LOOP.has(command)) {
+      // PLAN/EXECUTE go through buildRunLoopArgs — covered in the matrix
+      // block below using a fake runLoopPath, which avoids host-dependent
+      // findRunLoop() lookups.
+      continue;
+    }
+    test(`${command}: buildCommand emits exactly N --add-dir flags for N peer paths`, () => {
+      const workDir = makeTempDir();
+      writePromptFile(workDir, `Peer-aware prompt for ${command}`);
+      resetConfig({ command });
+
+      const peers = makePeerMetadata();
+      const { args } = buildCommand(workDir, workDir, null, peers);
+
+      assert.equal(
+        countAddDirFlags(args),
+        peers.length,
+        `${command} must emit one --add-dir per peer`
+      );
+    });
+
+    test(`${command}: buildCommand with zero peers emits zero --add-dir flags`, () => {
+      const workDir = makeTempDir();
+      writePromptFile(workDir, `Empty-peers prompt for ${command}`);
+      resetConfig({ command });
+
+      const { args } = buildCommand(workDir, workDir, null, []);
+
+      assert.equal(
+        countAddDirFlags(args),
+        0,
+        `${command} with empty peers must be byte-identical to no-peer baseline`
+      );
+    });
+  }
+
+  // Exercise PLAN and EXECUTE peer wiring via buildRunLoopArgs directly so the
+  // matrix is host-independent (findRunLoop() is bypassed). This keeps AC-007
+  // — PLAN/EXECUTE peer behavior is policy-driven — under test coverage.
+  for (const command of PEER_ENABLED_COMMANDS) {
+    if (!USES_RUN_LOOP.has(command)) {
+      continue;
+    }
+    test(`${command}: buildRunLoopArgs emits exactly N --add-dir flags for N peer paths`, () => {
+      resetConfig({ command });
+      const peerPaths = makePeerMetadata().map((p) => p.localPath);
+      const { cmd, args } = buildRunLoopArgs(
+        "/fake/run-loop.sh",
+        "/workspace/repo",
+        null,
+        peerPaths
+      );
+      assert.equal(cmd, "bash");
+      assert.equal(
+        countAddDirFlags(args),
+        peerPaths.length,
+        `${command} must emit one --add-dir per peer path`
+      );
+    });
+
+    test(`${command}: buildRunLoopArgs with zero peers emits zero --add-dir flags`, () => {
+      resetConfig({ command });
+      const { args } = buildRunLoopArgs(
+        "/fake/run-loop.sh",
+        "/workspace/repo",
+        null,
+        []
+      );
+      assert.equal(
+        countAddDirFlags(args),
+        0,
+        `${command} with empty peers must be byte-identical to no-peer baseline`
+      );
+    });
+  }
+
+  for (const command of PEER_DISABLED_COMMANDS) {
+    test(`${command}: buildCommand emits zero --add-dir flags even when peers supplied (defense-in-depth)`, () => {
+      const workDir = makeTempDir();
+      writePromptFile(workDir, `Defense-in-depth prompt for ${command}`);
+      resetConfig({ command });
+
+      // BOOTSTRAP and EVALUATE_FEATURE need their specific buildClaudeDirectArgs
+      // case branches; some have no case at all and would throw. We exercise
+      // buildCommand only for the subset that has a direct-claude branch.
+      const HAS_DIRECT_CLAUDE_BRANCH = new Set([
+        LoopCommand.Chat,
+        LoopCommand.Explore,
+        LoopCommand.Decompose,
+        LoopCommand.RequestChanges,
+        LoopCommand.EvaluatePrd,
+        LoopCommand.EvaluatePlan,
+        LoopCommand.EvaluateCode,
+        LoopCommand.EvaluateFeature,
+      ]);
+      if (!HAS_DIRECT_CLAUDE_BRANCH.has(command)) {
+        return; // BOOTSTRAP has no claude branch; skip — covered by policy unit tests
+      }
+
+      const peers = makePeerMetadata();
+      const { args } = buildCommand(workDir, workDir, null, peers);
+
+      assert.equal(
+        countAddDirFlags(args),
+        0,
+        `${command} must NEVER emit --add-dir flags`
+      );
+      // Also verify no Mounted paths footer leaks into the prompt for these
+      // commands (the prompt is the last positional arg in the direct-claude
+      // path).
+      const lastArg = args.at(-1);
+      assert.ok(
+        typeof lastArg !== "string" || !lastArg.includes("## Mounted paths"),
+        `${command} must not contain Mounted paths footer`
+      );
+    });
+  }
+});
+
+describe("Mounted paths footer for peer-enabled direct-claude commands", () => {
+  for (const command of [
+    LoopCommand.GeneratePrd,
+    LoopCommand.RequestPrdChanges,
+  ]) {
+    test(`${command}: prompt includes a "## Mounted paths" footer when peers present`, () => {
+      const workDir = makeTempDir();
+      writePromptFile(workDir, `Base prompt for ${command}`);
+      resetConfig({ command });
+
+      const peers = makePeerMetadata();
+      const { args } = buildClaudeDirectArgs(workDir, workDir, peers);
+
+      const prompt = args.at(-1);
+      assert.ok(
+        typeof prompt === "string" && prompt.includes("## Mounted paths"),
+        `${command} prompt must include Mounted paths footer`
+      );
+      assert.ok(
+        prompt.includes("/workspace/peers/org--peer-a"),
+        `${command} footer must list peer-a's mount path`
+      );
+      assert.ok(
+        prompt.includes("/workspace/peers/org--peer-b"),
+        `${command} footer must list peer-b's mount path`
+      );
+      assert.ok(
+        prompt.includes("`org/peer-a`"),
+        `${command} footer must list peer-a's fullName`
+      );
+      assert.ok(
+        prompt.includes("`develop`"),
+        `${command} footer must list peer-b's branch`
+      );
+    });
+
+    test(`${command}: prompt has no Mounted paths footer when peers are absent`, () => {
+      const workDir = makeTempDir();
+      writePromptFile(workDir, `Empty-peers prompt for ${command}`);
+      resetConfig({ command });
+
+      const { args } = buildClaudeDirectArgs(workDir, workDir, []);
+      const prompt = args.at(-1);
+      assert.ok(
+        typeof prompt === "string" && !prompt.includes("## Mounted paths"),
+        `${command} with no peers must have no Mounted paths footer`
+      );
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// peer-repos.json — written by writeContextPackFiles when peers present
+// ---------------------------------------------------------------------------
+
+describe("writeContextPackFiles peer-repos.json", () => {
+  test("writes peer-repos.json with fullName, branch, and computed localPath", async () => {
+    const workDir = makeTempDir();
+    const pack = {
+      command: LoopCommand.GeneratePrd,
+      prompt: "ignore",
+      additionalRepos: [
+        { fullName: "org/peer-a", branch: "main", githubToken: "tok-a" },
+        { fullName: "org/peer-b", branch: "develop", githubToken: "tok-b" },
+      ],
+    };
+
+    await writeContextPackFiles(workDir, pack);
+
+    const manifestPath = path.join(
+      workDir,
+      ".closedloop-ai",
+      "context",
+      "peer-repos.json"
+    );
+    assert.ok(
+      fs.existsSync(manifestPath),
+      "peer-repos.json must exist when additionalRepos is non-empty"
+    );
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    assert.deepEqual(manifest, {
+      peers: [
+        {
+          fullName: "org/peer-a",
+          branch: "main",
+          localPath: "/workspace/peers/org--peer-a",
+        },
+        {
+          fullName: "org/peer-b",
+          branch: "develop",
+          localPath: "/workspace/peers/org--peer-b",
+        },
+      ],
+    });
+  });
+
+  test("does not write peer-repos.json when additionalRepos is absent", async () => {
+    const workDir = makeTempDir();
+    await writeContextPackFiles(workDir, { command: LoopCommand.Chat });
+    const manifestPath = path.join(
+      workDir,
+      ".closedloop-ai",
+      "context",
+      "peer-repos.json"
+    );
+    assert.ok(
+      !fs.existsSync(manifestPath),
+      "peer-repos.json must be absent when no additionalRepos"
+    );
+  });
+
+  test("does not write peer-repos.json when additionalRepos is empty array", async () => {
+    const workDir = makeTempDir();
+    await writeContextPackFiles(workDir, {
+      command: LoopCommand.GeneratePrd,
+      additionalRepos: [],
+    });
+    const manifestPath = path.join(
+      workDir,
+      ".closedloop-ai",
+      "context",
+      "peer-repos.json"
+    );
+    assert.ok(
+      !fs.existsSync(manifestPath),
+      "peer-repos.json must be absent when additionalRepos is empty"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildClaudeDirectArgs — single source of truth for --add-dir + footer
+// (regression coverage for the closure-read bug that allowed footer/--add-dir
+// to drift if cloneAdditionalRepos were ever to partially succeed)
+// ---------------------------------------------------------------------------
+
+describe("buildClaudeDirectArgs single-source contract", () => {
+  test("--add-dir paths and footer are derived from the same `peers` argument", () => {
+    const workDir = makeTempDir();
+    writePromptFile(workDir, "Base prompt");
+    resetConfig({ command: LoopCommand.GeneratePrd });
+    // Inject a CONFLICTING contextPackRef to prove the function does NOT
+    // read it for footer construction. If the old closure-read regressed,
+    // the footer would mention "ghost/peer-z" — which it must not.
+    resetHarnessState({
+      contextPackRef: {
+        additionalRepos: [
+          { fullName: "ghost/peer-z", branch: "main", githubToken: "ghost" },
+        ],
+      },
+    });
+
+    const peers = makePeerMetadata();
+    const { args } = buildClaudeDirectArgs(workDir, workDir, peers);
+
+    const addDirIndices = args.reduce((acc, val, idx) => {
+      if (val === "--add-dir") {
+        acc.push(idx);
+      }
+      return acc;
+    }, []);
+    const addDirPaths = addDirIndices.map((i) => args[i + 1]);
+
+    const prompt = args.at(-1);
+    assert.equal(addDirPaths.length, peers.length);
+    for (const peer of peers) {
+      assert.ok(
+        addDirPaths.includes(peer.localPath),
+        `--add-dir must include ${peer.localPath}`
+      );
+      assert.ok(
+        prompt.includes(peer.localPath),
+        `footer must include ${peer.localPath}`
+      );
+    }
+    assert.ok(
+      !prompt.includes("ghost/peer-z"),
+      "footer must NOT read from contextPackRef closure"
+    );
+    assert.ok(
+      !addDirPaths.some((p) => p.includes("ghost--peer-z")),
+      "--add-dir must NOT read from contextPackRef closure"
+    );
+  });
+
+  test("partial peer set: footer enumerates exactly the peers that were mounted", () => {
+    const workDir = makeTempDir();
+    writePromptFile(workDir, "Base prompt");
+    resetConfig({ command: LoopCommand.GeneratePrd });
+    // contextPackRef advertises three peers, but the orchestration site only
+    // resolved two (simulating a hypothetical future partial-success path).
+    resetHarnessState({
+      contextPackRef: {
+        additionalRepos: [
+          { fullName: "org/peer-a", branch: "main", githubToken: "tok-a" },
+          { fullName: "org/peer-b", branch: "develop", githubToken: "tok-b" },
+          { fullName: "org/peer-c", branch: "main", githubToken: "tok-c" },
+        ],
+      },
+    });
+
+    // Caller supplies only two resolved peers — peer-c was not mounted.
+    const peers = makePeerMetadata();
+    const { args } = buildClaudeDirectArgs(workDir, workDir, peers);
+
+    const prompt = args.at(-1);
+    assert.ok(prompt.includes("org/peer-a"));
+    assert.ok(prompt.includes("org/peer-b"));
+    assert.ok(
+      !prompt.includes("org/peer-c"),
+      "footer must NOT advertise unresolved peer-c"
+    );
+  });
+
+  test("undefined peers argument behaves identically to empty array (no footer, no --add-dir)", () => {
+    const workDir = makeTempDir();
+    writePromptFile(workDir, "Base prompt");
+    resetConfig({ command: LoopCommand.GeneratePrd });
+    resetHarnessState({ contextPackRef: null });
+
+    const { args: argsUndef } = buildClaudeDirectArgs(workDir, workDir);
+    const { args: argsEmpty } = buildClaudeDirectArgs(workDir, workDir, []);
+
+    assert.deepEqual(argsUndef, argsEmpty);
+    assert.equal(countAddDirFlags(argsUndef), 0);
+    assert.ok(!argsUndef.at(-1).includes("## Mounted paths"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPeerWriteEnabled — read-only vs read-write contract
+// ---------------------------------------------------------------------------
+
+describe("isPeerWriteEnabled", () => {
+  for (const [command, policy] of Object.entries(MULTI_REPO_POLICY)) {
+    test(`${command}: matches policy.peerWriteMode === "read-write"`, () => {
+      resetConfig({ command });
+      const expected = policy.peerWriteMode === "read-write";
+      assert.equal(
+        isPeerWriteEnabled(),
+        expected,
+        `${command} expected isPeerWriteEnabled()=${expected} (peerWriteMode=${policy.peerWriteMode})`
+      );
+    });
+  }
+
+  test("read-only commands (PLAN, GENERATE_PRD, REQUEST_PRD_CHANGES) all return false", () => {
+    for (const command of [
+      LoopCommand.Plan,
+      LoopCommand.GeneratePrd,
+      LoopCommand.RequestPrdChanges,
+    ]) {
+      resetConfig({ command });
+      assert.equal(isPeerWriteEnabled(), false, `${command} must be read-only`);
+    }
+  });
+
+  test("EXECUTE returns true (the only read-write command today)", () => {
+    resetConfig({ command: LoopCommand.Execute });
+    assert.equal(isPeerWriteEnabled(), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshGitHubToken — command-agnostic for GENERATE_PRD and REQUEST_PRD_CHANGES
+// ---------------------------------------------------------------------------
+
+describe("refreshGitHubToken command-agnostic peer token refresh", () => {
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  for (const command of [
+    LoopCommand.GeneratePrd,
+    LoopCommand.RequestPrdChanges,
+  ]) {
+    test(`${command}: peer tokens are refreshed identically to PLAN/EXECUTE`, async () => {
+      resetConfig({
+        command,
+        authToken: "test-auth-token",
+        apiBaseUrl: "https://api.example.com",
+        loopId: "test-loop-id",
+        githubToken: "old-primary",
+      });
+
+      const contextPack = {
+        additionalRepos: [
+          { fullName: "org/peer-a", branch: "main", githubToken: "old-a" },
+          { fullName: "org/peer-b", branch: "develop", githubToken: "old-b" },
+        ],
+      };
+
+      let capturedBody;
+      globalThis.fetch = async (_url, options) => {
+        capturedBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              token: "new-primary",
+              additionalRepoTokens: [
+                { fullName: "org/peer-a", token: "new-a" },
+                { fullName: "org/peer-b", token: "new-b" },
+              ],
+            },
+          }),
+        };
+      };
+
+      await refreshGitHubToken(contextPack);
+
+      assert.ok(
+        capturedBody !== undefined,
+        `${command}: fetch was not called — refreshGitHubToken returned early before issuing the request`
+      );
+      assert.deepEqual(capturedBody.additionalRepos, [
+        { fullName: "org/peer-a", branch: "main" },
+        { fullName: "org/peer-b", branch: "develop" },
+      ]);
+      assert.equal(contextPack.additionalRepos[0].githubToken, "new-a");
+      assert.equal(contextPack.additionalRepos[1].githubToken, "new-b");
+      assert.equal(config.githubToken, "new-primary");
+    });
+  }
 });

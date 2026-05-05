@@ -1,3 +1,4 @@
+import { DESKTOP_API_NAMESPACE_CAPABILITY_KEY } from "@repo/api/src/desktop-api-namespace";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   ComputeTarget,
@@ -73,10 +74,18 @@ function buildCapabilitiesPayload(
   payload: RegisterComputeTargetInput | UpdateComputeTargetInput,
   existingCapabilities?: unknown
 ): JsonObject {
+  const payloadCapabilities = toJsonObject(payload.capabilities);
   const capabilities: JsonObject = {
     ...toJsonObject(existingCapabilities),
-    ...toJsonObject(payload.capabilities),
+    ...payloadCapabilities,
   };
+
+  if (
+    payload.capabilities !== undefined &&
+    !Object.hasOwn(payloadCapabilities, DESKTOP_API_NAMESPACE_CAPABILITY_KEY)
+  ) {
+    delete capabilities[DESKTOP_API_NAMESPACE_CAPABILITY_KEY];
+  }
 
   if ("allowedDirectories" in payload && payload.allowedDirectories) {
     capabilities.allowedDirectories = payload.allowedDirectories;

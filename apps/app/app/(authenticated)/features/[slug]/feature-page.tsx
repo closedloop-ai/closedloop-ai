@@ -6,6 +6,7 @@ import {
   type DocumentDetail,
   DocumentType,
 } from "@repo/api/src/types/document";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizablePanel,
@@ -30,16 +31,21 @@ import { EvaluationSection } from "@/components/document-editor/evaluation-secti
 import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
-import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
+import {
+  FloatingTargetPicker,
+  resolveFloatingTargetPickerSource,
+} from "@/components/engineer/floating-target-picker";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
 import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
 import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
 import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
 import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
+import { useFeatureActions } from "@/hooks/document-editing/use-feature-actions";
 import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
+import { useFeatureJudgesFeedback } from "@/hooks/queries/use-judges";
 import { ContextSection } from "./components/context-section";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
 import { FeatureMetadataBar } from "./components/feature-metadata-bar";
@@ -89,6 +95,9 @@ export function FeaturePage({
     editor: session.editor,
   });
   const planActions = usePlanActions({ documentId: linkedPlanId });
+  const featureActions = useFeatureActions({ documentId: feature.id });
+  const { data: judgesReport, refetch: refetchJudgesReport } =
+    useFeatureJudgesFeedback(feature.id);
 
   const { data: generationStatus } = useDocumentGenerationStatus(
     linkedPlanId ?? "",
@@ -97,6 +106,40 @@ export function FeaturePage({
       polling: true,
     }
   );
+  const { data: featureGenerationStatus } = useDocumentGenerationStatus(
+    feature.id,
+    { polling: true }
+  );
+  const activeTargetPicker = resolveFloatingTargetPickerSource(
+    {
+      multiTargetState: featureActions.multiTargetState,
+      onSelect: featureActions.selectTarget,
+    },
+    {
+      multiTargetState: planActions.multiTargetState,
+      onSelect: planActions.selectTarget,
+    }
+  );
+
+  const latestRefetchedEvaluationRunKey = useRef<string | null>(null);
+  useEffect(() => {
+    const runKey =
+      featureGenerationStatus?.runKey ??
+      featureGenerationStatus?.loopId ??
+      featureGenerationStatus?.correlationId ??
+      null;
+    if (
+      featureGenerationStatus?.command !== RunLoopCommand.EvaluateFeature ||
+      featureGenerationStatus.status !== "SUCCESS" ||
+      !runKey ||
+      latestRefetchedEvaluationRunKey.current === runKey
+    ) {
+      return;
+    }
+
+    latestRefetchedEvaluationRunKey.current = runKey;
+    refetchJudgesReport().catch(() => undefined);
+  }, [featureGenerationStatus, refetchJudgesReport]);
 
   // Auto-reveal comments when threads reappear after being fully resolved.
   // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
@@ -114,8 +157,10 @@ export function FeaturePage({
         displayTitle={feature.title}
         feature={feature}
         hasPlan={hasPlan}
+        isEvaluating={featureActions.isEvaluating}
         isReady={isReady}
         onDelete={uiState.openDeleteDialog}
+        onEvaluateFeature={featureActions.handleEvaluateFeature}
         onGeneratePlan={() => setShowGenerateModal(true)}
         onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
@@ -222,7 +267,7 @@ export function FeaturePage({
                 >
                   <EvaluationSection
                     documentId={feature.id}
-                    judgeItems={null}
+                    judgeItems={judgesReport ?? null}
                     title="Agent Evaluation"
                   />
                   <CustomFieldsSection
@@ -289,17 +334,10 @@ export function FeaturePage({
         />
       )}
 
-      {planActions.multiTargetState && (
-        <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
-          <p className="mb-2 text-muted-foreground text-sm">
-            Multiple compute targets are online. Select one:
-          </p>
-          <LoopDispatchTargetSelector
-            availableTargets={planActions.multiTargetState.availableTargets}
-            onSelect={planActions.selectTarget}
-          />
-        </div>
-      )}
+      <FloatingTargetPicker
+        multiTargetState={activeTargetPicker.multiTargetState}
+        onSelect={activeTargetPicker.onSelect}
+      />
 
       <BackendMismatchModal
         mismatchData={planActions.backendMismatchState}
@@ -311,6 +349,18 @@ export function FeaturePage({
           }
         }}
         open={!!planActions.backendMismatchState}
+      />
+
+      <BackendMismatchModal
+        mismatchData={featureActions.backendMismatchState}
+        onConfirmOriginal={featureActions.confirmOriginalBackend}
+        onConfirmPreferred={featureActions.confirmPreferredBackend}
+        onOpenChange={(open) => {
+          if (!open) {
+            featureActions.dismissBackendMismatch();
+          }
+        }}
+        open={!!featureActions.backendMismatchState}
       />
     </>
   );

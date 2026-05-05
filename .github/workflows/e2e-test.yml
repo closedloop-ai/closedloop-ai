@@ -61,7 +61,7 @@ jobs:
       - name: Wait for Vercel app-stage preview deployment
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.deployment_url == ''
         id: wait
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const sha = process.env.TARGET_SHA || context.payload.pull_request?.head?.sha || context.sha;
@@ -123,6 +123,46 @@ jobs:
       - name: Resolve preview URLs
         id: base-url
         run: |
+          resolve_preview_alias_candidates() {
+            local ref="$1"
+            local lowercase_ref
+            lowercase_ref="$(printf '%s' "$ref" | tr '[:upper:]' '[:lower:]')"
+            local hyphenated_alias
+            hyphenated_alias="$(printf '%s' "$lowercase_ref" | sed -E 's#[^a-z0-9]+#-#g; s#(^-+|-+$)##g')"
+
+            local first_segment="$lowercase_ref"
+            local remainder=""
+            if [[ "$lowercase_ref" == */* ]]; then
+              first_segment="${lowercase_ref%%/*}"
+              remainder="${lowercase_ref#*/}"
+            fi
+
+            local compact_remainder="${remainder//\//}"
+            compact_remainder="${compact_remainder//_/}"
+            compact_remainder="${compact_remainder//./}"
+            local compact_alias="$first_segment"
+            if [[ -n "$compact_remainder" ]]; then
+              compact_alias="${first_segment}-${compact_remainder}"
+            fi
+
+            printf '%s\n' "$compact_alias" "$hyphenated_alias" | awk '!seen[$0]++'
+          }
+
+          resolve_preview_base_url() {
+            local ref="$1"
+            local candidate_alias
+            while IFS= read -r candidate_alias; do
+              [ -n "$candidate_alias" ] || continue
+              local candidate_url="https://app-stage-git-${candidate_alias}.preview.closedloop-stage.ai"
+              if curl -fsSI --max-time 10 "$candidate_url" >/dev/null 2>&1; then
+                printf '%s\n' "$candidate_url"
+                return 0
+              fi
+            done < <(resolve_preview_alias_candidates "$ref")
+
+            return 1
+          }
+
           if [ -z "$REF_NAME" ]; then
             echo "::error::Failed to resolve preview URLs from branch ref"
             exit 1
@@ -133,8 +173,12 @@ jobs:
           elif [ "$REF_NAME" = "main" ] && [ "$EVENT_NAME" != "pull_request" ]; then
             BASE_URL="https://app.closedloop-stage.ai"
           else
-            NORMALIZED_REF="$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9]+#-#g; s#(^-+|-+$)##g')"
-            BASE_URL="https://app-stage-git-${NORMALIZED_REF}.preview.closedloop-stage.ai"
+            BASE_URL="$(resolve_preview_base_url "$REF_NAME")"
+            if [ -z "$BASE_URL" ]; then
+              echo "::error::Failed to resolve preview alias for ref $REF_NAME"
+              echo "::error::Tried: $(resolve_preview_alias_candidates "$REF_NAME" | paste -sd ', ' -)"
+              exit 1
+            fi
           fi
 
           if [[ "$BASE_URL" =~ ^https://app-stage-git-([a-z0-9-]+)\.preview\.closedloop-stage\.ai$ ]]; then
@@ -156,7 +200,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -169,6 +213,12 @@ jobs:
         env:
           # prisma generate (runs via postinstall) only needs the URL format, not a live DB
           DATABASE_URL: postgresql://localhost:5432/placeholder
+
+      - name: Build workspace dependencies needed by E2E specs
+        # E2E specs import @repo/api/src/types/loop, which has value-level imports
+        # from @closedloop-ai/loops-api/* whose `exports.import` resolves to ./dist/*.js.
+        # That dist/ is gitignored, so it must be built before Playwright loads the specs.
+        run: pnpm turbo build --filter=@closedloop-ai/loops-api
 
       - name: Cache Playwright browsers
         id: playwright-cache
@@ -194,6 +244,7 @@ jobs:
           API_BASE_URL: ${{ steps.base-url.outputs.api_url }}
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.STAGING_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
+          CLOSEDLOOP_RUNNER_JWT_SECRET: ${{ secrets.CLOSEDLOOP_RUNNER_JWT_SECRET }}
           DEVOPS_CLOSEDLOOP_APP_PWD: ${{ secrets.DEVOPS_CLOSEDLOOP_APP_PWD }}
 
       - name: Upload test failure artifacts

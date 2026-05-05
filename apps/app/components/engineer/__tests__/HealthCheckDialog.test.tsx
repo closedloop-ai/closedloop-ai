@@ -8,6 +8,30 @@ const EXIT_ANIMATION_MS = 250;
 
 const mockQueryFn = vi.fn();
 const mockSystemCheckResults = vi.fn();
+const mockLatestElectronReleaseOptions = vi.hoisted(() => vi.fn());
+const mockLatestElectronReleaseResult = vi.hoisted(
+  (): {
+    value: {
+      data:
+        | {
+            downloadUrl: string;
+            releaseNotes: string;
+            version: string;
+          }
+        | undefined;
+      isLoading: boolean;
+    };
+  } => ({
+    value: {
+      data: {
+        downloadUrl: "https://example.com/closedloop.dmg",
+        releaseNotes: "",
+        version: "1.0.0",
+      },
+      isLoading: false,
+    },
+  })
+);
 
 vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
   const actual =
@@ -44,6 +68,13 @@ vi.mock("@/components/engineer/PathAutocomplete", () => ({
   ),
 }));
 
+vi.mock("@/hooks/queries/use-electron-release", () => ({
+  useLatestElectronRelease: (options: unknown) => {
+    mockLatestElectronReleaseOptions(options);
+    return mockLatestElectronReleaseResult.value;
+  },
+}));
+
 vi.mock("@/lib/engineer/queries/keys", () => ({
   queryKeys: {
     healthCheck: () => ["health-check"],
@@ -72,6 +103,21 @@ const failingData = {
   checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
   allRequiredPassed: false,
 };
+const passingData = {
+  checks: [{ id: "cli", label: "CLI", required: true, passed: true }],
+  allRequiredPassed: true,
+};
+
+beforeEach(() => {
+  mockLatestElectronReleaseResult.value = {
+    data: {
+      downloadUrl: "https://example.com/closedloop.dmg",
+      releaseNotes: "",
+      version: "1.0.0",
+    },
+    isLoading: false,
+  };
+});
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -86,6 +132,71 @@ function createWrapper() {
     );
   };
 }
+
+describe("Release gating", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+    mockQueryFn.mockResolvedValue(failingData);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("waits for latest release data to settle before issuing the initial health check", async () => {
+    mockLatestElectronReleaseResult.value = {
+      data: undefined,
+      isLoading: true,
+    };
+
+    const Wrapper = createWrapper();
+    const { rerender } = render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    expect(mockLatestElectronReleaseOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabled: false,
+        staleTime: 300_000,
+      })
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(mockQueryFn).not.toHaveBeenCalled();
+    expect(mockLatestElectronReleaseOptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        staleTime: 300_000,
+      })
+    );
+
+    mockLatestElectronReleaseResult.value = {
+      data: {
+        downloadUrl: "https://example.com/closedloop.dmg",
+        releaseNotes: "",
+        version: "1.0.0",
+      },
+      isLoading: false,
+    };
+
+    rerender(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+    await act(async () => {});
+
+    expect(mockQueryFn).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("Dismissal behavior", () => {
   beforeEach(() => {
@@ -170,7 +281,7 @@ describe("Dismissal behavior", () => {
 
   it("Continue button is always enabled and dismisses the dialog", async () => {
     const Wrapper = createWrapper();
-    render(
+    const { unmount } = render(
       <Wrapper>
         <HealthCheckDialog />
       </Wrapper>
@@ -196,6 +307,49 @@ describe("Dismissal behavior", () => {
     });
 
     expect(screen.queryByRole("dialog")).toBeNull();
+
+    unmount();
+    mockQueryFn.mockClear();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).toBeNull();
+    expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("runs one health-check request per Re-check click", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+
+    mockQueryFn.mockClear();
+    mockQueryFn.mockResolvedValueOnce(failingData);
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+
+    expect(mockQueryFn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -396,5 +550,302 @@ describe("Show-once behavior", () => {
 
     // Second mount sees shownTargetKeys = true and returns null
     expect(screen.queryByText("System Check")).toBeNull();
+  });
+});
+
+describe("Blocking pre-loop mode", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+    mockQueryFn.mockResolvedValue(failingData);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("bypasses ambient show-once suppression and renders initial data without fetching", async () => {
+    const Wrapper = createWrapper();
+    const { unmount } = render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    unmount();
+    mockQueryFn.mockClear();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("blocking mode still opens after the ambient dialog was continued", async () => {
+    const Wrapper = createWrapper();
+    const { unmount } = render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    act(() => {
+      screen.getByRole("button", { name: /continue/i }).click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    unmount();
+    mockQueryFn.mockClear();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
+    expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("renders blocking initial data supplied after the query is mounted", async () => {
+    const Wrapper = createWrapper();
+    const { rerender } = render(
+      <Wrapper>
+        <HealthCheckDialog mode="blocking-pre-loop" onCancel={vi.fn()} />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      isLoading: true,
+      checks: undefined,
+    });
+
+    rerender(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+    await act(async () => {});
+
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      isLoading: false,
+      checks: expect.arrayContaining([
+        expect.objectContaining({ id: "cli", passed: false }),
+      ]),
+    });
+  });
+
+  it("routes Escape through cancel", async () => {
+    const onCancel = vi.fn();
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={onCancel}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("disables Continue in blocking mode", async () => {
+    const onCancel = vi.fn();
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={onCancel}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("labels localhost targets as Local Gateway", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          targetLabel="localhost"
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.getByText(/Target: Local Gateway/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Target: localhost/i)).not.toBeInTheDocument();
+  });
+
+  it("calls the resolved callback after a passing Re-check success delay", async () => {
+    const onResolvedAfterRecheck = vi.fn();
+    mockQueryFn.mockResolvedValueOnce(passingData);
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onResolvedAfterRecheck={onResolvedAfterRecheck}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+
+    expect(onResolvedAfterRecheck).toHaveBeenCalledOnce();
+  });
+
+  it("keeps blocking and reports result data when Re-check still has failures", async () => {
+    const onRecheckResult = vi.fn();
+    const changedFailure = {
+      checks: [{ id: "git", label: "Git", required: true, passed: false }],
+      allRequiredPassed: false,
+    };
+    mockQueryFn.mockResolvedValueOnce(changedFailure);
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onRecheckResult={onRecheckResult}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+
+    expect(onRecheckResult).toHaveBeenCalledWith(changedFailure);
+    expect(screen.queryByText("System Check")).not.toBeNull();
+  });
+
+  it("restores the visible rows when Re-check is unavailable", async () => {
+    const onRecheckUnavailable = vi.fn();
+    mockQueryFn.mockRejectedValueOnce(new Error("offline"));
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onRecheckUnavailable={onRecheckUnavailable}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      revealedCount: 1,
+    });
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+
+    expect(onRecheckUnavailable).toHaveBeenCalledWith("offline");
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      revealedCount: 1,
+    });
   });
 });

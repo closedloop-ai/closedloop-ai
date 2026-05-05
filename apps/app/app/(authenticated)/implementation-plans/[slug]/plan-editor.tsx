@@ -29,7 +29,7 @@ import { EvaluationSection } from "@/components/document-editor/evaluation-secti
 import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
 import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
 import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
-import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
+import { FloatingTargetPicker } from "@/components/engineer/floating-target-picker";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
 import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
@@ -157,7 +157,8 @@ export function PlanEditor({
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
     useInitialAdditionalRepos(plan.id);
 
-  const { data: pullRequests = [] } = useDocumentPullRequest(plan.id);
+  const { data: pullRequestsData } = useDocumentPullRequest(plan.id);
+  const pullRequests = pullRequestsData ?? [];
   const primaryPr = pickPullRequestForRepo(pullRequests, plan.targetRepo);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
@@ -465,31 +466,6 @@ export function PlanEditor({
         open={!!planActions.backendMismatchState}
       />
     </>
-  );
-}
-
-function FloatingTargetPicker({
-  multiTargetState,
-  onSelect,
-}: Readonly<{
-  multiTargetState: {
-    availableTargets: { id: string; machineName: string; status: string }[];
-  } | null;
-  onSelect: (targetId: string) => void;
-}>) {
-  if (!multiTargetState) {
-    return null;
-  }
-  return (
-    <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
-      <p className="mb-2 text-muted-foreground text-sm">
-        Multiple compute targets are online. Select one:
-      </p>
-      <LoopDispatchTargetSelector
-        availableTargets={multiTargetState.availableTargets}
-        onSelect={onSelect}
-      />
-    </div>
   );
 }
 

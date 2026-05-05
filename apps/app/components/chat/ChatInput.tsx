@@ -1,7 +1,8 @@
 "use client";
 
+import { Button } from "@repo/design-system/components/ui/button";
 import { cn } from "@repo/design-system/lib/utils";
-import { Send, Square } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 type ChatInputProps = {
@@ -23,10 +24,6 @@ type ChatInputProps = {
   footer?: React.ReactNode;
 };
 
-/**
- * Shared chat input area with auto-resize textarea and send/stop button.
- * Uses standardized primary (gold) color for accents.
- */
 export function ChatInput({
   value,
   onChange,
@@ -34,104 +31,93 @@ export function ChatInput({
   onStop,
   onKeyDown,
   isStreaming,
-  placeholder = "Type a message...",
+  placeholder = "Ask anything…",
   disabled = false,
   beforeInput,
   footer,
 }: Readonly<ChatInputProps>) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-resize textarea when input changes
   useEffect(() => {
     const el = inputRef.current;
-    if (el) {
-      if (value.length === 0) {
-        el.style.height = "40px";
-        return;
-      }
-      el.style.height = "40px";
+    if (!el) {
+      return;
+    }
+    el.style.height = "auto";
+    if (value.length > 0) {
       el.style.height = `${el.scrollHeight}px`;
     }
   }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Let parent handle keyboard events first
     if (onKeyDown) {
       onKeyDown(e);
-      // If parent handled it (e.g., mention autocomplete), don't process further
       if (e.defaultPrevented) {
         return;
       }
     }
 
-    // Enter without shift sends the message
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSend();
     }
   };
 
-  const canSend = value.trim() && !isStreaming && !disabled;
+  const canSend = Boolean(value.trim()) && !isStreaming && !disabled;
 
   return (
-    <div className="shrink-0 border-border border-t bg-muted/30">
+    <div className="shrink-0 bg-background p-3">
       {beforeInput}
 
-      <div className="relative flex items-end gap-3 p-4 pt-3">
-        <span className="shrink-0 pb-2.5 font-bold font-mono text-primary text-sm">
-          {">"}
-        </span>
-        <div className="relative flex-1">
-          <textarea
-            className={cn(
-              "w-full resize-none bg-transparent text-sm placeholder:text-muted-foreground",
-              "py-2 pr-10 font-mono leading-relaxed",
-              "focus:outline-none focus:ring-0",
-              "disabled:cursor-not-allowed disabled:opacity-50"
-            )}
-            disabled={isStreaming || disabled}
-            onChange={(e) => onChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            ref={inputRef}
-            rows={1}
-            style={{
-              minHeight: "40px",
-              maxHeight: "50vh",
-              overflow: "hidden",
-            }}
-            value={value}
-          />
-          {isStreaming && onStop ? (
-            <button
-              className={cn(
-                "absolute right-0 bottom-1.5 flex size-7 items-center justify-center rounded-lg",
-                "cursor-pointer transition-all duration-200",
-                "bg-foreground/[0.08] text-foreground/50 hover:bg-foreground/15 hover:text-foreground"
-              )}
-              onClick={onStop}
-              title="Stop response"
-              type="button"
-            >
-              <Square className="size-2.5 fill-current" />
-            </button>
-          ) : (
-            <button
-              className={cn(
-                "absolute right-0 bottom-1.5 flex size-7 items-center justify-center rounded-lg",
-                "transition-all duration-200",
-                canSend
-                  ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20 hover:bg-primary/90"
-                  : "cursor-not-allowed bg-muted text-muted-foreground"
-              )}
-              disabled={!canSend}
-              onClick={onSend}
-              type="button"
-            >
-              <Send className="size-3.5" />
-            </button>
+      <div
+        className={cn(
+          "flex items-end gap-2 rounded-xl border border-input-border bg-input py-2 pr-2 pl-3",
+          "transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50"
+        )}
+      >
+        <textarea
+          className={cn(
+            "flex-1 resize-none self-center bg-transparent text-sm leading-relaxed placeholder:text-muted-foreground",
+            "focus:outline-none focus:ring-0",
+            "disabled:cursor-not-allowed disabled:opacity-50"
           )}
-        </div>
+          disabled={isStreaming || disabled}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          ref={inputRef}
+          rows={1}
+          style={{
+            maxHeight: "50vh",
+            overflow: "hidden",
+          }}
+          value={value}
+        />
+        {isStreaming && onStop ? (
+          <Button
+            aria-label="Stop response"
+            className="rounded-lg"
+            onClick={onStop}
+            size="icon-sm"
+            title="Stop response"
+            type="button"
+            variant="ghost"
+          >
+            <Square className="size-3 fill-current" />
+          </Button>
+        ) : (
+          <Button
+            aria-label="Send message"
+            className="rounded-lg"
+            disabled={!canSend}
+            onClick={onSend}
+            size="icon-sm"
+            type="button"
+            variant={canSend ? "default" : "ghost"}
+          >
+            <ArrowUp />
+          </Button>
+        )}
       </div>
 
       {footer}

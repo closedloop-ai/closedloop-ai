@@ -26,7 +26,7 @@ import {
 } from "@/hooks/queries/use-compute-preference";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
-import { sortByDateDesc } from "@/lib/table-utils";
+import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
 const SSE_MAX_RECONNECT_ATTEMPTS = 3;
@@ -123,37 +123,27 @@ export function ComputeTargetPopover({
   const setPreference = useSetComputePreference(userId);
 
   const isDegraded = isStreamDegraded(streamReconnectAttempts);
-  const currentPreference =
-    preferenceData?.preferredComputeMode ?? ComputePreference.Cloud;
   const ownTargets = targets.filter((t) => !t.ownerName);
   const sharedTargets = targets.filter((t) => !!t.ownerName);
-  const onlineTargets = targets.filter((t) => t.isOnline);
+  const {
+    allOffline,
+    currentPreference,
+    effectiveTarget,
+    effectiveTargetId,
+    notInstalled,
+  } = resolveEffectiveComputeTargetSelection({
+    preference: preferenceData,
+    targets,
+  });
   const isLocal = currentPreference === ComputePreference.Local;
 
-  // Only use persisted target if it is currently online; otherwise fall back to
-  // the most recently active online target so the UI matches backend dispatch.
-  const persistedTargetId = preferenceData?.computeTargetId;
-  const persistedIsOnline =
-    persistedTargetId != null &&
-    onlineTargets.some((t) => t.id === persistedTargetId);
-  const defaultActiveTargetId = persistedIsOnline
-    ? persistedTargetId
-    : sortByDateDesc(onlineTargets, "lastSeenAt")[0]?.id;
-
-  const activeLocalTarget = isLocal
-    ? (targets.find((t) => t.id === defaultActiveTargetId) ??
-      onlineTargets[0] ??
-      null)
-    : null;
-
   // T-4.4: no registered targets at all
-  const notInstalled = !targetsLoading && targets.length === 0;
+  const shouldShowNotInstalled = !targetsLoading && notInstalled;
   // T-4.5: targets registered but all offline
-  const allOffline =
-    !targetsLoading && targets.length > 0 && targets.every((t) => !t.isOnline);
+  const shouldShowAllOffline = !targetsLoading && allOffline;
 
   const triggerLabel = isLocal
-    ? `Compute: ${activeLocalTarget?.machineName ?? "Local"}`
+    ? `Compute: ${effectiveTarget?.machineName ?? "Local"}`
     : "Compute: Cloud";
 
   function getTriggerIcon() {
@@ -166,7 +156,7 @@ export function ComputeTargetPopover({
       );
     }
     // T-4.5: show warning badge on trigger when local preference is set but all targets are offline
-    if (isLocal && allOffline) {
+    if (isLocal && shouldShowAllOffline) {
       return (
         <AlertTriangleIcon
           aria-label="Desktop app offline"
@@ -201,7 +191,7 @@ export function ComputeTargetPopover({
 
   function handleLocalOptionClick(): void {
     // T-4.4: no registered targets -- show download prompt, do NOT set preference
-    if (notInstalled) {
+    if (shouldShowNotInstalled) {
       setShowDownloadPrompt(true);
       return;
     }
@@ -252,7 +242,7 @@ export function ComputeTargetPopover({
         )}
 
         {/* T-4.5: offline warning banner -- shown when preference is Local but all targets are offline */}
-        {isLocal && allOffline && (
+        {isLocal && shouldShowAllOffline && (
           <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
             <div className="mb-1.5 flex items-center gap-2">
               <AlertTriangleIcon className="size-3.5 shrink-0" />
@@ -313,7 +303,7 @@ export function ComputeTargetPopover({
           )}
 
           {/* T-4.4: Local option shown when no targets registered; clicking opens download prompt */}
-          {notInstalled && (
+          {shouldShowNotInstalled && (
             <TargetOption
               description="Desktop app not installed"
               icon={<LaptopIcon className="size-4 text-muted-foreground" />}
@@ -348,7 +338,7 @@ export function ComputeTargetPopover({
               }
               isSelected={
                 currentPreference === ComputePreference.Local &&
-                target.id === defaultActiveTargetId
+                target.id === effectiveTargetId
               }
               key={target.id}
               label={target.machineName}
@@ -387,7 +377,7 @@ export function ComputeTargetPopover({
                   }
                   isSelected={
                     currentPreference === ComputePreference.Local &&
-                    target.id === defaultActiveTargetId
+                    target.id === effectiveTargetId
                   }
                   key={target.id}
                   label={target.machineName}
@@ -399,7 +389,7 @@ export function ComputeTargetPopover({
         </div>
 
         {/* T-4.4: download prompt -- popover stays open, preference NOT changed */}
-        {showDownloadPrompt && notInstalled && (
+        {showDownloadPrompt && shouldShowNotInstalled && (
           <div className="mt-2 rounded-md border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
             <div className="mb-1.5 flex items-center gap-2">
               <DownloadIcon className="size-3.5 shrink-0" />

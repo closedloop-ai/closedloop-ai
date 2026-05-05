@@ -71,7 +71,7 @@ Loop agents exit a phase by emitting a promise token such as `<promise>PLAN_VALI
 
 The desktop client's cloud command executor serializes commands by lock key. The default lock key is derived from the operation ID and the scoped path from the request body (`repoPath | worktreePath | workDir | runDir | path`). This prevents two loops from stepping on the same worktree.
 
-A loop can safely run in parallel with another loop in a different worktree. That is the foundation for [parallel feature development](../workflows/parallel-feature-development).
+A loop can safely run in parallel with another loop in a different worktree. See [Worktree](../glossary/worktree) for the underlying primitive that makes parallel feature development safe.
 
 ## Cancel and amend
 

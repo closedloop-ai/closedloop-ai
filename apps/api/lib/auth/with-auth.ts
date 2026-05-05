@@ -8,7 +8,7 @@ import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
-import { unauthorizedResponse } from "../route-utils";
+import { logRequestCompleted, unauthorizedResponse } from "../route-utils";
 import { findOrCreateUser } from "./find-or-create-user";
 
 /**
@@ -86,17 +86,21 @@ export function withAuth<TResponse, TRoute extends string = string>(
     request: NextRequest,
     routeContext: RouteContext<TRoute>
   ): Promise<AuthenticatedJsonResponse<TResponse>> => {
+    const startMs = globalThis.performance.now();
+    let response: AuthenticatedJsonResponse<TResponse> | undefined;
     try {
       const { userId: clerkUserId, orgId: clerkOrgId, orgRole } = await auth();
 
       if (!(clerkUserId && clerkOrgId)) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
       const user = await findOrCreateUser(clerkUserId, clerkOrgId);
 
       if (!user?.active) {
-        return unauthorizedResponse();
+        response = unauthorizedResponse();
+        return response;
       }
 
       const authContext: AuthContext = {
@@ -108,9 +112,13 @@ export function withAuth<TResponse, TRoute extends string = string>(
         apiKeyScopes: undefined,
       };
 
-      return handler(authContext, request, routeContext.params);
+      response = await handler(authContext, request, routeContext.params);
+      return response;
     } catch (error) {
-      return authErrorResponse("Authentication failed", error);
+      response = authErrorResponse("Authentication failed", error);
+      return response;
+    } finally {
+      logRequestCompleted(request, startMs, response?.status ?? 500);
     }
   };
 }

@@ -13,6 +13,7 @@ import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { LoopEvent } from "@repo/api/src/types/loop";
 import {
+  LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
   LoopStatus,
   MAX_ADDITIONAL_REPOS,
   ManualLoopEventType,
@@ -271,3 +272,7 @@ export function normalizeLoopEvent(body: unknown): LoopEvent {
   }
   return body as LoopEvent;
 }
+
+export const loopSummariesBodyValidator = z.object({
+  documentIds: z.array(z.uuid()).min(1).max(LOOP_SUMMARIES_MAX_DOCUMENT_IDS),
+});

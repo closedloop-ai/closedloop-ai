@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { getRenderableHealthChecks } from "../health-check";
+import {
+  COMPUTE_TARGET_HEADER,
+  GATEWAY_HEALTH_CHECK_PATH,
+  GATEWAY_RELAY_HEALTH_CHECK_PATH,
+} from "@/lib/engineer/constants";
+import {
+  buildHealthCheckRequest,
+  getRenderableHealthChecks,
+  healthCheckOptions,
+} from "../health-check";
 
 describe("getRenderableHealthChecks", () => {
   it("appends Claude and Codex MCP rows from mcpServers", () => {
@@ -132,6 +141,144 @@ describe("getRenderableHealthChecks", () => {
         remediation:
           "Retry check. team-codex is configured for https://example.com/mcp",
       }),
+    ]);
+  });
+
+  it("normalizes app-version responses into required blocking rows", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [
+          {
+            id: "app-version",
+            label: "Desktop App Version",
+            required: false,
+            passed: false,
+            version: "0.14.10",
+            error: "Update available: 0.14.11",
+            remediation: "Open the ClosedLoop Gateway app to update",
+          },
+        ],
+        allRequiredPassed: true,
+      },
+      null
+    );
+
+    expect(checks).toEqual([
+      {
+        id: "app-version",
+        label: "Gateway Version",
+        required: true,
+        passed: false,
+        version: "0.14.10",
+        error: "Update available: 0.14.11",
+        remediation: "Open the ClosedLoop Gateway app to update",
+      },
+    ]);
+  });
+
+  it("normalizes plugin-version aggregate rows to Plugin Updates", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [
+          {
+            id: "plugin-versions",
+            label: "Plugin Versions (@closedloop-ai)",
+            required: false,
+            passed: true,
+          },
+        ],
+        allRequiredPassed: true,
+      },
+      null
+    );
+
+    expect(checks).toEqual([
+      {
+        id: "plugin-versions",
+        label: "Plugin Updates",
+        required: false,
+        passed: true,
+      },
+    ]);
+  });
+});
+
+describe("healthCheckOptions", () => {
+  it("keys and builds the relay request with latestVersion when supplied", () => {
+    const options = healthCheckOptions(
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      { latestVersion: "9.9.9", relayTargetId: "target-1" }
+    );
+
+    expect(options.queryKey).toEqual([
+      "health-check",
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      "9.9.9",
+    ]);
+
+    const request = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: "9.9.9",
+      relayTargetId: "target-1",
+    });
+
+    expect(request).toEqual({
+      url: `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp&latestVersion=9.9.9`,
+      init: {
+        headers: {
+          [COMPUTE_TARGET_HEADER]: "target-1",
+        },
+      },
+    });
+  });
+
+  it("builds a direct gateway request with latestVersion when supplied", () => {
+    const request = buildHealthCheckRequest({
+      expectedMcpUrl: null,
+      latestVersion: "9.9.9",
+    });
+
+    expect(request).toEqual({
+      url: `${GATEWAY_HEALTH_CHECK_PATH}?latestVersion=9.9.9`,
+    });
+  });
+
+  it("omits latestVersion from the request when null or empty", () => {
+    const nullRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: null,
+      relayTargetId: "target-1",
+    });
+    const omittedRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      relayTargetId: "target-1",
+    });
+    const emptyRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: "",
+      relayTargetId: "target-1",
+    });
+    const options = healthCheckOptions("cloud-relay:target-1", null, {
+      latestVersion: null,
+      relayTargetId: "target-1",
+    });
+
+    expect(nullRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp`
+    );
+    expect(omittedRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp`
+    );
+    expect(emptyRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp`
+    );
+    expect(options.queryKey).toEqual([
+      "health-check",
+      "cloud-relay:target-1",
+      null,
+      null,
     ]);
   });
 });

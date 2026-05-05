@@ -11,6 +11,11 @@ import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import {
+  COMPUTE_TARGET_HEADER,
+  GATEWAY_PATH_PREFIX,
+  GATEWAY_RELAY_PATH_PREFIX,
+} from "@/lib/engineer/constants";
+import {
   isStreamingGatewayRequest,
   RelayClient,
   type RelayEncodedBody,
@@ -20,13 +25,12 @@ import {
 
 export const maxDuration = 300; // 5 minutes — relay proxies long-running streams (reviews, chat)
 
-const GATEWAY_RELAY_PREFIX = "/api/gateway-relay/";
-const GATEWAY_PATH_PREFIX = "/api/gateway/";
-
 function toGatewayPath(request: NextRequest): string {
-  const pathname = request.nextUrl.pathname.startsWith(GATEWAY_RELAY_PREFIX)
+  const pathname = request.nextUrl.pathname.startsWith(
+    GATEWAY_RELAY_PATH_PREFIX
+  )
     ? request.nextUrl.pathname.replace(
-        GATEWAY_RELAY_PREFIX,
+        GATEWAY_RELAY_PATH_PREFIX,
         GATEWAY_PATH_PREFIX
       )
     : request.nextUrl.pathname;
@@ -37,7 +41,7 @@ function collectRelayHeaders(request: NextRequest): Record<string, string> {
   const blocked = new Set([
     "authorization",
     "cookie",
-    "x-compute-target",
+    COMPUTE_TARGET_HEADER,
     "x-relay-command-id",
     "x-relay-after-sequence",
     "host",
@@ -188,7 +192,7 @@ async function ensureTargetOwnedAndOnline(
 }
 
 async function handleRelayRequest(request: NextRequest): Promise<Response> {
-  const targetId = request.headers.get("x-compute-target");
+  const targetId = request.headers.get(COMPUTE_TARGET_HEADER);
   if (!targetId) {
     return NextResponse.json(
       { error: "Missing X-Compute-Target header" },
@@ -283,7 +287,7 @@ async function handleWithErrorBoundary(
     // Generic message to avoid leaking internal details (file paths,
     // connection strings) from unexpected exceptions. Real error is logged.
     log.error("Engineer relay request failed", {
-      computeTargetId: request.headers.get("x-compute-target"),
+      computeTargetId: request.headers.get(COMPUTE_TARGET_HEADER),
       error,
     });
     return NextResponse.json(

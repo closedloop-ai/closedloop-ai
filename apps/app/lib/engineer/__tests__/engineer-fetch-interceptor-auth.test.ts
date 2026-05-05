@@ -43,12 +43,13 @@ vi.mock("../routing-store", () => ({
     mockGetEngineerRoutingSelection(...args),
 }));
 
-vi.mock("../constants", () => ({
-  CLOUD_RELAY_ENABLED: false,
-  DESKTOP_SETUP_URL: "https://closedloop.so/desktop",
-  VALID_PROVIDERS: new Set(["claude", "codex"]),
-  COMPUTE_TARGETS_QUERY_OPTIONS: { staleTime: 30_000, refetchInterval: 30_000 },
-}));
+vi.mock("../constants", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../constants")>();
+  return {
+    ...actual,
+    CLOUD_RELAY_ENABLED: false,
+  };
+});
 
 import {
   installEngineerFetchInterceptor,

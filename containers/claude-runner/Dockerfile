@@ -45,8 +45,12 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Copy the harness agent and shared loop contract package
+# Copy the harness agent, its co-located lib/ helpers, and the shared loop
+# contract package. lib/ holds modules the harness imports via relative path
+# (e.g. ./lib/peer-context.mjs); copy the whole directory so adding a new
+# helper does not require a Dockerfile edit.
 COPY containers/claude-runner/harness-agent.mjs /opt/harness/harness-agent.mjs
+COPY containers/claude-runner/lib/ /opt/harness/lib/
 COPY containers/claude-runner/package.json /opt/harness/package.json
 # Copy pre-built loops-api package so npm can install it from local path
 COPY packages/loops-api/dist/ /opt/harness/loops-api-pkg/dist/

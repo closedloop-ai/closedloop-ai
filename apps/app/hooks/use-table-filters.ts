@@ -310,6 +310,9 @@ export function useTableFilters({
     const counts = new Map<Priority, number>();
     for (const item of items) {
       const priority = item.data.priority;
+      if (!priority) {
+        continue;
+      }
       counts.set(priority, (counts.get(priority) ?? 0) + 1);
     }
     return counts;
@@ -386,7 +389,10 @@ export function useTableFilters({
         }
         if (
           filters.priorities.length > 0 &&
-          !filters.priorities.includes(item.data.priority)
+          !(
+            item.data.priority &&
+            filters.priorities.includes(item.data.priority)
+          )
         ) {
           return false;
         }

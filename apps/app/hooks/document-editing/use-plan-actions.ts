@@ -51,6 +51,8 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   // Generic conflict-resolution machinery
   const {
     runLoop,
+    runLoopWithPreLoopSystemCheck,
+    isPreLoopExecutePending,
     prepareConflictRefs,
     routeConflictError,
     makeRequestChangesHandler,
@@ -69,7 +71,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const isApproving = updateArtifact.isPending;
   const isRegenerating = runLoop.isPending;
   const isRequestingChanges = runLoop.isPending;
-  const isExecuting = runLoop.isPending;
+  const isExecuting = runLoop.isPending || isPreLoopExecutePending;
   const isEvaluatingPlan =
     activeCommandRef.current === RunLoopCommand.EvaluatePlan &&
     runLoop.isPending;
@@ -145,7 +147,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         ...(additionalRepos?.length ? { additionalRepos } : {}),
       };
       prepareConflictRefs(params);
-      runLoop.mutate(
+      runLoopWithPreLoopSystemCheck(
         { documentId, ...params },
         {
           onSuccess: () => {
@@ -158,7 +160,12 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       );
     },
-    [documentId, runLoop, prepareConflictRefs, routeConflictError]
+    [
+      documentId,
+      runLoopWithPreLoopSystemCheck,
+      prepareConflictRefs,
+      routeConflictError,
+    ]
   );
 
   /**

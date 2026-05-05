@@ -70,8 +70,12 @@ export const queryKeys = {
     ["deploy-existing", repoPath, worktreePath] as const,
 
   // Health check domain
-  healthCheck: (targetKey: string, expectedMcpUrl: string | null) =>
-    ["health-check", targetKey, expectedMcpUrl] as const,
+  healthCheck: (
+    targetKey: string,
+    expectedMcpUrl: string | null,
+    latestVersion?: string | null
+  ) =>
+    ["health-check", targetKey, expectedMcpUrl, latestVersion ?? null] as const,
 
   // Chat session domain
   chatSessionHistory: (chatKey: string) =>

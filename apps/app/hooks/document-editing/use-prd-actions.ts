@@ -1,6 +1,7 @@
 "use client";
 
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useMemo, useState } from "react";
@@ -66,10 +67,15 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
     };
   }, [makeRequestChangesHandler]);
 
-  const handleGeneratePrd = () => {
+  const handleGeneratePrd = (additionalRepos?: AdditionalRepoRef[]) => {
     setPendingCommand(RunLoopCommand.GeneratePrd);
     runLoop.mutate(
-      { documentId, command: RunLoopCommand.GeneratePrd },
+      {
+        documentId,
+        command: RunLoopCommand.GeneratePrd,
+        ...(additionalRepos &&
+          additionalRepos.length > 0 && { additionalRepos }),
+      },
       {
         onSuccess: () => {
           toast.success("PRD generation started");

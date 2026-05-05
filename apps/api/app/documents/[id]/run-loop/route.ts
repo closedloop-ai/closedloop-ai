@@ -3,16 +3,12 @@ import {
   type DesktopApiNamespace,
   LEGACY_DESKTOP_API_NAMESPACE,
 } from "@repo/api/src/desktop-api-namespace";
-import { ArtifactType } from "@repo/api/src/types/artifact";
 import { success } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
-import {
-  type CreateLoopResponse,
-  RunLoopCommand,
-} from "@repo/api/src/types/loop";
+import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { documentExecutionService } from "@/app/documents/execution-service";
@@ -25,7 +21,6 @@ import {
 } from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
-import { scheduleAutoEvaluatePrd } from "@/lib/loops/auto-evaluate-prd";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { getDefaultPrompt } from "@/lib/loops/prompts";
@@ -138,7 +133,6 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         contextRefs,
         parentLoopId,
         parentLoopComputeTargetId,
-        source,
         additionalRepos: resolvedAdditionalRepos,
       } = await resolveLoopContext(
         artifact,
@@ -208,15 +202,6 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
           metadata: getLoopMetadata(body.desktopApiNamespace),
         }
       );
-
-      // Auto-evaluate the source PRD when the user triggers plan generation.
-      // Skipped if a loop already exists for that PRD's current version.
-      if (
-        body.command === RunLoopCommand.Plan &&
-        source?.type === ArtifactType.Document
-      ) {
-        scheduleAutoEvaluatePrd(source.id, user.organizationId, user.id);
-      }
 
       const launchPromise = launchLoop(
         loopResponse.loopId,

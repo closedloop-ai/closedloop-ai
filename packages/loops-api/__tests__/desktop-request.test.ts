@@ -42,6 +42,32 @@ describe("LoopRequestBodySchema — additionalRepos", () => {
   });
 });
 
+describe("LoopRequestBodySchema — primaryArtifactId", () => {
+  it("accepts a string value", () => {
+    const result = LoopRequestBodySchema.safeParse({
+      ...base,
+      primaryArtifactId: "artifact-123",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts omitted field (undefined)", () => {
+    const result = LoopRequestBodySchema.safeParse({ ...base });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects null — z.string().optional() does not accept null", () => {
+    const result = LoopRequestBodySchema.safeParse({
+      ...base,
+      primaryArtifactId: null,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].path).toContain("primaryArtifactId");
+    }
+  });
+});
+
 describe("LoopRequestBodySchema — implementation plan raw state", () => {
   it("accepts implementation plan artifacts with raw plan state", () => {
     const result = LoopRequestBodySchema.safeParse({

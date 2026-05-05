@@ -1,3 +1,7 @@
+import {
+  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
+  LEGACY_DESKTOP_API_NAMESPACE,
+} from "@repo/api/src/desktop-api-namespace";
 import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -244,6 +248,57 @@ describe("computeTargetsService security status", () => {
             pluginVersion: "0.13.22",
             socketProtocolVersion: 2,
             desktopSecurityUpgradeProtocolVersion: 1,
+          },
+        }),
+      })
+    );
+  });
+
+  it("clears stale desktop API namespace when current capability payload omits it", async () => {
+    mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
+    const update = vi.fn().mockResolvedValue(
+      buildTarget({
+        capabilities: {
+          pluginVersion: "1.11.3",
+          socketProtocolVersion: "1",
+        },
+      })
+    );
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({
+          capabilities: {
+            [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]:
+              LEGACY_DESKTOP_API_NAMESPACE,
+            pluginVersion: "1.10.0",
+          },
+        }),
+        update,
+      },
+      apiKey: {
+        findMany: vi.fn(),
+      },
+    });
+
+    await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      {
+        capabilities: {
+          pluginVersion: "1.11.3",
+          socketProtocolVersion: "1",
+        },
+      },
+      "clerk-user-1"
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          capabilities: {
+            pluginVersion: "1.11.3",
+            socketProtocolVersion: "1",
           },
         }),
       })

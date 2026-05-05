@@ -7,6 +7,7 @@ import {
   DocumentType,
   type DocumentWithWorkstream,
 } from "@repo/api/src/types/document";
+import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -54,6 +55,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AdditionalReposPicker } from "@/app/(authenticated)/implementation-plans/components/additional-repos-picker";
 import {
   HiddenFileInput,
   type HiddenFileInputHandle,
@@ -70,6 +72,7 @@ import {
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
+import { useMultiRepoPrdEnabled } from "@/hooks/use-multi-repo-prd-enabled";
 import {
   DOCUMENT_STATUS_LABELS,
   DOCUMENT_TYPE_BADGE_LABELS,
@@ -115,6 +118,11 @@ export function CreateDocumentModal({
   const [targetBranch, setTargetBranch] = useState("main");
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
   const [reverseSynthesisLink, setReverseSynthesisLink] = useState("");
+  const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
+    []
+  );
+  const [incompleteAdditionalRepos, setIncompleteAdditionalRepos] =
+    useState(false);
 
   // Context source selection for implementation plans (PRD or Feature)
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
@@ -139,6 +147,8 @@ export function CreateDocumentModal({
   const typeLabel = DOCUMENT_TYPE_LABELS[documentType] ?? documentType;
   const isImplementationPlan = documentType === DocumentType.ImplementationPlan;
   const isPrd = documentType === DocumentType.Prd;
+  const isMultiRepoPrdEnabled = useMultiRepoPrdEnabled();
+  const showPicker = isPrd && isMultiRepoPrdEnabled;
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -217,22 +227,13 @@ export function CreateDocumentModal({
       transformedUsers
     );
 
-    if (populatedFields) {
-      setSelectedApprover(populatedFields.approver);
-      setStatus(populatedFields.status);
-      // Only overwrite repo/branch when the source explicitly defines them.
-      // Features inherit repo/branch from the project, so a null source value
-      // must not clobber the project-seeded defaults already in state.
-      if (populatedFields.targetRepo !== null) {
-        setTargetRepo(populatedFields.targetRepo);
-      }
-      if (populatedFields.targetBranch !== null) {
-        setTargetBranch(populatedFields.targetBranch);
-      }
-      if (populatedFields.selectedRepoId !== null) {
-        setSelectedRepoId(populatedFields.selectedRepoId);
-      }
-    }
+    applySourceFields(populatedFields, {
+      setSelectedApprover,
+      setStatus,
+      setTargetRepo,
+      setTargetBranch,
+      setSelectedRepoId,
+    });
   }, [
     isImplementationPlan,
     selectedSourceId,
@@ -284,6 +285,8 @@ export function CreateDocumentModal({
     setStatus("DRAFT");
     setSelectedSourceId("");
     setReverseSynthesisLink("");
+    setAdditionalRepos([]);
+    setIncompleteAdditionalRepos(false);
     setError(null);
     fileInputRef.current?.reset();
     if (showProjectSelector) {
@@ -380,6 +383,7 @@ export function CreateDocumentModal({
           runLoop.mutate({
             documentId: artifact.id,
             command: RunLoopCommand.GeneratePrd,
+            ...(additionalRepos.length > 0 && { additionalRepos }),
           });
           handleClose();
           onSuccess?.(artifact);
@@ -389,6 +393,12 @@ export function CreateDocumentModal({
   };
 
   const isSubmitting = createDocument.isPending;
+  const canGenerate = computeCanGenerate(
+    title,
+    selectedProjectId,
+    showPicker,
+    incompleteAdditionalRepos
+  );
 
   return (
     <Dialog
@@ -531,6 +541,20 @@ export function CreateDocumentModal({
             targetBranch={targetBranch}
           />
 
+          {showPicker && (
+            <div className="space-y-2">
+              <Label className="font-normal text-muted-foreground text-xs">
+                Additional Repositories (optional)
+              </Label>
+              <AdditionalReposPicker
+                initialValue={[]}
+                onChange={setAdditionalRepos}
+                onIncompleteChange={setIncompleteAdditionalRepos}
+                targetRepo={targetRepo}
+              />
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label className="font-normal text-muted-foreground text-xs">
               Status
@@ -566,7 +590,7 @@ export function CreateDocumentModal({
         </div>
 
         <CreateDocumentFooter
-          canGenerate={!!title.trim() && !!selectedProjectId}
+          canGenerate={canGenerate}
           canSubmit={!!title.trim() && !!selectedProjectId}
           isGenerating={false}
           isPrd={isPrd}
@@ -747,6 +771,39 @@ function populateFieldsFromSource(
     targetBranch: selectedSource.targetBranch ?? null,
     selectedRepoId,
   };
+}
+
+type SourceFieldSetters = {
+  setSelectedApprover: (v: User | null) => void;
+  setStatus: (v: DocumentStatus) => void;
+  setTargetRepo: (v: string) => void;
+  setTargetBranch: (v: string) => void;
+  setSelectedRepoId: (v: string) => void;
+};
+
+/**
+ * Applies the pre-populated source fields to form state.
+ * Only overwrites repo/branch/repoId when the source explicitly defines them
+ * (null means "don't overwrite the caller's current value").
+ */
+function applySourceFields(
+  fields: ReturnType<typeof populateFieldsFromSource>,
+  setters: SourceFieldSetters
+) {
+  if (!fields) {
+    return;
+  }
+  setters.setSelectedApprover(fields.approver);
+  setters.setStatus(fields.status);
+  if (fields.targetRepo !== null) {
+    setters.setTargetRepo(fields.targetRepo);
+  }
+  if (fields.targetBranch !== null) {
+    setters.setTargetBranch(fields.targetBranch);
+  }
+  if (fields.selectedRepoId !== null) {
+    setters.setSelectedRepoId(fields.selectedRepoId);
+  }
 }
 
 function CreateDocumentFooter({
@@ -1001,4 +1058,22 @@ function PrdContentFields({
       </div>
     </>
   );
+}
+
+function computeCanGenerate(
+  title: string,
+  selectedProjectId: string,
+  showPicker: boolean,
+  incompleteAdditionalRepos: boolean
+): boolean {
+  if (!title.trim()) {
+    return false;
+  }
+  if (!selectedProjectId) {
+    return false;
+  }
+  if (showPicker && incompleteAdditionalRepos) {
+    return false;
+  }
+  return true;
 }

@@ -810,6 +810,17 @@ export const loopsService = {
       throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
     }
 
+    const parsedAdditionalRepos = parseAdditionalRepos(parent.additionalRepos);
+    if (parent.additionalRepos != null && parsedAdditionalRepos === null) {
+      throw new Error(
+        `Loop ${parentLoopId} has malformed additionalRepos data and cannot be resumed. Operator action required.`
+      );
+    }
+
+    if (parsedAdditionalRepos && parsedAdditionalRepos.length > 0) {
+      await authorizeAdditionalRepos(parsedAdditionalRepos, organizationId);
+    }
+
     // Do NOT copy parent.s3StateKey — the child loop gets its own key when
     // launched (via ECS claim or desktop persistence). Copying the parent's
     // key creates a window where the child reads/writes the parent's storage.
@@ -824,9 +835,10 @@ export const loopsService = {
           parentLoopId: parent.id,
           prompt: input.prompt ?? parent.prompt,
           repo: parent.repo ?? undefined,
+          additionalRepos: parsedAdditionalRepos ?? undefined,
           contextRefs: parent.contextRefs ?? undefined,
           computeTargetId: computeTargetId ?? null,
-          status: "PENDING",
+          status: LoopStatus.Pending,
         },
       })
     );

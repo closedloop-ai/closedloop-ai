@@ -10,9 +10,11 @@ import type {
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
+import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
+import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 
 type UseArtifactRunLoopConfig = {
   documentId: string | null;
@@ -21,11 +23,17 @@ type UseArtifactRunLoopConfig = {
 export type RunLoopParams = {
   command: RunLoopCommand;
   prompt?: string;
-  computeTargetId?: string;
+  computeTargetId?: string | null;
   backendOverride?: boolean;
   repo?: CreateLoopRequest["repo"];
   additionalRepos?: AdditionalRepoRef[];
 };
+
+type RunLoopMutationParams = RunLoopParams & { documentId: string };
+type RunLoopMutationOptions = Parameters<
+  ReturnType<typeof useRunLoop>["mutate"]
+>[1];
+type RequestChangesResolver = (result: boolean) => void;
 
 /**
  * Generic conflict-resolution machinery for run-loop operations.
@@ -61,6 +69,7 @@ export type RunLoopParams = {
 export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   // TanStack Query mutation — all loop operations route through run-loop
   const runLoop = useRunLoop();
+  const preLoopGate = useOptionalPreLoopSystemCheckGate();
 
   // Multi-target conflict state
   const [multiTargetState, setMultiTargetState] = useState<{
@@ -73,13 +82,66 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
 
   /** Command last passed to `prepareConflictRefs` — used to restore evaluate loading state on conflict replay. */
   const pendingConflictCommandRef = useRef<RunLoopCommand | null>(null);
-  const pendingActionRef = useRef<((targetId: string) => Promise<void>) | null>(
-    null
-  );
+  const pendingActionRef = useRef<((targetId: string) => void) | null>(null);
   const pendingMismatchActionRef = useRef<
-    | ((targetId: string | null, backendOverride: boolean) => Promise<void>)
-    | null
+    ((targetId: string | null, backendOverride: boolean) => void) | null
   >(null);
+  const requestChangesResolversRef = useRef<Set<RequestChangesResolver>>(
+    new Set()
+  );
+  const executeOwnerKey = documentId
+    ? `run-loop:${RunLoopCommand.Execute}:${documentId}`
+    : null;
+
+  useEffect(
+    () => () => {
+      for (const resolveRequestChanges of requestChangesResolversRef.current) {
+        resolveRequestChanges(false);
+      }
+      requestChangesResolversRef.current.clear();
+    },
+    []
+  );
+
+  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
+  const routeConflictError = useCallback((error: unknown): void => {
+    handleRunLoopResponse(error, {
+      onMultipleTargets: (conflict) =>
+        setMultiTargetState({ availableTargets: conflict.availableTargets }),
+      onBackendMismatch: (body) => setBackendMismatchState(body),
+      onSuccess: () => {
+        // unreachable: error handlers only receive thrown errors
+      },
+      onRateLimited: (message) => toast.error(message),
+    });
+  }, []);
+
+  const runLoopMutationWithOptionalPreLoopCheck = useCallback(
+    (params: RunLoopMutationParams, execute: () => void): boolean => {
+      if (
+        params.command !== RunLoopCommand.Execute ||
+        !preLoopGate ||
+        !executeOwnerKey
+      ) {
+        return false;
+      }
+
+      preLoopGate
+        .runWithPreLoopSystemCheck(
+          {
+            command: PreLoopCommand.ExecutePlan,
+            computeTargetId: params.computeTargetId,
+            documentType: "implementation_plan",
+            documentId: params.documentId,
+            ownerKey: executeOwnerKey,
+          },
+          execute
+        )
+        .catch(() => undefined);
+      return true;
+    },
+    [executeOwnerKey, preLoopGate]
+  );
 
   /**
    * Restores the activeCommandRef before replaying a conflicted evaluate command.
@@ -120,54 +182,60 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           activeCommandRef.current = null;
         }
       };
-      pendingActionRef.current = async (targetId: string) => {
+      const replayRunLoop = (replayParams: RunLoopMutationParams): void => {
+        runLoop.mutate(replayParams, {
+          onError: routeConflictError,
+          onSettled: clearEvaluateActiveCommandAfterReplay,
+        });
+      };
+      pendingActionRef.current = (targetId: string) => {
         if (!documentId) {
           return;
         }
-        try {
-          await runLoop.mutateAsync({
-            ...baseParams,
-            documentId,
-            computeTargetId: targetId,
-          });
-        } finally {
-          clearEvaluateActiveCommandAfterReplay();
+
+        const replayParams = {
+          ...baseParams,
+          documentId,
+          computeTargetId: targetId,
+        };
+        const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
+          replayParams,
+          () => replayRunLoop(replayParams)
+        );
+        if (!queuedPreLoopCheck) {
+          replayRunLoop(replayParams);
         }
       };
-      pendingMismatchActionRef.current = async (
+      pendingMismatchActionRef.current = (
         targetId: string | null,
         backendOverride: boolean
       ) => {
         if (!documentId) {
           return;
         }
-        try {
-          await runLoop.mutateAsync({
-            ...baseParams,
-            documentId,
-            computeTargetId: targetId ?? undefined,
-            backendOverride,
-          });
-        } finally {
-          clearEvaluateActiveCommandAfterReplay();
+
+        const replayParams = {
+          ...baseParams,
+          documentId,
+          computeTargetId: targetId,
+          backendOverride,
+        };
+        const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
+          replayParams,
+          () => replayRunLoop(replayParams)
+        );
+        if (!queuedPreLoopCheck) {
+          replayRunLoop(replayParams);
         }
       };
     },
-    [documentId, runLoop]
+    [
+      documentId,
+      routeConflictError,
+      runLoop,
+      runLoopMutationWithOptionalPreLoopCheck,
+    ]
   );
-
-  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
-  const routeConflictError = useCallback((error: unknown): void => {
-    handleRunLoopResponse(error, {
-      onMultipleTargets: (conflict) =>
-        setMultiTargetState({ availableTargets: conflict.availableTargets }),
-      onBackendMismatch: (body) => setBackendMismatchState(body),
-      onSuccess: () => {
-        // unreachable: error handlers only receive thrown errors
-      },
-      onRateLimited: (message) => toast.error(message),
-    });
-  }, []);
 
   /**
    * Resolve a multi-target conflict by selecting a specific compute target.
@@ -182,9 +250,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingActionRef.current?.(targetId).catch(routeConflictError);
+      pendingActionRef.current?.(targetId);
     },
-    [restoreEvaluateActiveCommandBeforeReplay, routeConflictError]
+    [restoreEvaluateActiveCommandBeforeReplay]
   );
 
   /**
@@ -201,15 +269,9 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingMismatchActionRef
-        .current?.(targetId, true)
-        .catch(routeConflictError);
+      pendingMismatchActionRef.current?.(targetId, true);
     },
-    [
-      backendMismatchState,
-      restoreEvaluateActiveCommandBeforeReplay,
-      routeConflictError,
-    ]
+    [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]
   );
 
   /**
@@ -226,26 +288,42 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingMismatchActionRef
-        .current?.(targetId, true)
-        .catch(routeConflictError);
+      pendingMismatchActionRef.current?.(targetId, true);
     },
-    [
-      backendMismatchState,
-      restoreEvaluateActiveCommandBeforeReplay,
-      routeConflictError,
-    ]
+    [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]
   );
 
   const dismissBackendMismatch = useCallback(() => {
     setBackendMismatchState(null);
   }, []);
 
+  const isPreLoopExecutePending = Boolean(
+    executeOwnerKey && preLoopGate?.pendingOwnerKey === executeOwnerKey
+  );
+
+  /**
+   * Runs Execute Plan through the pre-loop system-check gate while preserving
+   * the raw run-loop mutation path for every other command in this launch.
+   */
+  const runLoopWithPreLoopSystemCheck = useCallback(
+    (params: RunLoopMutationParams, options?: RunLoopMutationOptions): void => {
+      if (
+        runLoopMutationWithOptionalPreLoopCheck(params, () =>
+          runLoop.mutate(params, options)
+        )
+      ) {
+        return;
+      }
+      runLoop.mutate(params, options);
+    },
+    [runLoop, runLoopMutationWithOptionalPreLoopCheck]
+  );
+
   /**
    * Factory that creates a `handleRequestChanges`-style handler for a given run-loop command.
    *
    * Eliminates boilerplate shared between plan and PRD request-changes flows:
-   * `prepareConflictRefs` → `mutateAsync` → success toast → `routeConflictError` on failure.
+   * `prepareConflictRefs` → `mutate` → success toast → `routeConflictError` on failure.
    *
    * @param command - The RunLoopCommand to send (e.g. RequestChanges, RequestPrdChanges)
    * @param successMessage - Toast text shown on success
@@ -253,25 +331,42 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
    */
   const makeRequestChangesHandler = useCallback(
     (command: RunLoopCommand, successMessage: string) =>
-      async (changes: string): Promise<boolean> => {
+      (changes: string): Promise<boolean> => {
         if (!documentId) {
-          return false;
+          return Promise.resolve(false);
         }
         prepareConflictRefs({ command, prompt: changes });
-        try {
-          await runLoop.mutateAsync(
-            { documentId, command, prompt: changes },
-            {
-              onSuccess: () => {
-                toast.success(successMessage);
-              },
+        return new Promise<boolean>((resolve) => {
+          let settled = false;
+          const resolveOnce: RequestChangesResolver = (result) => {
+            if (settled) {
+              return;
             }
-          );
-          return true;
-        } catch (error) {
-          routeConflictError(error);
-          return false;
-        }
+            settled = true;
+            requestChangesResolversRef.current.delete(resolveOnce);
+            resolve(result);
+          };
+          requestChangesResolversRef.current.add(resolveOnce);
+
+          try {
+            runLoop.mutate(
+              { documentId, command, prompt: changes },
+              {
+                onSuccess: () => {
+                  toast.success(successMessage);
+                  resolveOnce(true);
+                },
+                onError: (error) => {
+                  routeConflictError(error);
+                  resolveOnce(false);
+                },
+              }
+            );
+          } catch (error) {
+            routeConflictError(error);
+            resolveOnce(false);
+          }
+        });
       },
     [documentId, prepareConflictRefs, runLoop, routeConflictError]
   );
@@ -285,6 +380,8 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     confirmPreferredBackend,
     dismissBackendMismatch,
     makeRequestChangesHandler,
+    runLoopWithPreLoopSystemCheck,
+    isPreLoopExecutePending,
     multiTargetState,
     backendMismatchState,
     pendingConflictCommandRef,

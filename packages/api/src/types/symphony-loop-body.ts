@@ -37,4 +37,5 @@ export type SymphonyLoopBody = {
   userContext?: string;
   attachments?: ContextPackAttachment[];
   additionalRepos?: AdditionalRepoRef[];
+  primaryArtifactId?: string;
 };

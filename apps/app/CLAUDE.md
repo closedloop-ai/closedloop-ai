@@ -50,6 +50,8 @@ hooks/
 - **[pattern]**: Radix Dialog `modal={false}` still fires `onInteractOutside` and `onPointerDownOutside`. Non-modal panels: `e.preventDefault()` on both.
 - **[pattern]**: Multi-provider AI context injection must be provider-aware. Skip client-side formatting for non-target providers — use server-side.
 - **[convention]**: Async cancellation in useEffect: `let cancelled = false` + cleanup return, NOT AbortController/useRef.
+- **[pattern]**: Shared client-only UI state that must survive component remounts, route transitions, or browser back/forward should live in a small `useSyncExternalStore` store module, following `lib/engineer/routing-store.ts` and `lib/engineer/electron-detection.ts`. Keep reset semantics explicit: module memory for current-tab only, `localStorage` only when refresh/new-tab persistence is intended.
+- **[mistake]**: Do not put navigation-sensitive shared state in component module-local `Set`/`Map`/`let` values or ad hoc `window` globals. This repo does not currently use Zustand in `apps/app`; do not add it just to store small client-only state unless a human explicitly asks for a state-library migration.
 
 ### UI Patterns
 - **[pattern]**: Collapsible sections in document sidebar: PropertiesPanel pattern with CollapsibleTrigger/Content, ChevronUp/Down, default collapsed.

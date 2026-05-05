@@ -8,27 +8,58 @@ import type { DocumentRowItem } from "@/components/document-table/document-row";
 import { projectTreeKeys } from "@/hooks/queries/use-project-tree";
 import { useApiClient } from "@/hooks/use-api-client";
 import { getArtifactRoute } from "@/lib/document-navigation";
+import {
+  addNodeParentEntries,
+  type ParentEntry,
+} from "@/lib/project-tree-utils";
 
 function getProjectId(item: DocumentRowItem): string | undefined {
   if (item.kind === "project") {
     return item.data.id;
   }
+  if (item.kind === "branch") {
+    return item.data.projectId;
+  }
   return item.data.project?.id;
+}
+
+function isDocumentArtifact(artifact: Artifact): boolean {
+  return artifact.type === ArtifactType.Document;
+}
+
+/** Merge a single project tree response into the parent map. */
+function mergeTreeIntoParentMap(
+  treeData: ProjectTreeResponse,
+  map: Map<string, ParentEntry>
+): void {
+  for (const node of treeData.nodes) {
+    addNodeParentEntries(node, map);
+  }
+  for (const entry of treeData.externalParents) {
+    if (map.has(entry.childId) || !isDocumentArtifact(entry.parent)) {
+      continue;
+    }
+    map.set(entry.childId, {
+      title: entry.parent.name,
+      href: getArtifactRoute(entry.parent),
+    });
+  }
 }
 
 /**
  * Fetches project trees for all projects represented in `items`, then returns
- * a map from child entity ID to its parent entity title.
+ * a map from child entity ID to its immediate parent entity title.
  *
- * In-project tree parents take precedence; cross-project parents (returned in
- * `treeData.externalParents`) fill in for items whose parent lives elsewhere.
+ * Uses depth-aware mapping so depth-2+ items get their immediate parent,
+ * not the root. Cross-project parents fill in for items whose parent lives
+ * outside this project.
  *
  * Used by team-level flat tables (Features, Plans, My Tasks) to populate the
  * Parent column when items span multiple projects.
  */
 export function useItemsParentTitles(
   items: DocumentRowItem[]
-): Map<string, { title: string; href: string | null }> {
+): Map<string, ParentEntry> {
   const apiClient = useApiClient();
 
   const projectIds = useMemo(() => {
@@ -50,39 +81,11 @@ export function useItemsParentTitles(
     })),
   });
 
-  const parentTitles = new Map<
-    string,
-    { title: string; href: string | null }
-  >();
+  const parentTitles = new Map<string, ParentEntry>();
   for (const query of treeQueries) {
-    if (!query.data) {
-      continue;
-    }
-    for (const node of query.data.nodes) {
-      const parentHref = getArtifactRoute(node.root);
-      for (const child of node.children) {
-        parentTitles.set(child.id, {
-          title: node.root.name,
-          href: parentHref,
-        });
-      }
-    }
-    for (const entry of query.data.externalParents) {
-      if (parentTitles.has(entry.childId)) {
-        continue;
-      }
-      if (!isDocumentArtifact(entry.parent)) {
-        continue;
-      }
-      parentTitles.set(entry.childId, {
-        title: entry.parent.name,
-        href: getArtifactRoute(entry.parent),
-      });
+    if (query.data) {
+      mergeTreeIntoParentMap(query.data, parentTitles);
     }
   }
   return parentTitles;
-}
-
-function isDocumentArtifact(artifact: Artifact): boolean {
-  return artifact.type === ArtifactType.Document;
 }

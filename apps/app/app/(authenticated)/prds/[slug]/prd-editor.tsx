@@ -152,7 +152,7 @@ export function PRDEditor({
         onEvaluatePrd={prdActions.handleEvaluatePrd}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
-        onGeneratePrd={prdActions.handleGeneratePrd}
+        onGeneratePrd={() => prdActions.handleGeneratePrd()}
         onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
         onRequestChanges={openRequestChangesModal}

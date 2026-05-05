@@ -2,9 +2,9 @@
  * Unit tests for usePrdActions hook.
  *
  * Covers:
- * - success path: handleRequestChanges returns true and calls mutateAsync correctly
+ * - success path: handleRequestChanges returns true and calls mutate correctly
  * - conflict error routing: 409 multiple_targets error sets multiTargetState
- * - null documentId guard: returns false without calling mutateAsync
+ * - null documentId guard: returns false without calling mutate
  */
 
 import { RunLoopCommand } from "@repo/api/src/types/loop";
@@ -19,11 +19,11 @@ import { ApiError } from "@/lib/api-error";
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const mockMutateAsync = vi.fn();
+const mockMutate = vi.fn();
 
 vi.mock("@/hooks/queries/use-loops", () => ({
   useRunLoop: () => ({
-    mutateAsync: mockMutateAsync,
+    mutate: mockMutate,
     isPending: false,
   }),
 }));
@@ -88,10 +88,9 @@ describe("usePrdActions", () => {
   });
 
   describe("handleRequestChanges — success path", () => {
-    test("returns true and calls mutateAsync with correct arguments", async () => {
-      mockMutateAsync.mockResolvedValueOnce({
-        loopId: "loop-123",
-        status: "running",
+    test("returns true and calls mutate with correct arguments", async () => {
+      mockMutate.mockImplementationOnce((_params, options) => {
+        options?.onSuccess?.({ loopId: "loop-123", status: "running" });
       });
 
       const { result } = renderHook(
@@ -106,8 +105,8 @@ describe("usePrdActions", () => {
       });
 
       expect(returnValue).toBe(true);
-      expect(mockMutateAsync).toHaveBeenCalledOnce();
-      expect(mockMutateAsync).toHaveBeenCalledWith(
+      expect(mockMutate).toHaveBeenCalledOnce();
+      expect(mockMutate).toHaveBeenCalledWith(
         {
           documentId: "test-id",
           command: RunLoopCommand.RequestPrdChanges,
@@ -119,7 +118,7 @@ describe("usePrdActions", () => {
   });
 
   describe("handleRequestChanges — conflict error routing", () => {
-    test("sets multiTargetState when mutateAsync throws ApiError with multiple_targets body", async () => {
+    test("sets multiTargetState when mutate reports ApiError with multiple_targets body", async () => {
       const conflict = makeMultipleTargetsConflict();
       const apiError = new ApiError(
         "Conflict",
@@ -127,7 +126,9 @@ describe("usePrdActions", () => {
         undefined,
         wrapInApiResult(conflict)
       );
-      mockMutateAsync.mockRejectedValueOnce(apiError);
+      mockMutate.mockImplementationOnce((_params, options) => {
+        options?.onError?.(apiError);
+      });
 
       // Simulate routeConflictError invoking onMultipleTargets to set multiTargetState
       mockHandleRunLoopResponse.mockImplementationOnce(

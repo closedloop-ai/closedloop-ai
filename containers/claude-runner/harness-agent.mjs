@@ -34,7 +34,18 @@ import {
 import { ContextPackSchema } from "@closedloop-ai/loops-api/context-pack";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import { RepoExecutionResultSchema } from "@closedloop-ai/loops-api/execution-result";
+import {
+  getMultiRepoPolicy,
+  PeerWriteMode,
+} from "@closedloop-ai/loops-api/multi-repo-policy";
 import { normalizeModelName } from "@closedloop-ai/loops-api/tokens";
+
+import {
+  buildMountPathsFooter,
+  buildPeerLocalPaths,
+  DEFAULT_PEERS_DIR,
+  writePeerReposManifest,
+} from "./lib/peer-context.mjs";
 
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — lazy-loaded on first use (not needed for unit tests)
@@ -948,6 +959,33 @@ async function writeContextPackFiles(workDir, pack) {
       filesWritten++;
     }
 
+    // Write peer-repos.json — universal manifest with each peer's fullName,
+    // branch, and absolute mount path. Always written when peers are present
+    // (independent of command policy) so downstream tooling has a stable
+    // shape; agent consumption is gated by --add-dir injection upstream.
+    // Fail-soft: log and continue on write errors.
+    if (
+      Array.isArray(pack.additionalRepos) &&
+      pack.additionalRepos.length > 0
+    ) {
+      try {
+        const wrote = writePeerReposManifest(
+          contextDir,
+          buildPeerLocalPaths(pack.additionalRepos)
+        );
+        if (wrote) {
+          filesWritten++;
+        }
+      } catch (err) {
+        log(
+          "warn",
+          `Failed to write peer-repos.json: ${redactSensitive(
+            err instanceof Error ? err.message : String(err)
+          )}`
+        );
+      }
+    }
+
     // Write prior loop summaries as prior-loops.md
     if (
       Array.isArray(pack.priorLoopSummaries) &&
@@ -1094,18 +1132,18 @@ function findExistingRunDir(workDir) {
  *
  * Without this, PLAN commands get no --prd flag and produce empty plans.
  */
-function writePrdFile(targetDir, contextPack) {
-  let prdContent = contextPack?.prompt ?? null;
+function writePrdFile(targetDir, contextPack, options = {}) {
+  const artifactTypes = options.artifactTypes ?? [
+    LoopArtifactType.Prd,
+    LoopArtifactType.Feature,
+  ];
+  let prdContent = options.allowPrompt === false ? null : contextPack?.prompt;
 
-  // Fall back to the first PRD-type artifact, then FEATURE-type
+  // Fall back to the first artifact matching the requested type priority.
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
-    const prdArtifact = contextPack.artifacts.find(
-      (a) => a.type === LoopArtifactType.Prd
-    );
-    const featureArtifact = prdArtifact
-      ? null
-      : contextPack.artifacts.find((a) => a.type === LoopArtifactType.Feature);
-    const source = prdArtifact || featureArtifact;
+    const source = artifactTypes
+      .map((type) => contextPack.artifacts.find((a) => a.type === type))
+      .find(Boolean);
 
     if (source?.content) {
       prdContent = source.content;
@@ -1123,6 +1161,25 @@ function writePrdFile(targetDir, contextPack) {
   fs.writeFileSync(prdPath, prdContent);
   log("info", `Wrote prd.md to ${prdPath}`);
   return prdPath;
+}
+
+function writeFeatureEvaluationPrdFile(targetDir, contextPack) {
+  return writePrdFile(targetDir, contextPack, {
+    allowPrompt: false,
+    artifactTypes: [LoopArtifactType.Feature],
+  });
+}
+
+function hasArtifactContent(contextPack, artifactType) {
+  return (
+    Array.isArray(contextPack?.artifacts) &&
+    contextPack.artifacts.some(
+      (artifact) =>
+        artifact.type === artifactType &&
+        typeof artifact.content === "string" &&
+        artifact.content.trim().length > 0
+    )
+  );
 }
 
 /**
@@ -1247,7 +1304,7 @@ function cloneRepo(workDir) {
 // ---------------------------------------------------------------------------
 // Additional peer repository cloning
 // ---------------------------------------------------------------------------
-function cloneAdditionalRepos(entries, peersDir = "/workspace/peers") {
+function cloneAdditionalRepos(entries, peersDir = DEFAULT_PEERS_DIR) {
   if (!Array.isArray(entries) || entries.length === 0) {
     return [];
   }
@@ -2522,6 +2579,7 @@ async function uploadState(workDir, output, runDir) {
     LoopArtifactFile.PrdJudges,
     LoopArtifactFile.PlanJudges,
     LoopArtifactFile.CodeJudges,
+    LoopArtifactFile.FeatureJudges,
     LoopArtifactFile.Perf,
     LoopArtifactFile.State,
   ];
@@ -2685,8 +2743,18 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath, additionalRepoPaths) {
   return { cmd: "bash", args };
 }
 
-function buildClaudeDirectArgs(workDir, symphonyWD) {
+/**
+ * @param {string} workDir
+ * @param {string|null|undefined} symphonyWD
+ * @param {Array<{fullName: string, branch: string, localPath: string}>} [peers]
+ *   Resolved peer metadata. Single source of truth for both the --add-dir
+ *   flags AND the "## Mounted paths" footer; passed by buildCommand from the
+ *   orchestration site. The empty / undefined case is byte-identical to the
+ *   no-peer baseline.
+ */
+function buildClaudeDirectArgs(workDir, symphonyWD, peers) {
   const args = [];
+  const resolvedPeers = Array.isArray(peers) ? peers : [];
 
   // -p: print mode (non-interactive, required for --output-format stream-json).
   // --output-format stream-json: emit structured JSONL so we can parse token
@@ -2707,6 +2775,13 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
   // If resuming from a parent loop, use --resume to continue the session
   if (config.parentSessionId) {
     args.push("--resume", config.parentSessionId);
+  }
+
+  // Inject --add-dir for each peer worktree. Both --add-dir paths AND the
+  // mount-paths footer are derived from `resolvedPeers` so the agent's prompt
+  // can never advertise a path that wasn't actually mounted.
+  for (const peer of resolvedPeers) {
+    args.push("--add-dir", peer.localPath);
   }
 
   switch (config.command) {
@@ -2737,7 +2812,8 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
     case LoopCommand.Chat:
     case LoopCommand.Explore:
     case LoopCommand.Decompose:
-    case LoopCommand.GeneratePrd: {
+    case LoopCommand.GeneratePrd:
+    case LoopCommand.RequestPrdChanges: {
       const contextDir = path.join(workDir, ".closedloop-ai", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";
@@ -2747,7 +2823,11 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       if (!prompt) {
         throw new Error(`No prompt found for ${config.command} command`);
       }
-      args.push(prompt);
+      // The footer is empty when resolvedPeers is empty (NO_PEERS commands
+      // and zero-peer GENERATE_PRD / REQUEST_PRD_CHANGES). It enumerates
+      // exactly the same peers as the --add-dir flags above, so the agent
+      // cannot be told a path that wasn't actually mounted.
+      args.push(prompt + buildMountPathsFooter(resolvedPeers));
       break;
     }
     case LoopCommand.EvaluatePrd: {
@@ -2795,6 +2875,19 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       const skillCall =
         `Activate judges:run-judges skill --artifact-type code --workdir ${runDir}.\n` +
         `REPO_PATH=${workDir} (search here for relevant code).\n`;
+
+      args.push(skillCall);
+      break;
+    }
+    case LoopCommand.EvaluateFeature: {
+      // Feature artifact (prd.md) is written to symphonyWD (the run directory) by writePrdFile().
+      // Use symphonyWD so the skill reads the feature body and writes feature-judges.json
+      // to the correct location.
+      // Feature evaluation is repo-less — do NOT append any REPO_PATH= line.
+      const runDir = symphonyWD ?? workDir;
+
+      // Build skill invocation with runDir containing feature artifact
+      const skillCall = `Activate judges:run-judges skill --artifact-type feature --workdir ${runDir}.\n`;
 
       args.push(skillCall);
       break;
@@ -2866,7 +2959,7 @@ function setupShutdownHandlers(workDir) {
     await refreshGitHubToken(contextPackRef);
 
     // Attempt safety commit before uploading state (only for code-producing commands)
-    const shouldCommitAndPush = config.command === LoopCommand.Execute;
+    const shouldCommitAndPush = isPeerWriteEnabled();
     if (shouldCommitAndPush) {
       attemptSafetyCommit(
         workDir,
@@ -2992,6 +3085,17 @@ function shouldCreateWorkingBranch() {
   return config.command === LoopCommand.Execute;
 }
 
+/**
+ * Read-write peer mode means the harness will commit + push agent changes in
+ * peer worktrees and the primary repo. Read-only commands (PLAN, GENERATE_PRD,
+ * REQUEST_PRD_CHANGES) discard agent worktree writes on cleanup.
+ */
+function isPeerWriteEnabled() {
+  return (
+    getMultiRepoPolicy(config.command).peerWriteMode === PeerWriteMode.ReadWrite
+  );
+}
+
 function createWorkingBranch(workDir) {
   if (!config.targetRepo) {
     return null;
@@ -3089,18 +3193,40 @@ function validatePreRunInputs(command, contextPack) {
       `Pre-run validation failed: ${error}`
     );
   }
+
+  if (
+    command === LoopCommand.EvaluateFeature &&
+    !hasArtifactContent(contextPack, LoopArtifactType.Feature)
+  ) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EVALUATE_FEATURE requires a non-empty FEATURE artifact"
+    );
+  }
 }
 
 /**
  * @param {string} workDir
  * @param {string|null|undefined} symphonyWD
  * @param {string|null|undefined} prdPath
- * @param {string[]} [additionalRepoPaths]
+ * @param {Array<{fullName: string, branch: string, localPath: string}>} [peers]
+ *   Resolved peer metadata. The orchestration site (runHarness) computes this
+ *   once via `buildPeerLocalPaths(contextPack.additionalRepos)` and threads it
+ *   through; both --add-dir paths and the mount-paths footer derive from this
+ *   single source so they cannot drift.
  */
-function buildCommand(workDir, symphonyWD, prdPath, additionalRepoPaths) {
+function buildCommand(workDir, symphonyWD, prdPath, peers) {
   const usesRunLoop =
     config.command === LoopCommand.Plan ||
     config.command === LoopCommand.Execute;
+
+  // Defense-in-depth: if a NO_PEERS command somehow has peers populated
+  // (orchestrator/validator bug), drop them before forwarding so peer-disabled
+  // commands never see --add-dir flags. The orchestrator and validators are
+  // the primary gate; this is the second line of defense.
+  const policy = getMultiRepoPolicy(config.command);
+  const gatedPeers =
+    policy.supportsAdditionalRepos && Array.isArray(peers) ? peers : [];
 
   if (usesRunLoop) {
     let runLoopPath;
@@ -3117,10 +3243,10 @@ function buildCommand(workDir, symphonyWD, prdPath, additionalRepoPaths) {
       runLoopPath,
       symphonyWD || workDir,
       prdPath,
-      additionalRepoPaths
+      gatedPeers.map((p) => p.localPath)
     );
   }
-  return buildClaudeDirectArgs(workDir, symphonyWD);
+  return buildClaudeDirectArgs(workDir, symphonyWD, gatedPeers);
 }
 
 function toHarnessError(err) {
@@ -3610,7 +3736,7 @@ async function reportFinalStatus(
   await refreshGitHubToken(contextPackRef);
   lastTokenRefreshAt = Date.now();
 
-  const shouldCommitAndPush = config.command === LoopCommand.Execute;
+  const shouldCommitAndPush = isPeerWriteEnabled();
 
   const isIncomplete = timedOut || exitCode !== 0;
   const safetyCommitMsg = isIncomplete
@@ -3778,10 +3904,14 @@ async function main() {
     prepareWorkspace(workDir);
 
     // Step 3-peer: Clone additional peer repositories specified in the context pack.
-    // Returns an array of local directory paths (e.g., ["/workspace/peers/org--repo"]).
-    const additionalRepoPaths = cloneAdditionalRepos(
-      contextPack?.additionalRepos
-    );
+    // cloneAdditionalRepos throws on any clone failure (atomic), so a successful
+    // return implies every entry in contextPack.additionalRepos was provisioned.
+    // We intentionally derive the peer metadata used by buildCommand from the
+    // same `contextPack.additionalRepos` (via buildPeerLocalPaths) so that the
+    // --add-dir paths and the "## Mounted paths" footer share a single source
+    // of truth and cannot drift.
+    cloneAdditionalRepos(contextPack?.additionalRepos);
+    const peers = buildPeerLocalPaths(contextPack?.additionalRepos);
 
     // Step 3-bootstrap: Run repo-level setup script if present.
     // This installs dependencies (pnpm install), generates env stubs, sets
@@ -3829,8 +3959,11 @@ async function main() {
       log("info", `Created new run directory: ${symphonyWorkDir}`);
     }
 
-    // Write PRD to the run directory (all commands that have a prompt)
-    const prdPath = writePrdFile(symphonyWorkDir, contextPack);
+    // Write PRD/feature prompt content to the run directory.
+    const prdPath =
+      config.command === LoopCommand.EvaluateFeature
+        ? writeFeatureEvaluationPrdFile(symphonyWorkDir, contextPack)
+        : writePrdFile(symphonyWorkDir, contextPack);
 
     // For child loops: write the latest plan content from the context pack to
     // plan.json in the run dir. This picks up manual edits the user made in
@@ -3851,7 +3984,7 @@ async function main() {
       workDir,
       symphonyWorkDir,
       prdPath,
-      additionalRepoPaths
+      peers
     );
 
     // Step 5: Build environment for the child process
@@ -3922,7 +4055,7 @@ async function main() {
     // Best-effort: refresh token, LLM commit, safety commit, push, create PR
     // Mirrors dispatch workflow's `if: always()` pattern — preserve work
     // even on fatal errors.
-    const shouldCommitAndPush = config.command === LoopCommand.Execute;
+    const shouldCommitAndPush = isPeerWriteEnabled();
 
     try {
       await refreshGitHubToken(contextPackRef);
@@ -4050,6 +4183,7 @@ export {
   getWorkspaceStateRestorePrefixes,
   getWorkspaceStateUploadPrefixes,
   HarnessError,
+  isPeerWriteEnabled,
   parseTokenUsage,
   parseTokenUsageFromJsonl,
   parseTokenUsageFromJsonlFile,
@@ -4067,6 +4201,7 @@ export {
   writeContextPackFiles,
   writeExecutionResult,
   writeExecutionResultV2,
+  writeFeatureEvaluationPrdFile,
   writePrdFile,
 };
 

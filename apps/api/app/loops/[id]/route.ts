@@ -81,7 +81,7 @@ export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
       return errorResponse("Failed to cancel loop", error);
     }
   },
-  { requiredScopes: ["write"] }
+  { requiredScopes: ["delete"] }
 );
 
 /**

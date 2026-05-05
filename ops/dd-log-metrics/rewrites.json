@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "purpose": "2 PATCH bodies for api.requests.count and api.errors.count, switching their filters from the Vercel platform-log shape to service:api \"request_completed\" with @path/@method/@status_code group-by paths. Pairs with the new logRequestCompleted helper added in apps/api/lib/route-utils.ts in PR #1021.",
+    "verb": "PATCH",
+    "endpoint": "https://api.datadoghq.com/api/v2/logs/config/metrics/{id}",
+    "note": "Filters were further widened to service:(api OR cl-api) by harden-service-filter.json after this file was applied. Use baseline.json for current state.",
+    "applied_at": "2026-04-30",
+    "applied_in_pr": "https://github.com/closedloop-ai/symphony-alpha/pull/1021",
+    "transitional": "PRD-159 will replace this file with HCL in cl-tofu-aws-live/prod/datadog/pipelines/. Delete this file when PRD-159 lands.",
+    "iterate_with": "jq -c .operations[] <file>"
+  },
+  "operations": [
+    {
+      "id": "api.requests.count",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "api.requests.count",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"request_completed\""
+            },
+            "group_by": [
+              {
+                "path": "@path",
+                "tag_name": "path"
+              },
+              {
+                "path": "@method",
+                "tag_name": "method"
+              },
+              {
+                "path": "@status_code",
+                "tag_name": "status_code"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "api.errors.count",
+      "body": {
+        "data": {
+          "type": "logs_metrics",
+          "id": "api.errors.count",
+          "attributes": {
+            "filter": {
+              "query": "service:api \"request_completed\" @status_code:>=400"
+            },
+            "group_by": [
+              {
+                "path": "@path",
+                "tag_name": "path"
+              },
+              {
+                "path": "@status_code",
+                "tag_name": "status_code"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

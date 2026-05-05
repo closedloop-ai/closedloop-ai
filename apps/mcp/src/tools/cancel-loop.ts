@@ -5,7 +5,7 @@ import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
 /**
  * Register the cancel-loop tool on the given MCP server.
- * Cancels a running manual loop via DELETE /loops/[id].
+ * Cancels a running manual loop via POST /loops/[id]/cancel (write scope).
  */
 export function registerCancelLoop(
   server: McpServer,
@@ -23,8 +23,9 @@ export function registerCancelLoop(
     },
     ({ loopId }) =>
       withErrorHandling(async () => {
-        const result = await apiClient.delete<unknown>(
-          `/loops/${encodePathSegment(loopId)}`
+        const result = await apiClient.post<unknown>(
+          `/loops/${encodePathSegment(loopId)}/cancel`,
+          {}
         );
         return {
           content: [
