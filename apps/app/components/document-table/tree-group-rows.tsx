@@ -46,7 +46,9 @@ export function TreeGroupRows({
   const isOpen = isGroupExpanded(group.groupKey);
   const hasChildren = children.length > 0;
 
-  const collectVisibleChildren = (items: DocumentRowItem[]): DocumentRowItem[] => {
+  const collectVisibleChildren = (
+    items: DocumentRowItem[]
+  ): DocumentRowItem[] => {
     const visible: DocumentRowItem[] = [];
     for (const item of items) {
       visible.push(item);
@@ -77,6 +79,13 @@ export function TreeGroupRows({
     const itemEditHandlers = item.kind === "branch" ? undefined : editHandlers;
     const itemMoreMenuHandler =
       item.kind === "branch" ? undefined : handleMoreMenu;
+    const onToggleExpand = buildToggleHandler(
+      item,
+      isChild,
+      itemHasChildren,
+      group.groupKey,
+      toggleGroup
+    );
 
     return (
       <DocumentRow
@@ -90,13 +99,7 @@ export function TreeGroupRows({
         moreMenuContent={rowMoreMenuContent}
         onMoreMenu={itemMoreMenuHandler}
         onSelectionChange={handleSelectionChange}
-        onToggleExpand={
-          !itemHasChildren
-            ? undefined
-            : isChild
-              ? () => toggleGroup(item.data.id)
-              : () => toggleGroup(group.groupKey)
-        }
+        onToggleExpand={onToggleExpand}
         parentHref={parentMap.get(item.data.id)?.href}
         parentTitle={parentMap.get(item.data.id)?.title}
         showCheckbox={showCheckbox}
@@ -109,13 +112,26 @@ export function TreeGroupRows({
     <div key={group.groupKey}>
       {renderRow(root, false, false)}
       {isOpen &&
-        collectVisibleChildren(children).map((child, childIndex, visibleChildren) =>
-          renderRow(
-            child,
-            true,
-            childIndex === visibleChildren.length - 1
-          )
+        collectVisibleChildren(children).map(
+          (child, childIndex, visibleChildren) =>
+            renderRow(child, true, childIndex === visibleChildren.length - 1)
         )}
     </div>
   );
+}
+
+function buildToggleHandler(
+  item: DocumentRowItem,
+  isChild: boolean,
+  itemHasChildren: boolean,
+  rootGroupKey: string,
+  toggleGroup: (key: string) => void
+): (() => void) | undefined {
+  if (!itemHasChildren) {
+    return undefined;
+  }
+  if (isChild) {
+    return () => toggleGroup(item.data.id);
+  }
+  return () => toggleGroup(rootGroupKey);
 }

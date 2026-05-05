@@ -13,7 +13,6 @@ import {
   DocumentsView,
   type FilterCategory,
 } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/documents-view";
-import { useProjectFilters } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/use-project-filters";
 import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
 import type {
   DocumentRowItem,
@@ -39,6 +38,7 @@ import { useGroupBy } from "@/hooks/use-group-by";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useMergedProjectTrees } from "@/hooks/use-merged-project-trees";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
+import { useProjectFilters } from "@/hooks/use-project-filters";
 import { matchesFilter } from "@/lib/document-filter";
 import { isNavigableDocument } from "@/lib/document-navigation";
 import { OnboardingChecklist } from "../components/onboarding-checklist";
@@ -77,13 +77,13 @@ export default function MyTasksPage() {
 
   // ---- Column visibility ----
 
-  const { visibility, toggleColumn } = useColumnVisibility({
+  const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
     storageKey: COLUMN_VISIBILITY_KEY,
     defaults: COLUMN_DEFAULTS,
   });
   const visibleColumns = useMemo(
-    () => MY_TASKS_DEFAULT_COLUMNS.filter((c) => visibility[c] !== false),
-    [visibility]
+    () => MY_TASKS_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
+    [userVisibility]
   );
 
   const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:my-tasks");

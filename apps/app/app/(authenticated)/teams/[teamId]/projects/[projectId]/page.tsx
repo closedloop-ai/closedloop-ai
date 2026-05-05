@@ -76,6 +76,7 @@ import {
 } from "@/hooks/use-column-visibility";
 import { useFilterCurrentUser } from "@/hooks/use-filter-current-user";
 import { useGroupBy } from "@/hooks/use-group-by";
+import { useProjectFilters } from "@/hooks/use-project-filters";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
@@ -88,7 +89,6 @@ import {
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
-import { useProjectFilters } from "./use-project-filters";
 
 /** Workstream states that indicate an async workflow is actively running. */
 const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([
