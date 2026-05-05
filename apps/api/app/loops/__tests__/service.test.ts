@@ -1,4 +1,4 @@
-import { LoopStatus } from "@repo/api/src/types/loop";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import {
   afterEach,
   beforeEach,
@@ -75,7 +75,7 @@ const makeParentFixture = (overrides?: Record<string, unknown>) => ({
   id: TEST_PARENT_LOOP_ID,
   organizationId: TEST_ORG_ID,
   userId: TEST_USER_ID,
-  command: "PLAN",
+  command: LoopCommand.Plan,
   status: LoopStatus.Completed,
   artifactId: "artifact-111",
   workstreamId: null,
@@ -375,14 +375,17 @@ describe("loopsService.resume — sibling concurrency gate", () => {
     vi.restoreAllMocks();
   });
 
-  const parentOverrides = { artifactId: "artifact-1", command: "PLAN" };
+  const parentOverrides = {
+    artifactId: "artifact-1",
+    command: LoopCommand.Plan,
+  };
 
   it("throws LoopAlreadyActiveError when an active sibling exists for the same (artifactId, command)", async () => {
     const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
     mockFindFirst.mockResolvedValue({
       id: "loop-sibling",
-      status: "RUNNING",
-      command: "PLAN",
+      status: LoopStatus.Running,
+      command: LoopCommand.Plan,
     });
 
     const err = (await loopsService
@@ -391,8 +394,8 @@ describe("loopsService.resume — sibling concurrency gate", () => {
 
     expect(isLoopAlreadyActiveError(err)).toBe(true);
     expect(err.existingLoopId).toBe("loop-sibling");
-    expect(err.existingCommand).toBe("PLAN");
-    expect(err.existingStatus).toBe("RUNNING");
+    expect(err.existingCommand).toBe(LoopCommand.Plan);
+    expect(err.existingStatus).toBe(LoopStatus.Running);
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -401,8 +404,8 @@ describe("loopsService.resume — sibling concurrency gate", () => {
     // The gate uses `activeLoop.id !== parent.id` to exempt the parent.
     mockFindFirst.mockResolvedValue({
       id: TEST_PARENT_LOOP_ID,
-      status: "COMPLETED",
-      command: "PLAN",
+      status: LoopStatus.Completed,
+      command: LoopCommand.Plan,
     });
 
     await expect(
@@ -568,7 +571,7 @@ function makeLoopDbRow(overrides: Record<string, unknown> = {}) {
     id: "loop-enrich-1",
     organizationId: "org-enrich",
     userId: "user-enrich",
-    command: "PLAN",
+    command: LoopCommand.Plan,
     status: LoopStatus.Completed,
     artifactId: "doc-enrich-1",
     workstreamId: null,

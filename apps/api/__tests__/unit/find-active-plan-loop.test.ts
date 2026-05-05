@@ -70,7 +70,7 @@ describe("loopsService.findOperationallyActiveLoop", () => {
 
   describe("active-loop matches", () => {
     it.each<[string, Partial<PrismaLoop>]>([
-      ["RUNNING", { status: LoopStatus.Running }],
+      [LoopStatus.Running, { status: LoopStatus.Running }],
       [
         "CLAIMED with containerId",
         { status: LoopStatus.Claimed, containerId: "container-abc" },
@@ -201,7 +201,7 @@ describe("two-tier subset invariant", () => {
   // by checking that for every row the operational predicate matches, the
   // index-blocking predicate matches as well.
   const operationallyMatching: [string, Partial<PrismaLoop>][] = [
-    ["RUNNING", { status: LoopStatus.Running, containerId: null }],
+    [LoopStatus.Running, { status: LoopStatus.Running, containerId: null }],
     [
       "CLAIMED with containerId",
       { status: LoopStatus.Claimed, containerId: "ct" },

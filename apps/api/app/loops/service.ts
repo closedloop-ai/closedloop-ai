@@ -242,6 +242,92 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
 }
 
 /**
+ * Mirrors the partial unique index scope: only non-Chat loops with a concrete
+ * document/artifact participate in duplicate-active-loop prevention.
+ */
+function shouldEnforceActiveGate(
+  command: LoopCommand | string | null,
+  documentId: string | null | undefined
+): boolean {
+  return command !== LoopCommand.Chat && documentId != null;
+}
+
+function throwLoopAlreadyActive(existing: {
+  id: string;
+  command: LoopCommand | string;
+  status: LoopStatus | string;
+}): never {
+  throw new LoopAlreadyActiveError(
+    existing.id,
+    existing.command as LoopCommand,
+    existing.status as LoopStatus
+  );
+}
+
+async function enforceConcurrencyLimit(
+  userId: string,
+  organizationId: string
+): Promise<void> {
+  const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
+  const activeCount = await withDb((db) =>
+    db.loop.count({
+      where: {
+        userId,
+        organizationId,
+        status: { in: ACTIVE_LOOP_STATUSES },
+      },
+    })
+  );
+
+  if (activeCount >= maxConcurrentLoops) {
+    throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
+  }
+}
+
+async function createLoopWithActiveGate<
+  T extends { id: string; status: string },
+>(args: {
+  command: LoopCommand | string;
+  documentId: string | null | undefined;
+  organizationId: string;
+  excludeLoopId?: string;
+  insert: () => Promise<T>;
+}): Promise<T> {
+  const enforce = shouldEnforceActiveGate(args.command, args.documentId);
+
+  if (enforce && args.documentId != null) {
+    const existingLoop = await loopsService.findOperationallyActiveLoop(
+      args.documentId,
+      args.command as LoopCommand,
+      args.organizationId
+    );
+    if (existingLoop != null && existingLoop.id !== args.excludeLoopId) {
+      throwLoopAlreadyActive(existingLoop);
+    }
+  }
+
+  try {
+    return await args.insert();
+  } catch (error) {
+    if (
+      enforce &&
+      args.documentId != null &&
+      isLoopActiveIndexViolation(error)
+    ) {
+      const existingLoop = await loopsService.findIndexBlockingLoop(
+        args.documentId,
+        args.command as LoopCommand,
+        args.organizationId
+      );
+      if (existingLoop != null && existingLoop.id !== args.excludeLoopId) {
+        throwLoopAlreadyActive(existingLoop);
+      }
+    }
+    throw error;
+  }
+}
+
+/**
  * Validate a JSON value as a Loop["repo"] shape, returning null on mismatch.
  */
 function parseRepo(value: unknown): Loop["repo"] {
@@ -404,126 +490,43 @@ export const loopsService = {
     userId: string,
     input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
-    // Reap stale PENDING rows for this (artifactId, command) slice before the
-    // gate check runs. A PENDING row without a containerId older than
-    // STALE_PENDING_THRESHOLD_MS has never been acknowledged by any runner —
-    // the relay/dispatch step silently failed. Flip these to FAILED so they no
-    // longer count against the concurrency gate or block the LoopAlreadyActive
-    // check.
-    if (input.documentId && input.command) {
-      const stalenessThreshold = new Date(
-        Date.now() - STALE_PENDING_THRESHOLD_MS
-      );
-      await withDb((db) =>
-        db.loop.updateMany({
-          where: {
-            artifactId: input.documentId,
-            command: input.command,
-            status: LoopStatus.Pending,
-            containerId: null,
-            createdAt: { lt: stalenessThreshold },
-          },
-          data: {
-            status: LoopStatus.Failed,
-            completedAt: new Date(),
-          },
-        })
-      );
-    }
-
-    // Enforce per-user concurrency limit.
-    // NOTE: This is a soft limit with a known TOCTOU window — two concurrent
-    // requests could both read count=4 and both proceed. The risk is low
-    // (same user, tight race window, org-configurable limit) so a DB-level
-    // INSERT ... WHERE (SELECT count) < limit is overkill for V1.
-    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
-    const activeCount = await withDb((db) =>
-      db.loop.count({
-        where: {
-          userId,
-          organizationId,
-          status: { in: ACTIVE_LOOP_STATUSES },
-        },
-      })
+    await loopsService.reapStalePendingLoops(
+      input.documentId ?? null,
+      input.command ?? null
     );
 
-    if (activeCount >= maxConcurrentLoops) {
-      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
-    }
+    await enforceConcurrencyLimit(userId, organizationId);
 
     if (input.additionalRepos) {
       await authorizeAdditionalRepos(input.additionalRepos, organizationId);
     }
 
-    // Pre-insert concurrency gate: for any non-Chat command with a documentId,
-    // check if there is already an active loop for this (documentId, command) pair.
-    // This prevents duplicate active loops from being created in the common path.
-    if (input.command !== LoopCommand.Chat && input.documentId != null) {
-      // Pre-insert gate: operationally-active tier. Excludes orphan-shaped
-      // rows so users aren't told "blocked" by a silently-failed dispatch.
-      const existingLoop = await loopsService.findOperationallyActiveLoop(
-        input.documentId,
-        input.command,
-        organizationId
-      );
-      if (existingLoop) {
-        throw new LoopAlreadyActiveError(
-          existingLoop.id,
-          existingLoop.command,
-          existingLoop.status
-        );
-      }
-    }
-
-    let loop: { id: string; status: string };
-    try {
-      loop = await withDb((db) =>
-        db.loop.create({
-          data: {
-            organizationId,
-            userId,
-            command: input.command,
-            artifactId: input.documentId ?? null,
-            workstreamId: input.workstreamId ?? null,
-            parentLoopId: input.parentLoopId ?? null,
-            computeTargetId: input.computeTargetId ?? null,
-            prompt: input.prompt ?? null,
-            repo: input.repo ?? undefined,
-            additionalRepos: input.additionalRepos ?? undefined,
-            contextRefs: input.contextRefs ?? undefined,
-            artifactVersion: input.documentVersion ?? null,
-            metadata: input.metadata ?? undefined,
-            status: LoopStatus.Pending,
-          },
-        })
-      );
-    } catch (error) {
-      // P2002 backstop: a concurrent request may have inserted between our
-      // pre-insert check and this insert. Use the **index-blocking tier** here
-      // so we can describe whatever the DB rejected on — including orphan-shaped
-      // rows the operational predicate would have ignored. Narrow to the loops
-      // index by name so unrelated unique constraints (e.g. loop_events
-      // idempotency) pass through unchanged.
-      if (
-        isLoopActiveIndexViolation(error) &&
-        input.command !== LoopCommand.Chat &&
-        input.documentId != null
-      ) {
-        const existingLoop = await loopsService.findIndexBlockingLoop(
-          input.documentId,
-          input.command,
-          organizationId
-        );
-        if (existingLoop) {
-          throw new LoopAlreadyActiveError(
-            existingLoop.id,
-            existingLoop.command,
-            existingLoop.status
-          );
-        }
-      }
-      throw error;
-    }
+    const loop = await createLoopWithActiveGate({
+      command: input.command,
+      documentId: input.documentId,
+      organizationId,
+      insert: () =>
+        withDb((db) =>
+          db.loop.create({
+            data: {
+              organizationId,
+              userId,
+              command: input.command,
+              artifactId: input.documentId ?? null,
+              workstreamId: input.workstreamId ?? null,
+              parentLoopId: input.parentLoopId ?? null,
+              computeTargetId: input.computeTargetId ?? null,
+              prompt: input.prompt ?? null,
+              repo: input.repo ?? undefined,
+              additionalRepos: input.additionalRepos ?? undefined,
+              contextRefs: input.contextRefs ?? undefined,
+              artifactVersion: input.documentVersion ?? null,
+              metadata: input.metadata ?? undefined,
+              status: LoopStatus.Pending,
+            },
+          })
+        ),
+    });
 
     log.info("Loop created", {
       loopId: loop.id,
@@ -921,35 +924,6 @@ export const loopsService = {
   },
 
   /**
-   * Check for an active sibling loop (same artifact, command, non-Chat).
-   * Throws LoopAlreadyActiveError if found (excluding parent).
-   */
-  async checkSiblingLoopGate(
-    parentId: string,
-    command: string,
-    artifactId: string | null,
-    organizationId: string
-  ): Promise<void> {
-    if (command === LoopCommand.Chat || artifactId == null) {
-      return;
-    }
-
-    // Pre-insert sibling gate: operationally-active tier.
-    const activeLoop = await loopsService.findOperationallyActiveLoop(
-      artifactId,
-      command as LoopCommand,
-      organizationId
-    );
-    if (activeLoop != null && activeLoop.id !== parentId) {
-      throw new LoopAlreadyActiveError(
-        activeLoop.id,
-        activeLoop.command,
-        activeLoop.status
-      );
-    }
-  },
-
-  /**
    * Create a resumed Loop from a parent.
    * The new loop inherits context from the parent but starts fresh.
    */
@@ -966,93 +940,53 @@ export const loopsService = {
       userId
     );
 
-    // Enforce per-user concurrency limit (same as create())
-    const maxConcurrentLoops = await fetchOrgLoopLimit(organizationId);
-    const activeCount = await withDb((db) =>
-      db.loop.count({
-        where: {
-          userId,
-          organizationId,
-          status: { in: ACTIVE_LOOP_STATUSES },
-        },
-      })
-    );
-
-    if (activeCount >= maxConcurrentLoops) {
-      throw new ConcurrentLoopLimitError(activeCount, maxConcurrentLoops);
-    }
+    await enforceConcurrencyLimit(userId, organizationId);
 
     // Reap stale PENDING rows before gate check
     await loopsService.reapStalePendingLoops(parent.artifactId, parent.command);
 
-    // Check sibling concurrency gate
-    await loopsService.checkSiblingLoopGate(
-      parent.id,
-      parent.command,
-      parent.artifactId,
-      organizationId
-    );
-
-    const parsedAdditionalRepos = parseAdditionalRepos(parent.additionalRepos);
-    if (parent.additionalRepos != null && parsedAdditionalRepos === null) {
-      throw new Error(
-        `Loop ${parentLoopId} has malformed additionalRepos data and cannot be resumed. Operator action required.`
-      );
-    }
-
-    if (parsedAdditionalRepos && parsedAdditionalRepos.length > 0) {
-      await authorizeAdditionalRepos(parsedAdditionalRepos, organizationId);
-    }
-
-    // Do NOT copy parent.s3StateKey — the child loop gets its own key when
-    // launched (via ECS claim or desktop persistence). Copying the parent's
-    // key creates a window where the child reads/writes the parent's storage.
-    let loop: { id: string; status: string };
-    try {
-      loop = await withDb((db) =>
-        db.loop.create({
-          data: {
-            organizationId,
-            userId,
-            command: parent.command,
-            artifactId: parent.artifactId,
-            workstreamId: parent.workstreamId,
-            parentLoopId: parent.id,
-            prompt: input.prompt ?? parent.prompt,
-            repo: parent.repo ?? undefined,
-            additionalRepos: parsedAdditionalRepos ?? undefined,
-            contextRefs: parent.contextRefs ?? undefined,
-            computeTargetId: computeTargetId ?? null,
-            status: LoopStatus.Pending,
-          },
-        })
-      );
-    } catch (error) {
-      // P2002 backstop: mirrors create()'s catch path. Use the **index-blocking
-      // tier** so we describe whatever the DB rejected on, not the narrower
-      // operational set. Narrowed by constraint name to avoid swallowing
-      // unrelated unique violations. Chat is excluded from the partial unique
-      // index by migration design, so the Chat exemption applies here too.
-      if (
-        isLoopActiveIndexViolation(error) &&
-        parent.command !== LoopCommand.Chat &&
-        parent.artifactId != null
-      ) {
-        const existingLoop = await loopsService.findIndexBlockingLoop(
-          parent.artifactId,
-          parent.command as LoopCommand,
-          organizationId
+    const loop = await createLoopWithActiveGate({
+      command: parent.command,
+      documentId: parent.artifactId,
+      organizationId,
+      excludeLoopId: parent.id,
+      insert: async () => {
+        const parsedAdditionalRepos = parseAdditionalRepos(
+          parent.additionalRepos
         );
-        if (existingLoop != null && existingLoop.id !== parent.id) {
-          throw new LoopAlreadyActiveError(
-            existingLoop.id,
-            existingLoop.command,
-            existingLoop.status
+        if (parent.additionalRepos != null && parsedAdditionalRepos === null) {
+          throw new Error(
+            `Loop ${parentLoopId} has malformed additionalRepos data and cannot be resumed. Operator action required.`
           );
         }
-      }
-      throw error;
-    }
+
+        if (parsedAdditionalRepos && parsedAdditionalRepos.length > 0) {
+          await authorizeAdditionalRepos(parsedAdditionalRepos, organizationId);
+        }
+
+        // Do NOT copy parent.s3StateKey — the child loop gets its own key when
+        // launched (via ECS claim or desktop persistence). Copying the parent's
+        // key creates a window where the child reads/writes the parent's storage.
+        return withDb((db) =>
+          db.loop.create({
+            data: {
+              organizationId,
+              userId,
+              command: parent.command,
+              artifactId: parent.artifactId,
+              workstreamId: parent.workstreamId,
+              parentLoopId: parent.id,
+              prompt: input.prompt ?? parent.prompt,
+              repo: parent.repo ?? undefined,
+              additionalRepos: parsedAdditionalRepos ?? undefined,
+              contextRefs: parent.contextRefs ?? undefined,
+              computeTargetId: computeTargetId ?? null,
+              status: LoopStatus.Pending,
+            },
+          })
+        );
+      },
+    });
 
     log.info("Loop resumed", {
       loopId: loop.id,

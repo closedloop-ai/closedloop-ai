@@ -35,6 +35,7 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () =>
   uploadedArtifactsModuleMock()
 );
 
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   isConcurrentLoopLimitError,
@@ -49,7 +50,7 @@ import { makeP2002Error } from "../fixtures/prisma-errors";
 const ORG_ID = "org-1";
 const USER_ID = "user-1";
 const planLoopInput = {
-  command: "PLAN" as const,
+  command: LoopCommand.Plan,
   documentId: "artifact-1",
   documentVersion: 1,
 };
@@ -99,7 +100,7 @@ describe("loopsService.create", () => {
 
   describe("Chat command exemption", () => {
     const chatInput = {
-      command: "CHAT" as const,
+      command: LoopCommand.Chat,
       documentId: "artifact-1",
       documentVersion: 1,
     };
@@ -107,7 +108,7 @@ describe("loopsService.create", () => {
     it("creates a Chat loop even when an active Chat loop already exists", async () => {
       // Pre-loaded with a record that *would* trigger the gate if it were checked.
       handles.loopFindFirst.mockResolvedValue(
-        buildPrismaLoop({ id: "loop-existing", command: "CHAT" })
+        buildPrismaLoop({ id: "loop-existing", command: LoopCommand.Chat })
       );
 
       await expect(
@@ -123,7 +124,7 @@ describe("loopsService.create", () => {
       handles.loopFindFirst
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(
-          buildPrismaLoop({ id: "loop-existing", status: "RUNNING" })
+          buildPrismaLoop({ id: "loop-existing", status: LoopStatus.Running })
         );
 
       const err = (await loopsService
@@ -132,8 +133,8 @@ describe("loopsService.create", () => {
 
       expect(isLoopAlreadyActiveError(err)).toBe(true);
       expect(err.existingLoopId).toBe("loop-existing");
-      expect(err.existingCommand).toBe("PLAN");
-      expect(err.existingStatus).toBe("RUNNING");
+      expect(err.existingCommand).toBe(LoopCommand.Plan);
+      expect(err.existingStatus).toBe(LoopStatus.Running);
     });
 
     it("rethrows raw P2002 when the post-insert re-read finds no conflict", async () => {
@@ -159,7 +160,7 @@ describe("loopsService.create", () => {
       handles.loopFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(
         buildPrismaLoop({
           id: "loop-claimed-no-container",
-          status: "CLAIMED",
+          status: LoopStatus.Claimed,
           containerId: null,
         })
       );
@@ -170,7 +171,7 @@ describe("loopsService.create", () => {
 
       expect(isLoopAlreadyActiveError(err)).toBe(true);
       expect(err.existingLoopId).toBe("loop-claimed-no-container");
-      expect(err.existingStatus).toBe("CLAIMED");
+      expect(err.existingStatus).toBe(LoopStatus.Claimed);
 
       // The catch-path query must be the index-blocking shape (no OR /
       // staleness clause). Otherwise it would return null for this row.
@@ -180,7 +181,11 @@ describe("loopsService.create", () => {
       expect(catchCall.where).not.toHaveProperty("OR");
       expect(catchCall.where).toMatchObject({
         status: {
-          in: expect.arrayContaining(["PENDING", "CLAIMED", "RUNNING"]),
+          in: expect.arrayContaining([
+            LoopStatus.Pending,
+            LoopStatus.Claimed,
+            LoopStatus.Running,
+          ]),
         },
       });
     });
@@ -190,7 +195,7 @@ describe("loopsService.create", () => {
       handles.loopFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(
         buildPrismaLoop({
           id: "loop-stale-pending",
-          status: "PENDING",
+          status: LoopStatus.Pending,
           containerId: null,
           createdAt: new Date(Date.now() - 60_000),
         })
@@ -239,11 +244,11 @@ describe("loopsService.create", () => {
       expect(reaper.where).toMatchObject({
         artifactId: planLoopInput.documentId,
         command: planLoopInput.command,
-        status: "PENDING",
+        status: LoopStatus.Pending,
         containerId: null,
         createdAt: { lt: expect.any(Date) },
       });
-      expect(reaper.data.status).toBe("FAILED");
+      expect(reaper.data.status).toBe(LoopStatus.Failed);
     });
   });
 });
