@@ -1,459 +1,198 @@
 /**
- * Tests that:
- * - resolveOrgLoopLimit correctly falls back to DEFAULT_MAX_CONCURRENT_LOOPS
- *   for null, missing key, zero, negative, or non-integer values
- * - loopsService.create throws ConcurrentLoopLimitError when active loop count
- *   meets or exceeds the limit
- * - loopsService.create proceeds (calls db.loop.create) when count is below limit
- * - isConcurrentLoopLimitError correctly identifies ConcurrentLoopLimitError instances
- *
- * // TOCTOU: count check and insert are not atomic. Two concurrent requests at
- * // count=N-1 can both proceed. Accepted tradeoff — limit is a soft cap, not a
- * // security boundary.
+ * Unit tests for the per-org concurrency limit, the per-document active-loop
+ * gate, and the P2002 backstop in `loopsService.create`.
  */
 
 import { vi } from "vitest";
+import {
+  databaseModuleMock,
+  dbUtilsModuleMock,
+  docPrServiceModuleMock,
+  githubModuleMock,
+  type LoopsServiceHandles,
+  logModuleMock,
+  resetLoopsServiceHandles,
+  uploadedArtifactsModuleMock,
+} from "../fixtures/loops-service-mocks";
 
-// --- Mocks (must come before imports) ---
-
-vi.mock("@aws-sdk/client-ecs", () => ({
-  ECSClient: vi.fn(),
-  RunTaskCommand: vi.fn(),
-  StopTaskCommand: vi.fn(),
+const handles = vi.hoisted<LoopsServiceHandles>(() => ({
+  loopCreate: vi.fn(),
+  loopCount: vi.fn(),
+  loopFindFirst: vi.fn(),
+  loopFindUnique: vi.fn(),
+  loopUpdateMany: vi.fn(),
+  orgFindUnique: vi.fn(),
 }));
 
-vi.mock("@repo/github", () => ({
-  getInstallationAccessToken: vi.fn(),
-}));
-
-vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-const mockCount = vi.fn().mockResolvedValue(0);
-const mockCreate = vi.fn().mockResolvedValue({
-  id: "loop-new",
-  status: "PENDING",
-});
-const mockFindFirst = vi.fn().mockResolvedValue(null);
-const mockOrgFindUnique = vi.fn().mockResolvedValue({ settings: null });
-const mockUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
-
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(
-    vi.fn((fn: (db: unknown) => unknown) =>
-      fn({
-        loop: {
-          count: mockCount,
-          create: mockCreate,
-          findMany: vi.fn().mockResolvedValue([]),
-          findFirst: mockFindFirst,
-          findUnique: vi.fn().mockResolvedValue(null),
-          updateMany: mockUpdateMany,
-        },
-        loopEvent: {
-          findMany: vi.fn().mockResolvedValue([]),
-          count: vi.fn().mockResolvedValue(0),
-        },
-        organization: {
-          findUnique: mockOrgFindUnique,
-        },
-      })
-    ),
-    { tx: vi.fn() }
-  ),
-  LoopStatus: {
-    Pending: "PENDING",
-    Claimed: "CLAIMED",
-    Running: "RUNNING",
-    Failed: "FAILED",
-  },
-  EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
-}));
-
-vi.mock("@/lib/db-utils", () => ({
-  basicUserSelect: {
-    select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
-}));
-
-// --- Imports (after mocks) ---
+vi.mock("@repo/database", () => databaseModuleMock(handles));
+vi.mock("@repo/github", () => githubModuleMock());
+vi.mock("@repo/observability/log", () => logModuleMock());
+vi.mock("@/lib/db-utils", () => dbUtilsModuleMock());
+vi.mock("@/app/documents/document-pull-request-service", () =>
+  docPrServiceModuleMock()
+);
+vi.mock("@/lib/loops/uploaded-plan-artifacts", () =>
+  uploadedArtifactsModuleMock()
+);
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  type ConcurrentLoopLimitError,
   isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
   loopsService,
   resolveOrgLoopLimit,
 } from "@/app/loops/service";
+import { buildPrismaLoop } from "../fixtures/loop";
+import { makeP2002Error } from "../fixtures/prisma-errors";
 
-// ---------------------------------------------------------------------------
-// Minimal valid CreateLoopRequest for use in tests
-// ---------------------------------------------------------------------------
-
-const baseInput = {
+const ORG_ID = "org-1";
+const USER_ID = "user-1";
+const planLoopInput = {
   command: "PLAN" as const,
   documentId: "artifact-1",
   documentVersion: 1,
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe("resolveOrgLoopLimit", () => {
-  it("returns DEFAULT (10) for null", () => {
-    expect(resolveOrgLoopLimit(null)).toBe(10);
-  });
-
-  it("returns DEFAULT (10) for empty object (missing key)", () => {
-    expect(resolveOrgLoopLimit({})).toBe(10);
-  });
-
-  it("returns the configured value when maxConcurrentLoops is a positive integer", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: 25 })).toBe(25);
-  });
-
-  it("returns DEFAULT (10) when maxConcurrentLoops is 0", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: 0 })).toBe(10);
-  });
-
-  it("returns DEFAULT (10) when maxConcurrentLoops is negative", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: -1 })).toBe(10);
-  });
-
-  it("returns DEFAULT (10) when maxConcurrentLoops is a string (non-integer)", () => {
-    expect(resolveOrgLoopLimit({ maxConcurrentLoops: "25" })).toBe(10);
+  it.each<[string, unknown, number]>([
+    ["null settings", null, 10],
+    ["missing key", {}, 10],
+    ["positive integer", { maxConcurrentLoops: 25 }, 25],
+    ["zero", { maxConcurrentLoops: 0 }, 10],
+    ["negative", { maxConcurrentLoops: -1 }, 10],
+    ["non-integer string", { maxConcurrentLoops: "25" }, 10],
+  ])("returns %s → %d", (_label, settings, expected) => {
+    expect(resolveOrgLoopLimit(settings as never)).toBe(expected);
   });
 });
 
-describe("loopsService.create — concurrent loop limit enforcement", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockFindFirst.mockResolvedValue(null);
-    mockUpdateMany.mockResolvedValue({ count: 0 });
-  });
+describe("loopsService.create", () => {
+  beforeEach(() => resetLoopsServiceHandles(handles));
 
-  it("throws ConcurrentLoopLimitError when active count meets the default limit", async () => {
-    mockCount.mockResolvedValue(10);
+  describe("concurrent loop limit", () => {
+    it("throws ConcurrentLoopLimitError when active count meets the default limit", async () => {
+      handles.loopCount.mockResolvedValue(10);
 
-    let caught: unknown;
-    try {
-      await loopsService.create("org-1", "user-1", baseInput);
-    } catch (err) {
-      caught = err;
-    }
+      await expect(
+        loopsService.create(ORG_ID, USER_ID, planLoopInput)
+      ).rejects.toMatchObject({ limit: 10, activeCount: 10 });
 
-    expect(isConcurrentLoopLimitError(caught)).toBe(true);
-    const limitError = caught as ConcurrentLoopLimitError;
-    expect(limitError.limit).toBe(10);
-    expect(limitError.activeCount).toBe(10);
-  });
-
-  it("does NOT throw when active count is below a custom org limit", async () => {
-    mockCount.mockResolvedValue(5);
-    mockOrgFindUnique.mockResolvedValueOnce({
-      settings: { maxConcurrentLoops: 10 },
+      const err = await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e);
+      expect(isConcurrentLoopLimitError(err)).toBe(true);
     });
 
-    // Should not throw — 5 active loops is below the org limit of 10
-    await expect(
-      loopsService.create("org-1", "user-1", baseInput)
-    ).resolves.toBeDefined();
+    it("proceeds when active count is below a custom org limit", async () => {
+      handles.loopCount.mockResolvedValue(5);
+      handles.orgFindUnique.mockResolvedValueOnce({
+        settings: { maxConcurrentLoops: 10 },
+      });
 
-    // Verify that db.loop.create was actually called (loop was created)
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("loopsService.create — Chat command exemption from per-document gate", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Default: below concurrency limit, no active loop returned
-    mockCount.mockResolvedValue(0);
-    mockFindFirst.mockResolvedValue(null);
-    mockUpdateMany.mockResolvedValue({ count: 0 });
+      await expect(
+        loopsService.create(ORG_ID, USER_ID, planLoopInput)
+      ).resolves.toBeDefined();
+      expect(handles.loopCreate).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it("does NOT call db.loop.findFirst (findActiveLoopForDocumentAndCommand) when command is CHAT", async () => {
+  describe("Chat command exemption", () => {
     const chatInput = {
       command: "CHAT" as const,
       documentId: "artifact-1",
       documentVersion: 1,
     };
 
-    await expect(
-      loopsService.create("org-1", "user-1", chatInput)
-    ).resolves.toBeDefined();
+    it("skips the per-document active-loop gate even when an active Chat loop exists", async () => {
+      // Pre-loaded with a record that *would* trigger the gate if it were checked.
+      handles.loopFindFirst.mockResolvedValue(
+        buildPrismaLoop({ id: "loop-existing", command: "CHAT" })
+      );
 
-    // The per-document concurrency gate must be skipped entirely for Chat.
-    // findFirst backs findActiveLoopForDocumentAndCommand — it must not be called.
-    expect(mockFindFirst).not.toHaveBeenCalled();
+      await expect(
+        loopsService.create(ORG_ID, USER_ID, chatInput)
+      ).resolves.toBeDefined();
+      expect(handles.loopFindFirst).not.toHaveBeenCalled();
+      expect(handles.loopCreate).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it("creates a Chat loop successfully even when an existing active Chat loop exists on the same document", async () => {
-    const existingChatLoop = {
-      id: "loop-existing",
-      status: "RUNNING",
-      command: "CHAT",
-      artifactId: "artifact-1",
-      organizationId: "org-1",
-      userId: "user-2",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      completedAt: null,
-      containerId: "container-abc",
-      workstreamId: null,
-      parentLoopId: null,
-      computeTargetId: null,
-      prompt: null,
-      repo: null,
-      additionalRepos: null,
-      contextRefs: null,
-      artifactVersion: null,
-      metadata: {},
-      uploadedArtifacts: null,
-      tokensByModel: null,
-      tokensInput: 0,
-      tokensOutput: 0,
-      estimatedCost: null,
-      error: null,
-      s3StateKey: null,
-      prUrl: null,
-      prNumber: null,
-      branchName: null,
-      sessionId: null,
-      startedAt: null,
-    };
+  describe("P2002 backstop", () => {
+    it("converts P2002 to LoopAlreadyActiveError when the post-insert re-read finds the conflict", async () => {
+      handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
+      handles.loopFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(
+          buildPrismaLoop({ id: "loop-existing", status: "RUNNING" })
+        );
 
-    // Even if findFirst would return an active Chat loop (if queried), the gate is skipped.
-    mockFindFirst.mockResolvedValue(existingChatLoop);
+      const err = (await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e)) as LoopAlreadyActiveError;
 
-    const chatInput = {
-      command: "CHAT" as const,
-      documentId: "artifact-1",
-      documentVersion: 1,
-    };
+      expect(isLoopAlreadyActiveError(err)).toBe(true);
+      expect(err.existingLoopId).toBe("loop-existing");
+      expect(err.existingCommand).toBe("PLAN");
+      expect(err.existingStatus).toBe("RUNNING");
+    });
 
-    // Must not throw LoopAlreadyActiveError — Chat is exempt from the gate.
-    await expect(
-      loopsService.create("org-1", "user-1", chatInput)
-    ).resolves.toBeDefined();
+    it("rethrows raw P2002 when the post-insert re-read finds no conflict", async () => {
+      handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
+      handles.loopFindFirst.mockResolvedValue(null);
 
-    // db.loop.create must have been called — the loop was created.
-    expect(mockCreate).toHaveBeenCalledTimes(1);
+      const err = await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e);
 
-    // findFirst must not have been called — the gate was skipped.
-    expect(mockFindFirst).not.toHaveBeenCalled();
-  });
-});
+      expect(isLoopAlreadyActiveError(err)).toBe(false);
+      expect((err as { code?: string }).code).toBe("P2002");
+    });
 
-// ---------------------------------------------------------------------------
-// P2002 backstop helpers
-// ---------------------------------------------------------------------------
+    it("rethrows non-P2002 errors unchanged", async () => {
+      const original = new Error("Connection timed out");
+      handles.loopCreate.mockRejectedValueOnce(original);
 
-/**
- * Simulate a Prisma P2002 unique constraint violation error.
- * The service checks `error instanceof Error && "code" in error && error.code === "P2002"`.
- */
-function makePrismaP2002Error(): Error & { code: string } {
-  const err = new Error(
-    "Unique constraint failed on the fields: (`artifact_id`,`command`)"
-  );
-  (err as Error & { code: string }).code = "P2002";
-  return err as Error & { code: string };
-}
+      const err = await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e);
 
-/** Minimal Prisma loop record for use in findFirst mock responses. */
-const activeLoopRecord = {
-  id: "loop-existing",
-  status: "RUNNING",
-  command: "PLAN",
-  artifactId: "artifact-1",
-  organizationId: "org-1",
-  userId: "user-2",
-  createdAt: new Date(),
-  updatedAt: new Date(),
-  completedAt: null,
-  containerId: "container-abc",
-  workstreamId: null,
-  parentLoopId: null,
-  computeTargetId: null,
-  prompt: null,
-  repo: null,
-  additionalRepos: null,
-  contextRefs: null,
-  artifactVersion: null,
-  metadata: {},
-  uploadedArtifacts: null,
-  tokensByModel: null,
-  tokensInput: 0,
-  tokensOutput: 0,
-  estimatedCost: null,
-  error: null,
-  s3StateKey: null,
-  prUrl: null,
-  prNumber: null,
-  branchName: null,
-  sessionId: null,
-  startedAt: null,
-};
-
-describe("loopsService.create — P2002 backstop", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCount.mockResolvedValue(0);
-    mockFindFirst.mockResolvedValue(null);
-    mockUpdateMany.mockResolvedValue({ count: 0 });
-    mockCreate.mockResolvedValue({ id: "loop-new", status: "PENDING" });
+      expect(err).toBe(original);
+    });
   });
 
-  it("throws LoopAlreadyActiveError when db.loop.create throws P2002 and findActiveLoopForDocumentAndCommand finds an active loop", async () => {
-    // Arrange: create throws P2002; first findFirst call (pre-insert gate) returns
-    // null; second findFirst call (backstop re-read) returns the active loop.
-    mockCreate.mockRejectedValueOnce(makePrismaP2002Error());
-    mockFindFirst
-      .mockResolvedValueOnce(null) // pre-insert gate: no conflict yet
-      .mockResolvedValueOnce(activeLoopRecord); // backstop re-read: conflict found
+  describe("staleness reaper", () => {
+    it("clears PENDING rows older than ~30s with a null containerId for the (artifactId, command) slice", async () => {
+      const before = new Date(Date.now() - 30_000);
 
-    let caught: unknown;
-    try {
-      await loopsService.create("org-1", "user-1", baseInput);
-    } catch (err) {
-      caught = err;
-    }
+      await loopsService.create(ORG_ID, USER_ID, planLoopInput);
 
-    expect(isLoopAlreadyActiveError(caught)).toBe(true);
-    const loopError = caught as LoopAlreadyActiveError;
-    expect(loopError.existingLoopId).toBe(activeLoopRecord.id);
-    expect(loopError.existingCommand).toBe(activeLoopRecord.command);
-    expect(loopError.existingStatus).toBe(activeLoopRecord.status);
-  });
+      const reaper = handles.loopUpdateMany.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      };
+      expect(reaper.where).toMatchObject({
+        artifactId: planLoopInput.documentId,
+        command: planLoopInput.command,
+        status: "PENDING",
+        containerId: null,
+      });
+      const threshold = (reaper.where.createdAt as { lt: Date }).lt;
+      expect(threshold.getTime()).toBeGreaterThanOrEqual(
+        before.getTime() - 1000
+      );
+      expect(threshold.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
+      expect(reaper.data.status).toBe("FAILED");
+      expect(reaper.data.completedAt).toBeInstanceOf(Date);
+    });
 
-  it("rethrows the original P2002 error when db.loop.create throws P2002 but findActiveLoopForDocumentAndCommand returns null", async () => {
-    // Arrange: both findFirst calls return null — no competing loop found either
-    // before or after the insert attempt.
-    mockCreate.mockRejectedValueOnce(makePrismaP2002Error());
-    mockFindFirst.mockResolvedValue(null);
-
-    let caught: unknown;
-    try {
-      await loopsService.create("org-1", "user-1", baseInput);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Must NOT be a LoopAlreadyActiveError — the raw P2002 is rethrown.
-    expect(isLoopAlreadyActiveError(caught)).toBe(false);
-    // Must be the original error with code P2002.
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as { code?: string }).code).toBe("P2002");
-  });
-
-  it("rethrows the original error unchanged when db.loop.create throws a non-P2002 error (backstop not triggered)", async () => {
-    const originalError = new Error("Connection timed out");
-
-    mockCreate.mockRejectedValueOnce(originalError);
-    // pre-insert gate returns null (no conflict before insert)
-    mockFindFirst.mockResolvedValue(null);
-
-    let caught: unknown;
-    try {
-      await loopsService.create("org-1", "user-1", baseInput);
-    } catch (err) {
-      caught = err;
-    }
-
-    // Must be the exact same error object — no wrapping, no substitution.
-    expect(caught).toBe(originalError);
-    // Must NOT be a LoopAlreadyActiveError.
-    expect(isLoopAlreadyActiveError(caught)).toBe(false);
-  });
-});
-
-describe("loopsService.create — staleness reaper", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCount.mockResolvedValue(0);
-    mockFindFirst.mockResolvedValue(null);
-    mockUpdateMany.mockResolvedValue({ count: 0 });
-    mockCreate.mockResolvedValue({ id: "loop-new", status: "PENDING" });
-  });
-
-  it("calls db.loop.updateMany with correct staleness filter for the (artifactId, command) slice", async () => {
-    const before = new Date(Date.now() - 30_000);
-
-    await loopsService.create("org-1", "user-1", baseInput);
-
-    // updateMany must have been called at least once (the reaper call)
-    expect(mockUpdateMany).toHaveBeenCalled();
-
-    // The first call is the reaper — verify its where clause
-    const reaperCall = mockUpdateMany.mock.calls[0][0] as {
-      where: Record<string, unknown>;
-      data: Record<string, unknown>;
-    };
-
-    expect(reaperCall.where.artifactId).toBe(baseInput.documentId);
-    expect(reaperCall.where.command).toBe(baseInput.command);
-    expect(reaperCall.where.status).toBe("PENDING");
-    expect(reaperCall.where.containerId).toBeNull();
-
-    // createdAt.lt must be close to 30 seconds ago (within 1 second of tolerance)
-    const threshold = (reaperCall.where.createdAt as { lt: Date }).lt;
-    expect(threshold).toBeInstanceOf(Date);
-    expect(threshold.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
-    expect(threshold.getTime()).toBeLessThanOrEqual(Date.now() - 29_000);
-  });
-
-  it("sets status=FAILED and completedAt in the reaper updateMany data payload", async () => {
-    const beforeCall = new Date();
-
-    await loopsService.create("org-1", "user-1", baseInput);
-
-    const reaperCall = mockUpdateMany.mock.calls[0][0] as {
-      where: Record<string, unknown>;
-      data: Record<string, unknown>;
-    };
-
-    expect(reaperCall.data.status).toBe("FAILED");
-    expect(reaperCall.data.completedAt).toBeInstanceOf(Date);
-    expect(
-      (reaperCall.data.completedAt as Date).getTime()
-    ).toBeGreaterThanOrEqual(beforeCall.getTime());
-  });
-
-  it("runs the reaper BEFORE the findActiveLoopForDocumentAndCommand gate check", async () => {
-    await loopsService.create("org-1", "user-1", baseInput);
-
-    // Both must have been called
-    expect(mockUpdateMany).toHaveBeenCalled();
-    expect(mockFindFirst).toHaveBeenCalled();
-
-    // Vitest tracks a global invocation counter — lower order = called first
-    const reaperOrder = mockUpdateMany.mock.invocationCallOrder[0];
-    const gateOrder = mockFindFirst.mock.invocationCallOrder[0];
-    expect(reaperOrder).toBeLessThan(gateOrder);
-  });
-
-  it("does NOT call the reaper when documentId is missing", async () => {
-    const inputWithoutDocument = {
-      command: "PLAN" as const,
-      documentId: undefined as unknown as string,
-      documentVersion: 1,
-    };
-
-    await loopsService.create("org-1", "user-1", inputWithoutDocument);
-
-    // The reaper guard requires both documentId and command — no updateMany call expected
-    expect(mockUpdateMany).not.toHaveBeenCalled();
+    it("skips the reaper when documentId is missing", async () => {
+      await loopsService.create(ORG_ID, USER_ID, {
+        command: "PLAN" as const,
+        documentId: undefined as unknown as string,
+        documentVersion: 1,
+      });
+      expect(handles.loopUpdateMany).not.toHaveBeenCalled();
+    });
   });
 });
