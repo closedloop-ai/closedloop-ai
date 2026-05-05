@@ -237,5 +237,7 @@ export async function resolveComputeTargetWithPreferences(
   ) {
     return { ok: false, error: "compute_target_not_found" };
   }
+  // hint_offline — exhaustive guard: compile error if new reasons are added
+  ctResult.reason satisfies "hint_offline";
   return { ok: false, error: "compute_target_offline" };
 }
