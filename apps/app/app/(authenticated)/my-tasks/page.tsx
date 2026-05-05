@@ -9,15 +9,13 @@ import {
 import { SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import {
-  DocumentsView,
-  type FilterCategory,
-} from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/documents-view";
+import { DocumentsView } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/documents-view";
 import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
 import type {
   DocumentRowItem,
   RowEditHandlers,
 } from "@/components/document-table/document-row";
+import type { FilterCategory } from "@/components/document-table/filter-category";
 import { FilterPopover } from "@/components/document-table/filter-popover";
 import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import {

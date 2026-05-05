@@ -48,6 +48,7 @@ import {
   toDisplayGroups,
   toRowItem,
 } from "@/components/document-table/document-tree";
+import type { FilterCategory } from "@/components/document-table/filter-category";
 import { GroupSectionHeader } from "@/components/document-table/group-section-header";
 import { DocumentTableHeader } from "@/components/document-table/table-header";
 import { TreeGroupRows } from "@/components/document-table/tree-group-rows";
@@ -76,13 +77,6 @@ import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import { compareAssigneeNames } from "@/lib/user-utils";
 import { MergeDocumentsDialog } from "./merge-documents-dialog";
-
-export type FilterCategory =
-  | "all"
-  | "documents"
-  | "features"
-  | "plans"
-  | "branches";
 
 export type DocumentsViewProps = {
   documents: DocumentWithWorkstream[];

@@ -41,6 +41,7 @@ import type {
   DocumentRowItem,
   RowEditHandlers,
 } from "@/components/document-table/document-row";
+import type { FilterCategory } from "@/components/document-table/filter-category";
 import { FilterPopover } from "@/components/document-table/filter-popover";
 import { TableViewMenu } from "@/components/document-table/table-view-menu";
 import { EditableProjectDescription } from "@/components/editable-project-description";
@@ -82,10 +83,7 @@ import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
 import { CreateDocumentModal } from "./components/create-document-modal";
 import { CreateFeatureModal } from "./components/create-feature-modal";
-import {
-  DocumentsView,
-  type FilterCategory,
-} from "./components/documents-view";
+import { DocumentsView } from "./components/documents-view";
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
