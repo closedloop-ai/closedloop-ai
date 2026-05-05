@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { HealthCheckDialog } from "@/components/engineer/HealthCheckDialog";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import {
@@ -10,6 +11,16 @@ import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
+
+function getAmbientSystemCheckTargetKey(
+  routing: ReturnType<typeof useEngineerRoutingSelection>
+): string {
+  if (routing.mode === EngineerRoutingMode.LocalElectron) {
+    return "local-gateway";
+  }
+
+  return `${routing.mode}-${routing.computeTargetId ?? "none"}`;
+}
 
 export function SystemCheckBootstrap() {
   const { isLoading, shouldRunSystemCheck } = useSystemCheckEligibility();
@@ -24,10 +35,10 @@ export function SystemCheckBootstrap() {
     return null;
   }
 
-  // Key forces HealthCheckDialog to remount (and re-run checks) when the
-  // execution target changes — preserving the per-context freshness that the
-  // previous per-/engineer-page mount provided.
-  const targetKey = `${routing.mode}-${routing.computeTargetId ?? "none"}`;
+  // Key forces HealthCheckDialog to remount when the ambient check target
+  // changes. Local Electron always uses the localhost gateway, so its key must
+  // not churn when the loop-dispatch compute target ID hydrates.
+  const targetKey = getAmbientSystemCheckTargetKey(routing);
   const targetLabel = resolveTargetLabel(routing, targets);
 
   return (

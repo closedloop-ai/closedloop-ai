@@ -301,4 +301,31 @@ describe("useDocumentRunLoop", () => {
       expect(matching.result.current.isPreLoopExecutePending).toBe(true);
     });
   });
+
+  describe("makeRequestChangesHandler", () => {
+    test("resolves false on unmount when mutation callbacks do not fire", async () => {
+      mockMutate.mockImplementationOnce(() => {
+        // Simulate observer teardown before TanStack per-call callbacks fire.
+      });
+
+      const { result, unmount } = renderHook(
+        () => useDocumentRunLoop({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      let requestChanges: Promise<boolean> | null = null;
+      act(() => {
+        requestChanges = result.current.makeRequestChangesHandler(
+          RunLoopCommand.RequestChanges,
+          "Change request submitted"
+        )("Please add more detail");
+      });
+
+      expect(mockMutate).toHaveBeenCalledOnce();
+
+      unmount();
+
+      await expect(requestChanges).resolves.toBe(false);
+    });
+  });
 });

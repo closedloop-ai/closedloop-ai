@@ -10,7 +10,7 @@ import type {
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
@@ -33,6 +33,7 @@ type RunLoopMutationParams = RunLoopParams & { documentId: string };
 type RunLoopMutationOptions = Parameters<
   ReturnType<typeof useRunLoop>["mutate"]
 >[1];
+type RequestChangesResolver = (result: boolean) => void;
 
 /**
  * Generic conflict-resolution machinery for run-loop operations.
@@ -85,9 +86,22 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   const pendingMismatchActionRef = useRef<
     ((targetId: string | null, backendOverride: boolean) => void) | null
   >(null);
+  const requestChangesResolversRef = useRef<Set<RequestChangesResolver>>(
+    new Set()
+  );
   const executeOwnerKey = documentId
     ? `run-loop:${RunLoopCommand.Execute}:${documentId}`
     : null;
+
+  useEffect(
+    () => () => {
+      for (const resolveRequestChanges of requestChangesResolversRef.current) {
+        resolveRequestChanges(false);
+      }
+      requestChangesResolversRef.current.clear();
+    },
+    []
+  );
 
   /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
   const routeConflictError = useCallback((error: unknown): void => {
@@ -323,19 +337,35 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
         }
         prepareConflictRefs({ command, prompt: changes });
         return new Promise<boolean>((resolve) => {
-          runLoop.mutate(
-            { documentId, command, prompt: changes },
-            {
-              onSuccess: () => {
-                toast.success(successMessage);
-                resolve(true);
-              },
-              onError: (error) => {
-                routeConflictError(error);
-                resolve(false);
-              },
+          let settled = false;
+          const resolveOnce: RequestChangesResolver = (result) => {
+            if (settled) {
+              return;
             }
-          );
+            settled = true;
+            requestChangesResolversRef.current.delete(resolveOnce);
+            resolve(result);
+          };
+          requestChangesResolversRef.current.add(resolveOnce);
+
+          try {
+            runLoop.mutate(
+              { documentId, command, prompt: changes },
+              {
+                onSuccess: () => {
+                  toast.success(successMessage);
+                  resolveOnce(true);
+                },
+                onError: (error) => {
+                  routeConflictError(error);
+                  resolveOnce(false);
+                },
+              }
+            );
+          } catch (error) {
+            routeConflictError(error);
+            resolveOnce(false);
+          }
         });
       },
     [documentId, prepareConflictRefs, runLoop, routeConflictError]

@@ -6,13 +6,15 @@ import {
   isBranchNotFoundError,
   isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
+  isNestedManualLoopError,
   isUnauthorizedRepoError,
 } from "./service";
 
 /**
  * Map common loop-service errors to HTTP responses.
  * Handles ConcurrentLoopLimitError (429), LoopAlreadyActiveError (409),
- * UnauthorizedRepoError (403), and BranchNotFoundError (400).
+ * NestedManualLoopError (409), UnauthorizedRepoError (403), and
+ * BranchNotFoundError (400).
  * Falls through to a generic 500 for unrecognized errors.
  */
 export function handleLoopServiceError(
@@ -35,6 +37,9 @@ export function handleLoopServiceError(
       { success: false, error: error.message, data: body },
       { status: 409 }
     ) as NextResponse<ApiResult<never>>;
+  }
+  if (isNestedManualLoopError(error)) {
+    return errorResponse(error.message, error, 409);
   }
   if (isUnauthorizedRepoError(error)) {
     return errorResponse(error.message, error, 403);

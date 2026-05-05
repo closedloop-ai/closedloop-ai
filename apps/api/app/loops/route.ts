@@ -3,7 +3,7 @@ import type {
   LoopWithUser,
 } from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { resolveDocumentId } from "@/lib/identifier-utils";
+import { resolveDocumentId, resolveWorkstreamId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -66,10 +66,32 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
         return parseError;
       }
 
+      const resolved = { ...body };
+      if (body.documentId) {
+        const docId = await resolveDocumentId(
+          body.documentId,
+          user.organizationId
+        );
+        if (!docId) {
+          return notFoundResponse("Document");
+        }
+        resolved.documentId = docId;
+      }
+      if (body.workstreamId) {
+        const wsId = await resolveWorkstreamId(
+          body.workstreamId,
+          user.organizationId
+        );
+        if (!wsId) {
+          return notFoundResponse("Workstream");
+        }
+        resolved.workstreamId = wsId;
+      }
+
       const result = await loopsService.create(
         user.organizationId,
         user.id,
-        body
+        resolved
       );
 
       return successResponse(result);

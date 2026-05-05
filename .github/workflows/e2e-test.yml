@@ -168,10 +168,22 @@ jobs:
             exit 1
           fi
 
+          # The app's fetch interceptor derives the API origin from its own hostname
+          # (replacing "app-" with "api-"). Both app and API must therefore use
+          # git-branch aliases (which share the same slug across Vercel projects)
+          # or the stable stage domain. SHA-based Vercel URLs are per-project and
+          # cannot be used here.
+          #
+          # The "Wait for Vercel" step above already confirmed that the deployment
+          # for this SHA is live; by the time we reach this point the git-branch
+          # alias should be updated as well.
+
           if [ -n "$INPUT_DEPLOY_URL" ]; then
             BASE_URL="${INPUT_DEPLOY_URL%/}"
-          elif [ "$REF_NAME" = "main" ] && [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "URL source: workflow_dispatch input"
+          elif [ "$REF_NAME" = "main" ]; then
             BASE_URL="https://app.closedloop-stage.ai"
+            echo "URL source: stable stage (ref is main)"
           else
             BASE_URL="$(resolve_preview_base_url "$REF_NAME")"
             if [ -z "$BASE_URL" ]; then
@@ -179,6 +191,7 @@ jobs:
               echo "::error::Tried: $(resolve_preview_alias_candidates "$REF_NAME" | paste -sd ', ' -)"
               exit 1
             fi
+            echo "URL source: git-branch alias"
           fi
 
           if [[ "$BASE_URL" =~ ^https://app-stage-git-([a-z0-9-]+)\.preview\.closedloop-stage\.ai$ ]]; then

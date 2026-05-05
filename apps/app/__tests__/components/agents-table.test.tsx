@@ -27,6 +27,46 @@ vi.mock("@/hooks/queries/use-agents", () => ({
   })),
 }));
 
+vi.mock("@/hooks/queries/use-bootstrap-agents", () => ({
+  BootstrapStatus: {
+    Idle: "idle",
+    Creating: "creating",
+    Dispatched: "dispatched",
+    Running: "running",
+    Ingesting: "ingesting",
+    Completed: "completed",
+    Error: "error",
+  },
+  useBootstrapAgents: vi.fn(() => ({
+    state: { status: "idle" },
+    dispatch: vi.fn(),
+    reset: vi.fn(),
+  })),
+}));
+
+vi.mock("@/lib/engineer/electron-detection", () => ({
+  useElectronDetection: vi.fn(() => ({
+    detected: false,
+    loading: false,
+    port: null,
+    version: null,
+    machineName: null,
+    capabilities: null,
+    checkedAt: null,
+  })),
+}));
+
+vi.mock("@/hooks/queries/use-github-integration", () => ({
+  useGitHubIntegrationStatus: vi.fn(() => ({
+    data: { connected: false },
+    isLoading: false,
+  })),
+  useGitHubRepositories: vi.fn(() => ({
+    data: [],
+    isLoading: false,
+  })),
+}));
+
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));

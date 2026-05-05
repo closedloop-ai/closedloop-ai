@@ -41,6 +41,12 @@ import {
 } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { updateRepoSettings } from "@/lib/engineer/queries/repos";
+import {
+  markAmbientSystemCheckTargetDismissed,
+  markAmbientSystemCheckTargetShown,
+  resetAmbientSystemCheckVisibilityForTests,
+  useAmbientSystemCheckVisibility,
+} from "@/lib/system-check/ambient-system-check-visibility-store";
 
 /** Stagger delay (ms) between each check row revealing its result */
 const REVEAL_STAGGER = 120;
@@ -51,8 +57,6 @@ const SUCCESS_DISMISS_DELAY = 1200;
 /** Duration of the Radix dialog exit animation (matches duration-200 on DialogContent) */
 const EXIT_ANIMATION_MS = 250;
 const LATEST_RELEASE_STALE_TIME_MS = 5 * 60 * 1000;
-
-const shownTargetKeys = new Set<string>();
 
 type HealthCheckDialogMode = "ambient" | "blocking-pre-loop";
 
@@ -101,7 +105,7 @@ function getDisplayTargetLabel(targetLabel: string | undefined): string | null {
 }
 
 export function resetHealthCheckDialogVisibilityForTests(): void {
-  shownTargetKeys.clear();
+  resetAmbientSystemCheckVisibilityForTests();
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: This dialog coordinates the existing ambient system-check flow plus the new blocking pre-loop mode without splitting shared UI state.
@@ -131,8 +135,9 @@ export function HealthCheckDialog({
   const [showSuccess, setShowSuccess] = useState(false);
   const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const resolvedCallbackFired = useRef(false);
+  const ambientVisibility = useAmbientSystemCheckVisibility(targetKey);
   const canOpenThisMount = useRef(
-    isBlockingMode || !shownTargetKeys.has(targetKey)
+    isBlockingMode || !ambientVisibility.hasBeenShown
   );
   const queryClient = useQueryClient();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
@@ -219,7 +224,7 @@ export function HealthCheckDialog({
   const allRequiredPassed = allRevealed && !hasRequiredFailure;
 
   // Latch failureDetected — once a required failure is seen, open the dialog.
-  // Defers the module-flag write so React StrictMode's throwaway mount
+  // Defers the visibility-store write so React StrictMode's throwaway mount
   // cannot consume the one-shot flag.
   useEffect(() => {
     if (isBlockingMode) {
@@ -235,13 +240,21 @@ export function HealthCheckDialog({
     }
 
     const timer = setTimeout(() => {
-      shownTargetKeys.add(targetKey);
+      markAmbientSystemCheckTargetShown(targetKey);
     }, 0);
 
     setFailureDetected(true);
 
     return () => clearTimeout(timer);
   }, [hasRequiredFailure, isBlockingMode, targetKey]);
+
+  useEffect(() => {
+    if (isBlockingMode || !failureDetected || !ambientVisibility.isDismissed) {
+      return;
+    }
+
+    setClosing(true);
+  }, [ambientVisibility.isDismissed, failureDetected, isBlockingMode]);
 
   // Staggered reveal: only run when dialog is showing (failure detected).
   // recheckKey ensures the stagger re-triggers even when the response is
@@ -337,8 +350,9 @@ export function HealthCheckDialog({
     if (isBlockingMode) {
       return;
     }
+    markAmbientSystemCheckTargetDismissed(targetKey);
     setClosing(true);
-  }, [isBlockingMode]);
+  }, [isBlockingMode, targetKey]);
 
   const handleCancel = useCallback(() => {
     if (isBlockingMode) {
@@ -346,8 +360,9 @@ export function HealthCheckDialog({
       onCancel?.();
       return;
     }
+    markAmbientSystemCheckTargetDismissed(targetKey);
     setClosing(true);
-  }, [isBlockingMode, onCancel]);
+  }, [isBlockingMode, onCancel, targetKey]);
 
   const handleSaveWorktree = useCallback(async () => {
     const trimmed = worktreePath.trim();

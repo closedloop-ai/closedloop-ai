@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "@repo/design-system/lib/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { PrCommentContext } from "@/app/(authenticated)/build/[id]/comment-context";
@@ -147,7 +148,10 @@ export function ChatDrawerPanel({
 
   return (
     <div
-      className="flex h-full min-h-0 min-w-0 max-w-full overflow-hidden border-l bg-background"
+      className={cn(
+        "flex h-full min-h-0 min-w-0 max-w-full overflow-hidden bg-background",
+        !fillParent && "border-l"
+      )}
       style={fillParent ? undefined : { width }}
     >
       {!fillParent && (
