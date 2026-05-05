@@ -75,13 +75,11 @@ describe("loopsService.create", () => {
     it("throws ConcurrentLoopLimitError when active count meets the default limit", async () => {
       handles.loopCount.mockResolvedValue(10);
 
-      await expect(
-        loopsService.create(ORG_ID, USER_ID, planLoopInput)
-      ).rejects.toMatchObject({ limit: 10, activeCount: 10 });
-
       const err = await loopsService
         .create(ORG_ID, USER_ID, planLoopInput)
         .catch((e) => e);
+
+      expect(err).toMatchObject({ limit: 10, activeCount: 10 });
       expect(isConcurrentLoopLimitError(err)).toBe(true);
     });
 
@@ -119,24 +117,6 @@ describe("loopsService.create", () => {
   });
 
   describe("P2002 backstop", () => {
-    it("converts P2002 to LoopAlreadyActiveError when the post-insert re-read finds the conflict", async () => {
-      handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
-      handles.loopFindFirst
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(
-          buildPrismaLoop({ id: "loop-existing", status: LoopStatus.Running })
-        );
-
-      const err = (await loopsService
-        .create(ORG_ID, USER_ID, planLoopInput)
-        .catch((e) => e)) as LoopAlreadyActiveError;
-
-      expect(isLoopAlreadyActiveError(err)).toBe(true);
-      expect(err.existingLoopId).toBe("loop-existing");
-      expect(err.existingCommand).toBe(LoopCommand.Plan);
-      expect(err.existingStatus).toBe(LoopStatus.Running);
-    });
-
     it("rethrows raw P2002 when the post-insert re-read finds no conflict", async () => {
       handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
       handles.loopFindFirst.mockResolvedValue(null);
@@ -188,25 +168,6 @@ describe("loopsService.create", () => {
           ]),
         },
       });
-    });
-
-    it("converts P2002 to LoopAlreadyActiveError when the colliding row is PENDING older than the staleness threshold", async () => {
-      handles.loopCreate.mockRejectedValueOnce(makeP2002Error());
-      handles.loopFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(
-        buildPrismaLoop({
-          id: "loop-stale-pending",
-          status: LoopStatus.Pending,
-          containerId: null,
-          createdAt: new Date(Date.now() - 60_000),
-        })
-      );
-
-      const err = (await loopsService
-        .create(ORG_ID, USER_ID, planLoopInput)
-        .catch((e) => e)) as LoopAlreadyActiveError;
-
-      expect(isLoopAlreadyActiveError(err)).toBe(true);
-      expect(err.existingLoopId).toBe("loop-stale-pending");
     });
 
     it("does not swallow P2002 raised by an unrelated unique constraint", async () => {

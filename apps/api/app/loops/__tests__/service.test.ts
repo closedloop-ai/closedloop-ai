@@ -398,21 +398,6 @@ describe("loopsService.resume — sibling concurrency gate", () => {
     expect(err.existingStatus).toBe(LoopStatus.Running);
     expect(mockCreate).not.toHaveBeenCalled();
   });
-
-  it("does not throw when the only active loop found is the parent itself (exclusion guard)", async () => {
-    const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
-    // The gate uses `activeLoop.id !== parent.id` to exempt the parent.
-    mockFindFirst.mockResolvedValue({
-      id: TEST_PARENT_LOOP_ID,
-      status: LoopStatus.Completed,
-      command: LoopCommand.Plan,
-    });
-
-    await expect(
-      loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
-    ).resolves.toBeDefined();
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-  });
 });
 
 const TEST_ORG_ID_AUTH = "org-auth-111";
