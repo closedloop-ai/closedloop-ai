@@ -9,6 +9,7 @@ type EditorToolbarActionsProps = {
   onRestoreVersion: () => void;
   isRestoring?: boolean;
   canSaveVersion?: boolean;
+  hasUnsavedChanges?: boolean;
   onSaveVersion: () => void;
   isSaving?: boolean;
   onToggleComments: (pressed: boolean) => void;
@@ -21,6 +22,7 @@ export function EditorToolbarActions({
   onRestoreVersion,
   isRestoring = false,
   canSaveVersion = true,
+  hasUnsavedChanges = true,
   onSaveVersion,
   isSaving = false,
   onToggleComments,
@@ -51,13 +53,13 @@ export function EditorToolbarActions({
       </Button>
       {canSaveVersion && (
         <Button
-          disabled={isSaving}
+          disabled={isSaving || !hasUnsavedChanges}
           // swallow the event
           onClick={() => onSaveVersion()}
           size="sm"
-          variant="outline"
+          variant="default"
         >
-          {isSaving ? "Saving..." : "Save New Version"}
+          {isSaving ? "Publishing..." : "Publish"}
         </Button>
       )}
     </>

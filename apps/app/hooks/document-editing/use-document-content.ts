@@ -62,7 +62,7 @@ export function useDocumentContent(config: UseArtifactContentConfig) {
    * This preserves version history while updating the artifact.
    */
   const saveContent = useCallback(
-    (newContent?: string, resetRoom = false) => {
+    (newContent?: string, resetRoom = false, onSuccess?: () => void) => {
       if (newContent === undefined && !hasUnsavedChanges) {
         toast.info("No changes to publish");
         return;
@@ -77,6 +77,7 @@ export function useDocumentContent(config: UseArtifactContentConfig) {
           onSuccess: (updatedArtifact) => {
             toast.success("New version published");
             onVersionCreated?.(updatedArtifact);
+            onSuccess?.();
           },
         }
       );
@@ -103,6 +104,7 @@ export function useDocumentContent(config: UseArtifactContentConfig) {
     // Content state
     content,
     updateContent: setContent,
+    hasUnsavedChanges,
 
     // Save operations
     saveContent,
