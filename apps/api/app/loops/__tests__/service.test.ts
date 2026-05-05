@@ -54,6 +54,8 @@ import { documentPullRequestService } from "@/app/documents/document-pull-reques
 import {
   authorizeAdditionalRepos,
   BranchNotFoundError,
+  isLoopAlreadyActiveError,
+  type LoopAlreadyActiveError,
   loopsService,
   UnauthorizedRepoError,
 } from "../service";
@@ -100,6 +102,7 @@ function createMockResumeDb(
   const mockFindUnique = vi
     .fn()
     .mockResolvedValue(makeParentFixture(parentOverrides));
+  const mockFindFirst = vi.fn().mockResolvedValue(null);
   const mockCount = vi.fn().mockResolvedValue(0);
   const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
   const mockUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
@@ -108,7 +111,7 @@ function createMockResumeDb(
     const mockDb = {
       loop: {
         findUnique: mockFindUnique,
-        findFirst: vi.fn().mockResolvedValue(null),
+        findFirst: mockFindFirst,
         count: mockCount,
         create: mockCreate,
         updateMany: mockUpdateMany,
@@ -119,7 +122,7 @@ function createMockResumeDb(
     return callback(mockDb);
   });
 
-  return { mockCreate, mockCount, mockFindUnique };
+  return { mockCreate, mockCount, mockFindUnique, mockFindFirst };
 }
 
 function mockResumeDb(parentOverrides?: Record<string, unknown>) {
@@ -360,6 +363,73 @@ describe("loopsService.resume", () => {
 
     expect(mockFindManyInstallationRepos).not.toHaveBeenCalled();
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("loopsService.resume — sibling concurrency gate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const PARENT_ARTIFACT_ID = "artifact-1";
+  const parentOverrides = { artifactId: PARENT_ARTIFACT_ID, command: "PLAN" };
+
+  it("throws LoopAlreadyActiveError when an active sibling exists for the same (artifactId, command)", async () => {
+    const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
+    mockFindFirst.mockResolvedValue({
+      id: "loop-sibling",
+      status: "RUNNING",
+      command: "PLAN",
+    });
+
+    const err = (await loopsService
+      .resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+      .catch((e) => e)) as LoopAlreadyActiveError;
+
+    expect(isLoopAlreadyActiveError(err)).toBe(true);
+    expect(err.existingLoopId).toBe("loop-sibling");
+    expect(err.existingCommand).toBe("PLAN");
+    expect(err.existingStatus).toBe("RUNNING");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when the only active loop found is the parent itself (exclusion guard)", async () => {
+    const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
+    // The gate uses `activeLoop.id !== parent.id` to exempt the parent.
+    mockFindFirst.mockResolvedValue({
+      id: TEST_PARENT_LOOP_ID,
+      status: "COMPLETED",
+      command: "PLAN",
+    });
+
+    await expect(
+      loopsService.resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+    ).resolves.toBeDefined();
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("queries findFirst with the parent's artifactId and command", async () => {
+    const { mockFindFirst } = mockResumeDb(parentOverrides);
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    expect(mockFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          artifactId: PARENT_ARTIFACT_ID,
+          command: "PLAN",
+        }),
+      })
+    );
   });
 });
 
