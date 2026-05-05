@@ -8,11 +8,16 @@ import {
   scheduleLogFlushAfter,
   successResponse,
 } from "@/lib/route-utils";
-import { handleLoopServiceError } from "../../loop-error-responses";
+import {
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+} from "../../loop-error-responses";
 import { loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
-export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
+type ResumeLoopRouteResponse = CreateLoopResponse | LoopAlreadyActiveBody;
+
+export const POST = withAnyAuth<ResumeLoopRouteResponse, "/loops/[id]/resume">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

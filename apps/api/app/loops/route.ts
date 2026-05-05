@@ -11,9 +11,14 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { handleLoopServiceError } from "./loop-error-responses";
+import {
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+} from "./loop-error-responses";
 import { loopsService } from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
+
+type CreateLoopRouteResponse = CreateLoopResponse | LoopAlreadyActiveBody;
 
 export const GET = withAnyAuth<LoopWithUser[], "/loops">(
   async ({ user }, request) => {
@@ -55,7 +60,7 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
  * POST /loops — Creates a loop DB record only (status: PENDING).
  * Does NOT launch the loop. To create AND launch, use POST /artifacts/[id]/run-loop.
  */
-export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
+export const POST = withAnyAuth<CreateLoopRouteResponse, "/loops">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(

@@ -1,5 +1,5 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import type { LoopAlreadyActiveBody } from "@repo/api/src/types/loop";
+import type { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/route-utils";
 import {
@@ -9,6 +9,13 @@ import {
   isNestedManualLoopError,
   isUnauthorizedRepoError,
 } from "./service";
+
+export type LoopAlreadyActiveBody = {
+  error: "loop_already_active";
+  loopId: string;
+  command: LoopCommand;
+  status: LoopStatus;
+};
 
 /**
  * Map common loop-service errors to HTTP responses.

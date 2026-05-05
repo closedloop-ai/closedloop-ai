@@ -6,19 +6,14 @@
  * the right code and meta is enough to drive every code path under test.
  */
 
-/**
- * Default constraint name for the loops active-loop partial unique index.
- * The service narrows P2002 detection by this name so unrelated unique
- * violations are not translated into LoopAlreadyActiveError.
- */
-export const LOOP_ACTIVE_INDEX_NAME = "loops_active_artifact_command_key";
+import { LOOP_ACTIVE_INDEX_NAME } from "@/app/loops/loop-constants";
 
 /**
  * Synthesize a Prisma `P2002` (unique constraint violation). By default the
  * `meta.target` field is set to the loops active-index name so the error is
- * translated by the service. Pass `target: undefined` or another constraint
- * name to simulate a P2002 from a *different* index — the service should
- * leave it alone.
+ * translated by the service. Pass `target: null` (or another constraint name)
+ * to simulate a P2002 from a *different* index — the service should leave it
+ * alone.
  */
 export function makeP2002Error(options?: {
   fields?: string;

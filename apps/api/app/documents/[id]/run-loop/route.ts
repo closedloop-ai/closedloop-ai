@@ -8,15 +8,15 @@ import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
-import type {
-  CreateLoopResponse,
-  LoopAlreadyActiveBody,
-} from "@repo/api/src/types/loop";
+import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import { documentGenerationService } from "@/app/documents/generation-service";
-import { handleLoopServiceError } from "@/app/loops/loop-error-responses";
+import {
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+} from "@/app/loops/loop-error-responses";
 import { loopsService } from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";

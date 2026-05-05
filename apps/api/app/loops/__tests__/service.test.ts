@@ -54,6 +54,7 @@ import { documentPullRequestService } from "@/app/documents/document-pull-reques
 import {
   authorizeAdditionalRepos,
   BranchNotFoundError,
+  isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
   loopsService,
@@ -123,7 +124,13 @@ function createMockResumeDb(
     return callback(mockDb);
   });
 
-  return { mockCreate, mockCount, mockFindUnique, mockFindFirst };
+  return {
+    mockCreate,
+    mockCount,
+    mockFindUnique,
+    mockFindFirst,
+    mockUpdateMany,
+  };
 }
 
 function mockResumeDb(parentOverrides?: Record<string, unknown>) {
@@ -398,6 +405,31 @@ describe("loopsService.resume — sibling concurrency gate", () => {
     expect(err.existingCommand).toBe(LoopCommand.Plan);
     expect(err.existingStatus).toBe(LoopStatus.Running);
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("reaps stale pending siblings before enforcing the concurrency limit", async () => {
+    const { mockCount, mockCreate, mockUpdateMany } =
+      mockResumeDb(parentOverrides);
+    mockCount.mockResolvedValue(10);
+
+    const err = await loopsService
+      .resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+      .catch((e) => e);
+
+    expect(isConcurrentLoopLimitError(err)).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mockUpdateMany.mock.calls[0][0].where).toMatchObject({
+      organizationId: TEST_ORG_ID,
+      artifactId: parentOverrides.artifactId,
+      command: parentOverrides.command,
+      status: LoopStatus.Pending,
+      containerId: null,
+      createdAt: { lt: expect.any(Date) },
+    });
+    expect(mockUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCount.mock.invocationCallOrder[0]
+    );
   });
 });
 

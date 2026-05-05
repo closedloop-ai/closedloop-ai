@@ -35,6 +35,7 @@ import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { basicUserSelect } from "@/lib/db-utils";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
+import { LOOP_ACTIVE_INDEX_NAME } from "./loop-constants";
 
 /**
  * Fetch the effective concurrent loop limit for an organization from the DB.
@@ -223,13 +224,6 @@ const ACTIVE_LOOP_STATUSES: LoopStatus[] = [
  * operationally-active lookup so the two stay in lockstep.
  */
 const STALE_PENDING_THRESHOLD_MS = 30_000;
-
-/**
- * Name of the partial unique index enforcing per-(artifact, command) loop
- * uniqueness. Used to narrow P2002 detection so an unrelated unique violation
- * (e.g. event idempotency) is never translated into LoopAlreadyActiveError.
- */
-const LOOP_ACTIVE_INDEX_NAME = "loops_active_artifact_command_key";
 
 /** Type guard for Prisma's `P2002` (unique constraint) error code. */
 function isPrismaUniqueConstraintError(
@@ -509,6 +503,7 @@ export const loopsService = {
     input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
     await loopsService.reapStalePendingLoops(
+      organizationId,
       input.documentId ?? null,
       input.command ?? null
     );
@@ -953,6 +948,7 @@ export const loopsService = {
    * This prevents a stale PENDING row from blocking a resumed loop create.
    */
   async reapStalePendingLoops(
+    organizationId: string,
     artifactId: string | null,
     command: string | null
   ): Promise<void> {
@@ -966,6 +962,7 @@ export const loopsService = {
     await withDb((db) =>
       db.loop.updateMany({
         where: {
+          organizationId,
           artifactId,
           command: command as LoopCommand,
           status: LoopStatus.Pending,
@@ -997,10 +994,14 @@ export const loopsService = {
       userId
     );
 
-    await enforceConcurrencyLimit(userId, organizationId);
-
     // Reap stale PENDING rows before gate check
-    await loopsService.reapStalePendingLoops(parent.artifactId, parent.command);
+    await loopsService.reapStalePendingLoops(
+      organizationId,
+      parent.artifactId,
+      parent.command
+    );
+
+    await enforceConcurrencyLimit(userId, organizationId);
 
     const loop = await createLoopWithActiveGate({
       command: parent.command,

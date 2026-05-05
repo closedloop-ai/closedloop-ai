@@ -9,7 +9,10 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { documentExecutionService } from "@/app/documents/execution-service";
-import { handleLoopServiceError } from "@/app/loops/loop-error-responses";
+import {
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+} from "@/app/loops/loop-error-responses";
 import { repoSchema } from "@/app/loops/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
@@ -37,7 +40,9 @@ const bodySchema = z
   })
   .strict();
 
-export const POST = withAnyAuth<StartPlanLoopResponse>(
+type StartPlanLoopRouteResponse = StartPlanLoopResponse | LoopAlreadyActiveBody;
+
+export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(

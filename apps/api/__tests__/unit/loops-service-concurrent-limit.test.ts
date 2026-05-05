@@ -56,14 +56,22 @@ const planLoopInput = {
 };
 
 describe("resolveOrgLoopLimit", () => {
-  it.each<[string, unknown, number]>([
-    ["null settings", null, 10],
-    ["missing key", {}, 10],
-    ["positive integer", { maxConcurrentLoops: 25 }, 25],
-    ["zero", { maxConcurrentLoops: 0 }, 10],
-    ["negative", { maxConcurrentLoops: -1 }, 10],
-    ["non-integer string", { maxConcurrentLoops: "25" }, 10],
-  ])("returns %s → %d", (_label, settings, expected) => {
+  it.each([
+    { label: "null settings", settings: null, expected: 10 },
+    { label: "missing key", settings: {}, expected: 10 },
+    {
+      label: "positive integer",
+      settings: { maxConcurrentLoops: 25 },
+      expected: 25,
+    },
+    { label: "zero", settings: { maxConcurrentLoops: 0 }, expected: 10 },
+    { label: "negative", settings: { maxConcurrentLoops: -1 }, expected: 10 },
+    {
+      label: "non-integer string",
+      settings: { maxConcurrentLoops: "25" },
+      expected: 10,
+    },
+  ])("returns $label → $expected", ({ settings, expected }) => {
     expect(resolveOrgLoopLimit(settings as never)).toBe(expected);
   });
 });
@@ -203,6 +211,7 @@ describe("loopsService.create", () => {
         data: Record<string, unknown>;
       };
       expect(reaper.where).toMatchObject({
+        organizationId: ORG_ID,
         artifactId: planLoopInput.documentId,
         command: planLoopInput.command,
         status: LoopStatus.Pending,
@@ -210,6 +219,9 @@ describe("loopsService.create", () => {
         createdAt: { lt: expect.any(Date) },
       });
       expect(reaper.data.status).toBe(LoopStatus.Failed);
+      expect(handles.loopUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(
+        handles.loopCount.mock.invocationCallOrder[0]
+      );
     });
   });
 });
