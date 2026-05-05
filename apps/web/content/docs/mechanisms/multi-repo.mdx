@@ -1,90 +1,57 @@
 ---
 title: Multi-Repo Development
-description: Run a single loop across multiple sibling repositories and produce plans that cross repo boundaries.
+description: Run a single loop across multiple sibling repositories and produce artifacts that cross repo boundaries.
 ---
 
-Many teams ship features that span more than one repository: a backend API and a frontend app, a shared library and its consumers, a platform service and an SDK. ClosedLoop.ai's multi-repo mode lets a single loop plan and implement across those peers without context-switching.
+Many teams ship features that span more than one repository: a backend API and a frontend app, a shared library and its consumers, a platform service and an SDK. ClosedLoop.ai's multi-repo mode lets a single loop reference, plan, and (where applicable) modify peer repositories alongside the primary target — without context-switching.
 
-## Enabling multi-repo
+## How it works
 
-Pass `--add-dir` for every peer repo when you launch a loop:
+`additionalRepos` is a property of the loop request body. When a loop is created, the control plane validates and persists the peer set on the `Loop` record alongside the primary `repo`; the orchestrator then forwards the peer set to whichever runtime the loop is dispatched to (ECS or desktop). Every runtime mounts each peer at a local directory and injects `--add-dir` flags into the Claude Code spawn so the agent has direct filesystem access to peers as well as the primary.
 
-```bash
-./run-loop.sh .closedloop-ai/work --prd requirements.md \
-  --add-dir ../peer-backend \
-  --add-dir ../peer-mobile
-```
+Validation, persistence, and dispatch are command-agnostic. Whether a particular command actually receives peers at runtime is determined by a single per-command policy table — adding multi-repo support to a new command is a one-line entry in `MULTI_REPO_POLICY` rather than per-runtime plumbing.
 
-`setup-closedloop.sh` resolves each flag to a canonical absolute path and builds a **repo map** that every subagent can read.
+## Per-command status
 
-## The three env vars
+| Command | Peers supported | Peer write mode | Notes |
+|---|:---:|---|---|
+| `PLAN` | ✅ | read-only | Peer worktrees on `symphony/loop-<slug>-<peer>-<disambig>` branches; always-fresh per run. |
+| `EXECUTE` | ✅ | read-write | Peer worktrees reused across retries to preserve in-progress agent state; per-peer PRs created at finalize. |
+| `GENERATE_PRD` | ✅ | read-only | Always-fresh peer worktrees on `symphony/generate-prd-<slug>-<peer>-<disambig>` branches. |
+| `REQUEST_PRD_CHANGES` | ✅ | read-only | Inherits the parent `GENERATE_PRD` loop's peer set verbatim (see below). |
+| `REQUEST_CHANGES` | — | n/a | Single-repo only. |
+| `DECOMPOSE`, `EVALUATE_*`, `CHAT`, `EXPLORE`, `BOOTSTRAP` | — | n/a | Peers in the request body are silently ignored at the runtime gate. |
 
-Multi-repo state is carried entirely by environment variables, set in `$CLOSEDLOOP_WORKDIR/.closedloop-ai/config.env`:
+The table mirrors `MULTI_REPO_POLICY` in `@closedloop-ai/loops-api/multi-repo-policy`.
 
-| Variable | Format | Meaning |
-| --- | --- | --- |
-| `CLOSEDLOOP_ADD_DIRS` | pipe-separated absolute paths | All resolved `--add-dir` values. |
-| `CLOSEDLOOP_ADD_DIR_NAMES` | pipe-separated short names | User-friendly names, disambiguated when collisions occur. |
-| `CLOSEDLOOP_REPO_MAP` | pipe-separated `name=path` | Canonical name-to-path map used by agents. |
+## Read-only vs read-write peers
 
-## How peer names are chosen
+The peer-write contract is enforced at the commit/push/PR layer, not the filesystem layer:
 
-Each peer repo is expected to have a `.closedloop-ai/.repo-identity.json` with at least:
+- **Read-only commands** (`PLAN`, `GENERATE_PRD`, `REQUEST_PRD_CHANGES`) provision peer worktrees but never invoke the commit-and-push pipeline against them. Anything the agent writes inside a peer worktree is scratch and is discarded when the worktree is torn down.
+- **Read-write commands** (`EXECUTE`) run the full per-repo finalization pipeline — LLM-assisted commit, push, and PR creation — for every peer that has changes. Clean peers are skipped (no empty PRs).
 
-```json
-{
-  "name": "peer-backend",
-  "type": "service",
-  "discoverable": true
-}
-```
+Agents are told to treat peers as read-only on read-only commands via the prompt itself; the runtime guarantees nothing escapes regardless. There is no special "freeze" step — absence of finalization is the protection.
 
-When names collide, `make_unique_repo_name` walks path segments to build names like `peer-backend-acme`. Ancestors of the workdir are silently skipped.
+## REQUEST_PRD_CHANGES strict inheritance
 
-## Discovery tiers
+`REQUEST_PRD_CHANGES` does not accept a fresh `additionalRepos` from the request body. The control plane resolves the parent `GENERATE_PRD` loop's `additionalRepos` and copies the peer set verbatim onto the revision loop. This guarantees a PRD revision is grounded in the same cross-repo context as the original generation — drift between "PRD generated with peers A, B" and "PRD revised against peer C" is impossible.
 
-`discover-repos.sh` combines three sources:
+If the parent loop had no peers, the revision loop has no peers either; the orchestrator does not synthesize peers.
 
-1. **Explicit** paths from `CLOSEDLOOP_ADD_DIRS` (tagged `"local": true`).
-2. **Env var** from `CLAUDE_WORKSPACE_REPOS` (format `name1:path1,name2:path2`).
-3. **Sibling scan** – any sibling directory containing a `.repo-identity.json` with `discoverable: true`.
+## What the agent sees
 
-Results are deduplicated across tiers and emitted as JSON with `currentRepo`, `discoveryMethod`, `peers[]`, and a `monorepo` flag detected via `.repo-identity.json type=monorepo` or the presence of `apps/`/`packages/`.
+For peer-enabled commands the runtime produces three artifacts before spawning Claude:
 
-## Which agents are multi-repo aware
+1. **`--add-dir` flags** — one per peer worktree, granting the agent filesystem access.
+2. **`peer-repos.json`** — a structured manifest at `.closedloop-ai/context/peer-repos.json` enumerating each peer's `fullName`, `branch`, and `localPath`.
+3. **A "## Mounted paths" footer** appended to the prompt, listing the same peers with their actual local paths.
 
-- `pre-explorer` writes a `code-map-{name}.json` per repo.
-- `plan-draft-writer` emits plans with a `## Repositories` section and per-task `@{repo}:path` prefixes for cross-repo tasks.
-- `cross-repo-coordinator` decides which peers are needed and emits a `CAPABILITIES_LIST`.
-- `generic-discovery` probes each peer for capabilities and caches results to `.discovery-cache/{peer}.json`.
-- `cross-repo-prd-writer` produces `cross-repo-prd-{peer}.md` and tags plan tasks with `[CROSS-REPO: {peer}]`.
-- `api-spec-writer` captures the inter-repo contract as `api-requirements.md`.
-
-No orchestrator-level branching is required. Agents inspect the env vars themselves and act accordingly.
-
-## Plan schema addition
-
-`plan.json` has a `repositories` map keyed by short name:
-
-```json
-{
-  "repositories": {
-    "peer-backend": { "path": "/Users/me/code/peer-backend", "isPrimary": false },
-    "peer-mobile": { "path": "/Users/me/code/peer-mobile", "isPrimary": false },
-    "primary": { "path": "/Users/me/code/primary", "isPrimary": true }
-  }
-}
-```
-
-Tasks tagged `[CROSS-REPO: peer-backend]` are planned to land in that peer's working copy.
-
-## Running from the desktop app
-
-The desktop app auto-clones repositories that are referenced in a cloud command but missing locally (via `gh repo clone`, 120-second timeout). For multi-repo loops, ensure every peer repo either exists in your sandbox or is accessible via `gh` before dispatch. You can pre-populate `~/.closedloop-ai/config/repos.json` with the set you expect to use frequently.
+Together these mean the agent can be told (in the API-supplied prompt) which peers exist by `fullName` + `branch`, and discover the actual mount paths from the runtime-appended footer or the manifest file. Both runtimes (ECS and desktop) emit identical shapes.
 
 ## Authorization at loop create
 
-`additionalRepos` is now authorized and verified the moment a loop is created — not only when a `PLAN` runs. The control plane validates each peer against the calling org's GitHub installation and confirms the requested branch exists. Failures surface as structured errors:
+`additionalRepos` is authorized and verified the moment a loop is created — not only when a `PLAN` runs. The control plane validates each peer against the calling org's GitHub installation and confirms the requested branch exists. Failures surface as structured errors:
 
 | Error | Status | Meaning |
 |---|---|---|
@@ -92,22 +59,11 @@ The desktop app auto-clones repositories that are referenced in a cloud command 
 | `BranchNotFoundError` | `400` | The base branch does not exist on the peer. Push the branch or correct the name. |
 | Duplicate-repo validation error | `400` | The same repo appears more than once in `additionalRepos`. |
 
-`POST /loops/{id}/github-token` also accepts an optional `additionalRepos` body so a desktop harness can scope the token request to the actual peer set. When the body is omitted (or invalid), the route falls back to the loop record on file.
-
-## EXECUTE across peer repos
-
-EXECUTE loops receive the same peer-repo access as PLAN. The harness:
-
-1. Clones every `additionalRepos` entry into the workspace alongside the primary repo.
-2. Forwards `--add-dir` for each peer path to `run-loop.sh`, granting the loop's agents filesystem access to plan-tagged tasks in those peers.
-3. Inherits `additionalRepos` from the parent PLAN loop when an EXECUTE create call omits them — the control plane reads the parent loop record and propagates the peer set automatically. Callers can still override by supplying `additionalRepos` explicitly on the EXECUTE request body.
-4. Finalizes per-repo PRs when each peer has changes: clean peers are skipped (no empty PRs), and peers with commits get their own PR labelled `symphony` with a metadata footer linking back to the loop ID and command.
-
-A peer whose GitHub App installation has been revoked between PLAN and EXECUTE fails fast at loop create — `authorizeAdditionalRepos` runs unconditionally on every create.
+`POST /loops/{id}/github-token` also accepts an optional `additionalRepos` body so a runtime can scope the token request to the actual peer set. When the body is omitted (or invalid), the route falls back to the loop record on file.
 
 ## Multi-repo execution results (v2)
 
-When a multi-repo loop completes, the runtime publishes a v2 completion event whose `results[]` field is a discriminated union per peer:
+When a multi-repo `EXECUTE` loop completes, the runtime publishes a v2 completion event whose `results[]` field is a discriminated union per peer:
 
 ```json
 {
@@ -122,11 +78,17 @@ When a multi-repo loop completes, the runtime publishes a v2 completion event wh
 
 Single-repo loops continue to publish the v1 event shape. The platform normalizes both into a unified result so judges, the activity feed, and downstream automation see one consistent structure.
 
+Read-only commands (`PLAN`, `GENERATE_PRD`, `REQUEST_PRD_CHANGES`) do not emit per-peer entries — the only persisted artifact is the primary's (the plan, the PRD).
+
+## Running from the desktop app
+
+The desktop app auto-clones repositories that are referenced in a cloud command but missing locally (via `gh repo clone`, 120-second timeout). For multi-repo loops, ensure every peer repo either exists in your sandbox or is accessible via `gh` before dispatch. You can pre-populate `~/.closedloop-ai/config/repos.json` with the set you expect to use frequently.
+
 ## Related reading
 
 <Cards>
   <Card title="Artifacts" href="./artifacts">
-    How `plan.json` and the per-repo code maps live on disk.
+    How plan and PRD artifacts and per-peer manifests live on disk.
   </Card>
   <Card title="Orchestrator and subagents" href="./orchestrator">
     Which agents participate in cross-repo planning.
