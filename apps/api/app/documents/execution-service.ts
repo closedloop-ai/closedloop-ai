@@ -9,7 +9,7 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { ArtifactType, withDb } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
 import { artifactLinksService } from "../artifact-links/service";
-import { loopsService } from "../loops/service";
+import { LoopAlreadyActiveError, loopsService } from "../loops/service";
 import {
   createDocumentRecord,
   findInstallationRepoId,
@@ -467,6 +467,14 @@ export const documentExecutionService = {
       organizationId
     );
     if (activeLoop) {
+      if (activeLoop.computeTargetId !== input.computeTargetId) {
+        throw new LoopAlreadyActiveError(
+          activeLoop.id,
+          activeLoop.command,
+          activeLoop.status
+        );
+      }
+
       const existingLocalRepoPath =
         typeof activeLoop.metadata?.localRepoPath === "string"
           ? activeLoop.metadata.localRepoPath
