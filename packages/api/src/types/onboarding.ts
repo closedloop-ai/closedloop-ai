@@ -30,7 +30,6 @@ export const ChecklistItemId = {
   CreateProject: "CREATE_PROJECT",
   ConnectGitHub: "CONNECT_GITHUB",
   AddAnthropicKey: "ADD_ANTHROPIC_KEY",
-  ConnectLinear: "CONNECT_LINEAR",
   ConnectGoogle: "CONNECT_GOOGLE",
   InviteMembers: "INVITE_MEMBERS",
 } as const;
