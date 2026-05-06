@@ -6,11 +6,12 @@
  * of the desktop onboarding popup.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AuthContext } from "@/lib/auth/with-auth";
 
 // --- Mocks (must come before imports) ---
 
-let mockAuthContext: import("@/lib/auth/with-auth").AuthContext;
+let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
   withAnyAuth: (handler: any) => async (request: any, context: any) =>
@@ -21,7 +22,6 @@ vi.mock("@/app/onboarding/service");
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { GET } from "@/app/onboarding/route";
 import { onboardingService } from "@/app/onboarding/service";
 import {
