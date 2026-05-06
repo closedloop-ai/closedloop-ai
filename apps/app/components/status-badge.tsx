@@ -284,12 +284,14 @@ export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
   [LoopErrorCode.NoWorkProduced]: "No output produced",
   [LoopErrorCode.ContextLimitExceeded]: "Context limit exceeded",
   [LoopErrorCode.PlanStateUnavailable]: "Plan state unavailable",
+  [LoopErrorCode.StaleDispatch]: "Stale dispatch",
 };
 
 export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
   [LoopErrorCode.NoWorkProduced]: COLOR_PENDING,
   [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
   [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
+  [LoopErrorCode.StaleDispatch]: COLOR_FAILURE,
 };
 
 export function LoopStatusBadge({

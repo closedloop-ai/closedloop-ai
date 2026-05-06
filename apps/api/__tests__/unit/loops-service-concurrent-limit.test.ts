@@ -135,6 +135,7 @@ describe("loopsService.create", () => {
 
       expect(isLoopAlreadyActiveError(err)).toBe(false);
       expect((err as { code?: string }).code).toBe("P2002");
+      expect(handles.loopFindFirst).toHaveBeenCalledTimes(2);
     });
 
     // S1 regression: before the two-tier split, the catch path used the

@@ -8,6 +8,7 @@ import {
   type Mock,
   vi,
 } from "vitest";
+import { buildPrismaLoop } from "../../../__tests__/fixtures/loop";
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 // Mock modules before importing the service
@@ -390,11 +391,13 @@ describe("loopsService.resume — sibling concurrency gate", () => {
 
   it("throws LoopAlreadyActiveError when an active sibling exists for the same (artifactId, command)", async () => {
     const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
-    mockFindFirst.mockResolvedValue({
-      id: "loop-sibling",
-      status: LoopStatus.Running,
-      command: LoopCommand.Plan,
-    });
+    mockFindFirst.mockResolvedValue(
+      buildPrismaLoop({
+        id: "loop-sibling",
+        status: LoopStatus.Running,
+        command: LoopCommand.Plan,
+      })
+    );
 
     const err = (await loopsService
       .resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})

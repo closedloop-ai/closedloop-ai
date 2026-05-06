@@ -40,6 +40,7 @@ export const LoopErrorCode = {
   NoWorkProduced: "NO_WORK_PRODUCED",
   ContextLimitExceeded: "CONTEXT_LIMIT_EXCEEDED",
   PlanStateUnavailable: "PLAN_STATE_UNAVAILABLE",
+  StaleDispatch: "STALE_DISPATCH",
 } as const;
 export type LoopErrorCode = (typeof LoopErrorCode)[keyof typeof LoopErrorCode];
 

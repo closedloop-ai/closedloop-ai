@@ -146,8 +146,8 @@ describe("POST /plans/start-loop-from-local", () => {
     expect(json.data).toEqual({
       error: "loop_already_active",
       loopId: "loop-existing",
-      command: "PLAN",
-      status: "RUNNING",
+      command: LoopCommand.Plan,
+      status: LoopStatus.Running,
     });
   });
 });

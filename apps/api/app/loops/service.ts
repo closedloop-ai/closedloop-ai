@@ -11,6 +11,7 @@ import {
   type Loop,
   LoopCommand,
   type LoopDetail,
+  LoopErrorCode,
   type LoopEvent,
   type LoopEventsFilters,
   type LoopEventsPaginatedResponse,
@@ -1015,6 +1016,11 @@ export const loopsService = {
         data: {
           status: LoopStatus.Failed,
           completedAt: new Date(),
+          error: {
+            code: LoopErrorCode.StaleDispatch,
+            message:
+              "Loop dispatch was never acknowledged; marked failed after staleness threshold.",
+          },
         },
       })
     );
