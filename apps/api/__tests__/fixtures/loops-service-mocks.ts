@@ -99,6 +99,18 @@ export const logModuleMock = (): Record<string, unknown> => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 });
 
+function getMockPrismaErrorCode(error: unknown): string | undefined {
+  if (
+    (typeof error !== "object" || error === null) &&
+    typeof error !== "function"
+  ) {
+    return undefined;
+  }
+
+  const code = Reflect.get(error, "code");
+  return typeof code === "string" ? code : undefined;
+}
+
 export const dbUtilsModuleMock = (): Record<string, unknown> => ({
   basicUserSelect: {
     select: {
@@ -109,6 +121,7 @@ export const dbUtilsModuleMock = (): Record<string, unknown> => ({
       avatarUrl: true,
     },
   },
+  getPrismaErrorCode: vi.fn(getMockPrismaErrorCode),
 });
 
 export const docPrServiceModuleMock = (): Record<string, unknown> => ({

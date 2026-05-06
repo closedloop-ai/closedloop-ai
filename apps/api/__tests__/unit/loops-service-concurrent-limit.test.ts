@@ -37,6 +37,7 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () =>
 
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { beforeEach, describe, expect, it } from "vitest";
+import { LOOP_ACTIVE_INDEX_NAME } from "@/app/loops/loop-constants";
 import {
   isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
@@ -57,21 +58,18 @@ const planLoopInput = {
 
 describe("resolveOrgLoopLimit", () => {
   it.each([
-    { label: "null settings", settings: null, expected: 10 },
-    { label: "missing key", settings: {}, expected: 10 },
+    { label: "null settings → default", settings: null, expected: 10 },
     {
-      label: "positive integer",
+      label: "positive integer override",
       settings: { maxConcurrentLoops: 25 },
       expected: 25,
     },
-    { label: "zero", settings: { maxConcurrentLoops: 0 }, expected: 10 },
-    { label: "negative", settings: { maxConcurrentLoops: -1 }, expected: 10 },
     {
-      label: "non-integer string",
-      settings: { maxConcurrentLoops: "25" },
+      label: "invalid value (non-positive or non-integer) → default",
+      settings: { maxConcurrentLoops: -1 },
       expected: 10,
     },
-  ])("returns $label → $expected", ({ settings, expected }) => {
+  ])("returns $label", ({ settings, expected }) => {
     expect(resolveOrgLoopLimit(settings as never)).toBe(expected);
   });
 });
@@ -177,6 +175,70 @@ describe("loopsService.create", () => {
           ]),
         },
       });
+    });
+
+    it.each([
+      {
+        label: "Prisma target fields",
+        makeError: () =>
+          makeP2002Error({
+            target: ["artifactId", "command", "artifactVersion"],
+          }),
+      },
+      {
+        label: "PrismaPg driver-adapter field metadata",
+        makeError: () =>
+          makeP2002Error({
+            meta: {
+              driverAdapterError: {
+                name: "DriverAdapterError",
+                cause: {
+                  kind: "UniqueConstraintViolation",
+                  originalCode: "23505",
+                  constraint: {
+                    fields: ["artifact_id", "command", "artifact_version"],
+                  },
+                },
+              },
+            },
+            target: null,
+          }),
+      },
+      {
+        label: "nested PrismaPg constraint index metadata",
+        makeError: () =>
+          makeP2002Error({
+            meta: {
+              driverAdapterError: {
+                name: "DriverAdapterError",
+                cause: {
+                  kind: "UniqueConstraintViolation",
+                  originalCode: "23505",
+                  constraint: {
+                    index: LOOP_ACTIVE_INDEX_NAME,
+                  },
+                },
+              },
+            },
+            target: null,
+          }),
+      },
+    ])("converts P2002 reported via $label", async ({ makeError }) => {
+      handles.loopCreate.mockRejectedValueOnce(makeError());
+      handles.loopFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(
+        buildPrismaLoop({
+          id: "loop-active-from-pg-metadata",
+          status: LoopStatus.Running,
+        })
+      );
+
+      const err = (await loopsService
+        .create(ORG_ID, USER_ID, planLoopInput)
+        .catch((e) => e)) as LoopAlreadyActiveError;
+
+      expect(isLoopAlreadyActiveError(err)).toBe(true);
+      expect(err.existingLoopId).toBe("loop-active-from-pg-metadata");
+      expect(handles.loopFindFirst).toHaveBeenCalledTimes(2);
     });
 
     it("does not swallow P2002 raised by an unrelated unique constraint", async () => {

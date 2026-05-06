@@ -35,7 +35,7 @@ import { verifyInstallationBranchExists } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
-import { basicUserSelect } from "@/lib/db-utils";
+import { basicUserSelect, getPrismaErrorCode } from "@/lib/db-utils";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { LOOP_ACTIVE_INDEX_NAME } from "./loop-constants";
 
@@ -230,13 +230,134 @@ const ACTIVE_LOOP_STATUSES: LoopStatus[] = [
  */
 const STALE_PENDING_THRESHOLD_MS = 30_000;
 
-/** Type guard for Prisma's `P2002` (unique constraint) error code. */
-function isPrismaUniqueConstraintError(
-  error: unknown
-): error is Error & { code: "P2002"; meta?: { target?: string | string[] } } {
+const PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE = "P2002";
+const LOOP_ACTIVE_INDEX_DB_FIELDS = [
+  "artifact_id",
+  "command",
+  "artifact_version",
+] as const;
+const LOOP_ACTIVE_INDEX_FIELD_ALIASES = new Map<string, string>([
+  ["artifact_id", "artifact_id"],
+  ["artifactId", "artifact_id"],
+  ["command", "command"],
+  ["artifact_version", "artifact_version"],
+  ["artifactVersion", "artifact_version"],
+]);
+const LOOP_ACTIVE_INDEX_FIELD_SET = new Set<string>(
+  LOOP_ACTIVE_INDEX_DB_FIELDS
+);
+const FIELD_LIST_PARENS_REGEX = /\(([^)]+)\)/;
+const FIELD_NAME_QUOTES_REGEX = /^[`"']|[`"']$/g;
+const MAX_ERROR_METADATA_SCAN_DEPTH = 6;
+const ERROR_METADATA_SCAN_KEYS = [
+  "meta",
+  "target",
+  "fields",
+  "constraint",
+  "index",
+  "constraintName",
+  "constraint_name",
+  "driverAdapterError",
+  "cause",
+  "detail",
+  "message",
+  "originalMessage",
+] as const;
+const stringArraySchema = z.array(z.string());
+
+/** Checks for Prisma's `P2002` (unique constraint) error code. */
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return getPrismaErrorCode(error) === PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE;
+}
+
+function isObjectLike(value: unknown): value is object {
   return (
-    error instanceof Error && (error as { code?: unknown }).code === "P2002"
+    (typeof value === "object" && value !== null) || typeof value === "function"
   );
+}
+
+function normalizeLoopActiveIndexField(field: string): string | null {
+  const normalized = field.trim().replace(FIELD_NAME_QUOTES_REGEX, "");
+  return LOOP_ACTIVE_INDEX_FIELD_ALIASES.get(normalized) ?? null;
+}
+
+function parseFieldListFromString(value: string): string[] | null {
+  const parenthesizedFields = FIELD_LIST_PARENS_REGEX.exec(value)?.[1];
+  const rawFieldList =
+    parenthesizedFields ?? (value.includes(",") ? value : null);
+  if (rawFieldList == null) {
+    return null;
+  }
+
+  const fields = rawFieldList
+    .split(",")
+    .map((field) => field.trim())
+    .filter((field) => field.length > 0);
+  return fields.length > 0 ? fields : null;
+}
+
+function isLoopActiveIndexFieldSet(fields: string[]): boolean {
+  const normalizedFields = fields.map(normalizeLoopActiveIndexField);
+  if (normalizedFields.some((field) => field == null)) {
+    return false;
+  }
+
+  const uniqueFields = new Set(normalizedFields);
+  return (
+    uniqueFields.size === LOOP_ACTIVE_INDEX_FIELD_SET.size &&
+    LOOP_ACTIVE_INDEX_DB_FIELDS.every((field) => uniqueFields.has(field))
+  );
+}
+
+function stringMatchesLoopActiveIndex(value: string): boolean {
+  if (value.includes(LOOP_ACTIVE_INDEX_NAME)) {
+    return true;
+  }
+
+  const fields = parseFieldListFromString(value);
+  return fields != null && isLoopActiveIndexFieldSet(fields);
+}
+
+function valueMatchesLoopActiveIndexMetadata(
+  value: unknown,
+  depth = 0,
+  seen = new Set<object>()
+): boolean {
+  if (depth > MAX_ERROR_METADATA_SCAN_DEPTH) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    return stringMatchesLoopActiveIndex(value);
+  }
+
+  const parsedStringArray = stringArraySchema.safeParse(value);
+  if (parsedStringArray.success) {
+    return (
+      parsedStringArray.data.includes(LOOP_ACTIVE_INDEX_NAME) ||
+      isLoopActiveIndexFieldSet(parsedStringArray.data)
+    );
+  }
+
+  if (!isObjectLike(value)) {
+    return false;
+  }
+
+  if (seen.has(value)) {
+    return false;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.some((item) =>
+      valueMatchesLoopActiveIndexMetadata(item, depth + 1, seen)
+    );
+  }
+
+  return ERROR_METADATA_SCAN_KEYS.some((key) => {
+    const child = Reflect.get(value, key);
+    return valueMatchesLoopActiveIndexMetadata(child, depth + 1, seen);
+  });
 }
 
 /**
@@ -248,14 +369,7 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
   if (!isPrismaUniqueConstraintError(error)) {
     return false;
   }
-  const target = error.meta?.target;
-  if (typeof target === "string") {
-    return target === LOOP_ACTIVE_INDEX_NAME;
-  }
-  if (Array.isArray(target)) {
-    return target.includes(LOOP_ACTIVE_INDEX_NAME);
-  }
-  return false;
+  return valueMatchesLoopActiveIndexMetadata(error);
 }
 
 /**

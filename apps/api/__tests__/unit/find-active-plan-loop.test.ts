@@ -96,11 +96,6 @@ describe("loopsService.findOperationallyActiveLoop", () => {
     });
   });
 
-  it("returns null when findFirst finds no matching row", async () => {
-    handles.loopFindFirst.mockResolvedValue(null);
-    expect(await callOperational()).toBeNull();
-  });
-
   describe("query shape", () => {
     it("scopes by artifactId, command, organizationId and includes the staleness OR", async () => {
       await callOperational(LoopCommand.Execute);

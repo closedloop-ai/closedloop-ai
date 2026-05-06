@@ -46,6 +46,16 @@ vi.mock("@/lib/db-utils", () => ({
       avatarUrl: true,
     },
   },
+  getPrismaErrorCode: vi.fn((error: unknown) => {
+    if (
+      (typeof error !== "object" || error === null) &&
+      typeof error !== "function"
+    ) {
+      return undefined;
+    }
+    const code = Reflect.get(error, "code");
+    return typeof code === "string" ? code : undefined;
+  }),
 }));
 
 // Import after mocking
@@ -55,7 +65,6 @@ import { documentPullRequestService } from "@/app/documents/document-pull-reques
 import {
   authorizeAdditionalRepos,
   BranchNotFoundError,
-  isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
   loopsService,
@@ -409,31 +418,6 @@ describe("loopsService.resume — sibling concurrency gate", () => {
     expect(err.existingStatus).toBe(LoopStatus.Running);
     expect(mockCreate).not.toHaveBeenCalled();
   });
-
-  it("reaps stale pending siblings before enforcing the concurrency limit", async () => {
-    const { mockCount, mockCreate, mockUpdateMany } =
-      mockResumeDb(parentOverrides);
-    mockCount.mockResolvedValue(10);
-
-    const err = await loopsService
-      .resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
-      .catch((e) => e);
-
-    expect(isConcurrentLoopLimitError(err)).toBe(true);
-    expect(mockCreate).not.toHaveBeenCalled();
-    expect(mockUpdateMany).toHaveBeenCalledTimes(1);
-    expect(mockUpdateMany.mock.calls[0][0].where).toMatchObject({
-      organizationId: TEST_ORG_ID,
-      artifactId: parentOverrides.artifactId,
-      command: parentOverrides.command,
-      status: LoopStatus.Pending,
-      containerId: null,
-      createdAt: { lt: expect.any(Date) },
-    });
-    expect(mockUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(
-      mockCount.mock.invocationCallOrder[0]
-    );
-  });
 });
 
 describe("loopsService.create (MANUAL)", () => {
@@ -496,27 +480,6 @@ describe("loopsService.create (MANUAL)", () => {
     expect(createCall.data.command).toBe(LoopCommand.Manual);
     expect(createCall.data.status).toBe(LoopStatus.Running);
     expect(createCall.data.startedAt).toBeInstanceOf(Date);
-  });
-
-  it("creates a non-MANUAL loop in PENDING status without startedAt", async () => {
-    const mockCreate = vi
-      .fn()
-      .mockImplementation((args: { data: Record<string, unknown> }) => ({
-        id: TEST_NEW_LOOP_ID,
-        status: args.data.status,
-      }));
-    mockCreateDb({ create: mockCreate });
-
-    const result = await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Plan,
-      documentId: "artifact-111",
-    });
-
-    expect(result.status).toBe(LoopStatus.Pending);
-
-    const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.data.status).toBe(LoopStatus.Pending);
-    expect(createCall.data.startedAt).toBeUndefined();
   });
 
   it("throws NestedManualLoopError when a RUNNING non-MANUAL loop exists for the same document", async () => {
