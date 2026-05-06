@@ -1290,7 +1290,11 @@ async function handleLoopError(
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
-    error: { code: event.code, message: event.message },
+    error: {
+      code: event.code,
+      message: event.message,
+      ...(event.result !== undefined ? { result: event.result } : {}),
+    },
     ...buildErrorCostFields(event),
     ...prSession,
     metadata: buildApiKeySourceMetadata(event.apiKeySource),
@@ -1345,6 +1349,9 @@ function buildCanonicalErrorData(event: LoopEventError): LoopEventError {
     }),
     ...(event.tokensByModel !== undefined && {
       tokensByModel: event.tokensByModel,
+    }),
+    ...(event.result !== undefined && {
+      result: event.result,
     }),
   };
 }

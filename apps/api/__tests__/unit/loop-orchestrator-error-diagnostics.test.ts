@@ -97,6 +97,7 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 // --- Imports (after mocks) ---
 
+import { LoopErrorCode, RunnerErrorSubcode } from "@repo/api/src/types/loop";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
@@ -244,6 +245,31 @@ describe("handleLoopEvent error diagnostics", () => {
     expect(persistedData).not.toHaveProperty("logTail");
     expect(persistedData).not.toHaveProperty("tokenUsage");
     expect(persistedData).not.toHaveProperty("diagnosticsVersion");
+  });
+
+  it("persists runner failure result on loop error and event data", async () => {
+    setupLoop();
+    const result = { subcode: RunnerErrorSubcode.ClaudeRateLimit };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      type: "error",
+      code: LoopErrorCode.RunnerError,
+      message: "Claude rate limit reached.",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      result,
+    });
+
+    const updateCall = mockLoopsService.updateStatus.mock.calls[0];
+    const updateData = updateCall[3] as Record<string, unknown>;
+    expect(updateData.error).toEqual({
+      code: LoopErrorCode.RunnerError,
+      message: "Claude rate limit reached.",
+      result,
+    });
+
+    const addEventCall = mockLoopsService.addEvent.mock.calls[0];
+    const persistedData = addEventCall[2].data as Record<string, unknown>;
+    expect(persistedData.result).toEqual(result);
   });
 
   it("persists tokenUsage when provided", async () => {
