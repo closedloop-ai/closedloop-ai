@@ -11,8 +11,8 @@ import {
   type InvalidStatusTransitionError,
   isInvalidStatusTransitionError,
   isReplayDetectedError,
-  loopsService,
-} from "../../service";
+} from "../../loop-errors";
+import { loopsService } from "../../service";
 import {
   listLoopEventsQueryValidator,
   loopEventPayloadValidator,

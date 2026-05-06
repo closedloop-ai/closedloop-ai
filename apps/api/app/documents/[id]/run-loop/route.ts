@@ -14,11 +14,10 @@ import { NextResponse } from "next/server";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import { documentGenerationService } from "@/app/documents/generation-service";
 import {
-  isBranchNotFoundError,
-  isConcurrentLoopLimitError,
-  isUnauthorizedRepoError,
-  loopsService,
-} from "@/app/loops/service";
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+} from "@/app/loops/loop-error-responses";
+import { loopsService } from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
@@ -27,7 +26,6 @@ import { buildLoopPrompt } from "@/lib/loops/prompts";
 import {
   badRequestResponse,
   conflictResponse,
-  errorResponse,
   notFoundResponse,
   parseBody,
   scheduleLogFlushAfter,
@@ -40,19 +38,6 @@ import {
   resolveRunLoopComputeTarget,
 } from "./run-loop-helpers";
 import { runLoopSchema } from "./validators";
-
-function handleRunLoopError(error: unknown) {
-  if (isConcurrentLoopLimitError(error)) {
-    return errorResponse(error.message, error, 429);
-  }
-  if (isUnauthorizedRepoError(error)) {
-    return errorResponse(error.message, error, 403);
-  }
-  if (isBranchNotFoundError(error)) {
-    return errorResponse(error.message, error, 400);
-  }
-  return errorResponse("Failed to run loop", error);
-}
 
 function getLoopMetadata(
   desktopApiNamespace: DesktopApiNamespace | undefined
@@ -69,7 +54,8 @@ function getLoopMetadata(
 type RunLoopResponse =
   | CreateLoopResponse
   | ComputeTargetConflictBody
-  | BackendMismatchBody;
+  | BackendMismatchBody
+  | LoopAlreadyActiveBody;
 
 export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
   async ({ user }, request, params) => {
@@ -223,7 +209,7 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
 
       return NextResponse.json(success(loopResponse));
     } catch (error) {
-      return handleRunLoopError(error);
+      return handleLoopServiceError(error, "Failed to run loop");
     }
   }
 );

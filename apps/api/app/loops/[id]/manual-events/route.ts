@@ -12,7 +12,8 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { isInvalidStatusTransitionError, loopsService } from "../../service";
+import { isInvalidStatusTransitionError } from "../../loop-errors";
+import { loopsService } from "../../service";
 import {
   manualEventPayloadValidator,
   normalizeLoopEvent,

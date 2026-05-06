@@ -12,13 +12,13 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import {
-  isBranchNotFoundError,
-  isConcurrentLoopLimitError,
-  isNestedManualLoopError,
-  isUnauthorizedRepoError,
-  loopsService,
-} from "./service";
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+} from "./loop-error-responses";
+import { loopsService } from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
+
+type CreateLoopRouteResponse = CreateLoopResponse | LoopAlreadyActiveBody;
 
 export const GET = withAnyAuth<LoopWithUser[], "/loops">(
   async ({ user }, request) => {
@@ -60,7 +60,7 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
  * POST /loops — Creates a loop DB record only (status: PENDING).
  * Does NOT launch the loop. To create AND launch, use POST /artifacts/[id]/run-loop.
  */
-export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
+export const POST = withAnyAuth<CreateLoopRouteResponse, "/loops">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -101,19 +101,7 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
 
       return successResponse(result);
     } catch (error) {
-      if (isConcurrentLoopLimitError(error)) {
-        return errorResponse(error.message, error, 429);
-      }
-      if (isNestedManualLoopError(error)) {
-        return errorResponse(error.message, error, 409);
-      }
-      if (isUnauthorizedRepoError(error)) {
-        return errorResponse(error.message, error, 403);
-      }
-      if (isBranchNotFoundError(error)) {
-        return errorResponse(error.message, error, 400);
-      }
-      return errorResponse("Failed to create loop", error);
+      return handleLoopServiceError(error, "Failed to create loop");
     }
   },
   { requiredScopes: ["write"] }

@@ -1,4 +1,4 @@
-import type { JsonObject } from "@repo/api/src/types/common";
+import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
   type PullRequestInfo,
@@ -311,11 +311,7 @@ export async function checkBackendMismatch(
   organizationId: string,
   resolvedComputeTargetId: string | undefined,
   latestCompletedLoopComputeTargetId?: string | null
-): Promise<NextResponse<{
-  success: false;
-  error: string;
-  data: BackendMismatchBody;
-}> | null> {
+): Promise<NextResponse<ApiResult<never>> | null> {
   let previousTargetId: string | null;
   let hasPriorLoop: boolean;
   if (latestCompletedLoopComputeTargetId === undefined) {
@@ -359,10 +355,12 @@ export async function checkBackendMismatch(
     preferredComputeTargetId: currentTargetId,
     documentId,
   };
+  // The 409 body extends ApiResult with an extra `data` field (consumed by
+  // the frontend via ApiError.data.data). Cast to satisfy the return type.
   return NextResponse.json(
     { success: false, error: mismatchBody.message, data: mismatchBody },
     { status: 409 }
-  );
+  ) as NextResponse<ApiResult<never>>;
 }
 
 /**

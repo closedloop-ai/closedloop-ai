@@ -9,6 +9,11 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { documentExecutionService } from "@/app/documents/execution-service";
+import {
+  handleLoopServiceError,
+  type LoopAlreadyActiveBody,
+  loopAlreadyActiveResponse,
+} from "@/app/loops/loop-error-responses";
 import { repoSchema } from "@/app/loops/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
@@ -36,7 +41,9 @@ const bodySchema = z
   })
   .strict();
 
-export const POST = withAnyAuth<StartPlanLoopResponse>(
+type StartPlanLoopRouteResponse = StartPlanLoopResponse | LoopAlreadyActiveBody;
+
+export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -88,6 +95,15 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
             localRepoPath: result.localRepoPath,
           })
         );
+      }
+
+      if (result.outcome === "already-active-conflict") {
+        return loopAlreadyActiveResponse({
+          loopId: result.activeLoop.id,
+          command: result.activeLoop.command,
+          status: result.activeLoop.status,
+          message: `A ${result.activeLoop.command} loop is already active on a different compute target (id: ${result.activeLoop.id}, status: ${result.activeLoop.status}). Cancel or wait for the existing loop to complete before starting a new one.`,
+        });
       }
 
       if (result.outcome === "error") {
@@ -166,7 +182,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
         })
       );
     } catch (error) {
-      return errorResponse("Failed to start plan loop", error);
+      return handleLoopServiceError(error, "Failed to start plan loop");
     }
   },
   { requiredScopes: ["write"] }
