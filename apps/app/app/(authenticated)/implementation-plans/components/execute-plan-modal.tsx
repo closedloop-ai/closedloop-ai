@@ -1,6 +1,7 @@
 "use client";
 
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { Loader2Icon, PlayIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useDocument } from "@/hooks/queries/use-documents";
@@ -86,8 +87,10 @@ export function ExecutePlanModal({
     undefined,
     { enabled: !!planId }
   );
+  // EXECUTE inherits from the latest PLAN authoring on this Plan document
+  // (with EXECUTE as fallback). The precedence lives in the backend.
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
-    useInitialAdditionalRepos(planId);
+    useInitialAdditionalRepos(planId, LoopCommand.Execute);
   const targetRepo = plan?.targetRepo ?? "";
   const isLoadingInitialRepos =
     (!!planId && isLoadingPlan) || isLoadingInitialAdditionalRepos;

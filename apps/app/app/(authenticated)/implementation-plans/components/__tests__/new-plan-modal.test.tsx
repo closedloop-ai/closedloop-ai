@@ -64,6 +64,16 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubBranches: () => ({ data: undefined, isLoading: false }),
 }));
 
+// PLN-462: NewPlanModal calls useInheritedAdditionalRepos under TanStack
+// Query. Stub it so the existing tests don't need a QueryClientProvider —
+// the multi-repo behaviour has its own dedicated test file.
+vi.mock("@/hooks/queries/use-loops", () => ({
+  useInheritedAdditionalRepos: () => ({
+    data: { additionalRepos: [], source: null },
+    isFetched: true,
+  }),
+}));
+
 function createMockSource(overrides?: Partial<PlanSource>): PlanSource {
   return {
     id: "source-1",
@@ -706,37 +716,6 @@ describe("NewPlanModal", () => {
       expect(
         screen.queryByRole("button", { name: NEW_PLAN_REGEX })
       ).not.toBeInTheDocument();
-    });
-
-    it("should reset form when modal is closed", async () => {
-      const mockOnOpenChange = vi.fn();
-
-      const { rerender } = render(
-        <NewPlanModal onOpenChange={mockOnOpenChange} open={true} />
-      );
-
-      // Fill in some fields
-      const titleInput = screen.getByLabelText(TITLE_REGEX);
-      fireEvent.change(titleInput, { target: { value: "Test Title" } });
-
-      // Close modal
-      const cancelButton = screen.getByRole("button", { name: CANCEL_REGEX });
-      cancelButton.click();
-
-      await waitFor(() => {
-        expect(mockOnOpenChange).toHaveBeenCalledWith(false);
-      });
-
-      // Reopen modal - form should be reset
-      mockOnOpenChange.mockClear();
-      rerender(<NewPlanModal onOpenChange={mockOnOpenChange} open={true} />);
-
-      await waitFor(() => {
-        const titleInputReset = screen.getByLabelText(
-          TITLE_REGEX
-        ) as HTMLInputElement;
-        expect(titleInputReset.value).toBe("");
-      });
     });
   });
 });

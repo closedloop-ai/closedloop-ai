@@ -1,6 +1,7 @@
 "use client";
 
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -17,12 +18,20 @@ import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   useCreateAndGenerateDocument,
   useCreateDocument,
   useDocuments,
 } from "@/hooks/queries/use-documents";
+import { useInheritedAdditionalRepos } from "@/hooks/queries/use-loops";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
 import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
 import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
@@ -80,9 +89,7 @@ function isPreLoopPendingForOwner({
   ownerKey: string;
   preLoopGate: ReturnType<typeof useOptionalPreLoopSystemCheckGate>;
 }): boolean {
-  return Boolean(
-    enabled && preLoopGate && preLoopGate.pendingOwnerKey === ownerKey
-  );
+  return Boolean(enabled && preLoopGate?.pendingOwnerKey === ownerKey);
 }
 
 type SubmitCreatePlanArgs = {
@@ -219,6 +226,23 @@ export function NewPlanModal({
     return source ?? selectedPrd ?? undefined;
   }, [source, selectedPrd]);
 
+  // Inherit additionalRepos from the source PRD's most recent loop
+  const inheritedRepos = useInheritAdditionalReposFromSource({
+    open,
+    showPicker,
+    sourceId: selectedSource?.id,
+    onSeed: setAdditionalRepos,
+  });
+  // Mark the picker as user-edited as soon as onChange fires, so a
+  // late-arriving query result does not clobber the edit.
+  const onAdditionalReposChange = useCallback(
+    (repos: AdditionalRepoRef[]) => {
+      inheritedRepos.markUserEdited();
+      setAdditionalRepos(repos);
+    },
+    [inheritedRepos.markUserEdited]
+  );
+
   // Update title, filename, and repo/branch when source is selected from dropdown
   useEffect(() => {
     if (selectedSource && !source) {
@@ -258,21 +282,6 @@ export function NewPlanModal({
     }
   };
 
-  const resetForm = () => {
-    setSelectedSourceId(source?.id ?? "");
-    setSelectedProjectId("");
-    setTitle("");
-    setFileName("");
-    setContent("");
-    setTargetRepo(source?.targetRepo ?? "");
-    setTargetBranch(source?.targetBranch ?? "");
-    setSelectedRepoId("");
-    setAdditionalRepos([]);
-    setIncompleteAdditionalRepos(false);
-    setError(null);
-    hasPrePopulated.current = false;
-  };
-
   const handleSubmit = () => {
     setError(null);
 
@@ -300,7 +309,6 @@ export function NewPlanModal({
       preLoopOwnerKey,
       onSuccess: (document) => {
         setOpen(false);
-        resetForm();
         router.push(`/implementation-plans/${document.slug}`);
       },
     });
@@ -310,7 +318,6 @@ export function NewPlanModal({
     setOpen(newOpen);
     if (!newOpen) {
       preLoopGate?.cancelPendingPreLoopAttempt(preLoopOwnerKey);
-      resetForm();
     }
   };
 
@@ -433,8 +440,13 @@ export function NewPlanModal({
 
           {showPicker ? (
             <AdditionalReposPicker
+              // Remount once the inherited peers from PRD-244 loops resolve so
+              // the picker re-seeds via `initialValue`. Without the key change
+              // the picker keeps its mount-time seed (empty array) and the
+              // late-arriving inherited repos would never appear.
               initialValue={additionalRepos}
-              onChange={setAdditionalRepos}
+              key={inheritedRepos.pickerKey}
+              onChange={onAdditionalReposChange}
               onIncompleteChange={setIncompleteAdditionalRepos}
               targetRepo={targetRepo}
             />
@@ -505,13 +517,13 @@ function TargetRepoBranchFields({
   selectedBranch,
   onRepoChange,
   onBranchChange,
-}: {
+}: Readonly<{
   targetRepo: string;
   selectedRepoId: string;
   selectedBranch: string;
   onRepoChange: (repoId: string, fullName: string) => void;
   onBranchChange: (branch: string) => void;
-}) {
+}>) {
   return (
     <RepoBranchSelector
       branchInputId="target-branch"
@@ -536,11 +548,11 @@ function PlanSubmitValidationMessages({
   selectedSource,
   missingRepo,
   incompleteAdditionalRepos,
-}: {
+}: Readonly<{
   selectedSource: PlanSource | undefined;
   missingRepo: boolean;
   incompleteAdditionalRepos: boolean;
-}) {
+}>) {
   if (!selectedSource) {
     return null;
   }
@@ -559,4 +571,82 @@ function PlanSubmitValidationMessages({
       ) : null}
     </>
   );
+}
+
+type UseInheritAdditionalReposArgs = {
+  open: boolean;
+  showPicker: boolean;
+  sourceId: string | undefined;
+  onSeed: (initial: AdditionalRepoRef[]) => void;
+};
+
+type UseInheritAdditionalReposResult = {
+  pickerKey: number;
+  markUserEdited: () => void;
+};
+
+// Sentinel for the seed-once guard: the source whose peers are already
+// reflected in the picker. The guard re-arms automatically when `sourceId`
+// changes — switching PRDs in the dropdown re-seeds from the new source
+// instead of being silently blocked.
+const SEED_NOT_APPLIED = Symbol("seed-not-applied");
+type SeededSource = string | undefined | typeof SEED_NOT_APPLIED;
+
+function useInheritAdditionalReposFromSource({
+  open,
+  showPicker,
+  sourceId,
+  onSeed,
+}: UseInheritAdditionalReposArgs): UseInheritAdditionalReposResult {
+  const [pickerKey, setPickerKey] = useState(0);
+  // The sourceId whose peer set is currently reflected in the picker, or
+  // the sentinel when nothing has been seeded yet. The seed effect bails
+  // when this matches the live `sourceId` (already seeded for this source
+  // OR the user has typed and we don't want to clobber their edit).
+  const seededSourceRef = useRef<SeededSource>(SEED_NOT_APPLIED);
+  // Flagging the current source as seeded prevents a late query response
+  // from overwriting an edit the user made before the query resolved.
+  const markUserEdited = useCallback(() => {
+    seededSourceRef.current = sourceId;
+  }, [sourceId]);
+
+  const enabled = open && showPicker;
+  const lookupId = enabled ? sourceId : null;
+  // Target command is PLAN — the modal is launching a new PLAN loop on the
+  // soon-to-be-created Plan document. The backend's PLAN precedence chain
+  // resolves "GENERATE_PRD on the source PRD" for this case.
+  const { data: inherited, isFetched } = useInheritedAdditionalRepos(
+    lookupId,
+    LoopCommand.Plan,
+    { enabled: !!lookupId }
+  );
+
+  // sourceId changed since we last seeded → drop stale peers immediately
+  // (don't wait for the new query) and re-arm the seed guard.
+  useEffect(() => {
+    const seeded = seededSourceRef.current;
+    if (seeded !== SEED_NOT_APPLIED && seeded !== sourceId) {
+      seededSourceRef.current = SEED_NOT_APPLIED;
+      onSeed([]);
+      setPickerKey((k) => k + 1);
+    }
+  }, [sourceId, onSeed]);
+
+  // Seed when fresh data arrives for a source we haven't seeded yet.
+  useEffect(() => {
+    if (!(isFetched && inherited)) {
+      return;
+    }
+    if (seededSourceRef.current === sourceId) {
+      return;
+    }
+    seededSourceRef.current = sourceId;
+    if (inherited.additionalRepos.length === 0) {
+      return;
+    }
+    onSeed(inherited.additionalRepos);
+    setPickerKey((k) => k + 1);
+  }, [isFetched, inherited, sourceId, onSeed]);
+
+  return { pickerKey, markUserEdited };
 }

@@ -106,6 +106,7 @@ export function PRDEditor({
     openRenameDialog,
     showGeneratePlanModal,
     setShowGeneratePlanModal,
+    generatePlanModalMountKey,
     openGeneratePlanModal,
     showRequestChangesModal,
     setShowRequestChangesModal,
@@ -350,8 +351,11 @@ export function PRDEditor({
         title="PRD"
       />
 
-      {/* Generate Implementation Plan Modal */}
+      {/* Generate Implementation Plan Modal — `key` bumps on each open so
+          the modal mounts fresh and form state resets via remount instead
+          of imperative reset logic inside the modal. */}
       <NewPlanModal
+        key={generatePlanModalMountKey}
         onOpenChange={setShowGeneratePlanModal}
         open={showGeneratePlanModal}
         source={prd}

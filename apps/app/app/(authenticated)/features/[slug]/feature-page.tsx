@@ -46,6 +46,7 @@ import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
 import { useFeatureJudgesFeedback } from "@/hooks/queries/use-judges";
+import { useModalSession } from "@/hooks/use-modal-session";
 import { ContextSection } from "./components/context-section";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
 import { FeatureMetadataBar } from "./components/feature-metadata-bar";
@@ -66,7 +67,7 @@ export function FeaturePage({
   const chatFlag = useFeatureFlag("interactive-chat");
 
   const [showMoveDialog, setShowMoveDialog] = useState(false);
-  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const generatePlanModal = useModalSession();
   const [showExecuteModal, setShowExecuteModal] = useState(false);
   const [showComments, setShowComments] = useState(true);
 
@@ -161,7 +162,7 @@ export function FeaturePage({
         isReady={isReady}
         onDelete={uiState.openDeleteDialog}
         onEvaluateFeature={featureActions.handleEvaluateFeature}
-        onGeneratePlan={() => setShowGenerateModal(true)}
+        onGeneratePlan={generatePlanModal.openModal}
         onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -290,9 +291,8 @@ export function FeaturePage({
                   />
                   <PlanSection
                     feature={feature}
+                    generatePlanModalSession={generatePlanModal}
                     generationStatus={generationStatus}
-                    onGenerateModalChange={setShowGenerateModal}
-                    showGenerateModal={showGenerateModal}
                   />
                   <BranchesSection
                     documentId={feature.id}

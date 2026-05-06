@@ -8,6 +8,7 @@ import {
   PullRequestState,
   pickPullRequestForRepo,
 } from "@repo/api/src/types/document";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
 import {
   ResizablePanel,
@@ -149,13 +150,13 @@ export function PlanEditor({
     useDocumentGenerationStatus(plan.id, { polling: true });
   const dismissGenerationStatus = useDismissDocumentGenerationStatus();
 
-  // Fetch additionalRepos from the latest PLAN loop for this document.
-  // generationStatus.loopId can point to newer non-PLAN loops (EVALUATE_PLAN,
-  // EXECUTE, etc.) that intentionally omit plan-specific state like
-  // additionalRepos — using it would cause regenerate to forget the last
-  // plan's multi-repo selection.
+  // Pre-fill additionalRepos for the regenerate-plan flow from the PLAN
+  // precedence chain on this Plan document. The backend selects the right
+  // source loop (latest PLAN > GENERATE_PRD on this doc id), skipping
+  // intervening non-PLAN loops (EVALUATE_PLAN, EXECUTE, etc.) that
+  // intentionally omit plan-specific state.
   const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
-    useInitialAdditionalRepos(plan.id);
+    useInitialAdditionalRepos(plan.id, LoopCommand.Plan);
 
   const { data: pullRequestsData } = useDocumentPullRequest(plan.id);
   const pullRequests = pullRequestsData ?? [];

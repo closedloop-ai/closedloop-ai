@@ -135,6 +135,11 @@ export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
 
 export const MAX_ADDITIONAL_REPOS = 5;
 
+export type InheritedAdditionalRepos = {
+  additionalRepos: AdditionalRepoRef[];
+  source: { loopId: string; command: LoopCommand } | null;
+};
+
 // Request/Response types
 export type CreateLoopRequest = {
   command: LoopCommand;

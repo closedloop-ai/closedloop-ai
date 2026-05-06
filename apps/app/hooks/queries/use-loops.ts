@@ -5,7 +5,9 @@ import type {
   AdditionalRepoRef,
   CreateLoopRequest,
   CreateLoopResponse,
+  InheritedAdditionalRepos,
   Loop,
+  LoopCommand,
   LoopDetail,
   LoopEvent,
   LoopEventsFilters,
@@ -18,7 +20,6 @@ import type {
 } from "@repo/api/src/types/loop";
 import {
   LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
-  LoopCommand,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import {
@@ -137,46 +138,63 @@ export function useLoopsByArtifact(
 }
 
 /**
- * Fetches the most recent PLAN loop for a document.
+ * Resolve the peer-repo set the UI should pre-fill when the user is about
+ * to launch `targetCommand` against `documentId`. The precedence chain
+ * (which prior loop's `additionalRepos` to inherit from, in order) is
+ * dispatched server-side in `loopsService.findInheritedAdditionalRepos`
+ * based on the target command.
  *
- * Used to hydrate context (e.g., additionalRepos) from the last plan run,
- * ignoring intervening non-PLAN loops (EVALUATE_PLAN, EXECUTE, etc.) that
- * intentionally omit plan-specific state.
- *
- * Server-side ordering is `createdAt desc`, so the first element is the
- * latest PLAN loop.
+ * This is the single code path for any UI pre-seeding of additionalRepos.
+ * Call it once per modal/editor with the command the user is about to
+ * launch and the source document; the response payload is `{ additionalRepos,
+ * source }` where `source` is `null` when nothing inheritable was found.
  */
-export function useLatestPlanLoopByDocument(
-  documentId: string,
-  options?: Omit<UseQueryOptions<LoopWithUser | null>, "queryKey" | "queryFn">
+export function useInheritedAdditionalRepos(
+  documentId: string | null | undefined,
+  targetCommand: LoopCommand,
+  options?: Omit<
+    UseQueryOptions<InheritedAdditionalRepos>,
+    "queryKey" | "queryFn"
+  >
 ) {
   const apiClient = useApiClient();
-  const filters = { documentId, command: LoopCommand.Plan, limit: 1 };
-
   return useQuery({
-    queryKey: loopKeys.list(filters),
-    queryFn: async () => {
-      const params = buildSearchParams(filters);
-      const loops = await apiClient.get<LoopWithUser[]>(
-        `/loops?${params.toString()}`
-      );
-      return loops[0] ?? null;
-    },
+    queryKey: [
+      "documents",
+      "detail",
+      documentId,
+      "inherited-additional-repos",
+      targetCommand,
+    ],
+    queryFn: () =>
+      apiClient.get<InheritedAdditionalRepos>(
+        `/documents/${documentId}/inherited-additional-repos?command=${encodeURIComponent(targetCommand)}`
+      ),
     enabled: !!documentId,
     ...options,
   });
 }
 
+/**
+ * Thin wrapper around `useInheritedAdditionalRepos` that returns the
+ * `{ initialAdditionalRepos, isLoadingInitialAdditionalRepos }` shape used
+ * by the execute-plan modal and plan editor's regenerate flow. Pass the
+ * command the user is about to launch (e.g. `LoopCommand.Plan` for
+ * regenerate, `LoopCommand.Execute` for execute) so the backend selects
+ * the right inheritance chain.
+ */
 export function useInitialAdditionalRepos(
-  documentId: string | null | undefined
+  documentId: string | null | undefined,
+  targetCommand: LoopCommand
 ) {
   const enabled = Boolean(documentId);
-  const { data: loop, isLoading } = useLatestPlanLoopByDocument(
-    documentId ?? "",
+  const { data, isLoading } = useInheritedAdditionalRepos(
+    documentId,
+    targetCommand,
     { enabled }
   );
   return {
-    initialAdditionalRepos: loop?.additionalRepos ?? undefined,
+    initialAdditionalRepos: data?.additionalRepos,
     isLoadingInitialAdditionalRepos: enabled && isLoading,
   };
 }
