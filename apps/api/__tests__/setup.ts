@@ -5,11 +5,6 @@ import { vi } from "vitest";
 // If .env.local doesn't exist (e.g., in CI), this will silently fail
 config({ path: ".env.local" });
 
-// Set fallback env vars for packages that validate at import time.
-// These are only used when .env.local is absent (e.g., CI).
-process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
-process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
-
 // DD_SERVICE identifies this process as the API service for telemetry/origin
 // resolution. Must be set before any test module imports
 // packages/observability/telemetry/origin.ts, which resolves ORIGIN once at

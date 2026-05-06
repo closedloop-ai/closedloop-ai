@@ -22,7 +22,6 @@ Repository: symphony-alpha (Next.js monorepo on next-forge template)
 | **packages/ai** | AI integration - PRD generation agent with Anthropic models | Shared Library | AI SDK, Anthropic (@ai-sdk/anthropic), Claude Opus 4.5 / Sonnet 4.5 |
 | **packages/github** | GitHub App integration - workflow dispatch, webhook verification, repo management | Shared Library | Octokit, GitHub App Auth |
 | **packages/linear** | Linear integration - OAuth, issue sync, task extraction with LLM | Shared Library | Linear SDK, AI |
-| **packages/payments** | Stripe subscription management | Shared Library | Stripe 20 |
 | **packages/design-system** | UI component library (Shadcn/ui) | Shared Library | Radix UI, Tailwind CSS |
 | **packages/rich-text** | Rich text editor for document artifacts | Shared Library | TipTap 3, Mermaid diagrams |
 | **packages/collaboration** | Real-time collaboration on documents | Shared Library | Liveblocks, Yjs |
@@ -33,9 +32,7 @@ Repository: symphony-alpha (Next.js monorepo on next-forge template)
 | **packages/feature-flags** | Feature flag management | Shared Library | Vercel Flags, PostHog |
 | **packages/notifications** | In-app notification system | Shared Library | Knock |
 | **packages/webhooks** | Inbound/outbound webhook handling | Shared Library | Svix |
-| **packages/storage** | File upload and management | Shared Library | Vercel Blob |
 | **packages/email** | Transactional email templates | Shared Library | Resend |
-| **packages/cms** | Content management for marketing site | Shared Library | BaseHub |
 | **packages/seo** | Metadata, sitemaps, JSON-LD | Shared Library | Custom |
 | **packages/internationalization** | Multi-language support | Shared Library | Custom |
 
@@ -151,7 +148,6 @@ The core workflow is: a user creates a PRD or Issue (optionally with AI assistan
 | `/ai/prd` | POST | AI-assisted PRD generation (streaming) |
 | `/webhooks/auth` | POST | Clerk auth webhooks (user/org lifecycle) |
 | `/webhooks/github` | POST | GitHub App webhooks (installation, workflow runs) |
-| `/webhooks/payments` | POST | Stripe payment webhooks |
 | `/collaboration/auth` | POST | Liveblocks authentication |
 | `/cron/keep-alive` | GET | Keep-alive cron job |
 
@@ -248,7 +244,6 @@ API Server (apps/api)
     |
     |-- GitHub API (Octokit) --> GitHub App Webhooks --> API Server
     |-- Linear API (SDK) <--> Linear OAuth
-    |-- Stripe API (SDK) <--> Stripe Webhooks --> API Server
     |-- Clerk API <--> Clerk Webhooks --> API Server
     |-- Liveblocks API --> Real-time collaboration
     |-- AWS S3 --> Artifact file storage
@@ -296,7 +291,7 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 ### Application Security
 
 - **Nosecone** - Security headers (via `@nosecone/next`)
-- **Webhook verification:** GitHub webhook signatures verified with HMAC SHA-256 (timing-safe comparison). Clerk webhooks verified via Svix. Stripe webhooks verified via Stripe SDK.
+- **Webhook verification:** GitHub webhook signatures verified with HMAC SHA-256 (timing-safe comparison). Clerk webhooks verified via Svix.
 - **Environment variable validation:** All env vars validated with Zod schemas via `@t3-oss/env-nextjs` at startup
 - **Server-only code:** Critical packages use `import "server-only"` to prevent accidental client-side inclusion
 
@@ -335,7 +330,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 | **GitHub App** | GitHub | Workflow dispatch, PR creation, repo access, webhook events | REST API + App Auth + Webhooks | Critical |
 | **Anthropic (Claude)** | Anthropic | AI-powered PRD generation, LLM for task extraction | AI SDK | Critical |
 | **AWS S3** | AWS | Artifact storage (plan files, execution logs) | AWS SDK v3 | Critical |
-| **Stripe** | Stripe | Subscription/payment management | SDK + Webhooks | Important |
 | **Linear** | Linear | Project management integration - issue sync, task export | SDK + OAuth | Important |
 | **Liveblocks** | Liveblocks | Real-time document collaboration, live cursors | SDK (Client + Server) | Important |
 | **PostHog** | PostHog | Product analytics, feature flag evaluation | SDK (Client + Server) | Important |
@@ -345,7 +339,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 | **Datadog** | Datadog | Structured log ingestion and observability | HTTP intake API (agentless) | Important |
 | **Google Analytics** | Google | Web analytics | Script tag | Nice-to-have |
 | **Vercel Analytics** | Vercel | Web vitals and analytics | SDK | Nice-to-have |
-| **BaseHub** | BaseHub | CMS for marketing site blog/docs | SDK | Nice-to-have |
 | **Slack** | Slack | Deploy notifications, integration status | Bot API | Nice-to-have |
 | **Svix** | Svix | Outbound webhook delivery infrastructure | SDK | Nice-to-have |
 
@@ -357,9 +350,6 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 
 **AI/ML Services:**
 - **Anthropic (Claude Opus 4.5 / Sonnet 4.5)** - Powers the PRD generation agent with web search and web fetch tool use. Also used indirectly via Claude Code in GitHub Actions for plan generation and code execution. Failure impact: PRD AI assistant unavailable; plan generation/execution workflows would fail.
-
-**Payment & Financial:**
-- **Stripe** - Subscription management with webhook handling for payment events. Uses Stripe Agent Toolkit. Failure impact: Users cannot subscribe or manage billing.
 
 **Authentication:**
 - **Clerk** - Central identity provider. Handles user registration, login, MFA, organization management, SSO. Webhooks sync user/org lifecycle events to local database. Failure impact: Complete authentication failure; no user can access the platform.

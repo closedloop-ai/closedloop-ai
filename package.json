@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "cd packages/database && AWS_ROLE_ARN=${AWS_ROLE_ARN:-arn:aws:iam::000000000000:role/placeholder} AWS_REGION=${AWS_REGION:-us-east-1} PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5432} PGUSER=${PGUSER:-postgres} PGDATABASE=${PGDATABASE:-app} npx prisma generate --schema=./prisma/schema.prisma",
     "build": "turbo build",
-    "dev": "turbo dev",
+    "dev": "turbo dev --filter='!docs'",
     "typecheck": "turbo typecheck",
     "figma:typecheck": "pnpm --filter @repo/design-system figma:typecheck",
     "lint": "npx ultracite@latest check",
@@ -32,7 +32,6 @@
     "check-deps": "npx check-dependency-version-consistency"
   },
   "devDependencies": {
-    "@auto-it/first-time-contributor": "^11.3.6",
     "@biomejs/biome": "2.3.13",
     "@clerk/testing": "^2.0.14",
     "@playwright/test": "^1.58.2",

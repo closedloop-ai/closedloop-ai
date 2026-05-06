@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
+    emptyStringAsUndefined: true,
     server: {
       ANTHROPIC_API_KEY: z.string().startsWith("sk-").optional(),
       OPENAI_API_KEY: z.string().startsWith("sk-").optional(),

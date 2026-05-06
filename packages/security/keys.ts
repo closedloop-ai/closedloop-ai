@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
+    emptyStringAsUndefined: true,
     server: {
       CSP_ENABLED: z.enum(["true", "false"]).optional(),
       // This URL is embedded in CSP headers visible to all users — verify it does not contain API keys.
