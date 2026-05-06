@@ -29,6 +29,9 @@ vi.mock("@/app/loops/service", () => ({
     findById: vi.fn().mockResolvedValue(null),
     updateStatus: vi.fn(),
   },
+}));
+
+vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: vi.fn(),
 }));
 

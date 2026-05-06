@@ -27,6 +27,7 @@ vi.mock("@/hooks/queries/use-loop-stream", () => ({
 
 import { useLoopPolling } from "@/hooks/queries/use-loop-polling";
 import { useLoopStream } from "@/hooks/queries/use-loop-stream";
+import { RUNNER_RATE_LIMIT_EVENT } from "../../../__tests__/fixtures/loops";
 import { LoopProgressPanel } from "../loop-progress-panel";
 
 // Top-level regex constants (Biome useTopLevelRegex)
@@ -36,6 +37,7 @@ const DIAG_VERSION_ANY_REGEX = /Diagnostics version:/;
 const LOG_TAIL_BUTTON_REGEX = /log tail/i;
 const LINE_ONE_REGEX = /line 1/;
 const TOKEN_IN_REGEX = /\d+(\.\d+)?[kM]? in/;
+const RUNNER_RATE_LIMIT_TITLE = /Error: Claude rate limit/;
 
 type MockPolling = {
   events: LoopEvent[];
@@ -114,6 +116,14 @@ describe("ErrorEvent in LoopProgressPanel — tokenUsage", () => {
     // (The footer always shows tokens, but this checks the event area)
     const errorDiv = screen.getByText("Error: SOME_ERROR").closest("div");
     expect(errorDiv?.textContent).not.toMatch(TOKEN_IN_REGEX);
+  });
+
+  it("renders runner failure reason from result subcode", () => {
+    setupMocks([RUNNER_RATE_LIMIT_EVENT]);
+    render(<LoopProgressPanel loopId="loop-1" />);
+
+    expect(screen.getByText(RUNNER_RATE_LIMIT_TITLE)).toBeInTheDocument();
+    expect(screen.getByText("Claude rate limit reached.")).toBeInTheDocument();
   });
 });
 

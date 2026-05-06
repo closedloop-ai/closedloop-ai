@@ -397,6 +397,10 @@ model ComputeTarget {
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
+  // NOTE: A partial unique index on gateway_id WHERE gateway_id IS NOT NULL is
+  // maintained via raw migration. Prisma cannot express partial indexes. Do NOT
+  // add @@unique([gatewayId]) here; it would reject multiple NULL rows.
+  // See migration: add_compute_targets_gateway_id_unique
   @@index([organizationId, userId, gatewayId])
   @@index([userId, isOnline])
   @@index([organizationId, isSharedWithOrg])

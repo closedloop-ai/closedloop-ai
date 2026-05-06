@@ -13,7 +13,7 @@ import {
 } from "@repo/api/src/types/result";
 import { ApiKeySource, withDb } from "@repo/database";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
-import { getPrismaErrorCode } from "@/lib/db-utils";
+import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
 import { parseJsonObject } from "@/lib/json-schema";
 
 export const COMPUTE_TARGET_STALE_MS = 90_000;
@@ -310,56 +310,82 @@ export const computeTargetsService = {
     const capabilities = buildCapabilitiesPayload(payload);
 
     if (payload.gatewayId) {
-      const target = await withDb(async (db) => {
-        const conflictingGateway = await db.computeTarget.findFirst({
-          where: {
-            gatewayId: payload.gatewayId,
-            OR: [
-              { organizationId: { not: organizationId } },
-              { userId: { not: userId } },
-            ],
-          },
-          select: { id: true },
-        });
-        if (conflictingGateway) {
-          return computeTargetGatewayConflictResult<ComputeTargetRecord>();
-        }
+      let target: DomainResult<
+        ComputeTargetRecord,
+        ComputeTargetGatewayConflict
+      >;
+      try {
+        target = await withDb(async (db) => {
+          const conflictingGateway = await db.computeTarget.findFirst({
+            where: {
+              gatewayId: payload.gatewayId,
+              OR: [
+                { organizationId: { not: organizationId } },
+                { userId: { not: userId } },
+              ],
+            },
+            select: { id: true },
+          });
+          if (conflictingGateway) {
+            return computeTargetGatewayConflictResult<ComputeTargetRecord>();
+          }
 
-        const gatewayTarget = await db.computeTarget.findFirst({
-          where: {
-            organizationId,
-            userId,
-            gatewayId: payload.gatewayId,
-          },
-        });
-        if (gatewayTarget) {
-          const updated = await db.computeTarget.update({
-            where: { id: gatewayTarget.id },
-            data: {
-              machineName: payload.machineName,
-              platform: payload.platform,
-              capabilities,
-              supportedOperations: payload.supportedOperations,
-              isOnline: true,
-              lastSeenAt: now,
+          const gatewayTarget = await db.computeTarget.findFirst({
+            where: {
+              organizationId,
+              userId,
+              gatewayId: payload.gatewayId,
             },
           });
-          return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
-            updated
-          );
-        }
+          if (gatewayTarget) {
+            const updated = await db.computeTarget.update({
+              where: { id: gatewayTarget.id },
+              data: {
+                machineName: payload.machineName,
+                platform: payload.platform,
+                capabilities,
+                supportedOperations: payload.supportedOperations,
+                isOnline: true,
+                lastSeenAt: now,
+              },
+            });
+            return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
+              updated
+            );
+          }
 
-        const machineTarget = await db.computeTarget.findFirst({
-          where: {
-            organizationId,
-            userId,
-            machineName: payload.machineName,
-          },
-        });
-        if (machineTarget) {
-          const updated = await db.computeTarget.update({
-            where: { id: machineTarget.id },
-            data: {
+          const machineTarget = await db.computeTarget.findFirst({
+            where: {
+              organizationId,
+              userId,
+              machineName: payload.machineName,
+            },
+          });
+          if (machineTarget) {
+            const updated = await db.computeTarget.update({
+              where: { id: machineTarget.id },
+              data: {
+                gatewayId: payload.gatewayId,
+                platform: payload.platform,
+                capabilities,
+                supportedOperations: payload.supportedOperations,
+                isOnline: true,
+                lastSeenAt: now,
+              },
+            });
+            return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
+              updated
+            );
+          }
+
+          const upserted = await db.computeTarget.upsert({
+            where: {
+              userId_machineName: {
+                userId,
+                machineName: payload.machineName,
+              },
+            },
+            update: {
               gatewayId: payload.gatewayId,
               platform: payload.platform,
               capabilities,
@@ -367,43 +393,28 @@ export const computeTargetsService = {
               isOnline: true,
               lastSeenAt: now,
             },
+            create: {
+              organizationId,
+              userId,
+              gatewayId: payload.gatewayId,
+              machineName: payload.machineName,
+              platform: payload.platform,
+              capabilities,
+              supportedOperations: payload.supportedOperations,
+              isOnline: true,
+              lastSeenAt: now,
+            },
           });
           return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
-            updated
+            upserted
           );
-        }
-
-        const upserted = await db.computeTarget.upsert({
-          where: {
-            userId_machineName: {
-              userId,
-              machineName: payload.machineName,
-            },
-          },
-          update: {
-            gatewayId: payload.gatewayId,
-            platform: payload.platform,
-            capabilities,
-            supportedOperations: payload.supportedOperations,
-            isOnline: true,
-            lastSeenAt: now,
-          },
-          create: {
-            organizationId,
-            userId,
-            gatewayId: payload.gatewayId,
-            machineName: payload.machineName,
-            platform: payload.platform,
-            capabilities,
-            supportedOperations: payload.supportedOperations,
-            isOnline: true,
-            lastSeenAt: now,
-          },
         });
-        return Result.ok<ComputeTargetRecord, ComputeTargetGatewayConflict>(
-          upserted
-        );
-      });
+      } catch (error) {
+        if (isGatewayUniqueConstraintViolation(error)) {
+          return computeTargetGatewayConflictResult<ComputeTarget>();
+        }
+        throw error;
+      }
 
       if (isComputeTargetGatewayConflictResult(target)) {
         return target;
@@ -520,9 +531,12 @@ export const computeTargetsService = {
     clerkUserId?: string | null
   ): Promise<DomainResult<ComputeTarget | null, ComputeTargetGatewayConflict>> {
     try {
-      if (payload.gatewayId) {
-        const conflictingGateway = await withDb((db) =>
-          db.computeTarget.findFirst({
+      const updateResult: DomainResult<
+        ComputeTargetRecord | null,
+        ComputeTargetGatewayConflict
+      > = await withDb.tx(async (tx) => {
+        if (payload.gatewayId) {
+          const conflictingGateway = await tx.computeTarget.findFirst({
             where: {
               gatewayId: payload.gatewayId,
               OR: [
@@ -532,26 +546,24 @@ export const computeTargetsService = {
               ],
             },
             select: { id: true },
-          })
-        );
-        if (conflictingGateway) {
-          return computeTargetGatewayConflictResult<ComputeTarget | null>();
+          });
+          if (conflictingGateway) {
+            return computeTargetGatewayConflictResult<ComputeTargetRecord | null>();
+          }
         }
-      }
 
-      const existing = await withDb((db) =>
-        db.computeTarget.findFirst({
+        const existing = await tx.computeTarget.findFirst({
           where: { id, organizationId, userId },
           select: { capabilities: true },
-        })
-      );
-      if (!existing) {
-        return Result.ok(null);
-      }
+        });
+        if (!existing) {
+          return Result.ok<
+            ComputeTargetRecord | null,
+            ComputeTargetGatewayConflict
+          >(null);
+        }
 
-      const existingCapabilities = existing.capabilities;
-      const updated = await withDb((db) =>
-        db.computeTarget.update({
+        const updated = await tx.computeTarget.update({
           where: { id, organizationId, userId },
           data: {
             ...(payload.machineName
@@ -563,7 +575,7 @@ export const computeTargetsService = {
               ? {
                   capabilities: buildCapabilitiesPayload(
                     payload,
-                    existingCapabilities
+                    existing.capabilities
                   ),
                 }
               : {}),
@@ -572,8 +584,21 @@ export const computeTargetsService = {
               : {}),
             ...(payload.gatewayId ? { gatewayId: payload.gatewayId } : {}),
           },
-        })
-      );
+        });
+        return Result.ok<
+          ComputeTargetRecord | null,
+          ComputeTargetGatewayConflict
+        >(updated);
+      });
+
+      if (isComputeTargetGatewayConflictResult(updateResult)) {
+        return updateResult;
+      }
+      if (!updateResult.value) {
+        return Result.ok(null);
+      }
+
+      const updated = updateResult.value;
       const desktopSecurityEnabled =
         await isDesktopManagedPopEnforcementEnabled({
           userId,
@@ -602,6 +627,9 @@ export const computeTargetsService = {
     } catch (error) {
       if (getPrismaErrorCode(error) === "P2025") {
         return Result.ok(null);
+      }
+      if (isGatewayUniqueConstraintViolation(error)) {
+        return computeTargetGatewayConflictResult<ComputeTarget | null>();
       }
       throw error;
     }
@@ -779,3 +807,26 @@ export const computeTargetsService = {
     }
   },
 };
+
+const COMPUTE_TARGET_GATEWAY_ID_UNIQUE_INDEX =
+  "compute_targets_gateway_id_unique_idx";
+const COMPUTE_TARGET_GATEWAY_ID_UNIQUE_TARGETS = new Set([
+  COMPUTE_TARGET_GATEWAY_ID_UNIQUE_INDEX,
+  "gatewayId",
+  "gateway_id",
+]);
+
+function isGatewayUniqueConstraintViolation(error: unknown): boolean {
+  const target = getPrismaP2002Target(error);
+  return isGatewayUniqueConstraintTarget(target);
+}
+
+function isGatewayUniqueConstraintTarget(target: unknown): boolean {
+  if (typeof target === "string") {
+    return COMPUTE_TARGET_GATEWAY_ID_UNIQUE_TARGETS.has(target);
+  }
+  if (Array.isArray(target)) {
+    return target.some(isGatewayUniqueConstraintTarget);
+  }
+  return false;
+}

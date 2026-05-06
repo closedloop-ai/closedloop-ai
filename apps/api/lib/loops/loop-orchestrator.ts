@@ -26,10 +26,8 @@ import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { getCommitterInfo } from "@/app/documents/document-service";
 import { githubService } from "@/app/integrations/github/service";
-import {
-  isInvalidStatusTransitionError,
-  loopsService,
-} from "@/app/loops/service";
+import { isInvalidStatusTransitionError } from "@/app/loops/loop-errors";
+import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { documentWhere } from "@/lib/artifact-adapters";
 import type {
@@ -1292,7 +1290,11 @@ async function handleLoopError(
 
   await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
     completedAt: new Date(),
-    error: { code: event.code, message: event.message },
+    error: {
+      code: event.code,
+      message: event.message,
+      ...(event.result !== undefined ? { result: event.result } : {}),
+    },
     ...buildErrorCostFields(event),
     ...prSession,
     metadata: buildApiKeySourceMetadata(event.apiKeySource),
@@ -1347,6 +1349,9 @@ function buildCanonicalErrorData(event: LoopEventError): LoopEventError {
     }),
     ...(event.tokensByModel !== undefined && {
       tokensByModel: event.tokensByModel,
+    }),
+    ...(event.result !== undefined && {
+      result: event.result,
     }),
   };
 }

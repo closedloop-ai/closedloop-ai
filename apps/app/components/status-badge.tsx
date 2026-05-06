@@ -14,6 +14,7 @@ import type {
 } from "@repo/api/src/types/workstream";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { cn } from "@repo/design-system/lib/utils";
+import { loopErrorCodeLabels } from "@/lib/loop-error-labels";
 
 type StatusBadgeProps = {
   status: string;
@@ -280,16 +281,12 @@ const loopStatusLabels: Record<LoopStatus, string> = {
   [LoopStatus.TimedOut]: "Timed Out",
 };
 
-export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
-  [LoopErrorCode.NoWorkProduced]: "No output produced",
-  [LoopErrorCode.ContextLimitExceeded]: "Context limit exceeded",
-  [LoopErrorCode.PlanStateUnavailable]: "Plan state unavailable",
-};
-
 export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
   [LoopErrorCode.NoWorkProduced]: COLOR_PENDING,
   [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
   [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
+  [LoopErrorCode.StaleDispatch]: COLOR_FAILURE,
+  [LoopErrorCode.RunnerError]: COLOR_FAILURE,
 };
 
 export function LoopStatusBadge({

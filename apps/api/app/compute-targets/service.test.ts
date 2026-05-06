@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
-  withDb: vi.fn(),
+  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -52,6 +52,9 @@ function buildTarget(overrides: Record<string, unknown> = {}) {
 
 function installDb(db: unknown) {
   mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
+    callback(db)
+  );
+  mocks.withDb.tx.mockImplementation((callback: (db: unknown) => unknown) =>
     callback(db)
   );
 }
@@ -252,6 +255,8 @@ describe("computeTargetsService security status", () => {
         }),
       })
     );
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
+    expect(mocks.withDb).not.toHaveBeenCalled();
   });
 
   it("clears stale desktop API namespace when current capability payload omits it", async () => {
@@ -303,6 +308,8 @@ describe("computeTargetsService security status", () => {
         }),
       })
     );
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
+    expect(mocks.withDb).not.toHaveBeenCalled();
   });
 });
 
@@ -411,5 +418,224 @@ describe("computeTargetsService gateway reconciliation", () => {
     expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
     expect(update).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a gateway already bound to another owner when updating", async () => {
+    const update = vi.fn();
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "conflict" }),
+        update,
+      },
+    });
+
+    const result = await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      { gatewayId: "gateway-taken" },
+      null
+    );
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
+    expect(mocks.withDb).not.toHaveBeenCalled();
+  });
+
+  it("maps a gateway DB unique-constraint violation to a gateway conflict result", async () => {
+    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: "compute_targets_gateway_id_unique_idx" },
+    });
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ capabilities: {} });
+    installDb({
+      computeTarget: {
+        findFirst,
+        update: vi.fn().mockRejectedValue(gatewayP2002),
+      },
+    });
+
+    const result = await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      { gatewayId: "gateway-contested" },
+      null
+    );
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+  });
+
+  it("maps a gateway DB unique-constraint violation reported by field array", async () => {
+    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: ["gatewayId"] },
+    });
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ capabilities: {} });
+    installDb({
+      computeTarget: {
+        findFirst,
+        update: vi.fn().mockRejectedValue(gatewayP2002),
+      },
+    });
+
+    const result = await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      { gatewayId: "gateway-contested" },
+      null
+    );
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+  });
+
+  it("maps a gateway DB unique-constraint violation reported by column array", async () => {
+    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: ["gateway_id"] },
+    });
+    const findFirst = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ capabilities: {} });
+    installDb({
+      computeTarget: {
+        findFirst,
+        update: vi.fn().mockRejectedValue(gatewayP2002),
+      },
+    });
+
+    const result = await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      { gatewayId: "gateway-contested" },
+      null
+    );
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+  });
+
+  it("re-throws a machine-name unique-constraint violation without remapping", async () => {
+    const machineNameP2002 = Object.assign(
+      new Error("Unique constraint failed"),
+      {
+        code: "P2002",
+        meta: { target: ["userId", "machineName"] },
+      }
+    );
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ capabilities: {} }),
+        update: vi.fn().mockRejectedValue(machineNameP2002),
+      },
+    });
+
+    await expect(
+      computeTargetsService.updateOwned(
+        "target-1",
+        "org-1",
+        "user-1",
+        { machineName: "taken-name" },
+        null
+      )
+    ).rejects.toThrow("Unique constraint failed");
+  });
+
+  it("maps a gateway DB unique-constraint violation during register to a gateway conflict result", async () => {
+    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: "compute_targets_gateway_id_unique_idx" },
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockRejectedValue(gatewayP2002),
+      },
+    });
+
+    const result = await computeTargetsService.register("org-1", "user-1", {
+      machineName: "machine-1",
+      platform: "darwin",
+      gatewayId: "019dd545-b11d-444d-9956-0310752e2481",
+      capabilities: {},
+      supportedOperations: [],
+    });
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+  });
+
+  it("maps a gateway DB unique-constraint violation during register reported by field array", async () => {
+    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: ["gatewayId"] },
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockRejectedValue(gatewayP2002),
+      },
+    });
+
+    const result = await computeTargetsService.register("org-1", "user-1", {
+      machineName: "machine-1",
+      platform: "darwin",
+      gatewayId: "019dd545-b11d-444d-9956-0310752e2481",
+      capabilities: {},
+      supportedOperations: [],
+    });
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+  });
+
+  it("maps a gateway DB unique-constraint violation during register reported by column array", async () => {
+    const gatewayP2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: { target: ["gateway_id"] },
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockRejectedValue(gatewayP2002),
+      },
+    });
+
+    const result = await computeTargetsService.register("org-1", "user-1", {
+      machineName: "machine-1",
+      platform: "darwin",
+      gatewayId: "019dd545-b11d-444d-9956-0310752e2481",
+      capabilities: {},
+      supportedOperations: [],
+    });
+
+    expect(isComputeTargetGatewayConflictResult(result)).toBe(true);
+  });
+
+  it("re-throws non-gateway errors from register unchanged", async () => {
+    const dbError = new Error("connection refused");
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockRejectedValue(dbError),
+      },
+    });
+
+    await expect(
+      computeTargetsService.register("org-1", "user-1", {
+        machineName: "machine-1",
+        platform: "darwin",
+        gatewayId: "019dd545-b11d-444d-9956-0310752e2481",
+        capabilities: {},
+        supportedOperations: [],
+      })
+    ).rejects.toThrow("connection refused");
   });
 });

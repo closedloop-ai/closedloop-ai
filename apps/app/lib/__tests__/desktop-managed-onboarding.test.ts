@@ -1149,9 +1149,19 @@ exit 1
       const scriptPath = join(tempDir, "handoff-check.sh");
       const workspaceDir = join(homeDir, "workspace");
       const rawWorkspacePath = `${workspaceDir}/../workspace`;
+      const handoffEntrypoint = [
+        // This test only needs the prerequisite subshell plus parent-shell
+        // capture flow. PATH refresh can invoke Homebrew/npm probes and make
+        // the shell-out slow enough to flake under the parallel repo build.
+        "refresh_installer_path() { :; }",
+        'run_required_prerequisite "workspace_directory" "Workspace directory" ensure_workspace_directory',
+        "capture_validated_workspace_directory",
+        "finish_required_prerequisites",
+        "write_handoff_file",
+      ].join("; ");
       const handoffScript = DESKTOP_INSTALLER_SCRIPT.replace(
         'main "$@"',
-        'run_required_prerequisite "workspace_directory" "Workspace directory" ensure_workspace_directory; capture_validated_workspace_directory; finish_required_prerequisites; write_handoff_file'
+        handoffEntrypoint
       );
       await mkdir(homeDir, { recursive: true });
       await writeFile(scriptPath, handoffScript);

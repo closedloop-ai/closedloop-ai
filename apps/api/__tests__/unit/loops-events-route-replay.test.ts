@@ -32,7 +32,8 @@ vi.mock("@/app/loops/service", async () => {
 });
 
 import { POST } from "@/app/loops/[id]/events/route";
-import { loopsService, ReplayDetectedError } from "@/app/loops/service";
+import { ReplayDetectedError } from "@/app/loops/loop-errors";
+import { loopsService } from "@/app/loops/service";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 
