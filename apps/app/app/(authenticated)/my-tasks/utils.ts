@@ -1,12 +1,11 @@
 import {
   DocumentStatus,
-  DocumentType,
   type DocumentWithWorkstream,
   type FindDocumentsOptions,
 } from "@repo/api/src/types/document";
-import type { MyTasksFeatureFilters } from "./types";
+import type { MyTasksArtifactFilters } from "./types";
 
-export const EMPTY_FILTERS: MyTasksFeatureFilters = {
+export const EMPTY_FILTERS: MyTasksArtifactFilters = {
   priorities: [],
   projectIds: [],
   statuses: [],
@@ -39,14 +38,14 @@ export const DISPLAY_GROUPS: {
 ];
 
 /**
- * Build API query params. Only passes assigneeId to the API;
- * all other filtering is done client-side via `applyClientFilters`.
+ * Build API query params for the My Tasks page. Returns artifacts of any
+ * document type (PRDs, Plans, Features) assigned to the given user.
+ * Client-side filtering is applied via `applyClientFilters`.
  */
-export function buildFeatureListParams(
+export function buildArtifactListParams(
   assigneeId: string | null
 ): FindDocumentsOptions {
   return {
-    type: DocumentType.Feature,
     assigneeId: assigneeId ?? undefined,
   };
 }
@@ -55,25 +54,25 @@ export function buildFeatureListParams(
  * Apply all selected filters client-side.
  */
 export function applyClientFilters(
-  features: DocumentWithWorkstream[],
-  filters: MyTasksFeatureFilters
+  artifacts: DocumentWithWorkstream[],
+  filters: MyTasksArtifactFilters
 ): DocumentWithWorkstream[] {
-  return features.filter((feature) => {
+  return artifacts.filter((artifact) => {
     if (
       filters.projectIds.length > 0 &&
-      !(feature.projectId && filters.projectIds.includes(feature.projectId))
+      !(artifact.projectId && filters.projectIds.includes(artifact.projectId))
     ) {
       return false;
     }
     if (
       filters.statuses.length > 0 &&
-      !filters.statuses.includes(feature.status)
+      !filters.statuses.includes(artifact.status)
     ) {
       return false;
     }
     if (
       filters.priorities.length > 0 &&
-      !filters.priorities.includes(feature.priority)
+      !filters.priorities.includes(artifact.priority)
     ) {
       return false;
     }
@@ -81,7 +80,7 @@ export function applyClientFilters(
   });
 }
 
-export function hasActiveFilters(filters: MyTasksFeatureFilters): boolean {
+export function hasActiveFilters(filters: MyTasksArtifactFilters): boolean {
   return (
     filters.projectIds.length > 0 ||
     filters.statuses.length > 0 ||

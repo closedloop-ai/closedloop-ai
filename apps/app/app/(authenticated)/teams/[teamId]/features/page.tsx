@@ -29,6 +29,7 @@ import {
   FEATURE_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
+import { useFilterCurrentUser } from "@/hooks/use-filter-current-user";
 import { useGroupBy } from "@/hooks/use-group-by";
 import { useItemsParentTitles } from "@/hooks/use-items-parent-titles";
 import { useOrgUsersAsPopoverUsers } from "@/hooks/use-org-users-as-popover-users";
@@ -106,20 +107,7 @@ export default function TeamFeaturesPage() {
 
   const parentTitleMap = useItemsParentTitles(allItems);
 
-  const filterCurrentUser = useMemo(
-    () =>
-      currentUser
-        ? {
-            id: currentUser.id,
-            name:
-              [currentUser.firstName, currentUser.lastName]
-                .filter(Boolean)
-                .join(" ") || currentUser.email,
-            avatarUrl: currentUser.avatarUrl ?? undefined,
-          }
-        : null,
-    [currentUser]
-  );
+  const filterCurrentUser = useFilterCurrentUser(currentUser);
 
   const editHandlers: RowEditHandlers = useMemo(
     () => ({
