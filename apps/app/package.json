@@ -54,7 +54,7 @@
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "require-in-the-middle": "8.0.1",
-    "simple-git": "^3.32.3",
+    "simple-git": "^3.36.0",
     "sonner": "^2.0.7",
     "zod": "^4.3.6"
   },
