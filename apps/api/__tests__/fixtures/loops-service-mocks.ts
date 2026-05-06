@@ -38,6 +38,7 @@
  * vi.mock hoisting.
  */
 
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 
 export type LoopsServiceHandles = {
@@ -53,7 +54,7 @@ export type LoopsServiceHandles = {
 export function resetLoopsServiceHandles(handles: LoopsServiceHandles): void {
   handles.loopCreate
     .mockReset()
-    .mockResolvedValue({ id: "loop-new", status: "PENDING" });
+    .mockResolvedValue({ id: "loop-new", status: LoopStatus.Pending });
   handles.loopCount.mockReset().mockResolvedValue(0);
   handles.loopFindFirst.mockReset().mockResolvedValue(null);
   handles.loopFindUnique.mockReset().mockResolvedValue(null);

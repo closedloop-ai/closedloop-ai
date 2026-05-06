@@ -1002,7 +1002,7 @@ export const loopsService = {
     const stalenessThreshold = new Date(
       Date.now() - STALE_PENDING_THRESHOLD_MS
     );
-    await withDb((db) =>
+    const result = await withDb((db) =>
       db.loop.updateMany({
         where: {
           organizationId,
@@ -1018,6 +1018,14 @@ export const loopsService = {
         },
       })
     );
+    if (result.count > 0) {
+      log.info("Reaped stale pending loops", {
+        count: result.count,
+        organizationId,
+        artifactId,
+        command,
+      });
+    }
   },
 
   /**
