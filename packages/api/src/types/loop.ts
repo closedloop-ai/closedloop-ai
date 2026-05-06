@@ -264,6 +264,17 @@ export type DecomposeResult = {
 };
 
 export type {
+  BootstrapAgent,
+  BootstrapLoopResult,
+  BootstrapRepoResult,
+} from "@closedloop-ai/loops-api/bootstrap-result";
+export {
+  BootstrapAgentSchema,
+  BootstrapLoopResultSchema,
+  BootstrapRepoResultSchema,
+} from "@closedloop-ai/loops-api/bootstrap-result";
+
+export type {
   ExecutionResultV2,
   ParsedExecutionResult,
   RepoExecutionResult,

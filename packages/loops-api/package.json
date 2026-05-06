@@ -14,6 +14,12 @@
       "require": "./dist/artifacts.cjs",
       "default": "./dist/artifacts.js"
     },
+    "./bootstrap-result": {
+      "types": "./src/bootstrap-result.ts",
+      "import": "./dist/bootstrap-result.js",
+      "require": "./dist/bootstrap-result.cjs",
+      "default": "./dist/bootstrap-result.js"
+    },
     "./bundles": {
       "types": "./src/bundles.ts",
       "import": "./dist/bundles.js",

@@ -18,9 +18,9 @@ import {
   BootstrapStatus,
   useBootstrapAgents,
 } from "@/hooks/queries/use-bootstrap-agents";
+import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { formatRelativeTime } from "@/lib/date-utils";
-import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { BootstrapProgress } from "./bootstrap-progress";
 import { CreateAgentDialog } from "./create-agent-dialog";
 import { RepoPickerDialog } from "./repo-picker-dialog";
@@ -107,7 +107,8 @@ export function AgentsTable() {
     DEFAULT_PAGE_SIZE
   );
 
-  const electron = useElectronDetection();
+  const { data: computeTargets } = useComputeTargets();
+  const hasAvailableCompute = computeTargets?.some((t) => t.isOnline);
   const bootstrap = useBootstrapAgents();
   const isBootstrapBusy =
     bootstrap.state.status !== BootstrapStatus.Idle &&
@@ -115,9 +116,9 @@ export function AgentsTable() {
     bootstrap.state.status !== BootstrapStatus.Error;
 
   const handleGenerateClick = () => {
-    if (!electron.detected) {
+    if (!hasAvailableCompute) {
       toast.error(
-        "Desktop app not connected. Install and start the ClosedLoop desktop app to generate agents."
+        "No compute target available. Connect a desktop app or enable cloud compute in Settings."
       );
       return;
     }
