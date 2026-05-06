@@ -9,6 +9,7 @@ import {
   vi,
 } from "vitest";
 import { buildPrismaLoop } from "../../../__tests__/fixtures/loop";
+import { dbUtilsModuleMock } from "../../../__tests__/fixtures/loops-service-mocks";
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 // Mock modules before importing the service
@@ -36,27 +37,7 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
   extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock("@/lib/db-utils", () => ({
-  basicUserSelect: {
-    select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
-  getPrismaErrorCode: vi.fn((error: unknown) => {
-    if (
-      (typeof error !== "object" || error === null) &&
-      typeof error !== "function"
-    ) {
-      return undefined;
-    }
-    const code = Reflect.get(error, "code");
-    return typeof code === "string" ? code : undefined;
-  }),
-}));
+vi.mock("@/lib/db-utils", () => dbUtilsModuleMock());
 
 // Import after mocking
 import { withDb } from "@repo/database";

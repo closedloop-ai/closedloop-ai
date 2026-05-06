@@ -38,6 +38,15 @@ import { documentPullRequestService } from "@/app/documents/document-pull-reques
 import { basicUserSelect, getPrismaErrorCode } from "@/lib/db-utils";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { LOOP_ACTIVE_INDEX_NAME } from "./loop-constants";
+import {
+  BranchNotFoundError,
+  ConcurrentLoopLimitError,
+  InvalidStatusTransitionError,
+  LoopAlreadyActiveError,
+  NestedManualLoopError,
+  ReplayDetectedError,
+  UnauthorizedRepoError,
+} from "./loop-errors";
 
 /**
  * Fetch the effective concurrent loop limit for an organization from the DB.
@@ -55,16 +64,6 @@ export async function fetchOrgLoopLimit(
   );
   return resolveOrgLoopLimit(org?.settings);
 }
-
-import {
-  BranchNotFoundError,
-  ConcurrentLoopLimitError,
-  InvalidStatusTransitionError,
-  LoopAlreadyActiveError,
-  NestedManualLoopError,
-  ReplayDetectedError,
-  UnauthorizedRepoError,
-} from "./loop-errors";
 
 /**
  * Valid status transitions for loops.
@@ -157,7 +156,10 @@ const LOOP_ACTIVE_INDEX_DB_FIELDS = new Set([
 
 const prismaErrorMetaSchema = z
   .object({
-    target: z.union([z.string(), z.array(z.string())]).optional(),
+    target: z
+      .union([z.string(), z.array(z.string())])
+      .nullable()
+      .optional(),
     driverAdapterError: z
       .object({
         cause: z

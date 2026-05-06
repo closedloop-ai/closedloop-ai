@@ -5,6 +5,9 @@
 
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
+import { z } from "zod";
+
+const prismaErrorCodeSchema = z.object({ code: z.string() }).passthrough();
 
 export type LoopsServiceHandles = {
   loopCreate: ReturnType<typeof vi.fn>;
@@ -65,15 +68,8 @@ export const logModuleMock = (): Record<string, unknown> => ({
 });
 
 function getMockPrismaErrorCode(error: unknown): string | undefined {
-  if (
-    (typeof error !== "object" || error === null) &&
-    typeof error !== "function"
-  ) {
-    return undefined;
-  }
-
-  const code = Reflect.get(error, "code");
-  return typeof code === "string" ? code : undefined;
+  const result = prismaErrorCodeSchema.safeParse(error);
+  return result.success ? result.data.code : undefined;
 }
 
 export const dbUtilsModuleMock = (): Record<string, unknown> => ({
