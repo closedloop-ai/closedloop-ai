@@ -266,7 +266,7 @@ describe("loopsService.create", () => {
   });
 
   describe("staleness reaper", () => {
-    it("clears stale PENDING rows for the (artifactId, command) slice before gating", async () => {
+    it("clears all stale index-blocking shapes for the (artifactId, command) slice before gating", async () => {
       await loopsService.create(ORG_ID, USER_ID, planLoopInput);
 
       const reaper = handles.loopUpdateMany.mock.calls[0][0] as {
@@ -277,9 +277,12 @@ describe("loopsService.create", () => {
         organizationId: ORG_ID,
         artifactId: planLoopInput.documentId,
         command: planLoopInput.command,
-        status: LoopStatus.Pending,
-        containerId: null,
         createdAt: { lt: expect.any(Date) },
+        OR: [
+          { status: LoopStatus.Pending, containerId: null },
+          { status: LoopStatus.Claimed, containerId: null },
+          { status: LoopStatus.Pending, containerId: { not: null } },
+        ],
       });
       expect(reaper.data.status).toBe(LoopStatus.Failed);
       expect(handles.loopUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(
