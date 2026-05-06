@@ -99,6 +99,7 @@ export const POST = withAnyAuth<StartPlanLoopResponse>(
           loopId: result.activeLoop.id,
           command: result.activeLoop.command,
           status: result.activeLoop.status,
+          message: `A ${result.activeLoop.command} loop is already active on a different compute target (id: ${result.activeLoop.id}, status: ${result.activeLoop.status}). Cancel or wait for the existing loop to complete before starting a new one.`,
         });
       }
 

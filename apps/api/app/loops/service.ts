@@ -991,8 +991,19 @@ export const loopsService = {
   },
 
   /**
-   * Reap stale PENDING rows for a (artifactId, command) slice before gate check.
-   * This prevents a stale PENDING row from blocking a resumed loop create.
+   * Reap stale index-blocking rows for a (artifactId, command) slice before
+   * gate check. Bridges the gap between the broad index-blocking tier
+   * (`ACTIVE_LOOP_STATUSES`) and the narrower operationally-active tier
+   * (`findOperationallyActiveLoop`). Any row that holds the partial unique
+   * index slot but is excluded from the operational tier is marked FAILED so
+   * a new loop with the same (artifactId, command, artifactVersion) is not
+   * permanently blocked by an orphaned dispatch.
+   *
+   * Reaped shapes (all require age ≥ STALE_PENDING_THRESHOLD_MS):
+   * - PENDING with containerId=null (dispatch never acknowledged)
+   * - CLAIMED with containerId=null (claim recorded but container never set)
+   * - PENDING with containerId set (dispatch wrote container but row never
+   *   transitioned to CLAIMED/RUNNING)
    */
   async reapStalePendingLoops(
     organizationId: string,
@@ -1012,9 +1023,12 @@ export const loopsService = {
           organizationId,
           artifactId,
           command: command as LoopCommand,
-          status: LoopStatus.Pending,
-          containerId: null,
           createdAt: { lt: stalenessThreshold },
+          OR: [
+            { status: LoopStatus.Pending, containerId: null },
+            { status: LoopStatus.Claimed, containerId: null },
+            { status: LoopStatus.Pending, containerId: { not: null } },
+          ],
         },
         data: {
           status: LoopStatus.Failed,
