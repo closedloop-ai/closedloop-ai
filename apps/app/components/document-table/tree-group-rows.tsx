@@ -72,10 +72,12 @@ export function TreeGroupRows({
       item.kind !== "branch" && moreMenuContent && onRequestDelete
         ? moreMenuContent(item, () => onRequestDelete(item))
         : undefined;
-    const itemHasChildren = (item.children?.length ?? 0) > 0;
+    const itemHasChildren = isChild
+      ? (item.children?.length ?? 0) > 0
+      : hasChildren;
     const itemIsExpanded = isChild
       ? itemHasChildren && isGroupExpanded(item.data.id)
-      : hasChildren && isOpen;
+      : itemHasChildren && isOpen;
     const itemEditHandlers = item.kind === "branch" ? undefined : editHandlers;
     const itemMoreMenuHandler =
       item.kind === "branch" ? undefined : handleMoreMenu;

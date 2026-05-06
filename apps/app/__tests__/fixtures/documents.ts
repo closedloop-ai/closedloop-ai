@@ -1,8 +1,10 @@
+import { Priority } from "@repo/api/src/types/common";
 import type {
   DocumentWithWorkstream,
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/document";
+import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 
 /**
  * Factory for creating mock DocumentWithWorkstream objects.
@@ -10,18 +12,32 @@ import type {
  */
 export const createMockDocument = (
   overrides?: Partial<DocumentWithWorkstream>
-): DocumentWithWorkstream =>
-  ({
-    id: "artifact-123",
-    title: "Test Artifact",
-    type: "PRD",
-    slug: "test-artifact",
-    latestVersion: 1,
-    status: "DRAFT",
-    createdAt: "2024-01-15T10:00:00Z",
-    updatedAt: "2024-01-16T10:00:00Z",
-    ...overrides,
-  }) as DocumentWithWorkstream;
+): DocumentWithWorkstream => ({
+  id: "artifact-123",
+  organizationId: "org-1",
+  workstreamId: null,
+  projectId: null,
+  type: DocumentType.Prd,
+  title: "Test Artifact",
+  slug: "test-artifact",
+  fileName: null,
+  status: DocumentStatus.Draft,
+  priority: Priority.Medium,
+  latestVersion: 1,
+  createdById: "user-1",
+  assigneeId: null,
+  assignee: null,
+  approverId: null,
+  approver: null,
+  tokenUsage: null,
+  targetRepo: null,
+  targetBranch: null,
+  templateForType: null,
+  sortOrder: null,
+  createdAt: new Date("2024-01-15T10:00:00Z"),
+  updatedAt: new Date("2024-01-16T10:00:00Z"),
+  ...overrides,
+});
 
 /**
  * Factory for creating mock GenerationStatus objects.
