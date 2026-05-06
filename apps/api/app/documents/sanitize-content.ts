@@ -31,6 +31,11 @@ const SANITIZE_OPTIONS: IOptions = {
     "a",
     "img",
     "hr",
+    "details",
+    "summary",
+    "kbd",
+    "sub",
+    "sup",
   ],
   allowedAttributes: {
     a: ["href", "title"],
@@ -52,7 +57,51 @@ const ALLOWED_TAGS_SET = new Set(
     : []
 );
 
+// Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~
 const CODE_BLOCK_PATTERN = /(`{3,}|~{3,})[^\n]*\n[\s\S]*?\1/g;
+
+// Inline code spans: ``code`` or `code` (backtick pairs on the same line).
+// Handles double-backtick spans first, then single-backtick spans.
+const INLINE_CODE_PATTERN = /``(?!`)(.+?)``|`(?!`)([^`\n]+)`/g;
+
+// Indented code blocks: lines starting with 4+ spaces or a tab,
+// preceded and followed by a blank line (or start/end of string).
+const INDENTED_CODE_PATTERN =
+  /(?:^|\n\n)((?:(?: {4}|\t)[^\n]*\n?)+)(?=\n\n|$)/g;
+
+// Markdown autolinks: <https://...>, <http://...>, <email@example.com>
+const AUTOLINK_PATTERN =
+  /<(https?:\/\/[^\s>]+|[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)>/g;
+
+// Angle-bracket placeholders used in docs:
+// <REPLACE_ME>, <YOUR_API_KEY>, <NS:VALUE>, etc.
+// Require placeholder-like separators so uppercase HTML tags such as <SCRIPT>
+// still flow through sanitize-html instead of being restored afterward.
+const ANGLE_PLACEHOLDER_PATTERN = /<([A-Z0-9]+(?:[_:.][A-Z0-9_.:-]+)+)>/g;
+
+// Self-closing JSX/component references in prose: <Component />, <UI.Button />
+// Require at least one lowercase character so uppercase HTML tags such as
+// <SCRIPT /> are not preserved as placeholders.
+const SELF_CLOSING_COMPONENT_PATTERN =
+  /<([A-Z](?=[A-Za-z0-9]*[a-z])[A-Za-z0-9]*(?:\.[A-Z](?=[A-Za-z0-9]*[a-z])[A-Za-z0-9]*)*\s*\/)>/g;
+
+// HTML comments: <!-- ... -->
+const HTML_COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
+
+// Bare < in prose that isn't an HTML tag opening. Two sub-patterns:
+//   1. < NOT followed by a letter, /, or ! — clearly not a tag (e.g., "x < 5")
+//   2. < preceded by a word character, followed by a letter, where no > appears
+//      before the next < or end of line — prose like "a<b for comparison".
+//      "H<sub>2" has > after the tag name so it won't match.
+const BARE_LT_NOT_TAG = /<(?![a-zA-Z/!])/g;
+const MID_WORD_LT_PATTERN = /(?<=\w)<(?=[a-z])(?=[^>]*(?:<|$))/gm;
+
+// Arrow operators and spaced comparison operators get entity-encoded by
+// sanitize-html. Protect the full token so allowed HTML tags like
+// <a href="..." > do not match.
+const ARROW_OPERATOR_PATTERN = /=>/g;
+const SPACED_GT_OPERATOR_PATTERN = /(?<=\S)\s>\s(?=\S)/g;
+
 const BLOCKQUOTE_PREFIX_PATTERN = /^(?:>\s?)+/gm;
 
 export function sanitizeDocumentContent(
@@ -66,28 +115,81 @@ export function sanitizeDocumentContent(
   const placeholderPrefix = `__SANITIZE_${randomUUID().replaceAll("-", "")}_`;
   let placeholderIndex = 0;
 
-  let placeholderContent = content.replaceAll(CODE_BLOCK_PATTERN, (match) => {
-    const placeholder = `${placeholderPrefix}CODE_${placeholderIndex}__`;
-    placeholderMap.set(placeholder, match);
+  function placeholder(tag: string, match: string): string {
+    const key = `${placeholderPrefix}${tag}_${placeholderIndex}__`;
+    placeholderMap.set(key, match);
     placeholderIndex++;
-    return placeholder;
-  });
+    return key;
+  }
+
+  // Order matters: fenced code first (most protective), then inline code,
+  // then indented code, then autolinks/placeholders, then bare <, then blockquotes.
+
+  let placeholderContent = content.replaceAll(CODE_BLOCK_PATTERN, (match) =>
+    placeholder("CODE", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    INLINE_CODE_PATTERN,
+    (match) => placeholder("ICODE", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    INDENTED_CODE_PATTERN,
+    (match) => placeholder("INDENT", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    AUTOLINK_PATTERN,
+    (match) => placeholder("ALINK", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    ANGLE_PLACEHOLDER_PATTERN,
+    (match) => placeholder("ABRKT", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    SELF_CLOSING_COMPONENT_PATTERN,
+    (match) => placeholder("COMPONENT", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    HTML_COMMENT_PATTERN,
+    (match) => placeholder("COMMENT", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(BARE_LT_NOT_TAG, (match) =>
+    placeholder("LT", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    MID_WORD_LT_PATTERN,
+    (match) => placeholder("LT", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    ARROW_OPERATOR_PATTERN,
+    (match) => placeholder("ARROW", match)
+  );
+
+  placeholderContent = placeholderContent.replaceAll(
+    SPACED_GT_OPERATOR_PATTERN,
+    (match) => placeholder("GT", match)
+  );
 
   placeholderContent = placeholderContent.replaceAll(
     BLOCKQUOTE_PREFIX_PATTERN,
-    (match) => {
-      const placeholder = `${placeholderPrefix}QUOTE_${placeholderIndex}__`;
-      placeholderMap.set(placeholder, match);
-      placeholderIndex++;
-      return placeholder;
-    }
+    (match) => placeholder("QUOTE", match)
   );
 
   const sanitized = sanitizeHtml(placeholderContent, SANITIZE_OPTIONS);
 
   let restored = sanitized;
-  for (const [placeholder, original] of placeholderMap) {
-    restored = restored.replaceAll(placeholder, () => original);
+  for (const [key, original] of Array.from(
+    placeholderMap.entries()
+  ).reverse()) {
+    restored = restored.replaceAll(key, () => original);
   }
 
   const stripped = buildStrippedList(placeholderContent, sanitized);
