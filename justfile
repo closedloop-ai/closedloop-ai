@@ -4,6 +4,7 @@ default:
 
 # Start the main app, API, and relay
 dev:
+    pnpm --filter @closedloop-ai/loops-api build
     RELAY_API_URL=http://localhost:3020 pnpm turbo dev --filter=app --filter=api --filter=mcp --filter=relay
 
 # Start all apps (may fail if mintlify/stripe not installed)
