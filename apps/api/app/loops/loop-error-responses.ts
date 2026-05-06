@@ -18,6 +18,29 @@ export type LoopAlreadyActiveBody = {
 };
 
 /**
+ * Build the 409 "loop already active" response. The body extends ApiResult
+ * with an extra `data` field (consumed by the frontend via ApiError.data.data).
+ * Cast satisfies the ApiResult<never> return contract.
+ */
+export function loopAlreadyActiveResponse(args: {
+  loopId: string;
+  command: LoopCommand;
+  status: LoopStatus;
+  message?: string;
+}): NextResponse<ApiResult<never>> {
+  const body: LoopAlreadyActiveBody = {
+    error: "loop_already_active",
+    loopId: args.loopId,
+    command: args.command,
+    status: args.status,
+  };
+  return NextResponse.json(
+    { success: false, error: args.message ?? body.error, data: body },
+    { status: 409 }
+  ) as NextResponse<ApiResult<never>>;
+}
+
+/**
  * Map common loop-service errors to HTTP responses.
  * Handles ConcurrentLoopLimitError (429), LoopAlreadyActiveError (409),
  * NestedManualLoopError (409), UnauthorizedRepoError (403), and
@@ -32,18 +55,12 @@ export function handleLoopServiceError(
     return errorResponse(error.message, error, 429);
   }
   if (isLoopAlreadyActiveError(error)) {
-    const body: LoopAlreadyActiveBody = {
-      error: "loop_already_active",
+    return loopAlreadyActiveResponse({
       loopId: error.existingLoopId,
       command: error.existingCommand,
       status: error.existingStatus,
-    };
-    // The 409 body extends ApiResult with an extra `data` field (consumed by
-    // the frontend via ApiError.data.data). Cast to satisfy the return type.
-    return NextResponse.json(
-      { success: false, error: error.message, data: body },
-      { status: 409 }
-    ) as NextResponse<ApiResult<never>>;
+      message: error.message,
+    });
   }
   if (isNestedManualLoopError(error)) {
     return errorResponse(error.message, error, 409);

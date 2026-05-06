@@ -16,6 +16,7 @@ export type LoopsServiceHandles = {
   loopFindUnique: ReturnType<typeof vi.fn>;
   loopUpdateMany: ReturnType<typeof vi.fn>;
   orgFindUnique: ReturnType<typeof vi.fn>;
+  repoFindMany: ReturnType<typeof vi.fn>;
 };
 
 /** Reset every handle to its default behaviour. Call from `beforeEach`. */
@@ -28,6 +29,7 @@ export function resetLoopsServiceHandles(handles: LoopsServiceHandles): void {
   handles.loopFindUnique.mockReset().mockResolvedValue(null);
   handles.loopUpdateMany.mockReset().mockResolvedValue({ count: 0 });
   handles.orgFindUnique.mockReset().mockResolvedValue({ settings: null });
+  handles.repoFindMany.mockReset().mockResolvedValue([]);
 }
 
 export function databaseModuleMock(
@@ -46,6 +48,7 @@ export function databaseModuleMock(
             findMany: vi.fn().mockResolvedValue([]),
           },
           organization: { findUnique: handles.orgFindUnique },
+          gitHubInstallationRepository: { findMany: handles.repoFindMany },
           loopEvent: {
             findMany: vi.fn().mockResolvedValue([]),
             count: vi.fn().mockResolvedValue(0),

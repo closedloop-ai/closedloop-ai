@@ -9,7 +9,6 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { ArtifactType, withDb } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
 import { artifactLinksService } from "../artifact-links/service";
-import { LoopAlreadyActiveError } from "../loops/loop-errors";
 import { loopsService } from "../loops/service";
 import {
   createDocumentRecord,
@@ -469,11 +468,14 @@ export const documentExecutionService = {
     );
     if (activeLoop) {
       if (activeLoop.computeTargetId !== input.computeTargetId) {
-        throw new LoopAlreadyActiveError(
-          activeLoop.id,
-          activeLoop.command,
-          activeLoop.status
-        );
+        return {
+          outcome: "already-active-conflict",
+          activeLoop: {
+            id: activeLoop.id,
+            command: activeLoop.command,
+            status: activeLoop.status,
+          },
+        };
       }
 
       const existingLocalRepoPath =

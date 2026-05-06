@@ -33,6 +33,7 @@ const handles = vi.hoisted<LoopsServiceHandles>(() => ({
   loopFindUnique: vi.fn(),
   loopUpdateMany: vi.fn(),
   orgFindUnique: vi.fn(),
+  repoFindMany: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => databaseModuleMock(handles));

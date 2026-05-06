@@ -11,7 +11,7 @@ import { z } from "zod";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import {
   handleLoopServiceError,
-  type LoopAlreadyActiveBody,
+  loopAlreadyActiveResponse,
 } from "@/app/loops/loop-error-responses";
 import { repoSchema } from "@/app/loops/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -40,9 +40,7 @@ const bodySchema = z
   })
   .strict();
 
-type StartPlanLoopRouteResponse = StartPlanLoopResponse | LoopAlreadyActiveBody;
-
-export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
+export const POST = withAnyAuth<StartPlanLoopResponse>(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -94,6 +92,14 @@ export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
             localRepoPath: result.localRepoPath,
           })
         );
+      }
+
+      if (result.outcome === "already-active-conflict") {
+        return loopAlreadyActiveResponse({
+          loopId: result.activeLoop.id,
+          command: result.activeLoop.command,
+          status: result.activeLoop.status,
+        });
       }
 
       if (result.outcome === "error") {

@@ -42,7 +42,6 @@ vi.mock("@/app/documents/generation-service", () => ({
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import { documentGenerationService } from "@/app/documents/generation-service";
-import { LoopAlreadyActiveError } from "@/app/loops/loop-errors";
 import { loopsService } from "@/app/loops/service";
 
 const ORGANIZATION_ID = "org-1";
@@ -135,18 +134,20 @@ describe("documentExecutionService.startPlanLoopFromLocal", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("throws LoopAlreadyActiveError for an active plan loop on a different compute target", async () => {
+  it("returns already-active-conflict for an active plan loop on a different compute target", async () => {
     mocks.findOperationallyActiveLoop.mockResolvedValue(
       buildActivePlanLoop(OTHER_COMPUTE_TARGET_ID)
     );
 
-    const result = startPlanLoopFromLocal();
+    const result = await startPlanLoopFromLocal();
 
-    await expect(result).rejects.toBeInstanceOf(LoopAlreadyActiveError);
-    await expect(result).rejects.toMatchObject({
-      existingCommand: LoopCommand.Plan,
-      existingLoopId: "loop-active",
-      existingStatus: LoopStatus.Running,
+    expect(result).toEqual({
+      outcome: "already-active-conflict",
+      activeLoop: {
+        id: "loop-active",
+        command: LoopCommand.Plan,
+        status: LoopStatus.Running,
+      },
     });
     expect(mocks.artifactFindUnique).not.toHaveBeenCalled();
     expect(

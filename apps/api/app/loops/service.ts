@@ -221,6 +221,18 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
   if (constraint?.fields) {
     return fieldsMatch(constraint.fields, LOOP_ACTIVE_INDEX_DB_FIELDS);
   }
+  log.warn(
+    "P2002 unique constraint error with unrecognized meta shape; treating as non-active-index violation",
+    {
+      code: PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE,
+      meta: {
+        targetType: target == null ? "null/undefined" : typeof target,
+        hasDriverAdapterError: driverAdapterError != null,
+        hasConstraint: constraint != null,
+        constraintKeys: constraint != null ? Object.keys(constraint) : [],
+      },
+    }
+  );
   return false;
 }
 
