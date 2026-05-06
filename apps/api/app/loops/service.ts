@@ -7,6 +7,7 @@ import {
   type ComputeTargetSummary,
   type CreateLoopRequest,
   type CreateLoopResponse,
+  type InheritedAdditionalRepos,
   type Loop,
   LoopCommand,
   type LoopDetail,
@@ -382,6 +383,45 @@ function parseAdditionalRepos(value: unknown): Loop["additionalRepos"] {
   log.warn("Malformed loop.additionalRepos JSON, returning null", { value });
   return null;
 }
+
+// Source-loop precedence per *target* command — i.e. "if the user is about
+// to launch <target> on <document>, which prior loops are likely to hold a
+// useful peer set?". The first match with a non-empty `additionalRepos`
+// wins; an empty match keeps walking. Targets not in this map have no
+// inheritable defaults and the service returns an empty payload.
+const INHERITED_REPOS_SOURCE_PRECEDENCE: Partial<
+  Record<LoopCommand, readonly LoopCommand[]>
+> = {
+  // New PLAN from a PRD inherits from the PRD's GENERATE_PRD; regenerated
+  // PLAN on a Plan doc inherits from prior PLAN runs on that Plan doc.
+  // Both call sites benefit from the same chain — only the active tier
+  // differs based on which document type the lookup runs against.
+  [LoopCommand.Plan]: [LoopCommand.Plan, LoopCommand.GeneratePrd],
+  // Regenerated PRD inherits from prior GENERATE_PRD runs on this PRD.
+  [LoopCommand.GeneratePrd]: [LoopCommand.GeneratePrd],
+  // PRD revision inherits the originating generation's peer set. The
+  // runtime soft-inheritance in run-loop-helpers also handles this at
+  // loop-creation time when the body omits `additionalRepos`; this entry
+  // exists so any UI pre-fill points at the same source.
+  [LoopCommand.RequestPrdChanges]: [LoopCommand.GeneratePrd],
+  // EXECUTE inherits from the Plan's PLAN authoring, falling back to a
+  // prior EXECUTE on the same plan if no PLAN is found.
+  [LoopCommand.Execute]: [LoopCommand.Plan, LoopCommand.Execute],
+};
+
+// FAILED loops and active states (PENDING/CLAIMED/RUNNING) are never
+// inherited from. CANCELLED/TIMED_OUT loops still committed a peer-set
+// decision the user may want to reuse.
+const INHERITANCE_FALLBACK_STATUSES = [
+  LoopStatus.Cancelled,
+  LoopStatus.TimedOut,
+] as const;
+
+const INHERITANCE_LOOP_SELECT = {
+  id: true,
+  command: true,
+  additionalRepos: true,
+} as const;
 
 /**
  * Validate a JSON value as a Loop["error"] shape, returning null on mismatch.
@@ -1166,13 +1206,13 @@ export const loopsService = {
     // IMPORTANT: `type` must come AFTER the spread so that e.data's `type` field
     // (if present) does not overwrite the canonical DB-stored event type.
     return events.map((e) => {
-      const data = (e.data as Record<string, unknown>) ?? {};
+      const data = (e.data as JsonObject) ?? {};
       return {
         ...data,
         type: e.type,
         timestamp: data.timestamp ?? e.createdAt.toISOString(),
-      };
-    }) as unknown as LoopEvent[];
+      } as LoopEvent;
+    });
   },
 
   /**
@@ -1219,13 +1259,13 @@ export const loopsService = {
     // IMPORTANT: `type` must come AFTER the spread so that e.data's `type` field
     // (if present) does not overwrite the canonical DB-stored event type.
     const data = events.map((e) => {
-      const eventData = (e.data as Record<string, unknown>) ?? {};
+      const eventData = (e.data as JsonObject) ?? {};
       return {
         ...eventData,
         type: e.type,
         timestamp: eventData.timestamp ?? e.createdAt.toISOString(),
-      };
-    }) as unknown as LoopEvent[];
+      } as LoopEvent;
+    });
 
     return { data, total };
   },
@@ -1255,8 +1295,7 @@ export const loopsService = {
       ...(userId ? { userId } : {}),
       ...(validatedCommand
         ? {
-            command:
-              validatedCommand as (typeof LoopCommand)[keyof typeof LoopCommand],
+            command: validatedCommand as LoopCommand,
           }
         : {}),
       ...(startDate || endDate
@@ -1451,6 +1490,69 @@ export const loopsService = {
     }
 
     return toLoop(loop);
+  },
+
+  /**
+   * Resolve the peer-repo set the UI should pre-fill when the user is about
+   * to launch `targetCommand` against `documentId`.
+   *
+   * The precedence chain depends on the target command (see
+   * `INHERITED_REPOS_SOURCE_PRECEDENCE`). For each source command in the
+   * chain we look for the latest non-empty `additionalRepos` — preferring
+   * COMPLETED, then falling back to CANCELLED/TIMED_OUT. FAILED loops and
+   * active states (PENDING/CLAIMED/RUNNING) are never inherited from.
+   * An empty `additionalRepos` on a candidate keeps the chain walking so a
+   * recent empty loop does not shadow an earlier loop that has peers.
+   *
+   * Targets without an inheritance chain (e.g. CHAT, evaluators) return
+   * `{ additionalRepos: [], source: null }` immediately.
+   */
+  findInheritedAdditionalRepos(
+    documentId: string,
+    organizationId: string,
+    targetCommand: LoopCommand
+  ): Promise<InheritedAdditionalRepos> {
+    return withDb(async (db) => {
+      const precedence = INHERITED_REPOS_SOURCE_PRECEDENCE[targetCommand];
+      if (!precedence) {
+        return { additionalRepos: [], source: null };
+      }
+      const statusFilters: Prisma.EnumLoopStatusFilter[] = [
+        { equals: LoopStatus.Completed },
+        { in: [...INHERITANCE_FALLBACK_STATUSES] },
+      ];
+      for (const command of precedence) {
+        for (const statusFilter of statusFilters) {
+          const candidate = await db.loop.findFirst({
+            where: {
+              artifactId: documentId,
+              organizationId,
+              command,
+              status: statusFilter,
+            },
+            orderBy: { createdAt: "desc" },
+            select: INHERITANCE_LOOP_SELECT,
+          });
+          if (!candidate) {
+            continue;
+          }
+          const peers = parseAdditionalRepos(candidate.additionalRepos);
+          if (peers && peers.length > 0) {
+            return {
+              additionalRepos: peers,
+              source: {
+                loopId: candidate.id,
+                command: candidate.command,
+              },
+            };
+          }
+          // Candidate exists but has no usable peers — keep walking the
+          // precedence chain so a recent empty PLAN doesn't shadow a
+          // GENERATE_PRD that does have peers.
+        }
+      }
+      return { additionalRepos: [], source: null };
+    });
   },
 
   /**

@@ -3,6 +3,7 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { useCallback, useState } from "react";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { useModalSession } from "@/hooks/use-modal-session";
 
 type EditableDocumentType =
   | typeof DocumentType.Prd
@@ -31,7 +32,8 @@ type PrdState = CommonState & {
   openRenameDialog: () => void;
   closeRenameDialog: () => void;
   showGeneratePlanModal: boolean;
-  setShowGeneratePlanModal: React.Dispatch<React.SetStateAction<boolean>>;
+  setShowGeneratePlanModal: (open: boolean) => void;
+  generatePlanModalMountKey: number;
   openGeneratePlanModal: () => void;
   closeGeneratePlanModal: () => void;
   showRequestChangesModal: boolean;
@@ -101,7 +103,10 @@ export function useDocumentUIState(config: UseArtifactUIStateConfig) {
 
   // PRD-specific UI state
   const [showRenameDialog, setShowRenameDialog] = useState(false);
-  const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
+  // The new-plan modal mounts fresh on each open via `useModalSession` —
+  // the parent passes `key={generatePlanModal.mountKey}` so the modal
+  // never has to reset itself imperatively.
+  const generatePlanModal = useModalSession();
 
   // Plan-specific UI state
   const [showRequestChangesModal, setShowRequestChangesModal] = useState(false);
@@ -131,10 +136,11 @@ export function useDocumentUIState(config: UseArtifactUIStateConfig) {
       setShowRenameDialog,
       openRenameDialog: () => setShowRenameDialog(true),
       closeRenameDialog: () => setShowRenameDialog(false),
-      showGeneratePlanModal,
-      setShowGeneratePlanModal,
-      openGeneratePlanModal: () => setShowGeneratePlanModal(true),
-      closeGeneratePlanModal: () => setShowGeneratePlanModal(false),
+      showGeneratePlanModal: generatePlanModal.open,
+      setShowGeneratePlanModal: generatePlanModal.onOpenChange,
+      generatePlanModalMountKey: generatePlanModal.mountKey,
+      openGeneratePlanModal: generatePlanModal.openModal,
+      closeGeneratePlanModal: generatePlanModal.closeModal,
       showRequestChangesModal,
       setShowRequestChangesModal,
       openRequestChangesModal: () => setShowRequestChangesModal(true),

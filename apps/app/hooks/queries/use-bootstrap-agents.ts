@@ -1,55 +1,16 @@
 "use client";
 
 import type { BulkIngestAgentResponse } from "@repo/api/src/types/agent";
-import type { Loop } from "@repo/api/src/types/loop";
-import { LoopStatus } from "@repo/api/src/types/loop";
+import type { BootstrapRepoResult, Loop } from "@repo/api/src/types/loop";
+import {
+  BootstrapLoopResultSchema,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
-import { z } from "zod";
 import { useApiClient } from "@/hooks/use-api-client";
 import { agentKeys } from "./use-agents";
 import { loopKeys } from "./use-loops";
-
-// --- Bootstrap loop result shape (from uploadedArtifacts) ---
-
-type BootstrapLoopRepoResult = {
-  fullName: string;
-  success: boolean;
-  error?: string;
-  agents: Array<{
-    name: string;
-    slug: string;
-    role: string;
-    description: string;
-    prompt: string;
-  }>;
-  criticGates: Record<string, unknown> | null;
-  metadata: Record<string, unknown> | null;
-  duration: number;
-};
-
-const bootstrapLoopResultSchema = z.object({
-  repos: z.array(
-    z.object({
-      fullName: z.string(),
-      success: z.boolean(),
-      error: z.string().optional(),
-      agents: z.array(
-        z.object({
-          name: z.string(),
-          slug: z.string(),
-          role: z.string(),
-          description: z.string(),
-          prompt: z.string(),
-        })
-      ),
-      criticGates: z.record(z.string(), z.unknown()).nullable(),
-      metadata: z.record(z.string(), z.unknown()).nullable(),
-      duration: z.number(),
-    })
-  ),
-  totalDuration: z.number(),
-});
 
 // --- Public types ---
 
@@ -169,7 +130,7 @@ export function useBootstrapAgents() {
     ) {
       setState({ status: BootstrapStatus.Ingesting, loopId });
 
-      const parsed = bootstrapLoopResultSchema.safeParse(
+      const parsed = BootstrapLoopResultSchema.safeParse(
         loopData.uploadedArtifacts
       );
       if (!parsed.success) {
@@ -255,7 +216,7 @@ export function useBootstrapAgents() {
 // --- Ingestion helpers ---
 
 async function ingestRepoAgents(
-  repo: BootstrapLoopRepoResult,
+  repo: BootstrapRepoResult,
   apiClient: ReturnType<typeof useApiClient>,
   loopId: string
 ): Promise<BootstrapRepoSummary & { created: number; updated: number }> {
@@ -306,7 +267,7 @@ async function ingestRepoAgents(
 }
 
 async function ingestResults(
-  repos: BootstrapLoopRepoResult[],
+  repos: BootstrapRepoResult[],
   apiClient: ReturnType<typeof useApiClient>,
   loopId: string
 ): Promise<BootstrapIngestResult> {

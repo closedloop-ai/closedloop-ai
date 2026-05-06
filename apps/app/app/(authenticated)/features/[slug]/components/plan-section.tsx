@@ -16,20 +16,19 @@ import { SectionHeader } from "@/components/document-editor/relationships/sectio
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { useDeleteArtifactLink } from "@/hooks/queries/use-artifact-links";
 import { useDocument } from "@/hooks/queries/use-documents";
+import type { ModalSession } from "@/hooks/use-modal-session";
 import { useFeatureState } from "../use-feature-state";
 import { SelectPlanDialog } from "./select-plan-dialog";
 
 type PlanSectionProps = {
   feature: DocumentDetail;
-  showGenerateModal: boolean;
-  onGenerateModalChange: (open: boolean) => void;
+  generatePlanModalSession: ModalSession;
   generationStatus?: GenerationStatus;
 };
 
 export function PlanSection({
   feature,
-  showGenerateModal,
-  onGenerateModalChange,
+  generatePlanModalSession,
   generationStatus,
 }: Readonly<PlanSectionProps>) {
   const [showSelectModal, setShowSelectModal] = useState(false);
@@ -107,7 +106,7 @@ export function PlanSection({
                   <div className="flex gap-3">
                     <Button
                       disabled={!isReady}
-                      onClick={() => onGenerateModalChange(true)}
+                      onClick={generatePlanModalSession.openModal}
                       size="sm"
                       variant="secondary"
                     >
@@ -136,9 +135,13 @@ export function PlanSection({
         ) : null}
       </div>
 
+      {/* `key` bumps on each open so the modal mounts fresh and form
+          state resets via remount instead of imperative reset logic
+          inside the modal. */}
       <NewPlanModal
-        onOpenChange={onGenerateModalChange}
-        open={showGenerateModal}
+        key={generatePlanModalSession.mountKey}
+        onOpenChange={generatePlanModalSession.onOpenChange}
+        open={generatePlanModalSession.open}
         source={newPlanSource}
       />
 

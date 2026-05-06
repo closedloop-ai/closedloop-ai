@@ -44,15 +44,10 @@ vi.mock("@/hooks/queries/use-bootstrap-agents", () => ({
   })),
 }));
 
-vi.mock("@/lib/engineer/electron-detection", () => ({
-  useElectronDetection: vi.fn(() => ({
-    detected: false,
-    loading: false,
-    port: null,
-    version: null,
-    machineName: null,
-    capabilities: null,
-    checkedAt: null,
+vi.mock("@/hooks/queries/use-compute-targets", () => ({
+  useComputeTargets: vi.fn(() => ({
+    data: [{ id: "ct-1", isOnline: true }],
+    isLoading: false,
   })),
 }));
 

@@ -135,6 +135,11 @@ export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
 
 export const MAX_ADDITIONAL_REPOS = 5;
 
+export type InheritedAdditionalRepos = {
+  additionalRepos: AdditionalRepoRef[];
+  source: { loopId: string; command: LoopCommand } | null;
+};
+
 // Request/Response types
 export type CreateLoopRequest = {
   command: LoopCommand;
@@ -262,6 +267,17 @@ export type DecomposeFeature = {
 export type DecomposeResult = {
   features: DecomposeFeature[];
 };
+
+export type {
+  BootstrapAgent,
+  BootstrapLoopResult,
+  BootstrapRepoResult,
+} from "@closedloop-ai/loops-api/bootstrap-result";
+export {
+  BootstrapAgentSchema,
+  BootstrapLoopResultSchema,
+  BootstrapRepoResultSchema,
+} from "@closedloop-ai/loops-api/bootstrap-result";
 
 export type {
   ExecutionResultV2,

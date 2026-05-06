@@ -57,6 +57,15 @@ vi.mock("@repo/api/src/types/project", async () => {
   return { ...actual, getProjectSettings: () => ({}) };
 });
 
+// PLN-462: NewPlanModal reads the inherited peer set via TanStack Query.
+// Stub it so this test doesn't need a QueryClientProvider.
+vi.mock("@/hooks/queries/use-loops", () => ({
+  useInheritedAdditionalRepos: () => ({
+    data: { additionalRepos: [], source: null },
+    isFetched: true,
+  }),
+}));
+
 // ---- Regex constants (top-level to satisfy Biome useTopLevelRegex) ----
 
 const ADD_REPO_REGEX = /add repository/i;
