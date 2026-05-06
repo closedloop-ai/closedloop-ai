@@ -359,11 +359,3 @@ describe("acknowledgeCommand — at-least-once emission across races", () => {
     expect(vi.mocked(emitQueueMetric)).not.toHaveBeenCalled();
   });
 });
-
-describe("TelemetryCategory runtime values", () => {
-  it('Object.values(TelemetryCategory) contains "command.streaming_started"', () => {
-    expect(Object.values(TelemetryCategory)).toContain(
-      "command.streaming_started"
-    );
-  });
-});

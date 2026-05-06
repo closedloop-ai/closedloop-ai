@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
+    emptyStringAsUndefined: true,
     server: {
       AWS_ACCESS_KEY_ID: z.string().startsWith("AKIA").optional(),
       AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),

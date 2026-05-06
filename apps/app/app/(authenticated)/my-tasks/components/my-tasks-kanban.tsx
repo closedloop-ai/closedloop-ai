@@ -30,10 +30,14 @@ import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { EmptyState } from "@/components/empty-state";
 import { documentKeys, useUpdateDocument } from "@/hooks/queries/use-documents";
 import { useElementViewportHeight } from "@/hooks/use-element-viewport-height";
-import { DOCUMENT_STATUS_TO_ICON } from "@/lib/project-constants";
-import { buildFeatureListParams, DISPLAY_GROUPS } from "../utils";
+import { getDocumentRoute } from "@/lib/document-navigation";
+import {
+  DOCUMENT_STATUS_TO_ICON,
+  DOCUMENT_TYPE_ICONS,
+} from "@/lib/project-constants";
+import { buildArtifactListParams, DISPLAY_GROUPS } from "../utils";
 
-/** Map column (droppable) id to the status to set when a feature is dropped there */
+/** Map column (droppable) id to the status to set when an artifact is dropped there */
 const COLUMN_TO_STATUS: Record<string, DocumentStatus> = {
   draft: DocumentStatus.Draft,
   in_progress: DocumentStatus.InProgress,
@@ -45,15 +49,15 @@ const COLUMN_TO_STATUS: Record<string, DocumentStatus> = {
 };
 
 type MyTasksKanbanProps = {
+  artifacts: DocumentWithWorkstream[];
   assigneeId: string | null;
-  features: DocumentWithWorkstream[];
   isLoading: boolean;
   isUserLoading: boolean;
 };
 
 export function MyTasksKanban({
+  artifacts,
   assigneeId,
-  features,
   isLoading,
   isUserLoading,
 }: Readonly<MyTasksKanbanProps>) {
@@ -63,26 +67,26 @@ export function MyTasksKanban({
     minHeight: 240,
   });
   const listFilters = useMemo(
-    () => buildFeatureListParams(assigneeId),
+    () => buildArtifactListParams(assigneeId),
     [assigneeId]
   );
-  const updateFeatureMutation = useUpdateDocument();
-  const lastDraggedFeatureIdRef = useRef<string | null>(null);
+  const updateArtifactMutation = useUpdateDocument();
+  const lastDraggedArtifactIdRef = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const grouped = useMemo(() => {
     const map = new Map<string, DocumentWithWorkstream[]>();
     for (const group of DISPLAY_GROUPS) {
-      const items = features.filter((i: DocumentWithWorkstream) =>
+      const items = artifacts.filter((i: DocumentWithWorkstream) =>
         group.statuses.includes(i.status)
       );
       map.set(group.key, items);
     }
     return map;
-  }, [features]);
+  }, [artifacts]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    lastDraggedFeatureIdRef.current = String(event.active.id);
+    lastDraggedArtifactIdRef.current = String(event.active.id);
     setActiveId(String(event.active.id));
   }, []);
 
@@ -90,7 +94,7 @@ export function MyTasksKanban({
     (event: DragEndEvent) => {
       const { active, over } = event;
       setTimeout(() => {
-        lastDraggedFeatureIdRef.current = null;
+        lastDraggedArtifactIdRef.current = null;
       }, 250);
 
       if (!over || active.id === over.id) {
@@ -100,22 +104,22 @@ export function MyTasksKanban({
       const overId = String(over.id);
       let newStatus: DocumentStatus | undefined = COLUMN_TO_STATUS[overId];
       if (!newStatus) {
-        const targetFeature = features.find(
+        const targetArtifact = artifacts.find(
           (i: DocumentWithWorkstream) => i.id === overId
         );
-        if (targetFeature) {
-          newStatus = targetFeature.status;
+        if (targetArtifact) {
+          newStatus = targetArtifact.status;
         }
       }
       if (!newStatus) {
         setActiveId(null);
         return;
       }
-      const featureId = String(active.id);
-      const feature = features.find(
-        (i: DocumentWithWorkstream) => i.id === featureId
+      const artifactId = String(active.id);
+      const artifact = artifacts.find(
+        (i: DocumentWithWorkstream) => i.id === artifactId
       );
-      if (!feature || feature.status === newStatus) {
+      if (!artifact || artifact.status === newStatus) {
         setActiveId(null);
         return;
       }
@@ -126,13 +130,13 @@ export function MyTasksKanban({
             return old;
           }
           return old.map((i: DocumentWithWorkstream) =>
-            i.id === featureId ? { ...i, status: newStatus } : i
+            i.id === artifactId ? { ...i, status: newStatus } : i
           );
         }
       );
       setActiveId(null);
-      updateFeatureMutation.mutate(
-        { id: featureId, status: newStatus },
+      updateArtifactMutation.mutate(
+        { id: artifactId, status: newStatus },
         {
           onError: () => {
             queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
@@ -140,7 +144,7 @@ export function MyTasksKanban({
         }
       );
     },
-    [features, listFilters, queryClient, updateFeatureMutation]
+    [artifacts, listFilters, queryClient, updateArtifactMutation]
   );
 
   const sensors = useSensors(
@@ -165,7 +169,7 @@ export function MyTasksKanban({
     );
   }
 
-  if (features.length === 0) {
+  if (artifacts.length === 0) {
     return (
       <EmptyState
         description="Tasks assigned to you will appear here."
@@ -175,8 +179,8 @@ export function MyTasksKanban({
     );
   }
 
-  const activeFeature = activeId
-    ? features.find((i: DocumentWithWorkstream) => i.id === activeId)
+  const activeArtifact = activeId
+    ? artifacts.find((i: DocumentWithWorkstream) => i.id === activeId)
     : null;
 
   return (
@@ -204,7 +208,7 @@ export function MyTasksKanban({
                   groupLabel={group.label}
                   items={items}
                   key={group.key}
-                  lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
+                  lastDraggedArtifactIdRef={lastDraggedArtifactIdRef}
                   status={group.statuses[0]}
                 />
               );
@@ -212,7 +216,9 @@ export function MyTasksKanban({
           </div>
         </ScrollArea>
         <DragOverlay>
-          {activeFeature ? <KanbanCardPreview feature={activeFeature} /> : null}
+          {activeArtifact ? (
+            <KanbanCardPreview artifact={activeArtifact} />
+          ) : null}
         </DragOverlay>
       </DndContext>
     </div>
@@ -223,7 +229,7 @@ type KanbanColumnProps = {
   groupKey: string;
   groupLabel: string;
   items: DocumentWithWorkstream[];
-  lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
+  lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
   status: DocumentStatus;
 };
 
@@ -231,7 +237,7 @@ function KanbanColumn({
   groupKey,
   groupLabel,
   items,
-  lastDraggedFeatureIdRef,
+  lastDraggedArtifactIdRef,
   status,
 }: Readonly<KanbanColumnProps>) {
   const { isOver, setNodeRef } = useDroppable({ id: groupKey });
@@ -253,11 +259,11 @@ function KanbanColumn({
         )}
       >
         <div className="flex flex-col gap-1.5 p-1.5">
-          {items.map((feature) => (
+          {items.map((artifact) => (
             <MyTasksCard
-              feature={feature}
-              key={feature.id}
-              lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
+              artifact={artifact}
+              key={artifact.id}
+              lastDraggedArtifactIdRef={lastDraggedArtifactIdRef}
             />
           ))}
         </div>
@@ -268,34 +274,40 @@ function KanbanColumn({
 
 /** Shared card body for kanban cards and overlay preview */
 function KanbanCardContent({
+  artifact,
   disableAvatarLink = false,
-  feature,
 }: Readonly<{
+  artifact: DocumentWithWorkstream;
   disableAvatarLink?: boolean;
-  feature: DocumentWithWorkstream;
 }>) {
+  const TypeIcon = DOCUMENT_TYPE_ICONS[artifact.type];
+  const showSlug = isDisplayableSlug(artifact.slug);
+
   return (
     <div className="px-3 py-1">
       <div className="min-w-0">
         <div className="flex min-w-0 flex-col gap-0.5">
-          {isDisplayableSlug(feature.slug) && (
-            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-              {feature.slug}
-            </span>
-          )}
+          <div className="flex min-w-0 shrink-0 items-center gap-1 text-muted-foreground">
+            <TypeIcon className="size-3 shrink-0" />
+            {showSlug && (
+              <span className="truncate font-mono text-[11px]">
+                {artifact.slug}
+              </span>
+            )}
+          </div>
           <p className="min-w-0 truncate font-medium text-sm">
-            {feature.title}
+            {artifact.title}
           </p>
         </div>
       </div>
       <div className="mt-1.5 flex items-center justify-end gap-2">
         <div className="flex shrink-0 items-center gap-1">
           <div className="flex size-6 shrink-0 items-center justify-center">
-            <PriorityIcon priority={feature.priority} size={14} />
+            <PriorityIcon priority={artifact.priority} size={14} />
           </div>
           <div className="flex size-6 shrink-0 items-center justify-center">
             <AssigneeAvatar
-              assignee={feature.assignee}
+              assignee={artifact.assignee}
               className="size-4 shrink-0"
               disableLink={disableAvatarLink}
             />
@@ -303,7 +315,7 @@ function KanbanCardContent({
           <div className="flex size-6 shrink-0 items-center justify-center">
             <StatusIcon
               size={16}
-              status={DOCUMENT_STATUS_TO_ICON[feature.status]}
+              status={DOCUMENT_STATUS_TO_ICON[artifact.status]}
             />
           </div>
         </div>
@@ -314,26 +326,26 @@ function KanbanCardContent({
 
 /** Card for DragOverlay so the dragging item doesn't affect layout */
 function KanbanCardPreview({
-  feature,
-}: Readonly<{ feature: DocumentWithWorkstream }>) {
+  artifact,
+}: Readonly<{ artifact: DocumentWithWorkstream }>) {
   return (
     <Card className="cursor-grabbing rounded-md py-2 shadow-lg">
-      <KanbanCardContent feature={feature} />
+      <KanbanCardContent artifact={artifact} />
     </Card>
   );
 }
 
 type MyTasksCardProps = {
-  feature: DocumentWithWorkstream;
-  lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
+  artifact: DocumentWithWorkstream;
+  lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
 };
 
 function MyTasksCard({
-  feature,
-  lastDraggedFeatureIdRef,
+  artifact,
+  lastDraggedArtifactIdRef,
 }: Readonly<MyTasksCardProps>) {
   const { attributes, isDragging, listeners, setNodeRef, transform } =
-    useDraggable({ id: feature.id });
+    useDraggable({ id: artifact.id });
 
   const style =
     !isDragging && transform
@@ -342,13 +354,15 @@ function MyTasksCard({
 
   const handleLinkClick = useCallback(
     (e: React.MouseEvent) => {
-      if (lastDraggedFeatureIdRef.current === feature.id) {
+      if (lastDraggedArtifactIdRef.current === artifact.id) {
         e.preventDefault();
-        lastDraggedFeatureIdRef.current = null;
+        lastDraggedArtifactIdRef.current = null;
       }
     },
-    [feature.id, lastDraggedFeatureIdRef]
+    [artifact.id, lastDraggedArtifactIdRef]
   );
+
+  const href = getDocumentRoute(artifact) ?? "#";
 
   return (
     <div
@@ -358,9 +372,9 @@ function MyTasksCard({
       {...attributes}
       {...listeners}
     >
-      <Link href={`/features/${feature.slug}`} onClick={handleLinkClick}>
+      <Link href={href} onClick={handleLinkClick}>
         <Card className="rounded-md py-2 shadow-none transition-colors hover:bg-accent/50">
-          <KanbanCardContent disableAvatarLink feature={feature} />
+          <KanbanCardContent artifact={artifact} disableAvatarLink />
         </Card>
       </Link>
     </div>

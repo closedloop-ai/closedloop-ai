@@ -9,8 +9,6 @@ export const TelemetryCategory = {
   CommandQueued: "command.queued",
   CommandDispatched: "command.dispatched",
   CommandAcknowledged: "command.acknowledged",
-  /** @deprecated No active emission site. Removal tracked in FEA-535. */
-  CommandStreamingStarted: "command.streaming_started",
   CommandCompleted: "command.completed",
   CommandFailed: "command.failed",
   CommandTimedOut: "command.timed_out",

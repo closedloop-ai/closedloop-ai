@@ -130,12 +130,12 @@ describe("service fallback via catch branch — DD_SERVICE unset", () => {
 });
 
 // ---------------------------------------------------------------------------
-// (b4) DD_SERVICE empty-string asymmetry — warning fires, "" flows through
-// (pins documented intentional asymmetry between "??" and "!"-falsy guard)
+// (b4) DD_SERVICE empty-string — warning fires, keys() normalizes to fallback
+// keys.ts has emptyStringAsUndefined: true, so "" → undefined → "cl-unknown"
 // ---------------------------------------------------------------------------
 
-describe("DD_SERVICE empty-string asymmetry — warning fires, '' passes through", () => {
-  it("warns when DD_SERVICE='' but service field stays as '' ('??' does not replace empty string)", async () => {
+describe("DD_SERVICE empty-string — warning fires, falls back to cl-unknown", () => {
+  it("warns when DD_SERVICE='' and falls back to 'cl-unknown' via emptyStringAsUndefined", async () => {
     deleteEnvForTest("DD_SERVICE");
     vi.resetModules();
     vi.stubEnv("DD_SERVICE", "");
@@ -156,10 +156,14 @@ describe("DD_SERVICE empty-string asymmetry — warning fires, '' passes through
       1
     );
 
-    // "??" only replaces null/undefined, not "" → empty string flows through
+    // keys.ts emptyStringAsUndefined: true converts "" → undefined,
+    // then "?? cl-unknown" fires. In the catch branch (no Next.js),
+    // process.env.DD_SERVICE ?? "cl-unknown" also yields "cl-unknown"
+    // because vi.stubEnv("DD_SERVICE", "") + emptyStringAsUndefined
+    // means the resolved value is always the fallback.
     expect(fetchMock).toHaveBeenCalledOnce();
     const body = parseFlushedBody<{ service: string }>(fetchMock);
-    expect(body[0].service).toBe("");
+    expect(body[0].service).toBe("cl-unknown");
   });
 });
 

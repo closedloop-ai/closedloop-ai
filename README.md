@@ -105,7 +105,6 @@ sequenceDiagram
 | **api** | 3002 | Backend-for-Frontend API — all database operations, webhooks, service integrations |
 | **web** | 3001 | Marketing website with pricing and contact |
 | **docs** | 3004 | Documentation site (Mintlify) |
-| **email** | 3003 | Email template preview (React Email) |
 | **storybook** | 6006 | Component library |
 | **studio** | 3005 | Prisma Studio for database browsing |
 
@@ -124,7 +123,6 @@ Shared packages imported as `@repo/<package-name>`:
 | **design-system** | Shadcn/ui component library with Tailwind |
 | **rich-text** | TipTap rich text editor with Mermaid diagram support |
 | **collaboration** | Real-time collaboration via Liveblocks + Yjs |
-| **payments** | Stripe subscription management |
 | **analytics** | PostHog + Google Analytics + Vercel Analytics |
 | [**observability**](./packages/observability/README.md) | Structured logging with agentless Datadog export |
 | **security** | Security headers via Nosecone |
@@ -133,8 +131,6 @@ Shared packages imported as `@repo/<package-name>`:
 | **aws** | S3 artifact storage with presigned URLs |
 | **email** | Transactional emails via Resend |
 | **webhooks** | Inbound/outbound webhook handling (Svix) |
-| **storage** | File upload (Vercel Blob) |
-| **cms** | Marketing site content (BaseHub) |
 
 ## Getting Started
 
@@ -145,7 +141,6 @@ Shared packages imported as `@repo/<package-name>`:
 | **Node.js 20+** | Runtime | [nodejs.org](https://nodejs.org) or `brew install node` |
 | **pnpm** | Package manager | `npm install -g pnpm` or [pnpm.io](https://pnpm.io) |
 | **Docker** | Local PostgreSQL 16 | [docker.com](https://www.docker.com/get-started) |
-| **Stripe CLI** | Local webhook testing | [docs.stripe.com](https://docs.stripe.com/stripe-cli) |
 
 ### Service Accounts
 
@@ -156,7 +151,6 @@ ClosedLoop integrates with several third-party services. At minimum you need acc
 | **[Clerk](https://clerk.com)** | Yes | Authentication, user/org management | Create app, get publishable + secret keys |
 | **PostgreSQL** | Yes | Primary database (via Docker locally, [Neon](https://neon.tech) in prod) | `docker compose up -d` |
 | **[GitHub App](https://docs.github.com/en/apps)** | For plan generation | Workflow dispatch, webhook events, repo access | See [docs/github-app-setup.md](docs/github-app-setup.md) |
-| **[Stripe](https://stripe.com)** | For payments | Subscription management | Create account, get API keys |
 | **[Anthropic](https://console.anthropic.com)** | For AI features | PRD generation agent (Claude Opus/Sonnet) | Get API key |
 | **[AWS S3](https://aws.amazon.com/s3/)** | For artifact storage | Plan files, execution logs, screenshots | Create bucket + IAM credentials |
 | **[Liveblocks](https://liveblocks.io)** | For collaboration | Real-time document editing, live cursors | Create project, get secret key |
@@ -183,6 +177,9 @@ docker compose up -d
 cp apps/app/.env.example apps/app/.env.local
 cp apps/api/.env.example apps/api/.env.local
 cp apps/web/.env.example apps/web/.env.local
+cp apps/mcp/.env.example apps/mcp/.env.local
+cp apps/relay/.env.example apps/relay/.env.local
+cp packages/database/.env.example packages/database/.env
 
 # Run database migrations
 cd packages/database && pnpm prisma migrate dev && cd ../..
@@ -191,7 +188,7 @@ cd packages/database && pnpm prisma migrate dev && cd ../..
 pnpm dev
 ```
 
-See **[docs/local_deployment.md](docs/local_deployment.md)** for the full setup guide including Clerk, Stripe, GitHub App, and other service account configuration.
+See **[docs/local_deployment.md](docs/local_deployment.md)** for the full setup guide including Clerk, GitHub App, and other service account configuration.
 
 ### Common Commands
 
@@ -216,7 +213,7 @@ pnpm migrate                                # Run database migrations (prisma mi
 - **Artifact Versioning** — Full version history for all document artifacts
 - **Workstream Tracking** — 17-state delivery lifecycle from INITIATED through COMPLETED
 - **Multi-Org Support** — Organization switching with full data isolation
-- **Integrations** — GitHub, Linear, Slack, Stripe for the full delivery workflow
+- **Integrations** — GitHub, Linear, Slack for the full delivery workflow
 - **Template System** — Organization-level templates for PRDs, Issues, and Bug reports
 
 ## Documentation

@@ -1,8 +1,10 @@
 /**
  * Shared helper for launching a BOOTSTRAP loop.
  *
- * Unlike plan loops, bootstrap has no document, workstream, context refs,
- * or prompt. The repo list and options go in Loop metadata.
+ * Unlike plan loops, bootstrap has no document, workstream, or context refs.
+ * The repo list and options are stored as JSON in the prompt field so they
+ * flow through the context pack to the desktop harness, which parses
+ * body.prompt as { repos, options }.
  */
 
 import type { JsonObject } from "@repo/api/src/types/common";
@@ -51,6 +53,11 @@ export async function launchBootstrapLoop(
     return ctResult;
   }
 
+  const bootstrapParams: JsonObject = { repos };
+  if (options) {
+    bootstrapParams.options = options;
+  }
+
   const metadata: JsonObject = {
     repos,
     launchSource: "bootstrap",
@@ -65,6 +72,7 @@ export async function launchBootstrapLoop(
     const loopResponse = await loopsService.create(organizationId, userId, {
       command: LoopCommand.Bootstrap,
       computeTargetId: ctResult.computeTargetId,
+      prompt: JSON.stringify(bootstrapParams),
       metadata,
     });
     loopId = loopResponse.loopId;

@@ -66,8 +66,9 @@ export const PRD_DEFAULT_COLUMNS: DocumentColumn[] = [
   DocumentColumn.Score,
 ];
 
-/** Default columns for the My Tasks page (features assigned to current user). */
+/** Default columns for the My Tasks page (artifacts assigned to current user). */
 export const MY_TASKS_DEFAULT_COLUMNS: DocumentColumn[] = [
+  DocumentColumn.Type,
   DocumentColumn.Project,
   DocumentColumn.Assignee,
   DocumentColumn.Loop,
@@ -112,14 +113,21 @@ const DEFAULT_VISIBILITY: ColumnVisibility = {
  * @param options.storageKey - Local storage key used to persist user visibility preferences.
  * @param options.overrides - Per-column forced visibility (e.g., hide Type when filtering to a single type).
  *   These override user toggles and are not saved.
+ * @param options.defaults - Per-column default visibility used as the initial value before
+ *   the user has stored a preference. Differs from `overrides` in that the user can still
+ *   toggle columns; once toggled, the stored preference takes effect.
  */
 export function useColumnVisibility(options: {
   storageKey: string;
   overrides?: Partial<ColumnVisibility>;
+  defaults?: Partial<ColumnVisibility>;
 }) {
-  const { storageKey, overrides } = options;
+  const { storageKey, overrides, defaults } = options;
+  const initialVisibility: ColumnVisibility = defaults
+    ? { ...DEFAULT_VISIBILITY, ...defaults }
+    : DEFAULT_VISIBILITY;
   const [userVisibility, setUserVisibility] =
-    useLocalStorageState<ColumnVisibility>(storageKey, DEFAULT_VISIBILITY);
+    useLocalStorageState<ColumnVisibility>(storageKey, initialVisibility);
 
   const toggleColumn = (column: DocumentColumn) => {
     setUserVisibility((prev) => ({ ...prev, [column]: !prev[column] }));

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
+    emptyStringAsUndefined: true,
     server: {
       CLERK_SECRET_KEY: z.string().startsWith("sk_").optional(),
       CLERK_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),

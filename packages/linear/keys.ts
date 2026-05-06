@@ -11,6 +11,7 @@ import { z } from "zod";
  */
 export const keys = () =>
   createEnv({
+    emptyStringAsUndefined: true,
     server: {
       LINEAR_CLIENT_ID: z.string().min(1).optional(),
       LINEAR_CLIENT_SECRET: z.string().min(1).optional(),

@@ -162,6 +162,141 @@ describe("sanitizeDocumentContent", () => {
       expect(result.content).toBe(content);
       expect(result.stripped.length).toBe(0);
     });
+
+    it("preserves markdown autolink URLs", () => {
+      const content = "See <https://example.com> for details";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves markdown autolink emails", () => {
+      const content = "Contact <foo@example.com> please";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves angle-bracket placeholders", () => {
+      const content = "Use <YOUR_API_KEY> in the request";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves angle-bracket placeholders (REPLACE_ME pattern)", () => {
+      const content = "replace <REPLACE_ME> with real value";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves bare less-than in prose (x < 5)", () => {
+      const content = "If x < 5 and y > 3";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves bare less-than without closing angle (a<b)", () => {
+      const content = "Use a<b for comparison";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves arrow functions in prose", () => {
+      const content = "Pass (x) => x*2";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves inline code containing HTML tags", () => {
+      const content = '`<div class="foo">`';
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves inline code containing TypeScript generics", () => {
+      const content = "`Array<T>`";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves inline code with escaped angle brackets", () => {
+      const content = "Avoid `<script>` in user input";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves JSX/component references in prose", () => {
+      const content = "Render <Component /> in your tree";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves details/summary elements", () => {
+      const content = "<details><summary>Click</summary>Hidden</details>";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves kbd, sub, sup elements", () => {
+      const content =
+        "<kbd>Ctrl</kbd>+<kbd>C</kbd>, H<sub>2</sub>O, 10<sup>3</sup>";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves HTML comments", () => {
+      const content = "text <!-- a comment --> more text";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toContain("<!-- a comment -->");
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("preserves indented code blocks", () => {
+      const content =
+        "Paragraph before.\n\n    <script>alert(1)</script>\n    more code\n\nParagraph after.";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toContain("<script>alert(1)</script>");
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("strips uppercase HTML tags instead of restoring them as placeholders", () => {
+      const content = "<SCRIPT>alert(1)</SCRIPT>";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe("");
+      expect(result.content).not.toContain("<SCRIPT>");
+      expect(result.stripped).toContain("<SCRIPT>");
+    });
+
+    it("preserves comparison operators without corrupting allowed tag closers", () => {
+      const content =
+        '<a href="https://example.com" >docs</a>\n\nIf x < 5 and y > 3';
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(
+        '<a href="https://example.com">docs</a>\n\nIf x < 5 and y > 3'
+      );
+      expect(result.content).not.toContain("&gt;");
+      expect(result.content).not.toContain("__SANITIZE_");
+    });
+
+    it("does not leak internal placeholders when preserving mixed markdown constructs", () => {
+      const content =
+        "Use <YOUR_API_KEY>, `Array<T>`, (x) => x * 2, and <https://example.com> while x < 5 and y > 3";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.content).not.toContain("__SANITIZE_");
+      expect(result.stripped.length).toBe(0);
+    });
   });
 
   describe("code block protection", () => {

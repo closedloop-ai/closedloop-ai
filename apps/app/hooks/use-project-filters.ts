@@ -6,8 +6,8 @@ import {
 } from "@repo/api/src/types/document";
 import { useMemo } from "react";
 import type { DocumentRowItem } from "@/components/document-table/document-row";
+import type { FilterCategory } from "@/components/document-table/filter-category";
 import { useTableFilters } from "@/hooks/use-table-filters";
-import type { FilterCategory } from "./page";
 
 // ---- Category helpers ----
 

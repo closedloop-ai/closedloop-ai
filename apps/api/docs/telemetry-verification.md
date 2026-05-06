@@ -194,9 +194,6 @@ The relay emits the connection lifecycle events below via `log.info(JSON.stringi
 
 **Note:** All `emitter.ts`-path events call `log.info(JSON.stringify(payload))` through `logAtSeverity()`. The structured fields land in `message` as stringified JSON. Faceted queries require the pipeline. The relay-origin connection events above bypass the emitter entirely but follow the same stringified-JSON-in-`message` pattern.
 
-**Deprecated category — do not query in production dashboards:**
-`command.streaming_started` (`TelemetryCategory.CommandStreamingStarted`) has no active emission site. Removal tracked in FEA-535.
-
 ## Expected Field Values
 
 These fields are set by `buildEntry()` in `log.ts` (line 166) and by the telemetry schemas.

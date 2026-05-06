@@ -150,6 +150,7 @@ function getDynamicUrl(urlType: AppType, fallback: string | undefined): string {
 
 export const keys = () =>
   createEnv({
+    emptyStringAsUndefined: true,
     server: {
       ANALYZE: z.string().optional(),
 

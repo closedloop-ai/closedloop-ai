@@ -10,8 +10,7 @@
         ".next/**",
         "!.next/cache/**",
         "**/generated/**",
-        "storybook-static/**",
-        ".react-email/**"
+        "storybook-static/**"
       ]
     },
     "@repo/database#build": {
