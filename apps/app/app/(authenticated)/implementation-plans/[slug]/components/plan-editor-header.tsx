@@ -91,6 +91,19 @@ export function PlanEditorHeader({
   isPending = false,
 }: PlanEditorHeaderProps) {
   const branchPrFlag = useFeatureFlag("branch-pr");
+
+  /** Check if a specific command is disabled based on generation status. */
+  function commandDisabled(
+    targetCommand: GenerationStatus["command"],
+    localMutationPending = false
+  ): boolean {
+    return isCommandDisabled({
+      generationStatus,
+      isLoading: generationStatusLoading,
+      targetCommand,
+      localMutationPending,
+    });
+  }
   const branchPrEnabled = branchPrFlag?.enabled === true;
 
   const breadcrumbs: BreadcrumbEntry[] = plan.project?.teams?.[0]?.id
@@ -193,60 +206,28 @@ export function PlanEditorHeader({
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem
-            disabled={
-              !isApproved ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "execute",
-                localMutationPending: isExecuting,
-              })
-            }
+            disabled={!isApproved || commandDisabled("execute", isExecuting)}
             onClick={() => onExecute()}
           >
             <PlayIcon className="h-4 w-4" />
             Execute
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={
-              isPending ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "request_changes",
-                localMutationPending: false,
-              })
-            }
+            disabled={isPending || commandDisabled("request_changes")}
             onClick={() => onRequestChanges()}
           >
             <MessageSquareIcon className="h-4 w-4" />
             Request Changes
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={
-              isPending ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "plan",
-                localMutationPending: false,
-              })
-            }
+            disabled={isPending || commandDisabled("plan")}
             onClick={() => onRegenerate()}
           >
             <RefreshCwIcon className="h-4 w-4" />
             Regenerate Plan
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={
-              isPending ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "evaluate_plan",
-                localMutationPending: false,
-              })
-            }
+            disabled={isPending || commandDisabled("evaluate_plan")}
             onClick={() => onEvaluatePlan()}
           >
             <GaugeIcon className="h-4 w-4" />
@@ -254,15 +235,7 @@ export function PlanEditorHeader({
           </DropdownMenuItem>
           {onEvaluateCode ? (
             <DropdownMenuItem
-              disabled={
-                isPending ||
-                isCommandDisabled({
-                  generationStatus,
-                  isLoading: generationStatusLoading,
-                  targetCommand: "evaluate_code",
-                  localMutationPending: false,
-                })
-              }
+              disabled={isPending || commandDisabled("evaluate_code")}
               onClick={() => onEvaluateCode()}
             >
               <GaugeIcon className="h-4 w-4" />

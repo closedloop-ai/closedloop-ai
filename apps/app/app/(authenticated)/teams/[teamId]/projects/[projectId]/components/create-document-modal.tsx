@@ -41,6 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   type User,
@@ -380,11 +381,22 @@ export function CreateDocumentModal({
       },
       {
         onSuccess: (artifact) => {
-          runLoop.mutate({
-            documentId: artifact.id,
-            command: RunLoopCommand.GeneratePrd,
-            ...(additionalRepos.length > 0 && { additionalRepos }),
-          });
+          runLoop.mutate(
+            {
+              documentId: artifact.id,
+              command: RunLoopCommand.GeneratePrd,
+              ...(additionalRepos.length > 0 && { additionalRepos }),
+            },
+            {
+              onError: (error) => {
+                toast.error(
+                  error instanceof Error
+                    ? error.message
+                    : "An unexpected error occurred"
+                );
+              },
+            }
+          );
           handleClose();
           onSuccess?.(artifact);
         },

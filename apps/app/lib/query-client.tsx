@@ -54,12 +54,8 @@ function makeQueryClient() {
         retry: false,
         onError: (error, _variables, _onMutateResult, mutation) => {
           if (
-            mutation &&
-            (
-              mutation.meta as
-                | { suppressDefaultErrorToast?: boolean }
-                | undefined
-            )?.suppressDefaultErrorToast === true
+            (mutation?.meta as Record<string, unknown> | undefined)
+              ?.suppressDefaultErrorToast === true
           ) {
             return;
           }

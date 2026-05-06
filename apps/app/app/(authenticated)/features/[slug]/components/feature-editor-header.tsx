@@ -58,6 +58,18 @@ export function FeatureEditorHeader({
   onDelete,
   onEvaluateFeature,
 }: Readonly<FeatureEditorHeaderProps>) {
+  /** Check if a specific command is disabled based on generation status. */
+  function commandDisabled(
+    targetCommand: GenerationStatus["command"],
+    localMutationPending = false
+  ): boolean {
+    return isCommandDisabled({
+      generationStatus,
+      isLoading: generationStatusLoading,
+      targetCommand,
+      localMutationPending,
+    });
+  }
   const teamId = feature.project?.teams?.[0]?.id;
   const projectId = feature.project?.id;
   const teamName = feature.project?.teams?.[0]?.name;
@@ -89,43 +101,21 @@ export function FeatureEditorHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            disabled={
-              !isReady ||
-              hasPlan ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "plan",
-                localMutationPending: false,
-              })
-            }
+            disabled={!isReady || hasPlan || commandDisabled("plan")}
             onClick={() => onGeneratePlan()}
           >
             <SparklesIcon className="h-4 w-4" />
             Generate Plan
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={
-              !hasPlan ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "execute",
-                localMutationPending: false,
-              })
-            }
+            disabled={!hasPlan || commandDisabled("execute")}
             onClick={() => onStartBuild()}
           >
             <PlayIcon className="h-4 w-4" />
             Start Building
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={isCommandDisabled({
-              generationStatus,
-              isLoading: generationStatusLoading,
-              targetCommand: "evaluate_feature",
-              localMutationPending: isEvaluating,
-            })}
+            disabled={commandDisabled("evaluate_feature", isEvaluating)}
             onClick={() => onEvaluateFeature()}
           >
             <GaugeIcon className="h-4 w-4" />

@@ -327,6 +327,9 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
         expect.objectContaining({
           documentId: "new-prd-123",
           command: RunLoopCommand.GeneratePrd,
+        }),
+        expect.objectContaining({
+          onError: expect.any(Function),
         })
       );
       const callArg = mockRunLoopMutate.mock.calls[0][0] as Record<
@@ -374,6 +377,9 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
         expect.objectContaining({
           documentId: "new-prd-456",
           command: RunLoopCommand.GeneratePrd,
+        }),
+        expect.objectContaining({
+          onError: expect.any(Function),
         })
       );
       const callArg = mockRunLoopMutate.mock.calls[0][0] as Record<
@@ -445,6 +451,9 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
           additionalRepos: [
             { fullName: "org/secondary-repo", branch: "feature" },
           ],
+        }),
+        expect.objectContaining({
+          onError: expect.any(Function),
         })
       );
     });

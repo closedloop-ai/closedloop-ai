@@ -6,9 +6,25 @@
  * backend_mismatch discriminants.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api-error";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
+
+vi.mock("@repo/design-system/components/ui/sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
+import { toast } from "@repo/design-system/components/ui/sonner";
+
+const mockToastError = toast.error as ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  mockToastError.mockClear();
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -113,6 +129,84 @@ describe("handleRunLoopResponse — 429 rate limit", () => {
     expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
     expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fallback toast for unhandled errors
+// ---------------------------------------------------------------------------
+
+describe("handleRunLoopResponse — fallback toast for unhandled errors", () => {
+  const baseCallbacks = () => ({
+    onMultipleTargets: vi.fn(),
+    onBackendMismatch: vi.fn(),
+    onSuccess: vi.fn(),
+    onRateLimited: vi.fn(),
+  });
+
+  it("toasts the message for ApiError with status 500", () => {
+    handleRunLoopResponse(
+      new ApiError("Internal Server Error", 500),
+      baseCallbacks()
+    );
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Internal Server Error");
+  });
+
+  it("toasts the message for ApiError with status 403", () => {
+    handleRunLoopResponse(new ApiError("Forbidden", 403), baseCallbacks());
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Forbidden");
+  });
+
+  it("toasts the message for a plain Error (network failure)", () => {
+    handleRunLoopResponse(new Error("Network down"), baseCallbacks());
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Network down");
+  });
+
+  it("toasts a generic message for non-Error values", () => {
+    handleRunLoopResponse("oops", baseCallbacks());
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("An unexpected error occurred");
+  });
+
+  it("toasts when 409 has no conflict body", () => {
+    handleRunLoopResponse(
+      new ApiError("Conflict", 409, undefined, undefined),
+      baseCallbacks()
+    );
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Conflict");
+  });
+
+  it("does NOT toast for a successful response", () => {
+    handleRunLoopResponse(
+      { loopId: "loop-1", status: "running" },
+      baseCallbacks()
+    );
+
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("does NOT toast when onRateLimited handles a 429", () => {
+    handleRunLoopResponse(new ApiError("Rate limited", 429), baseCallbacks());
+
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("does NOT toast when a 409 conflict body is routed to a callback", () => {
+    handleRunLoopResponse(
+      new ApiError("Conflict", 409, undefined, makeMultipleTargetsBody()),
+      baseCallbacks()
+    );
+
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 });
 

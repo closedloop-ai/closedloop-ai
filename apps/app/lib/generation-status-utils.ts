@@ -106,9 +106,9 @@ function getFailureMessage(command: GenerationStatus["command"]): string {
  * Per-command disabled predicate for run-loop menu items.
  *
  * Returns true (disabled) when:
- * - The generation-status poll reports an active loop matching `targetCommand`, OR
+ * - A local mutation is pending (`localMutationPending`), OR
  * - The generation-status fetch is still loading (`isLoading`), OR
- * - A local mutation is pending (`localMutationPending`).
+ * - The generation-status poll reports an active loop matching `targetCommand`.
  *
  * Unrelated commands (active loop for command A does NOT disable command B).
  */
@@ -121,21 +121,11 @@ export function isCommandDisabled(opts: {
   const { generationStatus, isLoading, targetCommand, localMutationPending } =
     opts;
 
-  if (localMutationPending) {
-    return true;
-  }
-
-  if (isLoading) {
-    return true;
-  }
-
-  if (
-    generationStatus &&
-    generationStatus.command === targetCommand &&
-    isActiveGenerationStatus(generationStatus.status)
-  ) {
-    return true;
-  }
-
-  return false;
+  return (
+    localMutationPending ||
+    isLoading ||
+    (generationStatus != null &&
+      generationStatus.command === targetCommand &&
+      isActiveGenerationStatus(generationStatus.status))
+  );
 }

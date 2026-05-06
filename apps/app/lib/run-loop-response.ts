@@ -6,6 +6,7 @@ import type {
   CreateLoopResponse,
   LoopAlreadyActiveBody,
 } from "@repo/api/src/types/loop";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
@@ -33,8 +34,7 @@ type RunLoopResponseCallbacks = {
  *
  * 409 conflict responses are thrown as ApiError by apiFetch. The conflict body
  * is nested at `apiError.data.data` (ApiResult.data = conflict body).
- * Non-conflict errors are not handled and should be caught by the caller or
- * the global QueryClient mutations.onError toast handler.
+ * Unrecognized errors fall back to a toast so they are always surfaced to the user.
  */
 export function handleRunLoopResponse(
   response: unknown,
@@ -53,34 +53,42 @@ export function handleRunLoopResponse(
   }
 
   // Error case: route 409 conflict responses by discriminant
-  if (!(response instanceof ApiError) || response.status !== 409) {
-    return;
+  if (response instanceof ApiError && response.status === 409) {
+    // ApiError.data is the raw ApiResult: { success: false, error: string, data: ConflictBody }
+    const apiResult = response.data as
+      | {
+          data?:
+            | ComputeTargetConflictBody
+            | BackendMismatchBody
+            | LoopAlreadyActiveBody;
+        }
+      | undefined;
+    const conflictBody = apiResult?.data;
+
+    if (conflictBody?.error === "loop_already_active") {
+      callbacks.onLoopAlreadyActive?.(conflictBody as LoopAlreadyActiveBody);
+      return;
+    }
+    if (conflictBody?.error === "multiple_targets") {
+      callbacks.onMultipleTargets(conflictBody as ComputeTargetConflictBody);
+      return;
+    }
+    if (conflictBody?.error === "backend_mismatch") {
+      callbacks.onBackendMismatch(conflictBody as BackendMismatchBody);
+      return;
+    }
   }
 
-  // ApiError.data is the raw ApiResult: { success: false, error: string, data: ConflictBody }
-  const apiResult = response.data as
-    | {
-        data?:
-          | ComputeTargetConflictBody
-          | BackendMismatchBody
-          | LoopAlreadyActiveBody;
-      }
-    | undefined;
-  const conflictBody = apiResult?.data;
-
-  if (!conflictBody) {
-    return;
-  }
-
-  if (conflictBody.error === "loop_already_active") {
-    callbacks.onLoopAlreadyActive?.(conflictBody as LoopAlreadyActiveBody);
-  } else if (conflictBody.error === "multiple_targets") {
-    callbacks.onMultipleTargets(conflictBody as ComputeTargetConflictBody);
-  } else if (conflictBody.error === "backend_mismatch") {
-    callbacks.onBackendMismatch(conflictBody as BackendMismatchBody);
-  }
+  toast.error(getErrorMessage(response));
 }
 
 function isCreateLoopResponse(value: unknown): value is CreateLoopResponse {
   return createLoopResponseSchema.safeParse(value).success;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) {
+    return error.message;
+  }
+  return "An unexpected error occurred";
 }
