@@ -1,4 +1,7 @@
-import type { GenerationStatus } from "@repo/api/src/types/document";
+import {
+  type GenerationStatus,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/document";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 export function getStatusMessage(
@@ -97,4 +100,42 @@ function getFailureMessage(command: GenerationStatus["command"]): string {
     default:
       return "Generation failed";
   }
+}
+
+/**
+ * Per-command disabled predicate for run-loop menu items.
+ *
+ * Returns true (disabled) when:
+ * - The generation-status poll reports an active loop matching `targetCommand`, OR
+ * - The generation-status fetch is still loading (`isLoading`), OR
+ * - A local mutation is pending (`localMutationPending`).
+ *
+ * Unrelated commands (active loop for command A does NOT disable command B).
+ */
+export function isCommandDisabled(opts: {
+  generationStatus: GenerationStatus | undefined;
+  isLoading: boolean;
+  targetCommand: GenerationStatus["command"];
+  localMutationPending: boolean;
+}): boolean {
+  const { generationStatus, isLoading, targetCommand, localMutationPending } =
+    opts;
+
+  if (localMutationPending) {
+    return true;
+  }
+
+  if (isLoading) {
+    return true;
+  }
+
+  if (
+    generationStatus &&
+    generationStatus.command === targetCommand &&
+    isActiveGenerationStatus(generationStatus.status)
+  ) {
+    return true;
+  }
+
+  return false;
 }

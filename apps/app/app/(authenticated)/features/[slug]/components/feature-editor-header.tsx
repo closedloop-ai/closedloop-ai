@@ -1,6 +1,9 @@
 "use client";
 
-import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
+import type {
+  DocumentWithWorkstream,
+  GenerationStatus,
+} from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -22,6 +25,7 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
+import { isCommandDisabled } from "@/lib/generation-status-utils";
 
 type FeatureEditorHeaderProps = {
   feature: DocumentWithWorkstream;
@@ -29,6 +33,8 @@ type FeatureEditorHeaderProps = {
   hasPlan: boolean;
   isReady: boolean;
   isEvaluating?: boolean;
+  generationStatus?: GenerationStatus;
+  generationStatusLoading?: boolean;
   onToggleMetadataPanel: () => void;
   onGeneratePlan: () => void;
   onStartBuild: () => void;
@@ -43,6 +49,8 @@ export function FeatureEditorHeader({
   hasPlan,
   isReady,
   isEvaluating = false,
+  generationStatus,
+  generationStatusLoading = false,
   onToggleMetadataPanel,
   onGeneratePlan,
   onStartBuild,
@@ -81,18 +89,43 @@ export function FeatureEditorHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            disabled={!isReady || hasPlan}
+            disabled={
+              !isReady ||
+              hasPlan ||
+              isCommandDisabled({
+                generationStatus,
+                isLoading: generationStatusLoading,
+                targetCommand: "plan",
+                localMutationPending: false,
+              })
+            }
             onClick={() => onGeneratePlan()}
           >
             <SparklesIcon className="h-4 w-4" />
             Generate Plan
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={!hasPlan} onClick={() => onStartBuild()}>
+          <DropdownMenuItem
+            disabled={
+              !hasPlan ||
+              isCommandDisabled({
+                generationStatus,
+                isLoading: generationStatusLoading,
+                targetCommand: "execute",
+                localMutationPending: false,
+              })
+            }
+            onClick={() => onStartBuild()}
+          >
             <PlayIcon className="h-4 w-4" />
             Start Building
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={isEvaluating}
+            disabled={isCommandDisabled({
+              generationStatus,
+              isLoading: generationStatusLoading,
+              targetCommand: "evaluate_feature",
+              localMutationPending: isEvaluating,
+            })}
             onClick={() => onEvaluateFeature()}
           >
             <GaugeIcon className="h-4 w-4" />

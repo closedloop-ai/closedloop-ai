@@ -117,6 +117,92 @@ describe("handleRunLoopResponse — 429 rate limit", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 409 loop_already_active branch
+// ---------------------------------------------------------------------------
+
+describe("handleRunLoopResponse — 409 loop_already_active", () => {
+  const makeLoopAlreadyActiveBody = () =>
+    wrapInApiResult({
+      error: "loop_already_active" as const,
+      loopId: "loop-existing-456",
+      command: "EVALUATE_FEATURE",
+      status: "RUNNING",
+    });
+
+  it("calls onLoopAlreadyActive with the payload when error is loop_already_active", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      makeLoopAlreadyActiveBody()
+    );
+    const onLoopAlreadyActive = vi.fn();
+    const callbacks = {
+      onMultipleTargets: vi.fn(),
+      onBackendMismatch: vi.fn(),
+      onLoopAlreadyActive,
+      onSuccess: vi.fn(),
+      onRateLimited: vi.fn(),
+    };
+
+    handleRunLoopResponse(error, callbacks);
+
+    expect(onLoopAlreadyActive).toHaveBeenCalledOnce();
+    expect(onLoopAlreadyActive).toHaveBeenCalledWith({
+      error: "loop_already_active",
+      loopId: "loop-existing-456",
+      command: "EVALUATE_FEATURE",
+      status: "RUNNING",
+    });
+    expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
+    expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when onLoopAlreadyActive is omitted and error is loop_already_active", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      makeLoopAlreadyActiveBody()
+    );
+    const callbacks = {
+      onMultipleTargets: vi.fn(),
+      onBackendMismatch: vi.fn(),
+      onSuccess: vi.fn(),
+      // onLoopAlreadyActive intentionally omitted
+    };
+
+    expect(() => handleRunLoopResponse(error, callbacks)).not.toThrow();
+    expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
+    expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call onLoopAlreadyActive for other 409 discriminants", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      makeMultipleTargetsBody()
+    );
+    const onLoopAlreadyActive = vi.fn();
+    const callbacks = {
+      onMultipleTargets: vi.fn(),
+      onBackendMismatch: vi.fn(),
+      onLoopAlreadyActive,
+      onSuccess: vi.fn(),
+      onRateLimited: vi.fn(),
+    };
+
+    handleRunLoopResponse(error, callbacks);
+
+    expect(onLoopAlreadyActive).not.toHaveBeenCalled();
+    expect(callbacks.onMultipleTargets).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 409 conflict routing — non-regression
 // ---------------------------------------------------------------------------
 

@@ -7,11 +7,13 @@ import type {
 import type {
   AdditionalRepoRef,
   CreateLoopRequest,
+  LoopAlreadyActiveBody,
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRunLoop } from "@/hooks/queries/use-loops";
+import { getCommandLabels } from "@/lib/loop-display";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
@@ -109,6 +111,17 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
       onMultipleTargets: (conflict) =>
         setMultiTargetState({ availableTargets: conflict.availableTargets }),
       onBackendMismatch: (body) => setBackendMismatchState(body),
+      onLoopAlreadyActive: (payload: LoopAlreadyActiveBody) => {
+        const label = getCommandLabels(payload.command).noun;
+        toast.error(`${label} is already running on this document`, {
+          action: {
+            label: "View Loop",
+            onClick: () => {
+              globalThis.window?.location.assign(`/loops/${payload.loopId}`);
+            },
+          },
+        });
+      },
       onSuccess: () => {
         // unreachable: error handlers only receive thrown errors
       },

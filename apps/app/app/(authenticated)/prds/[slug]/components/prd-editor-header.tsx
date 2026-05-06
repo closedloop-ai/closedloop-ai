@@ -4,6 +4,7 @@ import { useFeatureFlag } from "@repo/analytics/client";
 import {
   DocumentType,
   type DocumentWithWorkstream,
+  type GenerationStatus,
 } from "@repo/api/src/types/document";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -30,6 +31,7 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
+import { isCommandDisabled } from "@/lib/generation-status-utils";
 import { DOCUMENT_TYPE_ICONS } from "@/lib/project-constants";
 
 type PRDEditorHeaderProps = {
@@ -44,6 +46,8 @@ type PRDEditorHeaderProps = {
   isGenerating?: boolean;
   isEvaluating?: boolean;
   isRequestingChanges?: boolean;
+  generationStatus?: GenerationStatus;
+  generationStatusLoading?: boolean;
   onRename: () => void;
   onExport: () => void;
   onMove: () => void;
@@ -65,6 +69,8 @@ export function PRDEditorHeader({
   isGenerating = false,
   isEvaluating = false,
   isRequestingChanges = false,
+  generationStatus,
+  generationStatusLoading = false,
   onRename,
   onExport,
   onMove,
@@ -138,7 +144,7 @@ export function PRDEditorHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            disabled={isGenerating}
+            disabled={isGenerating || generationStatusLoading}
             onClick={() => onGeneratePrd()}
           >
             <PrdIcon className="h-4 w-4" />
@@ -149,7 +155,12 @@ export function PRDEditorHeader({
             Decompose into Features
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={isEvaluating}
+            disabled={isCommandDisabled({
+              generationStatus,
+              isLoading: generationStatusLoading,
+              targetCommand: "evaluate_prd",
+              localMutationPending: isEvaluating,
+            })}
             onClick={() => onEvaluatePrd()}
           >
             <GaugeIcon className="h-4 w-4" />
@@ -161,7 +172,12 @@ export function PRDEditorHeader({
           </DropdownMenuItem>
           {requestChangesFlag?.enabled && (
             <DropdownMenuItem
-              disabled={isGenerating || isRequestingChanges}
+              disabled={isCommandDisabled({
+                generationStatus,
+                isLoading: generationStatusLoading,
+                targetCommand: "request_prd_changes",
+                localMutationPending: isGenerating || isRequestingChanges,
+              })}
               onClick={() => onRequestChanges()}
             >
               <MessageSquareIcon className="h-4 w-4" />

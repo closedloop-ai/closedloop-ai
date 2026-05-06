@@ -302,6 +302,49 @@ describe("useDocumentRunLoop", () => {
     });
   });
 
+  describe("routeConflictError — loop_already_active toast", () => {
+    test("displays toast with command label and deep link for loop_already_active 409", async () => {
+      const { handleRunLoopResponse } = vi.mocked(
+        await import("@/lib/run-loop-response")
+      );
+
+      // Capture the callbacks passed to handleRunLoopResponse when routeConflictError fires
+      handleRunLoopResponse.mockImplementationOnce((_error, callbacks) => {
+        // Simulate the loop_already_active branch
+        callbacks.onLoopAlreadyActive?.({
+          error: "loop_already_active",
+          loopId: "loop-existing-999",
+          command: "EVALUATE_FEATURE",
+          status: "RUNNING",
+        });
+      });
+
+      const { toast } = vi.mocked(
+        await import("@repo/design-system/components/ui/sonner")
+      );
+
+      const { result } = renderHook(
+        () => useDocumentRunLoop({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.routeConflictError(new Error("test"));
+      });
+
+      expect(toast.error).toHaveBeenCalledOnce();
+      expect(toast.error).toHaveBeenCalledWith(
+        "Feature eval is already running on this document",
+        expect.objectContaining({
+          action: expect.objectContaining({
+            label: "View Loop",
+            onClick: expect.any(Function),
+          }),
+        })
+      );
+    });
+  });
+
   describe("makeRequestChangesHandler", () => {
     test("resolves false on unmount when mutation callbacks do not fire", async () => {
       mockMutate.mockImplementationOnce(() => {

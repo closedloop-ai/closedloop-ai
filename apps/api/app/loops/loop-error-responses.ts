@@ -1,5 +1,9 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import type { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import type {
+  LoopAlreadyActiveBody,
+  LoopCommand,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/route-utils";
 import {
@@ -10,12 +14,7 @@ import {
   isUnauthorizedRepoError,
 } from "./loop-errors";
 
-export type LoopAlreadyActiveBody = {
-  error: "loop_already_active";
-  loopId: string;
-  command: LoopCommand;
-  status: LoopStatus;
-};
+export type { LoopAlreadyActiveBody } from "@repo/api/src/types/loop";
 
 /**
  * Build the 409 "loop already active" response. The body extends ApiResult

@@ -293,6 +293,7 @@ export function useRunLoop() {
   const apiClient = useApiClient();
 
   return useMutation({
+    meta: { suppressDefaultErrorToast: true },
     mutationFn: async ({
       documentId,
       command,

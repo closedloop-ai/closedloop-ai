@@ -2,7 +2,10 @@ import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import type {
+  CreateLoopResponse,
+  LoopAlreadyActiveBody,
+} from "@repo/api/src/types/loop";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
@@ -15,6 +18,7 @@ const createLoopResponseSchema = z.object({
 type RunLoopResponseCallbacks = {
   onMultipleTargets: (targets: ComputeTargetConflictBody) => void;
   onBackendMismatch: (body: BackendMismatchBody) => void;
+  onLoopAlreadyActive?: (payload: LoopAlreadyActiveBody) => void;
   onSuccess: (response: CreateLoopResponse) => void;
   onRateLimited?: (message: string) => void;
 };
@@ -55,7 +59,12 @@ export function handleRunLoopResponse(
 
   // ApiError.data is the raw ApiResult: { success: false, error: string, data: ConflictBody }
   const apiResult = response.data as
-    | { data?: ComputeTargetConflictBody | BackendMismatchBody }
+    | {
+        data?:
+          | ComputeTargetConflictBody
+          | BackendMismatchBody
+          | LoopAlreadyActiveBody;
+      }
     | undefined;
   const conflictBody = apiResult?.data;
 
@@ -63,7 +72,9 @@ export function handleRunLoopResponse(
     return;
   }
 
-  if (conflictBody.error === "multiple_targets") {
+  if (conflictBody.error === "loop_already_active") {
+    callbacks.onLoopAlreadyActive?.(conflictBody as LoopAlreadyActiveBody);
+  } else if (conflictBody.error === "multiple_targets") {
     callbacks.onMultipleTargets(conflictBody as ComputeTargetConflictBody);
   } else if (conflictBody.error === "backend_mismatch") {
     callbacks.onBackendMismatch(conflictBody as BackendMismatchBody);

@@ -52,7 +52,17 @@ function makeQueryClient() {
       },
       mutations: {
         retry: false,
-        onError: (error) => {
+        onError: (error, _variables, _onMutateResult, mutation) => {
+          if (
+            mutation &&
+            (
+              mutation.meta as
+                | { suppressDefaultErrorToast?: boolean }
+                | undefined
+            )?.suppressDefaultErrorToast === true
+          ) {
+            return;
+          }
           const message = getErrorMessage(error);
           toast.error(message);
         },
