@@ -1,14 +1,6 @@
 import { LinkType } from "@repo/api/src/types/artifact";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const loopContract = vi.hoisted(() => ({
-  LoopCommand: {
-    Plan: "PLAN",
-  },
-  LoopStatus: {
-    Running: "RUNNING",
-  },
-}));
 
 const mocks = vi.hoisted(() => ({
   artifactFindFirst: vi.fn(),
@@ -21,12 +13,8 @@ const mocks = vi.hoisted(() => ({
   withDbTx: vi.fn(),
 }));
 
-vi.mock("@repo/api/src/types/loop", () => loopContract);
-
 vi.mock("@repo/database", () => ({
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-  },
+  ArtifactType: { DOCUMENT: "DOCUMENT" },
   withDb: Object.assign(mocks.withDb, { tx: mocks.withDbTx }),
 }));
 
@@ -35,49 +23,12 @@ vi.mock("@repo/github", () => ({
 }));
 
 vi.mock("@/app/artifact-links/service", () => ({
-  artifactLinksService: {
-    findTargetLinks: mocks.findTargetLinks,
-  },
+  artifactLinksService: { findTargetLinks: mocks.findTargetLinks },
 }));
 
-vi.mock("@/app/loops/service", () => {
-  class LoopAlreadyActiveError extends Error {
-    readonly existingCommand: string;
-    readonly existingLoopId: string;
-    readonly existingStatus: string;
-
-    constructor(
-      existingLoopId: string,
-      existingCommand: string,
-      existingStatus: string
-    ) {
-      super(
-        `A ${existingCommand} loop is already active (id: ${existingLoopId}, status: ${existingStatus}).`
-      );
-      this.name = "LoopAlreadyActiveError";
-      this.existingLoopId = existingLoopId;
-      this.existingCommand = existingCommand;
-      this.existingStatus = existingStatus;
-    }
-  }
-
-  return {
-    LoopAlreadyActiveError,
-    loopsService: {
-      findOperationallyActiveLoop: mocks.findOperationallyActiveLoop,
-    },
-  };
-});
-
-vi.mock("@/app/documents/document-service", () => ({
-  createDocumentRecord: vi.fn(),
-  findInstallationRepoId: vi.fn(),
-  getCommitterInfo: vi.fn(),
-}));
-
-vi.mock("@/app/documents/document-version-service", () => ({
-  documentVersionService: {
-    getLatest: vi.fn(),
+vi.mock("@/app/loops/service", () => ({
+  loopsService: {
+    findOperationallyActiveLoop: mocks.findOperationallyActiveLoop,
   },
 }));
 
@@ -88,22 +39,11 @@ vi.mock("@/app/documents/generation-service", () => ({
   },
 }));
 
-vi.mock("@/app/documents/room-utils", () => ({
-  createDocumentRoom: vi.fn(),
-}));
-
-vi.mock("@/app/documents/workstream-service", () => ({
-  documentWorkstreamService: {
-    findOrCreateWorkstream: vi.fn(),
-  },
-}));
-
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import { documentGenerationService } from "@/app/documents/generation-service";
-import { LoopAlreadyActiveError, loopsService } from "@/app/loops/service";
-
-const { LoopCommand, LoopStatus } = loopContract;
+import { LoopAlreadyActiveError } from "@/app/loops/loop-errors";
+import { loopsService } from "@/app/loops/service";
 
 const ORGANIZATION_ID = "org-1";
 const USER_ID = "user-1";
@@ -115,24 +55,6 @@ const REQUEST_COMPUTE_TARGET_ID = "target-request";
 const OTHER_COMPUTE_TARGET_ID = "target-other";
 const LOCAL_REPO_PATH = "/tmp/current-repo";
 const EXISTING_LOCAL_REPO_PATH = "/tmp/existing-repo";
-
-type MockDb = {
-  artifact: {
-    findFirst: typeof mocks.artifactFindFirst;
-    findMany: typeof mocks.artifactFindMany;
-    findUnique: typeof mocks.artifactFindUnique;
-  };
-};
-
-function buildMockDb(): MockDb {
-  return {
-    artifact: {
-      findFirst: mocks.artifactFindFirst,
-      findMany: mocks.artifactFindMany,
-      findUnique: mocks.artifactFindUnique,
-    },
-  };
-}
 
 function buildActivePlanLoop(computeTargetId: string | null) {
   return {
@@ -160,8 +82,14 @@ describe("documentExecutionService.startPlanLoopFromLocal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    mocks.withDb.mockImplementation((callback: (db: MockDb) => unknown) =>
-      callback(buildMockDb())
+    mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findFirst: mocks.artifactFindFirst,
+          findMany: mocks.artifactFindMany,
+          findUnique: mocks.artifactFindUnique,
+        },
+      })
     );
     mocks.artifactFindFirst.mockResolvedValue({
       id: FEATURE_ID,
@@ -207,7 +135,7 @@ describe("documentExecutionService.startPlanLoopFromLocal", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("returns a compatible conflict for an active plan loop on a different compute target", async () => {
+  it("throws LoopAlreadyActiveError for an active plan loop on a different compute target", async () => {
     mocks.findOperationallyActiveLoop.mockResolvedValue(
       buildActivePlanLoop(OTHER_COMPUTE_TARGET_ID)
     );

@@ -1,21 +1,17 @@
 /**
- * Unit tests for the two-tier active-loop lookups (S1):
+ * Unit tests for `loopsService.findOperationallyActiveLoop` — UX-facing
+ * predicate. Excludes orphan-shaped rows so silently-failed dispatches do not
+ * block retries.
  *
- *   - `loopsService.findOperationallyActiveLoop` — UX-facing predicate. Excludes
- *     orphan-shaped rows so silently-failed dispatches do not block retries.
+ *   RUNNING                                → blocks
+ *   CLAIMED with containerId               → blocks
+ *   CLAIMED with null containerId          → never blocks
+ *   PENDING with null containerId, < 30s   → blocks
+ *   PENDING with null containerId, > 30s   → does not block
+ *   PENDING with non-null containerId      → does not block
  *
- *       RUNNING                                → blocks
- *       CLAIMED with containerId               → blocks
- *       CLAIMED with null containerId          → never blocks
- *       PENDING with null containerId, < 30s   → blocks
- *       PENDING with null containerId, > 30s   → does not block
- *       PENDING with non-null containerId      → does not block
- *
- *   - `loopsService.findIndexBlockingLoop` — mirrors the Phase 1 app-level
- *     active-loop invariant on (artifact_id, command). By construction a strict
- *     superset of the operational predicate. Used by the post-P2002 catch path
- *     to surface a structured 409 from the live partial unique index
- *     `loops_active_artifact_command_version_key` until Phase 2 widens it.
+ * The broader index-blocking query used by the P2002 catch path is exercised
+ * indirectly via `loops-service-concurrent-limit.test.ts > P2002 backstop`.
  */
 
 import { vi } from "vitest";
@@ -61,10 +57,6 @@ const ARTIFACT_ID = "artifact-1";
 
 function callOperational(command: LoopCommand = LoopCommand.Plan) {
   return loopsService.findOperationallyActiveLoop(ARTIFACT_ID, command, ORG_ID);
-}
-
-function callIndexBlocking(command: LoopCommand = LoopCommand.Plan) {
-  return loopsService.findIndexBlockingLoop(ARTIFACT_ID, command, ORG_ID);
 }
 
 describe("loopsService.findOperationallyActiveLoop", () => {
@@ -124,36 +116,6 @@ describe("loopsService.findOperationallyActiveLoop", () => {
           }),
         ])
       );
-    });
-  });
-});
-
-describe("loopsService.findIndexBlockingLoop", () => {
-  beforeEach(() => resetLoopsServiceHandles(handles));
-
-  describe("query shape — mirrors the partial unique index", () => {
-    it("uses status IN [PENDING, CLAIMED, RUNNING] with no staleness filter", async () => {
-      await callIndexBlocking(LoopCommand.Execute);
-
-      const arg = handles.loopFindFirst.mock.calls[0][0] as {
-        where: Record<string, unknown>;
-      };
-      expect(arg.where).toMatchObject({
-        artifactId: ARTIFACT_ID,
-        command: LoopCommand.Execute,
-        organizationId: ORG_ID,
-        status: {
-          in: expect.arrayContaining([
-            LoopStatus.Pending,
-            LoopStatus.Claimed,
-            LoopStatus.Running,
-          ]),
-        },
-      });
-      // Critical: no staleness filter, no OR for orphan exclusion.
-      expect(arg.where).not.toHaveProperty("OR");
-      expect(arg.where).not.toHaveProperty("createdAt");
-      expect(arg.where).not.toHaveProperty("containerId");
     });
   });
 });

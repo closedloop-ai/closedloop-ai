@@ -59,6 +59,9 @@ vi.mock("@/app/loops/service", () => ({
     cancel: vi.fn(),
     create: vi.fn(),
   },
+}));
+
+vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: vi.fn().mockReturnValue(false),
   InvalidStatusTransitionError: class extends Error {},
 }));

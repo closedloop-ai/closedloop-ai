@@ -9,7 +9,8 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { ArtifactType, withDb } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
 import { artifactLinksService } from "../artifact-links/service";
-import { LoopAlreadyActiveError, loopsService } from "../loops/service";
+import { LoopAlreadyActiveError } from "../loops/loop-errors";
+import { loopsService } from "../loops/service";
 import {
   createDocumentRecord,
   findInstallationRepoId,

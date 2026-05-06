@@ -42,9 +42,8 @@ import {
   isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
-  loopsService,
-  resolveOrgLoopLimit,
-} from "@/app/loops/service";
+} from "@/app/loops/loop-errors";
+import { loopsService, resolveOrgLoopLimit } from "@/app/loops/service";
 import { buildPrismaLoop } from "../fixtures/loop";
 import { makeP2002Error } from "../fixtures/prisma-errors";
 

@@ -56,104 +56,15 @@ export async function fetchOrgLoopLimit(
   return resolveOrgLoopLimit(org?.settings);
 }
 
-export class ReplayDetectedError extends Error {
-  constructor(message = "Replay detected") {
-    super(message);
-    this.name = "ReplayDetectedError";
-  }
-}
-
-export function isReplayDetectedError(
-  error: unknown
-): error is ReplayDetectedError {
-  return error instanceof ReplayDetectedError;
-}
-
-export class InvalidStatusTransitionError extends Error {
-  readonly from: string;
-  readonly to: string;
-  constructor(from: string, to: string) {
-    super(`Invalid status transition: ${from} → ${to}`);
-    this.name = "InvalidStatusTransitionError";
-    this.from = from;
-    this.to = to;
-  }
-}
-
-export function isInvalidStatusTransitionError(
-  error: unknown
-): error is InvalidStatusTransitionError {
-  return error instanceof InvalidStatusTransitionError;
-}
-
-export class ConcurrentLoopLimitError extends Error {
-  readonly activeCount: number;
-  readonly limit: number;
-  constructor(activeCount: number, limit: number) {
-    super(
-      "Too many active loops (" +
-        activeCount +
-        "). " +
-        "Maximum " +
-        limit +
-        " concurrent loops allowed. " +
-        "Wait for existing loops to complete or cancel them."
-    );
-    this.name = "ConcurrentLoopLimitError";
-    this.activeCount = activeCount;
-    this.limit = limit;
-  }
-}
-
-export function isConcurrentLoopLimitError(
-  error: unknown
-): error is ConcurrentLoopLimitError {
-  return error instanceof ConcurrentLoopLimitError;
-}
-
-export class LoopAlreadyActiveError extends Error {
-  readonly existingLoopId: string;
-  readonly existingCommand: LoopCommand;
-  readonly existingStatus: LoopStatus;
-  constructor(
-    existingLoopId: string,
-    existingCommand: LoopCommand,
-    existingStatus: LoopStatus
-  ) {
-    super(
-      `A ${existingCommand} loop is already active (id: ${existingLoopId}, status: ${existingStatus}). ` +
-        "Cancel or wait for the existing loop to complete before starting a new one."
-    );
-    this.name = "LoopAlreadyActiveError";
-    this.existingLoopId = existingLoopId;
-    this.existingCommand = existingCommand;
-    this.existingStatus = existingStatus;
-  }
-}
-
-export function isLoopAlreadyActiveError(
-  error: unknown
-): error is LoopAlreadyActiveError {
-  return error instanceof LoopAlreadyActiveError;
-}
-
-export class NestedManualLoopError extends Error {
-  constructor(documentId: string) {
-    super(
-      "Cannot create a manual loop while a platform-managed loop is already " +
-        "running for this document (" +
-        documentId +
-        "). Wait for the existing loop to complete or cancel it first."
-    );
-    this.name = "NestedManualLoopError";
-  }
-}
-
-export function isNestedManualLoopError(
-  error: unknown
-): error is NestedManualLoopError {
-  return error instanceof NestedManualLoopError;
-}
+import {
+  BranchNotFoundError,
+  ConcurrentLoopLimitError,
+  InvalidStatusTransitionError,
+  LoopAlreadyActiveError,
+  NestedManualLoopError,
+  ReplayDetectedError,
+  UnauthorizedRepoError,
+} from "./loop-errors";
 
 /**
  * Valid status transitions for loops.
@@ -231,145 +142,84 @@ const ACTIVE_LOOP_STATUSES: LoopStatus[] = [
 const STALE_PENDING_THRESHOLD_MS = 30_000;
 
 const PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE = "P2002";
-const LOOP_ACTIVE_INDEX_DB_FIELDS = [
+/** Camel-case field names emitted by Prisma's `error.meta.target` array. */
+const LOOP_ACTIVE_INDEX_TARGET_FIELDS = new Set([
+  "artifactId",
+  "command",
+  "artifactVersion",
+]);
+/** Snake-case column names emitted by the pg driver-adapter. */
+const LOOP_ACTIVE_INDEX_DB_FIELDS = new Set([
   "artifact_id",
   "command",
   "artifact_version",
-] as const;
-const LOOP_ACTIVE_INDEX_FIELD_ALIASES = new Map<string, string>([
-  ["artifact_id", "artifact_id"],
-  ["artifactId", "artifact_id"],
-  ["command", "command"],
-  ["artifact_version", "artifact_version"],
-  ["artifactVersion", "artifact_version"],
 ]);
-const LOOP_ACTIVE_INDEX_FIELD_SET = new Set<string>(
-  LOOP_ACTIVE_INDEX_DB_FIELDS
-);
-const FIELD_LIST_PARENS_REGEX = /\(([^)]+)\)/;
-const FIELD_NAME_QUOTES_REGEX = /^[`"']|[`"']$/g;
-const MAX_ERROR_METADATA_SCAN_DEPTH = 6;
-const ERROR_METADATA_SCAN_KEYS = [
-  "meta",
-  "target",
-  "fields",
-  "constraint",
-  "index",
-  "constraintName",
-  "constraint_name",
-  "driverAdapterError",
-  "cause",
-  "detail",
-  "message",
-  "originalMessage",
-] as const;
-const stringArraySchema = z.array(z.string());
+
+const prismaErrorMetaSchema = z
+  .object({
+    target: z.union([z.string(), z.array(z.string())]).optional(),
+    driverAdapterError: z
+      .object({
+        cause: z
+          .object({
+            constraint: z
+              .object({
+                index: z.string().optional(),
+                fields: z.array(z.string()).optional(),
+              })
+              .optional(),
+          })
+          .optional(),
+      })
+      .optional(),
+  })
+  .optional();
+
+function fieldsMatch(values: string[], expected: Set<string>): boolean {
+  return (
+    values.length === expected.size && values.every((v) => expected.has(v))
+  );
+}
 
 /** Checks for Prisma's `P2002` (unique constraint) error code. */
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   return getPrismaErrorCode(error) === PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE;
 }
 
-function isObjectLike(value: unknown): value is object {
-  return (
-    (typeof value === "object" && value !== null) || typeof value === "function"
-  );
-}
-
-function normalizeLoopActiveIndexField(field: string): string | null {
-  const normalized = field.trim().replace(FIELD_NAME_QUOTES_REGEX, "");
-  return LOOP_ACTIVE_INDEX_FIELD_ALIASES.get(normalized) ?? null;
-}
-
-function parseFieldListFromString(value: string): string[] | null {
-  const parenthesizedFields = FIELD_LIST_PARENS_REGEX.exec(value)?.[1];
-  const rawFieldList =
-    parenthesizedFields ?? (value.includes(",") ? value : null);
-  if (rawFieldList == null) {
-    return null;
-  }
-
-  const fields = rawFieldList
-    .split(",")
-    .map((field) => field.trim())
-    .filter((field) => field.length > 0);
-  return fields.length > 0 ? fields : null;
-}
-
-function isLoopActiveIndexFieldSet(fields: string[]): boolean {
-  const normalizedFields = fields.map(normalizeLoopActiveIndexField);
-  if (normalizedFields.some((field) => field == null)) {
-    return false;
-  }
-
-  const uniqueFields = new Set(normalizedFields);
-  return (
-    uniqueFields.size === LOOP_ACTIVE_INDEX_FIELD_SET.size &&
-    LOOP_ACTIVE_INDEX_DB_FIELDS.every((field) => uniqueFields.has(field))
-  );
-}
-
-function stringMatchesLoopActiveIndex(value: string): boolean {
-  if (value.includes(LOOP_ACTIVE_INDEX_NAME)) {
-    return true;
-  }
-
-  const fields = parseFieldListFromString(value);
-  return fields != null && isLoopActiveIndexFieldSet(fields);
-}
-
-function valueMatchesLoopActiveIndexMetadata(
-  value: unknown,
-  depth = 0,
-  seen = new Set<object>()
-): boolean {
-  if (depth > MAX_ERROR_METADATA_SCAN_DEPTH) {
-    return false;
-  }
-
-  if (typeof value === "string") {
-    return stringMatchesLoopActiveIndex(value);
-  }
-
-  const parsedStringArray = stringArraySchema.safeParse(value);
-  if (parsedStringArray.success) {
-    return (
-      parsedStringArray.data.includes(LOOP_ACTIVE_INDEX_NAME) ||
-      isLoopActiveIndexFieldSet(parsedStringArray.data)
-    );
-  }
-
-  if (!isObjectLike(value)) {
-    return false;
-  }
-
-  if (seen.has(value)) {
-    return false;
-  }
-  seen.add(value);
-
-  if (Array.isArray(value)) {
-    return value.some((item) =>
-      valueMatchesLoopActiveIndexMetadata(item, depth + 1, seen)
-    );
-  }
-
-  return ERROR_METADATA_SCAN_KEYS.some((key) => {
-    const child = Reflect.get(value, key);
-    return valueMatchesLoopActiveIndexMetadata(child, depth + 1, seen);
-  });
-}
-
 /**
  * True iff the error is a P2002 raised by the loops active-index. Other unique
  * constraints (loop_events idempotency, etc.) return false and pass through
- * unchanged.
+ * unchanged. Handles both shapes Prisma actually emits today:
+ *   - `meta.target`: index name (string) or camelCase field array
+ *   - `meta.driverAdapterError.cause.constraint.{index|fields}` (pg adapter)
  */
 function isLoopActiveIndexViolation(error: unknown): boolean {
   if (!isPrismaUniqueConstraintError(error)) {
     return false;
   }
-  return valueMatchesLoopActiveIndexMetadata(error);
+  const parsed = prismaErrorMetaSchema.safeParse(
+    Reflect.get(error as object, "meta")
+  );
+  if (!parsed.success || parsed.data == null) {
+    return false;
+  }
+  const { target, driverAdapterError } = parsed.data;
+
+  if (typeof target === "string") {
+    return target === LOOP_ACTIVE_INDEX_NAME;
+  }
+  if (Array.isArray(target)) {
+    return fieldsMatch(target, LOOP_ACTIVE_INDEX_TARGET_FIELDS);
+  }
+
+  const constraint = driverAdapterError?.cause?.constraint;
+  if (constraint?.index === LOOP_ACTIVE_INDEX_NAME) {
+    return true;
+  }
+  if (constraint?.fields) {
+    return fieldsMatch(constraint.fields, LOOP_ACTIVE_INDEX_DB_FIELDS);
+  }
+  return false;
 }
 
 /**
@@ -445,7 +295,7 @@ async function createLoopWithActiveGate<
       args.documentId != null &&
       isLoopActiveIndexViolation(error)
     ) {
-      const existingLoop = await loopsService.findIndexBlockingLoop(
+      const existingLoop = await findIndexBlockingLoop(
         args.documentId,
         args.command as LoopCommand,
         args.organizationId
@@ -456,6 +306,31 @@ async function createLoopWithActiveGate<
     }
     throw error;
   }
+}
+
+/**
+ * Mirrors the partial unique index — any loop the DB would refuse a duplicate
+ * of. Strictly broader than `findOperationallyActiveLoop` (no orphan exclusion)
+ * so a P2002 catch can always describe the colliding row, even when it's in
+ * one of the orphan-shaped subsets the operational predicate ignores.
+ */
+async function findIndexBlockingLoop(
+  documentId: string,
+  command: LoopCommand,
+  organizationId: string
+): Promise<Loop | null> {
+  const loop = await withDb((db) =>
+    db.loop.findFirst({
+      where: {
+        artifactId: documentId,
+        command,
+        organizationId,
+        status: { in: ACTIVE_LOOP_STATUSES },
+      },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+  return loop ? toLoop(loop) : null;
 }
 
 /**
@@ -1746,9 +1621,8 @@ export const loopsService = {
    *
    * Find a loop that, from the user's perspective, is currently doing work on
    * `(documentId, command)`. Used for the pre-insert gate and any UX-facing
-   * "is a loop running?" question. Strictly narrower than `findIndexBlockingLoop`
-   * — orphan-shaped rows are excluded so a silently-failed dispatch does not
-   * permanently block retries.
+   * "is a loop running?" question. Orphan-shaped rows are excluded so a
+   * silently-failed dispatch does not permanently block retries.
    *
    * Staleness rules:
    * - RUNNING always blocks
@@ -1782,42 +1656,6 @@ export const loopsService = {
               createdAt: { gte: stalenessThreshold },
             },
           ],
-        },
-        orderBy: { createdAt: "desc" },
-      })
-    );
-
-    if (!loop) {
-      return null;
-    }
-
-    return toLoop(loop);
-  },
-
-  /**
-   * **Index-blocking tier** (per S1).
-   *
-   * Find any loop the partial unique index would refuse a duplicate of. The
-   * Phase 1 app-level gate is broader (artifact_id, command); the live DB index
-   * is narrower (artifact_id, command, artifact_version). This query reflects
-   * the app-level invariant — by construction a superset of
-   * `findOperationallyActiveLoop` — and is used by the post-P2002 catch path so
-   * a structured 409 can always describe what the DB rejected on, even when the
-   * colliding row falls into one of the orphan-shaped subsets the operational
-   * predicate ignores.
-   */
-  async findIndexBlockingLoop(
-    documentId: string,
-    command: LoopCommand,
-    organizationId: string
-  ): Promise<Loop | null> {
-    const loop = await withDb((db) =>
-      db.loop.findFirst({
-        where: {
-          artifactId: documentId,
-          command,
-          organizationId,
-          status: { in: ACTIVE_LOOP_STATUSES },
         },
         orderBy: { createdAt: "desc" },
       })
@@ -1982,40 +1820,6 @@ function _findPrimaryRepoPr(
   }
 
   return prs.find((pr) => pr.repoFullName === loop.repo?.fullName) ?? null;
-}
-
-export class UnauthorizedRepoError extends Error {
-  readonly unauthorizedRepos: string[];
-  constructor(unauthorizedRepos: string[]) {
-    super(
-      `GitHub App installation does not have access to the following repositories: ${unauthorizedRepos.join(", ")}`
-    );
-    this.name = "UnauthorizedRepoError";
-    this.unauthorizedRepos = unauthorizedRepos;
-  }
-}
-
-export function isUnauthorizedRepoError(
-  error: unknown
-): error is UnauthorizedRepoError {
-  return error instanceof UnauthorizedRepoError;
-}
-
-export class BranchNotFoundError extends Error {
-  readonly repoFullName: string;
-  readonly branch: string;
-  constructor(repoFullName: string, branch: string) {
-    super(`Branch "${branch}" does not exist in repository ${repoFullName}`);
-    this.name = "BranchNotFoundError";
-    this.repoFullName = repoFullName;
-    this.branch = branch;
-  }
-}
-
-export function isBranchNotFoundError(
-  error: unknown
-): error is BranchNotFoundError {
-  return error instanceof BranchNotFoundError;
 }
 
 /**

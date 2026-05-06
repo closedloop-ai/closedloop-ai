@@ -8,7 +8,7 @@ import {
   isLoopAlreadyActiveError,
   isNestedManualLoopError,
   isUnauthorizedRepoError,
-} from "./service";
+} from "./loop-errors";
 
 export type LoopAlreadyActiveBody = {
   error: "loop_already_active";

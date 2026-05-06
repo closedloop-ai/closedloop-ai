@@ -38,7 +38,7 @@ vi.mock("@/lib/loops/launch-plan-loop", () => {
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { documentExecutionService } from "@/app/documents/execution-service";
-import { LoopAlreadyActiveError } from "@/app/loops/service";
+import { LoopAlreadyActiveError } from "@/app/loops/loop-errors";
 import { POST } from "@/app/plans/start-loop-from-local/route";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
 import {

@@ -1,41 +1,6 @@
 /**
- * Shared dependency mocks for `loopsService` unit tests.
- *
- * Usage (per test file):
- *
- *   import { vi } from "vitest";
- *   import {
- *     databaseModuleMock,
- *     dbUtilsModuleMock,
- *     docPrServiceModuleMock,
- *     githubModuleMock,
- *     logModuleMock,
- *     resetLoopsServiceHandles,
- *     uploadedArtifactsModuleMock,
- *     type LoopsServiceHandles,
- *   } from "../fixtures/loops-service-mocks";
- *
- *   const handles = vi.hoisted<LoopsServiceHandles>(() => ({
- *     loopCreate: vi.fn(),
- *     loopCount: vi.fn(),
- *     loopFindFirst: vi.fn(),
- *     loopFindUnique: vi.fn(),
- *     loopUpdateMany: vi.fn(),
- *     orgFindUnique: vi.fn(),
- *   }));
- *
- *   vi.mock("@repo/database", () => databaseModuleMock(handles));
- *   vi.mock("@repo/github", githubModuleMock);
- *   vi.mock("@repo/observability/log", logModuleMock);
- *   vi.mock("@/lib/db-utils", dbUtilsModuleMock);
- *   vi.mock("@/app/documents/document-pull-request-service", docPrServiceModuleMock);
- *   vi.mock("@/lib/loops/uploaded-plan-artifacts", uploadedArtifactsModuleMock);
- *
- *   beforeEach(() => resetLoopsServiceHandles(handles));
- *
- * The factory functions are referenced lazily by vi.mock — by the time the
- * factory body runs, the import has resolved, so importing them works despite
- * vi.mock hoisting.
+ * Shared dependency mocks for `loopsService` unit tests. See
+ * `__tests__/unit/loops-service-concurrent-limit.test.ts` for canonical usage.
  */
 
 import { LoopStatus } from "@repo/api/src/types/loop";

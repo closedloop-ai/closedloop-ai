@@ -7,7 +7,8 @@
 
 import type { JsonObject } from "@repo/api/src/types/common";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { ConcurrentLoopLimitError, loopsService } from "@/app/loops/service";
+import { ConcurrentLoopLimitError } from "@/app/loops/loop-errors";
+import { loopsService } from "@/app/loops/service";
 import type { ComputeTargetError } from "./compute-target-resolver";
 import { resolveComputeTargetWithPreferences } from "./compute-target-resolver";
 import type { DispatchErrorCode } from "./loop-dispatch-utils";

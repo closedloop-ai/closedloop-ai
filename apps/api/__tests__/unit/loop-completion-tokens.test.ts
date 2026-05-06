@@ -57,6 +57,9 @@ vi.mock("@/app/loops/service", () => ({
     addEvent: vi.fn().mockResolvedValue(undefined),
     persistLaunchInfo: vi.fn(),
   },
+}));
+
+vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: mockIsInvalidStatusTransitionError,
 }));
 

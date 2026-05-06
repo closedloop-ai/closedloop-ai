@@ -63,14 +63,13 @@ import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import {
-  authorizeAdditionalRepos,
   BranchNotFoundError,
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
-  loopsService,
   NestedManualLoopError,
   UnauthorizedRepoError,
-} from "../service";
+} from "../loop-errors";
+import { authorizeAdditionalRepos, loopsService } from "../service";
 
 // Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;

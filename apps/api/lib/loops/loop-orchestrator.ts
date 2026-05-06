@@ -26,10 +26,8 @@ import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { getCommitterInfo } from "@/app/documents/document-service";
 import { githubService } from "@/app/integrations/github/service";
-import {
-  isInvalidStatusTransitionError,
-  loopsService,
-} from "@/app/loops/service";
+import { isInvalidStatusTransitionError } from "@/app/loops/loop-errors";
+import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { documentWhere } from "@/lib/artifact-adapters";
 import type {
