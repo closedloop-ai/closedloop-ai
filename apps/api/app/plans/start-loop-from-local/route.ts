@@ -11,6 +11,7 @@ import { z } from "zod";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import {
   handleLoopServiceError,
+  type LoopAlreadyActiveBody,
   loopAlreadyActiveResponse,
 } from "@/app/loops/loop-error-responses";
 import { repoSchema } from "@/app/loops/validators";
@@ -40,7 +41,9 @@ const bodySchema = z
   })
   .strict();
 
-export const POST = withAnyAuth<StartPlanLoopResponse>(
+type StartPlanLoopRouteResponse = StartPlanLoopResponse | LoopAlreadyActiveBody;
+
+export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
