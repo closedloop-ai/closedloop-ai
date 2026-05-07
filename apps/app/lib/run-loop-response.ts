@@ -1,3 +1,4 @@
+import type { ApiConflictBody } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
@@ -52,19 +53,16 @@ export function handleRunLoopResponse(
     return;
   }
 
-  // Error case: route 409 conflict responses by discriminant
+  // Error case: route 409 conflict responses by discriminant.
+  // The wire shape is `ApiConflictBody<F>` from @repo/api — a typed failure
+  // body shared between server and client.
   if (response instanceof ApiError && response.status === 409) {
-    // 409 conflict bodies extend ApiResult<never> with an extra `data` field
-    // carrying the conflict shape: { success: false, error, data: ConflictBody }.
-    // This is non-canonical (canonical ApiResult.failure has no data field), so
-    // the shape is described inline here rather than reusing ApiResult<T>.
     const apiResult = response.data as
-      | {
-          data?:
-            | ComputeTargetConflictBody
-            | BackendMismatchBody
-            | LoopAlreadyActiveBody;
-        }
+      | ApiConflictBody<
+          | ComputeTargetConflictBody
+          | BackendMismatchBody
+          | LoopAlreadyActiveBody
+        >
       | undefined;
     const conflictBody = apiResult?.data;
 

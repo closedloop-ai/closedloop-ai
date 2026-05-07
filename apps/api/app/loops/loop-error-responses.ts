@@ -1,4 +1,5 @@
 import type { ApiResult } from "@repo/api/src/types/common";
+import { conflictBody } from "@repo/api/src/types/common";
 import type {
   LoopAlreadyActiveBody,
   LoopCommand,
@@ -15,9 +16,11 @@ import {
 } from "./loop-errors";
 
 /**
- * Build the 409 "loop already active" response. The body extends ApiResult
- * with an extra `data` field (consumed by the frontend via ApiError.data.data).
- * Cast satisfies the ApiResult<never> return contract.
+ * Build the 409 "loop already active" response. Body is typed via
+ * `ApiConflictBody<LoopAlreadyActiveBody>` so the wire contract is shared
+ * with the frontend; the outer NextResponse is cast to `ApiResult<never>` to
+ * satisfy the standard auth-wrapper response contract (NextResponse is
+ * invariant in its body type).
  */
 export function loopAlreadyActiveResponse(args: {
   loopId: string;
@@ -31,10 +34,9 @@ export function loopAlreadyActiveResponse(args: {
     command: args.command,
     status: args.status,
   };
-  return NextResponse.json(
-    { success: false, error: args.message ?? body.error, data: body },
-    { status: 409 }
-  ) as NextResponse<ApiResult<never>>;
+  return NextResponse.json(conflictBody(args.message ?? body.error, body), {
+    status: 409,
+  }) as NextResponse<ApiResult<never>>;
 }
 
 /**
