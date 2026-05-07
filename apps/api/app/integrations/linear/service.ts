@@ -15,6 +15,10 @@ import {
 } from "@repo/linear";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import {
+  encryptTokenPair,
+  resolveIntegrationToken,
+} from "@/lib/integration-encryption";
 import { documentVersionService } from "../../documents/document-version-service";
 
 /**
@@ -74,14 +78,52 @@ async function ensureValidAccessToken(
   const needsRefresh =
     integration.tokenExpiresAt &&
     integration.tokenExpiresAt < new Date() &&
-    integration.refreshToken;
+    (integration.refreshTokenEncrypted ?? integration.refreshToken);
 
   if (!needsRefresh) {
-    return { success: true, accessToken: integration.accessToken };
+    // Prefer encrypted token on read, fall back to plaintext
+    let accessToken: string | null;
+    try {
+      accessToken = await resolveIntegrationToken(
+        integration.accessTokenEncrypted,
+        integration.accessToken
+      );
+    } catch (error) {
+      log.warn(`${logPrefix} Decryption failed, falling back to plaintext`, {
+        organizationId,
+        error: parseError(error),
+      });
+      accessToken = integration.accessToken;
+    }
+    return { success: true, accessToken: accessToken as string };
   }
 
   try {
-    const tokens = await refreshAccessToken(integration.refreshToken as string);
+    const rawRefreshToken = await resolveIntegrationToken(
+      integration.refreshTokenEncrypted,
+      integration.refreshToken as string
+    );
+
+    const tokens = await refreshAccessToken(rawRefreshToken as string);
+
+    let encryptedAccessToken: string | null = null;
+    let encryptedRefreshToken: string | null = null;
+    try {
+      const encrypted = await encryptTokenPair(
+        tokens.accessToken,
+        tokens.refreshToken
+      );
+      encryptedAccessToken = encrypted.encryptedAccessToken;
+      encryptedRefreshToken = encrypted.encryptedRefreshToken;
+    } catch (error) {
+      log.warn(
+        `${logPrefix} Failed to encrypt refreshed tokens, storing plaintext only`,
+        {
+          organizationId,
+          error: parseError(error),
+        }
+      );
+    }
 
     await withDb((db) =>
       db.linearIntegration.update({
@@ -89,6 +131,8 @@ async function ensureValidAccessToken(
         data: {
           accessToken: tokens.accessToken,
           refreshToken: tokens.refreshToken,
+          accessTokenEncrypted: encryptedAccessToken ?? undefined,
+          refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
           tokenExpiresAt: calculateTokenExpiration(tokens.expiresIn),
         },
       })
@@ -133,9 +177,30 @@ export const linearService = {
         redirectUri
       );
 
-      // Create client and get organization info
+      // Calculate token expiration
+      const tokenExpiresAt = calculateTokenExpiration(tokens.expiresIn);
+
+      // Get viewer info and encrypt tokens in parallel (independent operations)
       const client = createLinearClient(tokens.accessToken);
-      const linearOrg = await getViewer(client);
+      const [linearOrg, { encryptedAccessToken, encryptedRefreshToken }] =
+        await Promise.all([
+          getViewer(client),
+          encryptTokenPair(tokens.accessToken, tokens.refreshToken).catch(
+            (error) => {
+              log.warn(
+                "[linear/oauth] Failed to encrypt tokens, storing plaintext only",
+                {
+                  organizationId,
+                  error: parseError(error),
+                }
+              );
+              return {
+                encryptedAccessToken: null,
+                encryptedRefreshToken: null,
+              };
+            }
+          ),
+        ]);
 
       if (!linearOrg) {
         return {
@@ -143,9 +208,6 @@ export const linearService = {
           error: "Failed to get Linear organization info",
         };
       }
-
-      // Calculate token expiration
-      const tokenExpiresAt = calculateTokenExpiration(tokens.expiresIn);
 
       // Upsert the integration record
       await withDb((db) =>
@@ -155,6 +217,8 @@ export const linearService = {
             organizationId,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
+            accessTokenEncrypted: encryptedAccessToken ?? undefined,
+            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
@@ -162,6 +226,8 @@ export const linearService = {
           update: {
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
+            accessTokenEncrypted: encryptedAccessToken ?? undefined,
+            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
@@ -248,7 +314,13 @@ export const linearService = {
 
     // Revoke the token (best effort - don't fail if this errors)
     try {
-      await revokeToken(integration.accessToken);
+      // Prefer decrypted token; fall back to plaintext for backward compatibility
+      // accessToken is non-null: integration.accessToken is always a non-null DB field
+      const accessToken = await resolveIntegrationToken(
+        integration.accessTokenEncrypted,
+        integration.accessToken
+      );
+      await revokeToken(accessToken as string);
     } catch (error) {
       log.warn("[linear] Failed to revoke token during disconnect", {
         organizationId,

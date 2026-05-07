@@ -13,6 +13,10 @@ import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
 import { documentService } from "@/app/documents/document-service";
 import { projectsService } from "@/app/projects/service";
+import {
+  encryptTokenPair,
+  resolveIntegrationToken,
+} from "@/lib/integration-encryption";
 
 /**
  * Result types for service operations
@@ -62,14 +66,33 @@ export async function ensureValidAccessToken(
   const needsRefresh =
     integration.tokenExpiresAt &&
     integration.tokenExpiresAt < new Date() &&
-    integration.refreshToken;
+    (integration.refreshTokenEncrypted ?? integration.refreshToken);
 
   if (!needsRefresh) {
-    return { success: true, accessToken: integration.accessToken };
+    // Prefer encrypted token on read, fall back to plaintext
+    let accessToken: string | null;
+    try {
+      accessToken = await resolveIntegrationToken(
+        integration.accessTokenEncrypted,
+        integration.accessToken
+      );
+    } catch (error) {
+      log.warn(`${logPrefix} Decryption failed, falling back to plaintext`, {
+        organizationId,
+        error: parseError(error),
+      });
+      accessToken = integration.accessToken;
+    }
+    return { success: true, accessToken: accessToken as string };
   }
 
   try {
-    const tokens = await refreshAccessToken(integration.refreshToken as string);
+    const rawRefreshToken = await resolveIntegrationToken(
+      integration.refreshTokenEncrypted,
+      integration.refreshToken as string
+    );
+
+    const tokens = await refreshAccessToken(rawRefreshToken as string);
 
     const tokenExpiresAt = tokens.expiresIn
       ? new Date(Date.now() + tokens.expiresIn * 1000)
@@ -84,12 +107,33 @@ export async function ensureValidAccessToken(
       );
     }
 
+    let encryptedAccessToken: string | null = null;
+    let encryptedRefreshToken: string | null = null;
+    try {
+      const encrypted = await encryptTokenPair(
+        tokens.accessToken,
+        tokens.refreshToken
+      );
+      encryptedAccessToken = encrypted.encryptedAccessToken;
+      encryptedRefreshToken = encrypted.encryptedRefreshToken;
+    } catch (error) {
+      log.warn(
+        `${logPrefix} Failed to encrypt refreshed tokens, storing plaintext only`,
+        {
+          organizationId,
+          error: parseError(error),
+        }
+      );
+    }
+
     await withDb((db) =>
       db.googleIntegration.update({
         where: { organizationId },
         data: {
           accessToken: tokens.accessToken,
           refreshToken: tokens.refreshToken,
+          accessTokenEncrypted: encryptedAccessToken ?? undefined,
+          refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
           tokenExpiresAt,
           lastUsedAt: new Date(),
         },
@@ -170,24 +214,6 @@ export const googleService = {
         redirectUri
       );
 
-      // Get user info for display (email)
-      let googleEmail: string | null = null;
-      let googleUserId = "unknown"; // Fallback if userinfo fails
-
-      try {
-        const userInfo = await getUserInfo(tokens.accessToken);
-        googleEmail = userInfo.email;
-        googleUserId = userInfo.email; // Use email as stable user ID
-      } catch (error) {
-        log.warn(
-          "[google/oauth] Failed to get user info, continuing without email",
-          {
-            organizationId,
-            error: parseError(error),
-          }
-        );
-      }
-
       // Calculate token expiration with fallback
       const tokenExpiresAt = tokens.expiresIn
         ? new Date(Date.now() + tokens.expiresIn * 1000)
@@ -199,8 +225,45 @@ export const googleService = {
         });
       }
 
+      // Get user info and encrypt tokens in parallel (independent operations)
+      let googleEmail: string | null = null;
+      let googleUserId = "unknown"; // Fallback if userinfo fails
+
+      const [userInfoResult, { encryptedAccessToken, encryptedRefreshToken }] =
+        await Promise.all([
+          getUserInfo(tokens.accessToken).catch((error) => {
+            log.warn(
+              "[google/oauth] Failed to get user info, continuing without email",
+              {
+                organizationId,
+                error: parseError(error),
+              }
+            );
+            return null;
+          }),
+          encryptTokenPair(tokens.accessToken, tokens.refreshToken).catch(
+            (error) => {
+              log.warn(
+                "[google/oauth] Failed to encrypt tokens, storing plaintext only",
+                {
+                  organizationId,
+                  error: parseError(error),
+                }
+              );
+              return {
+                encryptedAccessToken: null,
+                encryptedRefreshToken: null,
+              };
+            }
+          ),
+        ]);
+
+      if (userInfoResult) {
+        googleEmail = userInfoResult.email;
+        googleUserId = userInfoResult.email; // Use email as stable user ID
+      }
+
       // Upsert the integration record
-      // TODO: Encrypt tokens at rest before storing (follow-up PR)
       await withDb((db) =>
         db.googleIntegration.upsert({
           where: { organizationId },
@@ -210,6 +273,8 @@ export const googleService = {
             googleEmail,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
+            accessTokenEncrypted: encryptedAccessToken ?? undefined,
+            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
           },
           update: {
@@ -217,6 +282,8 @@ export const googleService = {
             googleEmail,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
+            accessTokenEncrypted: encryptedAccessToken ?? undefined,
+            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
             lastUsedAt: new Date(),
           },
@@ -286,7 +353,13 @@ export const googleService = {
 
     // Revoke the token (best effort - don't fail if this errors)
     try {
-      await revokeToken(integration.accessToken);
+      // Prefer decrypted token; fall back to plaintext for backward compatibility
+      // accessToken is non-null: integration.accessToken is always a non-null DB field
+      const accessToken = await resolveIntegrationToken(
+        integration.accessTokenEncrypted,
+        integration.accessToken
+      );
+      await revokeToken(accessToken as string);
     } catch (error) {
       log.warn("[google] Failed to revoke token during disconnect", {
         organizationId,

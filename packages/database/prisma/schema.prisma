@@ -1216,18 +1216,20 @@ model Prompt {
 // =============================================================================
 
 model LinearIntegration {
-  id             String    @id @default(uuid(7)) @db.Uuid
-  organizationId String    @unique @map("organization_id") @db.Uuid
-  accessToken    String    @map("access_token")
-  refreshToken   String?   @map("refresh_token")
-  tokenExpiresAt DateTime? @map("token_expires_at")
-  linearOrgId    String    @map("linear_org_id")
-  linearOrgName  String    @map("linear_org_name")
-  defaultTeamId  String?   @map("default_team_id")
-  webhookId      String?   @map("webhook_id")
-  webhookSecret  String?   @map("webhook_secret")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  organizationId        String    @unique @map("organization_id") @db.Uuid
+  accessToken           String    @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  accessTokenEncrypted  String?   @map("access_token_encrypted") @db.Text
+  refreshTokenEncrypted String?   @map("refresh_token_encrypted") @db.Text
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+  linearOrgId           String    @map("linear_org_id")
+  linearOrgName         String    @map("linear_org_name")
+  defaultTeamId         String?   @map("default_team_id")
+  webhookId             String?   @map("webhook_id")
+  webhookSecret         String?   @map("webhook_secret")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   @@map("linear_integrations")
 }
@@ -1669,16 +1671,18 @@ model CustomFieldValue {
 // =============================================================================
 
 model GoogleIntegration {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String    @unique @map("organization_id") @db.Uuid
-  googleUserId   String    @map("google_user_id")
-  googleEmail    String?   @map("google_email") @db.VarChar(255)
-  accessToken    String    @map("access_token") @db.Text
-  refreshToken   String?   @map("refresh_token") @db.Text
-  tokenExpiresAt DateTime? @map("token_expires_at")
-  lastUsedAt     DateTime? @map("last_used_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId        String    @unique @map("organization_id") @db.Uuid
+  googleUserId          String    @map("google_user_id")
+  googleEmail           String?   @map("google_email") @db.VarChar(255)
+  accessToken           String    @map("access_token") @db.Text
+  refreshToken          String?   @map("refresh_token") @db.Text
+  accessTokenEncrypted  String?   @map("access_token_encrypted") @db.Text
+  refreshTokenEncrypted String?   @map("refresh_token_encrypted") @db.Text
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+  lastUsedAt            DateTime? @map("last_used_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
 
   @@map("google_integrations")
 }

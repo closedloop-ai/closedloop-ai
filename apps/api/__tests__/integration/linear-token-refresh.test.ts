@@ -22,6 +22,24 @@ vi.mock("@repo/linear", async () => {
   };
 });
 
+// Mock encryption to avoid requiring AWS_REGION / KMS in CI
+vi.mock("@/lib/integration-encryption", () => ({
+  encryptIntegrationToken: vi.fn().mockResolvedValue("mock-encrypted-token"),
+  decryptIntegrationToken: vi
+    .fn()
+    .mockImplementation((token: string) => Promise.resolve(token)),
+  resolveIntegrationToken: vi
+    .fn()
+    .mockImplementation(
+      (_encrypted: string | null | undefined, plaintext: string | null) =>
+        Promise.resolve(plaintext)
+    ),
+  encryptTokenPair: vi.fn().mockResolvedValue({
+    encryptedAccessToken: "mock-encrypted-access",
+    encryptedRefreshToken: "mock-encrypted-refresh",
+  }),
+}));
+
 const mockRefreshAccessToken = refreshAccessToken as Mock;
 const mockGetTeams = getTeams as Mock;
 

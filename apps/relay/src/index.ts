@@ -205,7 +205,7 @@ async function validateApiKeyViaApi(
   context?: { organizationId: string; userId: string };
 }> {
   log.info("validateApiKeyViaApi: calling API", {
-    keyPrefix: `${apiKey.slice(0, 8)}...`,
+    hasApiKey: Boolean(apiKey),
     url: `${VERCEL_API_URL}/internal/api-keys/verify`,
     hasDesktopPopHeaders:
       Object.keys(desktopPopHeaders ?? {}).length ===
@@ -228,7 +228,6 @@ async function validateApiKeyViaApi(
     contentType,
     responseUrl,
     hasData: data !== null,
-    rawBodyPreview: rawBody.slice(0, 300),
   });
 
   if (!(ok && data)) {
@@ -236,7 +235,7 @@ async function validateApiKeyViaApi(
       status,
       responseUrl,
       contentType,
-      response: data ?? rawBody.slice(0, 500),
+      responseLength: rawBody.length,
       errorClass: ErrorClass.Connection,
     });
     return { ok: false };
@@ -355,7 +354,7 @@ async function forwardSocketEvent(
       status,
       responseUrl,
       contentType,
-      response: data ?? rawBody.slice(0, 500),
+      responseLength: rawBody.length,
       errorClass: ErrorClass.Protocol,
     });
     return { emit: [] };
@@ -552,7 +551,7 @@ namespace.use((socket, next) => {
 
   log.info("Socket auth middleware: extracted API key, validating via API", {
     socketId: socket.id,
-    keyPrefix: `${apiKey.slice(0, 8)}...`,
+    hasApiKey: Boolean(apiKey),
     vercelUrl: VERCEL_API_URL,
   });
 
