@@ -5,19 +5,20 @@
  */
 export const queryKeys = {
   // Symphony domain
-  symphonyStatus: (ticketId: string, repoPath: string | null) =>
-    ["symphony-status", ticketId, repoPath] as const,
-  symphonyPlan: (ticketId: string, repoPath: string) =>
-    ["symphony-plan", ticketId, repoPath] as const,
-  symphonyChatHistory: (
+  closedloopStatus: (ticketId: string, repoPath: string | null) =>
+    ["closedloop-status", ticketId, repoPath] as const,
+  closedloopPlan: (ticketId: string, repoPath: string) =>
+    ["closedloop-plan", ticketId, repoPath] as const,
+  closedloopChatHistory: (
     ticketId: string,
     repoPath: string,
     provider?: string
-  ) => ["symphony-chat-history", ticketId, repoPath, provider ?? null] as const,
-  symphonyLogs: (ticketId: string, repoPath: string) =>
-    ["symphony-logs", ticketId, repoPath] as const,
-  symphonyJudges: (ticketId: string, repoPath: string) =>
-    ["symphony-judges", ticketId, repoPath] as const,
+  ) =>
+    ["closedloop-chat-history", ticketId, repoPath, provider ?? null] as const,
+  closedloopLogs: (ticketId: string, repoPath: string) =>
+    ["closedloop-logs", ticketId, repoPath] as const,
+  closedloopJudges: (ticketId: string, repoPath: string) =>
+    ["closedloop-judges", ticketId, repoPath] as const,
   commentChatHistory: (ticketId: string, commentId: string, repoPath: string) =>
     ["comment-chat-history", ticketId, commentId, repoPath] as const,
   findingChatHistory: (ticketId: string, findingId: string, repoPath: string) =>

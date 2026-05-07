@@ -29,8 +29,8 @@ import {
   parseCodexReviewOutput,
   type ReviewFinding,
 } from "@/lib/engineer/codex-review-parser";
+import type { ChatHistory } from "@/lib/engineer/queries/closedloop";
 import { queryKeys } from "@/lib/engineer/queries/keys";
-import type { ChatHistory } from "@/lib/engineer/queries/symphony";
 
 const REVIEW_SLASH_COMMANDS: SlashCommand[] = [
   {
@@ -266,7 +266,7 @@ export function useReviewChat(
             });
           }
           await queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyChatHistory(
+            queryKey: queryKeys.closedloopChatHistory(
               ticketId,
               repoPath,
               config.provider

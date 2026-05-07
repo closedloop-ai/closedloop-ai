@@ -6,7 +6,7 @@ import {
   type CaseScore,
   EvalStatus,
   type EvaluationReport,
-} from "@/lib/engineer/queries/symphony";
+} from "@/lib/engineer/queries/closedloop";
 import { decodeText } from "@/lib/engineer/run-viewer-utils";
 import { formatScorePercent } from "@/lib/evaluation-utils";
 

@@ -13,7 +13,7 @@ type UserMessageContentProps = {
 
 /**
  * Shared user message renderer that extracts <context> blocks and displays them
- * as collapsible sections. Used by SymphonyChat, CommentChat, and TicketChatDialog.
+ * as collapsible sections. Used by ClosedLoopChat, CommentChat, and TicketChatDialog.
  */
 export function UserMessageContent({
   content,

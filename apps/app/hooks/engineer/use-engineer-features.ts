@@ -45,7 +45,7 @@ export type EngineerFeaturesResultWithUser = EngineerTicketsResult & {
 };
 
 /** Map closedloop-dev status names to Symphony DocumentStatus */
-function mapToSymphonyStatus(status: string): DocumentStatus {
+function mapToClosedLoopStatus(status: string): DocumentStatus {
   const lower = status.toLowerCase();
   if (lower === "done" || lower === "completed") {
     return "DONE";
@@ -194,10 +194,10 @@ export function useEngineerFeatures(): EngineerFeaturesResultWithUser {
         return false;
       }
 
-      const symphonyStatus = mapToSymphonyStatus(status);
+      const closedloopStatus = mapToClosedLoopStatus(status);
       try {
         await apiClient.put<Document>(`/documents/${ticket.featureId}`, {
-          status: symphonyStatus,
+          status: closedloopStatus,
         });
         return true;
       } catch (err) {

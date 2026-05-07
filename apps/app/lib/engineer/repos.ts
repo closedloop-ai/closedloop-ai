@@ -400,7 +400,7 @@ function findLatestPluginScript(
 }
 
 /**
- * Auto-discover the Symphony run-loop.sh script path.
+ * Auto-discover the ClosedLoop run-loop.sh script path.
  * Scans $HOME/.claude/plugins/cache/closedloop-ai/code/ for the latest
  * semver version directory containing scripts/run-loop.sh.
  * Returns undefined if not found.
@@ -489,7 +489,7 @@ export function checkRequiredPlugins(): PluginCheckResult {
   return { allInstalled: true, missing: [], installed, reason: "ok" };
 }
 
-export function getSymphonyScriptPath(): string | undefined {
+export function getClosedLoopScriptPath(): string | undefined {
   const pluginDir = join(
     homedir(),
     ".claude",

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { symphonyStatusOptions } from "@/lib/engineer/queries/symphony";
+import { closedloopStatusOptions } from "@/lib/engineer/queries/closedloop";
 
 type UseActiveTicketStatusInput = {
   ticketId: string;
@@ -21,7 +21,7 @@ export type ActiveTicketStatus = {
   /** True only when the user has explicitly accepted the plan */
   isCoding: boolean;
   /** True while the launch API has returned but no status poll has arrived yet */
-  isWaitingForSymphony: boolean;
+  isWaitingForClosedLoop: boolean;
   /** Composite: launching, accepting plan, waiting for first status, or resuming */
   isLaunchingOrAccepting: boolean;
   isAcceptingPlan: boolean;
@@ -35,7 +35,7 @@ export type ActiveTicketStatus = {
  * Derives symphony execution state from the status polling query.
  *
  * Extracted from ActiveTicketCard so the logic is independently testable.
- * The `isWaitingForSymphony` flag latches off once a valid status has been
+ * The `isWaitingForClosedLoop` flag latches off once a valid status has been
  * received, preventing transient poll failures (common in CloudRelay) from
  * flashing the "Launching" indicator on idle tickets.
  */
@@ -56,13 +56,13 @@ export function useActiveTicketStatus({
     return localStorage.getItem(planAcceptedKey) === "true";
   });
 
-  // Poll Symphony status every 3 seconds
-  const { data: symphonyStatus } = useQuery({
-    ...symphonyStatusOptions(ticketId, repoPath),
+  // Poll ClosedLoop status every 3 seconds
+  const { data: closedloopStatus } = useQuery({
+    ...closedloopStatusOptions(ticketId, repoPath),
     refetchInterval: 3000,
   });
 
-  const statusValue = symphonyStatus?.status ?? null;
+  const statusValue = closedloopStatus?.status ?? null;
   const isExecuting = statusValue === "IN_PROGRESS";
   const isCompleted = statusValue === "COMPLETED";
   const isStopped = statusValue === "STOPPED";
@@ -102,12 +102,12 @@ export function useActiveTicketStatus({
   }
 
   // Show launching state only in the gap between launch API returning and
-  // Symphony's first status poll — never after we've seen a valid status.
-  const isWaitingForSymphony =
+  // ClosedLoop's first status poll — never after we've seen a valid status.
+  const isWaitingForClosedLoop =
     !!repoPath && !statusValue && !hasReceivedStatus.current;
 
   const isLaunchingOrAccepting =
-    isLaunching || isAcceptingPlan || isWaitingForSymphony || !!isResuming;
+    isLaunching || isAcceptingPlan || isWaitingForClosedLoop || !!isResuming;
 
   const persistPlanAccepted = useCallback(
     (value: boolean) => {
@@ -128,12 +128,12 @@ export function useActiveTicketStatus({
     isStopped,
     isAwaitingUser,
     isCoding,
-    isWaitingForSymphony,
+    isWaitingForClosedLoop,
     isLaunchingOrAccepting,
     isAcceptingPlan,
     setIsAcceptingPlan,
     hasPlanAccepted,
     setHasPlanAccepted: persistPlanAccepted,
-    taskProgress: symphonyStatus?.taskProgress,
+    taskProgress: closedloopStatus?.taskProgress,
   };
 }

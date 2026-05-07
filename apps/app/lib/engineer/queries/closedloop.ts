@@ -24,7 +24,7 @@ export type ActiveAgent = {
   startedAt: string;
 };
 
-export type SymphonyStatusResponse = {
+export type ClosedLoopStatusResponse = {
   exists: boolean;
   stateExists?: boolean;
   phase?: string | null;
@@ -87,7 +87,7 @@ export type CaseScore = EvaluationCaseScore;
 export type MetricStatistics = EvaluationMetricStatistics;
 export type EvaluationReport = JudgesReport;
 
-export type SymphonyJudgesResponse = {
+export type ClosedLoopJudgesResponse = {
   exists: boolean;
   isMock: boolean;
   data?: EvaluationReport;
@@ -98,12 +98,12 @@ export type SymphonyJudgesResponse = {
 
 /* ---------- Query option factories ---------- */
 
-export function symphonyStatusOptions(
+export function closedloopStatusOptions(
   ticketId: string,
   repoPath: string | null
 ) {
-  return queryOptions<SymphonyStatusResponse>({
-    queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
+  return queryOptions<ClosedLoopStatusResponse>({
+    queryKey: queryKeys.closedloopStatus(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
         `/api/gateway/symphony/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath || "")}`
@@ -117,9 +117,9 @@ export function symphonyStatusOptions(
   });
 }
 
-export function symphonyPlanOptions(ticketId: string, repoPath: string) {
+export function closedloopPlanOptions(ticketId: string, repoPath: string) {
   return queryOptions<PlanResponse>({
-    queryKey: queryKeys.symphonyPlan(ticketId, repoPath),
+    queryKey: queryKeys.closedloopPlan(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
         `/api/gateway/symphony/plan/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
@@ -132,13 +132,13 @@ export function symphonyPlanOptions(ticketId: string, repoPath: string) {
   });
 }
 
-export function symphonyChatHistoryOptions(
+export function closedloopChatHistoryOptions(
   ticketId: string,
   repoPath: string,
   provider?: string
 ) {
   return queryOptions<ChatHistory>({
-    queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath, provider),
+    queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath, provider),
     queryFn: async () => {
       let url = `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       if (provider) {
@@ -153,9 +153,9 @@ export function symphonyChatHistoryOptions(
   });
 }
 
-export function symphonyLogsOptions(ticketId: string, repoPath: string) {
+export function closedloopLogsOptions(ticketId: string, repoPath: string) {
   return queryOptions<LogResponse>({
-    queryKey: queryKeys.symphonyLogs(ticketId, repoPath),
+    queryKey: queryKeys.closedloopLogs(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
         `/api/gateway/symphony/logs/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&lines=1000`
@@ -239,9 +239,9 @@ export function findingChatHistoryOptions(
   });
 }
 
-export function symphonyJudgesOptions(ticketId: string, repoPath: string) {
-  return queryOptions<SymphonyJudgesResponse>({
-    queryKey: queryKeys.symphonyJudges(ticketId, repoPath),
+export function closedloopJudgesOptions(ticketId: string, repoPath: string) {
+  return queryOptions<ClosedLoopJudgesResponse>({
+    queryKey: queryKeys.closedloopJudges(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
         `/api/gateway/symphony/judges/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`

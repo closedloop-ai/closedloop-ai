@@ -5,7 +5,7 @@
  * Each comment can be: pending, addressed, responded, or dismissed.
  */
 
-const STORAGE_KEY = "symphony-pr-comment-status";
+const STORAGE_KEY = "closedloop-pr-comment-status";
 
 export type CommentStatusType =
   | "pending"

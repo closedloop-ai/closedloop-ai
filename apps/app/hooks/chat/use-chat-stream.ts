@@ -66,7 +66,7 @@ type UseChatStreamReturn = {
 
 /**
  * Shared hook encapsulating the streaming chat pattern used by
- * TicketChatDialog, CodexReviewDialog, and SymphonyChat.
+ * TicketChatDialog, CodexReviewDialog, and ClosedLoopChat.
  *
  * Composes the chat-stream reducer with three focused sub-hooks:
  * `useAbortController` owns the `AbortController` lifecycle,

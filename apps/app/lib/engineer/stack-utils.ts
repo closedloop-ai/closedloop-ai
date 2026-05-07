@@ -1,4 +1,4 @@
-import type { ActiveSession } from "@/hooks/engineer/useSymphonyLaunch";
+import type { ActiveSession } from "@/hooks/engineer/useClosedLoopLaunch";
 
 /**
  * Node in the stack tree, representing a ticket and its relationship to others.

@@ -80,13 +80,13 @@ function resolveAgentAttribution(activeTab?: string, phase?: string): string {
  * Return a <learning-capture> instruction block for the Claude prompt.
  */
 export function getLearningCaptureInstruction(
-  symphonyWorkDir: string,
+  closedloopWorkDir: string,
   activeTab?: string
 ): string {
   // Try to read state.json for phase info
   let phase: string | undefined;
   try {
-    const statePath = join(symphonyWorkDir, "state.json");
+    const statePath = join(closedloopWorkDir, "state.json");
     if (existsSync(statePath)) {
       const state = JSON.parse(readFileSync(statePath, "utf-8"));
       phase = state.phase?.toString();
@@ -102,7 +102,7 @@ export function getLearningCaptureInstruction(
     "If you notice a genuine learning during this conversation (a mistake corrected, a pattern discovered,",
     "a convention clarified), you may write it as a JSON file to the pending learnings directory.",
     "",
-    `Directory: ${join(symphonyWorkDir, ".learnings", "pending")}/`,
+    `Directory: ${join(closedloopWorkDir, ".learnings", "pending")}/`,
     "Filename format: chat-{timestamp}.json",
     "",
     "JSON schema for each learning file:",
@@ -134,7 +134,7 @@ export function getLearningCaptureInstruction(
 }
 
 type ExtractionOptions = {
-  symphonyWorkDir: string;
+  closedloopWorkDir: string;
   worktreeDir: string;
   chatHistoryPath: string;
   activeTab?: string;
@@ -158,13 +158,18 @@ export async function triggerAsyncLearningExtraction(
 async function triggerAsyncLearningExtractionInner(
   opts: ExtractionOptions
 ): Promise<void> {
-  const { symphonyWorkDir, worktreeDir, chatHistoryPath, activeTab, ticketId } =
-    opts;
+  const {
+    closedloopWorkDir,
+    worktreeDir,
+    chatHistoryPath,
+    activeTab,
+    ticketId,
+  } = opts;
 
   // Resolve PATH eagerly so the spawn below is synchronous
   const shellPath = await getShellPath();
 
-  const learningsDir = join(symphonyWorkDir, ".learnings");
+  const learningsDir = join(closedloopWorkDir, ".learnings");
   const pendingDir = join(learningsDir, "pending");
   const lockPath = join(learningsDir, ".lock");
   const statusPath = join(learningsDir, "chat-extraction-status.json");
@@ -195,7 +200,7 @@ async function triggerAsyncLearningExtractionInner(
   // Read state.json for context
   let stateContext = "";
   try {
-    const statePath = join(symphonyWorkDir, "state.json");
+    const statePath = join(closedloopWorkDir, "state.json");
     if (existsSync(statePath)) {
       stateContext = `\nState file at: ${statePath}`;
     }
@@ -270,7 +275,7 @@ Be selective — only capture things that would help agents do better in the fut
         cwd: worktreeDir,
         env: {
           ...process.env,
-          CLOSEDLOOP_WORKDIR: symphonyWorkDir,
+          CLOSEDLOOP_WORKDIR: closedloopWorkDir,
           PATH: shellPath,
         },
         stdio: ["pipe", "ignore", "ignore"],

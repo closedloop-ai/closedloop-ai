@@ -12,6 +12,7 @@ import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ActiveTicketCard } from "@/components/engineer/ActiveTicketCard";
+import { ClosedLoopChat } from "@/components/engineer/ClosedLoopChat";
 import { CloseTicketDialog } from "@/components/engineer/CloseTicketDialog";
 import { CodexReviewDialog } from "@/components/engineer/CodexReviewDialog";
 import { CommitDialog } from "@/components/engineer/CommitDialog";
@@ -19,7 +20,6 @@ import { DeployDialog } from "@/components/engineer/DeployDialog";
 import { LinkPRDialog } from "@/components/engineer/LinkPRDialog";
 import type { MentionedFile } from "@/components/engineer/RepoPickerDialog";
 import { RepoPickerDialog } from "@/components/engineer/RepoPickerDialog";
-import { SymphonyChat } from "@/components/engineer/SymphonyChat";
 import { TicketCard } from "@/components/engineer/TicketCard";
 import { TicketCardSkeleton } from "@/components/engineer/TicketCardSkeleton";
 import { TicketChatDialog } from "@/components/engineer/TicketChatDialog";
@@ -30,7 +30,7 @@ import {
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
 import type { FullTicketDetails } from "@/hooks/engineer/use-engineer-features";
 import { useStartPlanLoop } from "@/hooks/engineer/use-start-plan-loop";
-import { useSymphonyLaunch } from "@/hooks/engineer/useSymphonyLaunch";
+import { useClosedLoopLaunch } from "@/hooks/engineer/useClosedLoopLaunch";
 import {
   clearDeployment,
   type DeployInfo,
@@ -46,10 +46,10 @@ import {
   saveTicketPR,
 } from "@/lib/engineer/pr-tracker";
 import { clearTicketPushed, isTicketPushed } from "@/lib/engineer/push-tracker";
+import type { ClosedLoopStatusResponse } from "@/lib/engineer/queries/closedloop";
 import { triggerDeployDetect } from "@/lib/engineer/queries/deploy";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { reposOptions } from "@/lib/engineer/queries/repos";
-import type { SymphonyStatusResponse } from "@/lib/engineer/queries/symphony";
 import { getChildTickets } from "@/lib/engineer/stack-utils";
 import { deriveBaseRepoPath } from "@/lib/engineer/worktree-utils";
 import { type EngineerTicket, TicketSourceType } from "@/types/engineer";
@@ -94,7 +94,7 @@ const GRID_SKELETON_KEYS = [
 
 /**
  * TicketList component displays Linear tickets in a responsive grid layout.
- * When Symphony is running for a ticket, it shows in a dedicated "Active Planning" section.
+ * When ClosedLoop is running for a ticket, it shows in a dedicated "Active Planning" section.
  */
 export function TicketList({
   tickets,
@@ -114,7 +114,7 @@ export function TicketList({
     isActive,
     getSession,
     error,
-  } = useSymphonyLaunch();
+  } = useClosedLoopLaunch();
 
   const {
     startPlanLoop,
@@ -1417,7 +1417,7 @@ export function TicketList({
     }
   };
 
-  // Handler for stopping a running Symphony process
+  // Handler for stopping a running ClosedLoop process
   const handleStopSymphony = async (ticketId: string) => {
     const repoPath = getRepoPathForTicket(ticketId);
     if (!repoPath) {
@@ -1481,7 +1481,7 @@ export function TicketList({
             toast.success("ClosedLoop process stopped");
           }
           queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
+            queryKey: queryKeys.closedloopStatus(ticketId, repoPath),
           });
         } else {
           toast.error("Failed to cancel loop", {
@@ -1504,7 +1504,7 @@ export function TicketList({
         toast.success("ClosedLoop process stopped");
         // Invalidate status query to update UI
         queryClient.invalidateQueries({
-          queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
+          queryKey: queryKeys.closedloopStatus(ticketId, repoPath),
         });
       } else {
         toast.error("Failed to stop process", {
@@ -1758,12 +1758,12 @@ export function TicketList({
 
                                 if (result.launched && !result.alreadyRunning) {
                                   queryClient.setQueryData(
-                                    queryKeys.symphonyStatus(
+                                    queryKeys.closedloopStatus(
                                       ticketId,
                                       repoPath
                                     ),
                                     (
-                                      old: SymphonyStatusResponse | undefined
+                                      old: ClosedLoopStatusResponse | undefined
                                     ) => ({
                                       ...old,
                                       exists: true,
@@ -1789,7 +1789,7 @@ export function TicketList({
                             }
                           : undefined
                       }
-                      onStopSymphony={handleStopSymphony}
+                      onStopClosedLoop={handleStopSymphony}
                       onTeardown={handleTeardown}
                       parentTicketId={parentId}
                       pendingClaudeMdPath={
@@ -2374,7 +2374,7 @@ export function TicketList({
       )}
 
       {commentViewTicketId && prStatus[commentViewTicketId] && (
-        <SymphonyChat
+        <ClosedLoopChat
           initialTab="comments"
           isOpen={commentViewOpen}
           onClose={() => {

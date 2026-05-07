@@ -18,7 +18,7 @@ import Image from "next/image";
 import { type ReactNode, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { symphonyPlanOptions } from "@/lib/engineer/queries/symphony";
+import { closedloopPlanOptions } from "@/lib/engineer/queries/closedloop";
 import { getTextContent } from "@/lib/engineer/utils";
 
 type PlanViewerProps = {
@@ -31,7 +31,7 @@ type PlanViewerProps = {
 };
 
 /**
- * PlanViewer component displays the Symphony implementation plan.
+ * PlanViewer component displays the ClosedLoop implementation plan.
  * Polls for plan.json availability and renders the markdown content.
  */
 export function PlanViewer({
@@ -48,7 +48,7 @@ export function PlanViewer({
     error,
     refetch,
   } = useQuery({
-    ...symphonyPlanOptions(ticketId, repoPath),
+    ...closedloopPlanOptions(ticketId, repoPath),
     refetchInterval: (query) => {
       const data = query.state.data;
       if (data?.planExists) {

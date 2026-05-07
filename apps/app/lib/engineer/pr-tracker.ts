@@ -3,7 +3,7 @@
  * Uses localStorage to persist state across page refreshes.
  */
 
-const STORAGE_KEY = "symphony-ticket-prs";
+const STORAGE_KEY = "closedloop-ticket-prs";
 
 type PRInfo = {
   url: string;

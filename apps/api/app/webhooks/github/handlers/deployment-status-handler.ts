@@ -11,7 +11,7 @@ import { deploymentService } from "@/app/deployments/deployment-service";
  * When Vercel (or another deployment provider) completes a preview deployment,
  * GitHub sends a deployment_status event with `environment_url` containing the
  * actual preview URL. This handler updates the matching PREVIEW_DEPLOYMENT
- * ExternalLink record so the URL appears in the Symphony UI.
+ * ExternalLink record so the URL appears in the ClosedLoop UI.
  *
  * Flow:
  * 1. Filter to "success" deployments with a non-empty environment_url

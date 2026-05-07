@@ -52,7 +52,7 @@ import {
   parseFindingTitle,
   type ReviewFinding,
 } from "@/lib/engineer/codex-review-parser";
-import { symphonyChatHistoryOptions } from "@/lib/engineer/queries/symphony";
+import { closedloopChatHistoryOptions } from "@/lib/engineer/queries/closedloop";
 import { stripWorktreePath } from "@/lib/engineer/review-path-utils";
 import { formatReviewSummary } from "@/lib/engineer/review-split";
 
@@ -147,7 +147,7 @@ export function ReviewChatPane({
   });
 
   const { data: chatHistory } = useQuery({
-    ...symphonyChatHistoryOptions(ticketId, repoPath, config.provider),
+    ...closedloopChatHistoryOptions(ticketId, repoPath, config.provider),
     enabled: review.reviewDone,
   });
 

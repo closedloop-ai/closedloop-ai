@@ -8,9 +8,9 @@ vi.mock("@tanstack/react-query", () => ({
   queryOptions: (opts: unknown) => opts,
 }));
 
-vi.mock("@/lib/engineer/queries/symphony", () => ({
-  symphonyStatusOptions: (ticketId: string, repoPath: string | null) => ({
-    queryKey: ["symphony-status", ticketId, repoPath],
+vi.mock("@/lib/engineer/queries/closedloop", () => ({
+  closedloopStatusOptions: (ticketId: string, repoPath: string | null) => ({
+    queryKey: ["closedloop-status", ticketId, repoPath],
     queryFn: vi.fn(),
     enabled: !!repoPath,
   }),
@@ -35,27 +35,27 @@ describe("useActiveTicketStatus", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
   });
 
-  it("reports isWaitingForSymphony before first status arrives", () => {
+  it("reports isWaitingForClosedLoop before first status arrives", () => {
     mockUseQuery.mockReturnValue({ data: undefined });
 
     const { result } = renderHook(() => useActiveTicketStatus(makeProps()));
 
-    expect(result.current.isWaitingForSymphony).toBe(true);
+    expect(result.current.isWaitingForClosedLoop).toBe(true);
     expect(result.current.isLaunchingOrAccepting).toBe(true);
   });
 
-  it("clears isWaitingForSymphony once status arrives", () => {
+  it("clears isWaitingForClosedLoop once status arrives", () => {
     mockUseQuery.mockReturnValue({
       data: { status: "AWAITING_USER" },
     });
 
     const { result } = renderHook(() => useActiveTicketStatus(makeProps()));
 
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
     expect(result.current.isAwaitingUser).toBe(true);
   });
 
-  it("does NOT flash isWaitingForSymphony when status transiently drops to undefined", () => {
+  it("does NOT flash isWaitingForClosedLoop when status transiently drops to undefined", () => {
     // First render: valid status arrives
     mockUseQuery.mockReturnValue({
       data: { status: "AWAITING_USER" },
@@ -65,7 +65,7 @@ describe("useActiveTicketStatus", () => {
       useActiveTicketStatus(makeProps())
     );
 
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
     expect(result.current.isAwaitingUser).toBe(true);
 
     // Second render: poll returns undefined (transient relay failure)
@@ -73,11 +73,11 @@ describe("useActiveTicketStatus", () => {
     rerender();
 
     // Key assertion: should NOT go back to "waiting" / "launching"
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
     expect(result.current.isLaunchingOrAccepting).toBe(false);
   });
 
-  it("does NOT flash isWaitingForSymphony when status has null status field", () => {
+  it("does NOT flash isWaitingForClosedLoop when status has null status field", () => {
     // First render: valid status
     mockUseQuery.mockReturnValue({
       data: { status: "COMPLETED" },
@@ -93,7 +93,7 @@ describe("useActiveTicketStatus", () => {
     mockUseQuery.mockReturnValue({ data: { status: null } });
     rerender();
 
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
     expect(result.current.isLaunchingOrAccepting).toBe(false);
   });
 
@@ -104,7 +104,7 @@ describe("useActiveTicketStatus", () => {
       useActiveTicketStatus(makeProps({ repoPath: null }))
     );
 
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
   });
 
   it("includes isLaunching in isLaunchingOrAccepting", () => {
@@ -174,14 +174,14 @@ describe("useActiveTicketStatus", () => {
       (p: ReturnType<typeof makeProps>) => useActiveTicketStatus(p),
       { initialProps: props }
     );
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
 
     // Session cleared → new session with different repoPath, no status yet
     mockUseQuery.mockReturnValue({ data: undefined });
     rerender({ ...props, repoPath: "/repo-b" });
 
-    // Latch should have reset, so isWaitingForSymphony fires for the new session
-    expect(result.current.isWaitingForSymphony).toBe(true);
+    // Latch should have reset, so isWaitingForClosedLoop fires for the new session
+    expect(result.current.isWaitingForClosedLoop).toBe(true);
   });
 
   it("resets status latch when a new launch begins on the same session", () => {
@@ -193,7 +193,7 @@ describe("useActiveTicketStatus", () => {
       (p: ReturnType<typeof makeProps>) => useActiveTicketStatus(p),
       { initialProps: props }
     );
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
 
     // User accepts plan → new launch starts, poll briefly returns no status
     mockUseQuery.mockReturnValue({ data: undefined });
@@ -207,7 +207,7 @@ describe("useActiveTicketStatus", () => {
     rerender({ ...props, isLaunching: false });
 
     // Without reset this would be false (stale latch); with reset it's true
-    expect(result.current.isWaitingForSymphony).toBe(true);
+    expect(result.current.isWaitingForClosedLoop).toBe(true);
   });
 
   it("resets status latch when resume begins", () => {
@@ -218,7 +218,7 @@ describe("useActiveTicketStatus", () => {
       (p: ReturnType<typeof makeProps>) => useActiveTicketStatus(p),
       { initialProps: props }
     );
-    expect(result.current.isWaitingForSymphony).toBe(false);
+    expect(result.current.isWaitingForClosedLoop).toBe(false);
 
     // Resume starts, poll briefly empty
     mockUseQuery.mockReturnValue({ data: undefined });
@@ -226,6 +226,6 @@ describe("useActiveTicketStatus", () => {
 
     // Resume ends, still waiting for first status
     rerender({ ...props, isResuming: false });
-    expect(result.current.isWaitingForSymphony).toBe(true);
+    expect(result.current.isWaitingForClosedLoop).toBe(true);
   });
 });

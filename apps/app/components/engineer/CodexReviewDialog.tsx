@@ -23,11 +23,11 @@ import {
   parseCodexReviewOutput,
   type ReviewFindings,
 } from "@/lib/engineer/codex-review-parser";
-import { queryKeys } from "@/lib/engineer/queries/keys";
 import {
+  closedloopChatHistoryOptions,
   findingChatHistoryOptions,
-  symphonyChatHistoryOptions,
-} from "@/lib/engineer/queries/symphony";
+} from "@/lib/engineer/queries/closedloop";
+import { queryKeys } from "@/lib/engineer/queries/keys";
 
 type CodexReviewDialogProps = {
   open: boolean;
@@ -102,7 +102,7 @@ export function CodexReviewDialog({
     selectedFindingIndex === null ? null : `finding-${selectedFindingIndex}`;
 
   const { data: chatHistory } = useQuery({
-    ...symphonyChatHistoryOptions(ticketId, repoPath),
+    ...closedloopChatHistoryOptions(ticketId, repoPath),
     enabled: open && chatMode && selectedFindingIndex === null,
   });
 
@@ -328,7 +328,7 @@ export function CodexReviewDialog({
         onLearningsUsed: recordLearningUse,
         onComplete: () =>
           queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+            queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
           }),
       }
     );
@@ -473,7 +473,7 @@ export function CodexReviewDialog({
           onLearningsUsed: recordLearningUse,
           onComplete: () =>
             queryClient.invalidateQueries({
-              queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+              queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
             }),
         }
       );
@@ -604,7 +604,7 @@ export function CodexReviewDialog({
           { method: "DELETE" }
         );
         queryClient.setQueryData(
-          queryKeys.symphonyChatHistory(ticketId, repoPath),
+          queryKeys.closedloopChatHistory(ticketId, repoPath),
           {
             messages: [],
             ticketId,
@@ -652,7 +652,7 @@ export function CodexReviewDialog({
         hasReview: false,
       });
       queryClient.invalidateQueries({
-        queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+        queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
       });
     } catch {
       // Best-effort clear
@@ -680,7 +680,7 @@ export function CodexReviewDialog({
         clearAllFindingChats(),
       ]);
       queryClient.invalidateQueries({
-        queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+        queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
       });
     } catch {
       // Best-effort clear
@@ -954,7 +954,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
         onLearningsUsed,
         onComplete: () =>
           queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+            queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
           }),
       }
     );

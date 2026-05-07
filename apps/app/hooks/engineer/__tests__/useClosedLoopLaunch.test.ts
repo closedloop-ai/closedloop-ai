@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useSymphonyLaunch } from "@/hooks/engineer/useSymphonyLaunch";
+import { useClosedLoopLaunch } from "@/hooks/engineer/useClosedLoopLaunch";
 
 // Mock fetch globally
 const fetchMock = vi.fn();
@@ -13,7 +13,7 @@ function makeJsonResponse(data: Record<string, unknown>, status = 200) {
   });
 }
 
-describe("useSymphonyLaunch", () => {
+describe("useClosedLoopLaunch", () => {
   beforeEach(() => {
     fetchMock.mockReset();
     // Default: sessions load returns empty
@@ -57,7 +57,7 @@ describe("useSymphonyLaunch", () => {
       return Promise.resolve(makeJsonResponse({ error: "not mocked" }, 500));
     });
 
-    const { result } = renderHook(() => useSymphonyLaunch());
+    const { result } = renderHook(() => useClosedLoopLaunch());
 
     // Launch both inside a single act to avoid overlapping act scope warnings.
     // The first call enters the guard and blocks on fetch; the second call
@@ -127,7 +127,7 @@ describe("useSymphonyLaunch", () => {
       return Promise.resolve(makeJsonResponse({ error: "not mocked" }, 500));
     });
 
-    const { result } = renderHook(() => useSymphonyLaunch());
+    const { result } = renderHook(() => useClosedLoopLaunch());
 
     let launchResult: { launched: boolean } | undefined;
     await act(async () => {
@@ -189,7 +189,7 @@ describe("useSymphonyLaunch", () => {
       return Promise.resolve(makeJsonResponse({ error: "not mocked" }, 500));
     });
 
-    const { result } = renderHook(() => useSymphonyLaunch());
+    const { result } = renderHook(() => useClosedLoopLaunch());
 
     // Wait for initial session load
     await waitFor(() => {
