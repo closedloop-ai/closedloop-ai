@@ -6,6 +6,7 @@
  * backend_mismatch discriminants.
  */
 
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api-error";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
@@ -17,8 +18,6 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
     info: vi.fn(),
   },
 }));
-
-import { toast } from "@repo/design-system/components/ui/sonner";
 
 const mockToastError = toast.error as ReturnType<typeof vi.fn>;
 

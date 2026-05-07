@@ -74,6 +74,7 @@ import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { useMultiRepoPrdEnabled } from "@/hooks/use-multi-repo-prd-enabled";
+import { getErrorMessage } from "@/lib/api-error";
 import {
   DOCUMENT_STATUS_LABELS,
   DOCUMENT_TYPE_BADGE_LABELS,
@@ -389,11 +390,7 @@ export function CreateDocumentModal({
             },
             {
               onError: (error) => {
-                toast.error(
-                  error instanceof Error
-                    ? error.message
-                    : "An unexpected error occurred"
-                );
+                toast.error(getErrorMessage(error));
               },
             }
           );
