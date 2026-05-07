@@ -2,13 +2,6 @@ const TRAILING_SLASH_REGEX = /\/$/;
 const LEADING_DOT_REGEX = /^\./;
 const DEFAULT_PREVIEW_SUFFIX = "preview.closedloop-stage.ai";
 const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
-// Vercel git-branch preview URLs follow the pattern:
-//   <project>-git-<branch-slug>-<team-slug>.vercel.app
-// We require the "-git-" segment to be present — this prevents spoofing via
-// project names like "app-stage-fake-closed-loop" (no "-git-" segment).
-// Commit-hash deploys (no "-git-") are ephemeral and not trusted for CORS.
-const VERCEL_TEAM_ORIGIN_REGEX =
-  /^(app|api)-stage-git-[a-z0-9][a-z0-9-]*-closed-loop\.vercel\.app$/;
 
 function getAllowedOrigins(): Set<string> {
   const origins = new Set<string>(["http://localhost:3000"]);
@@ -72,5 +65,5 @@ export function isTrustedOrigin(origin: string | null): boolean {
     return true;
   }
 
-  return VERCEL_TEAM_ORIGIN_REGEX.test(hostname);
+  return false;
 }

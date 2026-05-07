@@ -48,6 +48,7 @@ export default authMiddleware(
               "connect-src": [
                 "https://*.posthog.com",
                 "https://www.google-analytics.com/",
+                "https://analytics.google.com/",
               ],
             },
             reportTo: env.CSP_REPORT_URI,
