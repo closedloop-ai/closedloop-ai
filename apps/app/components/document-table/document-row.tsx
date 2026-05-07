@@ -242,22 +242,12 @@ function NameCell({
         </div>
       )}
       {indented && <div className="w-7 shrink-0" />}
-      {hasChevron && (
-        <button
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
-          onClick={() => {
-            if (onToggleExpand) {
-              onToggleExpand();
-            }
-          }}
-          tabIndex={onToggleExpand ? 0 : -1}
-          type="button"
-        >
-          <ChevronRightIcon
-            className={`h-4 w-4 text-muted-foreground ${isExpanded ? "rotate-90" : ""} transition-transform`}
-          />
-        </button>
-      )}
+      <ChevronSlot
+        hasChevron={hasChevron}
+        indented={indented}
+        isExpanded={isExpanded}
+        onToggleExpand={onToggleExpand}
+      />
       <span className="mr-1.5 ml-1 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
         {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
       </span>
@@ -928,22 +918,12 @@ function BranchNameCell({
   return (
     <div className={className}>
       {indented && <div className="w-7 shrink-0" />}
-      {hasChevron && (
-        <button
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
-          onClick={() => {
-            if (onToggleExpand) {
-              onToggleExpand();
-            }
-          }}
-          tabIndex={onToggleExpand ? 0 : -1}
-          type="button"
-        >
-          <ChevronRightIcon
-            className={`h-4 w-4 text-muted-foreground ${isExpanded ? "rotate-90" : ""} transition-transform`}
-          />
-        </button>
-      )}
+      <ChevronSlot
+        hasChevron={hasChevron}
+        indented={indented}
+        isExpanded={isExpanded}
+        onToggleExpand={onToggleExpand}
+      />
       <div className="flex h-7 w-7 shrink-0 items-center justify-center">
         <GitPullRequestIcon
           className={`h-4 w-4 ${isPullRequest ? "text-emerald-500" : "text-blue-500"}`}
@@ -960,4 +940,39 @@ function BranchNameCell({
       )}
     </div>
   );
+}
+
+function ChevronSlot({
+  hasChevron,
+  indented,
+  isExpanded,
+  onToggleExpand,
+}: {
+  hasChevron: boolean;
+  indented?: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+}) {
+  if (hasChevron) {
+    return (
+      <button
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${onToggleExpand ? "hover:bg-muted" : "cursor-default opacity-30"}`}
+        onClick={() => {
+          if (onToggleExpand) {
+            onToggleExpand();
+          }
+        }}
+        tabIndex={onToggleExpand ? 0 : -1}
+        type="button"
+      >
+        <ChevronRightIcon
+          className={`h-4 w-4 text-muted-foreground ${isExpanded ? "rotate-90" : ""} transition-transform`}
+        />
+      </button>
+    );
+  }
+  if (indented) {
+    return <div aria-hidden="true" className="h-7 w-7 shrink-0" />;
+  }
+  return null;
 }
