@@ -107,10 +107,10 @@ export function FeaturePage({
       polling: true,
     }
   );
-  const { data: featureGenerationStatus } = useDocumentGenerationStatus(
-    feature.id,
-    { polling: true }
-  );
+  const {
+    data: featureGenerationStatus,
+    isLoading: featureGenerationStatusLoading,
+  } = useDocumentGenerationStatus(feature.id, { polling: true });
   const activeTargetPicker = resolveFloatingTargetPickerSource(
     {
       multiTargetState: featureActions.multiTargetState,
@@ -157,6 +157,8 @@ export function FeaturePage({
       <FeatureEditorHeader
         displayTitle={feature.title}
         feature={feature}
+        generationStatus={featureGenerationStatus}
+        generationStatusLoading={featureGenerationStatusLoading}
         hasPlan={hasPlan}
         isEvaluating={featureActions.isEvaluating}
         isReady={isReady}

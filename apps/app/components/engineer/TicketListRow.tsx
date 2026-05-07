@@ -94,9 +94,9 @@ export function TicketListRow({
   hasWorkDirectory,
   worktreePath,
   onDeleteWorktree,
-  symphonyCompleted,
-  symphonyExecuting,
-  symphonyAwaitingUser,
+  closedloopCompleted,
+  closedloopExecuting,
+  closedloopAwaitingUser,
   hasPushed,
   prInfo,
   onAskClaude,
@@ -112,15 +112,15 @@ export function TicketListRow({
   parentTicketId,
   onParentClick,
 }: Readonly<TicketCardProps>) {
-  const isSymphonyActive = !!(isRunning || isLaunching);
+  const isClosedLoopActive = !!(isRunning || isLaunching);
   const workflowProgress = getWorkflowProgress({
     hasWorkDirectory: hasWorkDirectory ?? false,
-    symphonyCompleted: symphonyCompleted ?? false,
+    closedloopCompleted: closedloopCompleted ?? false,
     hasPushed: hasPushed ?? false,
     hasPR: !!prInfo,
-    symphonyExecuting,
+    closedloopExecuting,
     isRunning,
-    symphonyAwaitingUser,
+    closedloopAwaitingUser,
     taskProgress,
   });
 
@@ -134,7 +134,7 @@ export function TicketListRow({
 
   // Primary action button
   const showPlanningButton =
-    !isSymphonyActive &&
+    !isClosedLoopActive &&
     shouldShowPlanningButton(ticket.status.type, hasWorkDirectory ?? false);
 
   return (
@@ -356,7 +356,7 @@ export function TicketListRow({
           {hasWorkDirectory &&
             worktreePath &&
             onDeleteWorktree &&
-            !isSymphonyActive && (
+            !isClosedLoopActive && (
               <button
                 className="cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:text-destructive"
                 onClick={(e) => {

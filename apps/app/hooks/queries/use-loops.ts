@@ -29,6 +29,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useMemo } from "react";
+import { documentKeys } from "@/hooks/queries/use-documents";
 import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
 import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
@@ -159,13 +160,10 @@ export function useInheritedAdditionalRepos(
 ) {
   const apiClient = useApiClient();
   return useQuery({
-    queryKey: [
-      "documents",
-      "detail",
-      documentId,
-      "inherited-additional-repos",
-      targetCommand,
-    ],
+    queryKey: documentKeys.inheritedAdditionalRepos(
+      documentId ?? "",
+      targetCommand
+    ),
     queryFn: () =>
       apiClient.get<InheritedAdditionalRepos>(
         `/documents/${documentId}/inherited-additional-repos?command=${encodeURIComponent(targetCommand)}`
@@ -293,6 +291,7 @@ export function useRunLoop() {
   const apiClient = useApiClient();
 
   return useMutation({
+    meta: { suppressDefaultErrorToast: true },
     mutationFn: async ({
       documentId,
       command,

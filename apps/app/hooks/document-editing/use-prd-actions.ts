@@ -36,10 +36,15 @@ type UsePrdActionsConfig = {
  * **Important:** Request changes returns a Promise<boolean> for modal handling.
  */
 export function usePrdActions({ documentId }: UsePrdActionsConfig) {
-  const { runLoop, makeRequestChangesHandler, multiTargetState, selectTarget } =
-    useDocumentRunLoop({
-      documentId,
-    });
+  const {
+    runLoop,
+    makeRequestChangesHandler,
+    routeConflictError,
+    multiTargetState,
+    selectTarget,
+  } = useDocumentRunLoop({
+    documentId,
+  });
 
   const [pendingCommand, setPendingCommand] = useState<RunLoopCommand | null>(
     null
@@ -81,8 +86,9 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
           toast.success("PRD generation started");
           setPendingCommand(null);
         },
-        onError: () => {
+        onError: (error) => {
           setPendingCommand(null);
+          routeConflictError(error);
         },
       }
     );
@@ -104,6 +110,8 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
             setDecomposeTargetState({
               availableTargets: conflict.availableTargets,
             });
+          } else {
+            routeConflictError(error);
           }
         },
       }
@@ -119,8 +127,9 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
           toast.success("PRD evaluation started");
           setPendingCommand(null);
         },
-        onError: () => {
+        onError: (error) => {
           setPendingCommand(null);
+          routeConflictError(error);
         },
       }
     );

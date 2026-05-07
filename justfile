@@ -4,6 +4,7 @@ default:
 
 # Start the main app, API, and relay
 dev:
+    pnpm --filter @closedloop-ai/loops-api build
     RELAY_API_URL=http://localhost:3020 pnpm turbo dev --filter=app --filter=api --filter=mcp --filter=relay
 
 # Start all apps (may fail if mintlify/stripe not installed)
@@ -46,10 +47,10 @@ test:
     pnpm test
 
 # Docker postgres -- explicit POSTGRES_USER avoids auth failures on fresh containers,
-# and the symphony DB must exist before Prisma migrations can run.
+# and the closedloop_ai DB must exist before Prisma migrations can run.
 db-start:
-    docker start postgres16 || docker run -d --name postgres16 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=symphony -p 5432:5432 postgres:16
-    docker exec postgres16 psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='symphony'" | grep -q 1 || docker exec postgres16 createdb -U postgres symphony
+    docker start postgres16 || docker run -d --name postgres16 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=closedloop_ai -p 5432:5432 postgres:16
+    docker exec postgres16 psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='closedloop_ai'" | grep -q 1 || docker exec postgres16 createdb -U postgres closedloop_ai
 
 db-stop:
     docker stop postgres16

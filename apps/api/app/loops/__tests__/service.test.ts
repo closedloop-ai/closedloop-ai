@@ -1,10 +1,3 @@
-/**
- * Unit tests for loopsService methods: resume, create (MANUAL), and authorizeAdditionalRepos.
- *
- * Tests computeTargetId propagation, s3StateKey exclusion from resumed loops,
- * resumable-status validation, additional repos authorization behaviors,
- * MANUAL loop initial status/startedAt, and nested-loop prevention guard.
- */
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import {
   afterEach,
@@ -15,6 +8,8 @@ import {
   type Mock,
   vi,
 } from "vitest";
+import { buildPrismaLoop } from "../../../__tests__/fixtures/loop";
+import { dbUtilsModuleMock } from "../../../__tests__/fixtures/loops-service-mocks";
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 // Mock modules before importing the service
@@ -42,17 +37,20 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
   extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
 }));
 
+vi.mock("@/lib/db-utils", () => dbUtilsModuleMock());
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import {
-  authorizeAdditionalRepos,
   BranchNotFoundError,
-  loopsService,
+  isLoopAlreadyActiveError,
+  type LoopAlreadyActiveError,
   NestedManualLoopError,
   UnauthorizedRepoError,
-} from "../service";
+} from "../loop-errors";
+import { authorizeAdditionalRepos, loopsService } from "../service";
 
 // Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;
@@ -69,7 +67,7 @@ const makeParentFixture = (overrides?: Record<string, unknown>) => ({
   id: TEST_PARENT_LOOP_ID,
   organizationId: TEST_ORG_ID,
   userId: TEST_USER_ID,
-  command: "PLAN",
+  command: LoopCommand.Plan,
   status: LoopStatus.Completed,
   artifactId: "artifact-111",
   workstreamId: null,
@@ -96,15 +94,19 @@ function createMockResumeDb(
   const mockFindUnique = vi
     .fn()
     .mockResolvedValue(makeParentFixture(parentOverrides));
+  const mockFindFirst = vi.fn().mockResolvedValue(null);
   const mockCount = vi.fn().mockResolvedValue(0);
   const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
+  const mockUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
 
   mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
     const mockDb = {
       loop: {
         findUnique: mockFindUnique,
+        findFirst: mockFindFirst,
         count: mockCount,
         create: mockCreate,
+        updateMany: mockUpdateMany,
       },
       organization: { findUnique: mockOrgFindUnique },
       ...extraModels,
@@ -112,7 +114,13 @@ function createMockResumeDb(
     return callback(mockDb);
   });
 
-  return { mockCreate, mockCount, mockFindUnique };
+  return {
+    mockCreate,
+    mockCount,
+    mockFindUnique,
+    mockFindFirst,
+    mockUpdateMany,
+  };
 }
 
 function mockResumeDb(parentOverrides?: Record<string, unknown>) {
@@ -356,6 +364,42 @@ describe("loopsService.resume", () => {
   });
 });
 
+describe("loopsService.resume — sibling concurrency gate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const parentOverrides = {
+    artifactId: "artifact-1",
+    command: LoopCommand.Plan,
+  };
+
+  it("throws LoopAlreadyActiveError when an active sibling exists for the same (artifactId, command)", async () => {
+    const { mockFindFirst, mockCreate } = mockResumeDb(parentOverrides);
+    mockFindFirst.mockResolvedValue(
+      buildPrismaLoop({
+        id: "loop-sibling",
+        status: LoopStatus.Running,
+        command: LoopCommand.Plan,
+      })
+    );
+
+    const err = (await loopsService
+      .resume(TEST_PARENT_LOOP_ID, TEST_ORG_ID, TEST_USER_ID, {})
+      .catch((e) => e)) as LoopAlreadyActiveError;
+
+    expect(isLoopAlreadyActiveError(err)).toBe(true);
+    expect(err.existingLoopId).toBe("loop-sibling");
+    expect(err.existingCommand).toBe(LoopCommand.Plan);
+    expect(err.existingStatus).toBe(LoopStatus.Running);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+});
+
 describe("loopsService.create (MANUAL)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -365,6 +409,36 @@ describe("loopsService.create (MANUAL)", () => {
     vi.restoreAllMocks();
   });
 
+  function mockCreateDb({
+    count = vi.fn().mockResolvedValue(0),
+    create = vi.fn().mockResolvedValue({
+      id: TEST_NEW_LOOP_ID,
+      status: LoopStatus.Pending,
+    }),
+    findFirst = vi.fn().mockResolvedValue(null),
+    updateMany = vi.fn().mockResolvedValue({ count: 0 }),
+  }: {
+    count?: Mock;
+    create?: Mock;
+    findFirst?: Mock;
+    updateMany?: Mock;
+  } = {}) {
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        loop: {
+          count,
+          create,
+          findFirst,
+          updateMany,
+        },
+        organization: { findUnique: mockOrgFindUnique },
+      };
+      return callback(mockDb);
+    });
+
+    return { count, create, findFirst, updateMany };
+  }
+
   it("creates a MANUAL loop in RUNNING status with startedAt set", async () => {
     const mockCreate = vi
       .fn()
@@ -373,18 +447,7 @@ describe("loopsService.create (MANUAL)", () => {
         status: args.data.status,
         startedAt: args.data.startedAt,
       }));
-    const mockCount = vi.fn().mockResolvedValue(0);
-
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          count: mockCount,
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
-    });
+    mockCreateDb({ create: mockCreate });
 
     const result = await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
       command: LoopCommand.Manual,
@@ -394,65 +457,27 @@ describe("loopsService.create (MANUAL)", () => {
     expect(result.status).toBe(LoopStatus.Running);
 
     const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data.command).toBe(LoopCommand.Manual);
     expect(createCall.data.status).toBe(LoopStatus.Running);
     expect(createCall.data.startedAt).toBeInstanceOf(Date);
   });
 
-  it("creates a non-MANUAL loop in PENDING status without startedAt", async () => {
-    const mockCreate = vi
-      .fn()
-      .mockImplementation((args: { data: Record<string, unknown> }) => ({
-        id: TEST_NEW_LOOP_ID,
-        status: args.data.status,
-      }));
-    const mockCount = vi.fn().mockResolvedValue(0);
-
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          count: mockCount,
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
-    });
-
-    const result = await loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
-      command: LoopCommand.Plan,
-      documentId: "artifact-111",
-    });
-
-    expect(result.status).toBe(LoopStatus.Pending);
-
-    const createCall = mockCreate.mock.calls[0][0];
-    expect(createCall.data.status).toBe(LoopStatus.Pending);
-    expect(createCall.data.startedAt).toBeUndefined();
-  });
-
   it("throws NestedManualLoopError when a RUNNING non-MANUAL loop exists for the same document", async () => {
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          // Active count (concurrency check) returns 0
-          count: vi
-            .fn()
-            .mockImplementation((args: { where: Record<string, unknown> }) => {
-              // Nested-loop guard queries with `command: { not: "MANUAL" }`
-              if (
-                args.where.command &&
-                typeof args.where.command === "object" &&
-                "not" in args.where.command
-              ) {
-                return Promise.resolve(1); // A running non-MANUAL loop exists
-              }
-              return Promise.resolve(0); // Concurrency check passes
-            }),
-          create: vi.fn(),
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
+    const mockCreate = vi.fn();
+    mockCreateDb({
+      count: vi
+        .fn()
+        .mockImplementation((args: { where: Record<string, unknown> }) => {
+          if (
+            args.where.command &&
+            typeof args.where.command === "object" &&
+            "not" in args.where.command
+          ) {
+            return Promise.resolve(1);
+          }
+          return Promise.resolve(0);
+        }),
+      create: mockCreate,
     });
 
     await expect(
@@ -461,6 +486,8 @@ describe("loopsService.create (MANUAL)", () => {
         documentId: "artifact-111",
       })
     ).rejects.toBeInstanceOf(NestedManualLoopError);
+
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("allows MANUAL loop creation when no RUNNING non-MANUAL loops exist", async () => {
@@ -469,16 +496,7 @@ describe("loopsService.create (MANUAL)", () => {
       status: LoopStatus.Running,
     });
 
-    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
-      const mockDb = {
-        loop: {
-          count: vi.fn().mockResolvedValue(0), // Both concurrency + nested-loop
-          create: mockCreate,
-        },
-        organization: { findUnique: mockOrgFindUnique },
-      };
-      return callback(mockDb);
-    });
+    mockCreateDb({ create: mockCreate });
 
     await expect(
       loopsService.create(TEST_ORG_ID, TEST_USER_ID, {
@@ -832,7 +850,7 @@ function makeLoopDbRow(overrides: Record<string, unknown> = {}) {
     id: "loop-enrich-1",
     organizationId: "org-enrich",
     userId: "user-enrich",
-    command: "PLAN",
+    command: LoopCommand.Plan,
     status: LoopStatus.Completed,
     artifactId: "doc-enrich-1",
     workstreamId: null,

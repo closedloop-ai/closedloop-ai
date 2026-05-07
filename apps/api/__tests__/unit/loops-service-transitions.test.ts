@@ -56,10 +56,8 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  InvalidStatusTransitionError,
-  loopsService,
-} from "@/app/loops/service";
+import { InvalidStatusTransitionError } from "@/app/loops/loop-errors";
+import { loopsService } from "@/app/loops/service";
 import { buildLoop } from "../fixtures/loop";
 
 const mockWithDb = withDb as unknown as Mock;

@@ -1,4 +1,4 @@
-# Contributing to Symphony
+# Contributing to ClosedLoop.AI
 
 We welcome contributions! This guide covers everything you need to get started.
 
@@ -8,16 +8,15 @@ We welcome contributions! This guide covers everything you need to get started.
 
 - Node.js 20+
 - [pnpm](https://pnpm.io)
-- [Stripe CLI](https://docs.stripe.com/stripe-cli) for local webhook testing
 - Docker (for local PostgreSQL)
 
 ### Setup
 
 ```bash
 # Fork on GitHub, then clone your fork
-git clone git@github.com:YOUR_USERNAME/symphony-alpha.git
-cd symphony-alpha
-git remote add upstream git@github.com:closedloop-ai/symphony-alpha.git
+git clone git@github.com:YOUR_USERNAME/closedloop-ai.git
+cd closedloop-ai
+git remote add upstream git@github.com:closedloop-ai/closedloop-ai.git
 
 # Install dependencies
 pnpm install
@@ -37,7 +36,7 @@ cd packages/database && pnpm prisma migrate dev && cd ../..
 pnpm dev
 ```
 
-See [docs/local_deployment.md](docs/local_deployment.md) for the full setup guide including service account configuration (Clerk, Stripe, GitHub App, etc.).
+See [docs/local_deployment.md](docs/local_deployment.md) for the full setup guide including service account configuration (Clerk, GitHub App, etc.).
 
 ### Verify
 
@@ -58,7 +57,7 @@ All contributions come through forks. External contributors do not have push acc
 
 ### Fork & Branch
 
-1. [Fork](https://github.com/closedloop-ai/symphony-alpha/fork) the repository on GitHub
+1. [Fork](https://github.com/closedloop-ai/closedloop-ai/fork) the repository on GitHub
 2. Clone your fork and add the upstream remote (see Setup above)
 3. Create a feature branch from `main`:
    ```bash
@@ -83,7 +82,7 @@ git rebase upstream/main
 ### Pull Request Process
 
 1. Push your branch to **your fork** (not the upstream repo)
-2. Open a PR from your fork's branch to `closedloop-ai/symphony-alpha:main`
+2. Open a PR from your fork's branch to `closedloop-ai/closedloop-ai:main`
 3. Include a description of what changed and why
 4. Address review feedback with additional commits (don't force-push during review)
 5. A maintainer will squash merge to `main` after approval
@@ -93,7 +92,7 @@ git rebase upstream/main
 ### Monorepo Structure
 
 ```
-symphony-alpha/
+closedloop-ai/
 ├── apps/           # Deployable applications
 │   ├── app/        # Main application (port 3000)
 │   ├── api/        # BFF API server (port 3002)

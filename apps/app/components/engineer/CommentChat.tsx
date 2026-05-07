@@ -66,8 +66,8 @@ import {
   createCodexStreamState,
   readCodexStream,
 } from "@/lib/engineer/codex-stream";
+import type { ChatMessage } from "@/lib/engineer/queries/closedloop";
 import { queryKeys } from "@/lib/engineer/queries/keys";
-import type { ChatMessage } from "@/lib/engineer/queries/symphony";
 import { getTextContent } from "@/lib/engineer/utils";
 
 export type CommentChatProps = {
@@ -89,7 +89,7 @@ export type CommentChatProps = {
 
 /**
  * CommentChat - A non-dialog component for addressing a specific PR comment.
- * Used within SymphonyChat when a comment is selected in the PR Comments tab.
+ * Used within ClosedLoopChat when a comment is selected in the PR Comments tab.
  */
 export function CommentChat({
   commentId,

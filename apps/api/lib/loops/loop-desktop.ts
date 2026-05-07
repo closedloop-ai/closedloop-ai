@@ -12,7 +12,7 @@ import {
 import type { JsonValue } from "@repo/api/src/types/common";
 import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
-import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
+import type { LoopBody } from "@repo/api/src/types/loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
@@ -299,7 +299,7 @@ export async function launchLoopOnDesktop(
             })),
           }),
       ...(documentId ? { primaryArtifactId: documentId } : {}),
-    } satisfies SymphonyLoopBody as JsonValue,
+    } satisfies LoopBody as JsonValue,
   };
 
   const createResult = await desktopCommandStore.createCommand(

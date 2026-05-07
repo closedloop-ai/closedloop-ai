@@ -26,7 +26,7 @@ type UseCodexDebateOptions = {
   claudeStream: ReturnType<typeof useChatStream>;
   /** Override where debate messages are saved (default: symphony chat-history) */
   saveEndpoint?: string;
-  /** Override which query key to invalidate after saving (default: symphonyChatHistory) */
+  /** Override which query key to invalidate after saving (default: closedloopChatHistory) */
   invalidateKey?: readonly unknown[];
   /** Override URL to POST Claude messages during debate (default: /api/gateway/symphony/chat/{ticketId}?repo=...) */
   claudeUrl?: string;
@@ -172,7 +172,7 @@ export function useCodexDebate({
       });
       await queryClient.invalidateQueries({
         queryKey:
-          invalidateKey || queryKeys.symphonyChatHistory(ticketId, repoPath),
+          invalidateKey || queryKeys.closedloopChatHistory(ticketId, repoPath),
       });
     },
     [ticketId, repoPath, queryClient, saveEndpoint, invalidateKey]
@@ -428,7 +428,7 @@ export function useCodexDebate({
             await queryClient.invalidateQueries({
               queryKey:
                 invalidateKey ||
-                queryKeys.symphonyChatHistory(ticketId, repoPath),
+                queryKeys.closedloopChatHistory(ticketId, repoPath),
             });
             // Fetch the latest messages to get Claude's response for debate history
             const fetchHistoryUrl =
@@ -561,7 +561,7 @@ export function useCodexDebate({
             await queryClient.invalidateQueries({
               queryKey:
                 invalidateKey ||
-                queryKeys.symphonyChatHistory(ticketId, repoPath),
+                queryKeys.closedloopChatHistory(ticketId, repoPath),
             });
             // Auto-debate is done — disable auto mode
             setAutoDebateState(false);
@@ -668,7 +668,7 @@ export function useCodexDebate({
       });
       await queryClient.invalidateQueries({
         queryKey:
-          invalidateKey || queryKeys.symphonyChatHistory(ticketId, repoPath),
+          invalidateKey || queryKeys.closedloopChatHistory(ticketId, repoPath),
       });
 
       // Wrap the prompt so Codex knows a human developer is speaking

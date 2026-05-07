@@ -5,7 +5,11 @@ import type {
   DocumentStatus,
   DocumentType,
 } from "@repo/api/src/types/document";
-import type { SourceContextType } from "@repo/api/src/types/loop";
+import type {
+  LoopCommand,
+  LoopStatus,
+  SourceContextType,
+} from "@repo/api/src/types/loop";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type {
   Prisma,
@@ -375,6 +379,10 @@ export type StartPlanLoopFromLocalResult =
       documentId: string;
       documentSlug: string;
       localRepoPath: string;
+    }
+  | {
+      outcome: "already-active-conflict";
+      activeLoop: { id: string; command: LoopCommand; status: LoopStatus };
     }
   | { outcome: "error"; reason: "missing-local-path" }
   | {

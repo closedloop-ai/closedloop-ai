@@ -146,8 +146,11 @@ export function PlanEditor({
   );
 
   // Fetch generation status with adaptive polling (stops when terminal)
-  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
-    useDocumentGenerationStatus(plan.id, { polling: true });
+  const {
+    data: generationStatus,
+    isLoading: generationStatusLoading,
+    invalidateCache: invalidateArtifactCache,
+  } = useDocumentGenerationStatus(plan.id, { polling: true });
   const dismissGenerationStatus = useDismissDocumentGenerationStatus();
 
   // Pre-fill additionalRepos for the regenerate-plan flow from the PLAN
@@ -246,6 +249,8 @@ export function PlanEditor({
   const header = showHeader ? (
     <PlanEditorHeader
       canShowPanel={chatFlag?.enabled === true}
+      generationStatus={generationStatus}
+      generationStatusLoading={generationStatusLoading}
       isApproved={isApproved}
       isDraft={isDraft}
       isExecuting={planActions.isExecuting}

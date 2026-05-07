@@ -4,7 +4,7 @@
  * Follows the same pattern as pr-tracker.ts.
  */
 
-const STORAGE_KEY = "symphony-deploy-info";
+const STORAGE_KEY = "closedloop-deploy-info";
 
 export type DeployInfo = {
   ticketId: string;

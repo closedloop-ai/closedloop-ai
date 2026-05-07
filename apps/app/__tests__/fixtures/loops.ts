@@ -1,5 +1,24 @@
-import type { Loop, LoopWithUser } from "@repo/api/src/types/loop";
-import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import type { Loop, LoopEvent, LoopWithUser } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  LoopErrorCode,
+  LoopStatus,
+  RunnerErrorSubcode,
+} from "@repo/api/src/types/loop";
+
+export const RUNNER_RATE_LIMIT_LOOP_ERROR = {
+  code: LoopErrorCode.RunnerError,
+  message: "Claude rate limit reached.",
+  result: { subcode: RunnerErrorSubcode.ClaudeRateLimit },
+} satisfies NonNullable<Loop["error"]>;
+
+export const RUNNER_RATE_LIMIT_EVENT: LoopEvent = {
+  type: "error",
+  code: RUNNER_RATE_LIMIT_LOOP_ERROR.code,
+  message: RUNNER_RATE_LIMIT_LOOP_ERROR.message,
+  timestamp: "2026-01-01T00:00:00.000Z",
+  result: RUNNER_RATE_LIMIT_LOOP_ERROR.result,
+};
 
 /**
  * Factory for creating mock Loop objects.

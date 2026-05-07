@@ -3,7 +3,6 @@
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
   AdditionalRepoRefWithPr,
-  LoopErrorCode,
   LoopEventError,
   TokensByModel,
 } from "@repo/api/src/types/loop";
@@ -45,11 +44,7 @@ import { useState } from "react";
 import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
-import {
-  LoopCommandBadge,
-  LoopStatusBadge,
-  loopErrorCodeLabels,
-} from "@/components/status-badge";
+import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { UserLink } from "@/components/user-link";
 import { useDocument } from "@/hooks/queries/use-documents";
 import {
@@ -65,6 +60,7 @@ import {
   CANCELLABLE_LOOP_STATUSES,
   RESTARTABLE_LOOP_STATUSES,
 } from "@/lib/loop-constants";
+import { getLoopErrorTitle } from "@/lib/loop-error-display";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatModelName(model: string): string {
@@ -393,6 +389,9 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const diagnosticsLogTail = ghostLoopUx
     ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
     : undefined;
+  const loopErrorTitle = loop.error
+    ? getLoopErrorTitle(loop.error, { useFriendlyCodeLabels: !!ghostLoopUx })
+    : null;
 
   const handleRestart = () => {
     resumeLoop.mutate(
@@ -501,11 +500,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       {loop.error && (
         <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4">
           <p className="font-medium text-destructive text-sm">
-            Error:{" "}
-            {ghostLoopUx
-              ? (loopErrorCodeLabels[loop.error.code as LoopErrorCode] ??
-                loop.error.code)
-              : loop.error.code}
+            Error: {loopErrorTitle}
           </p>
           <p className="mt-1 text-destructive/80 text-sm">
             {loop.error.message}

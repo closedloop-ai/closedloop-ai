@@ -1,4 +1,5 @@
-import type { JsonObject } from "@repo/api/src/types/common";
+import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
+import { conflictBody } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
   type PullRequestInfo,
@@ -311,11 +312,7 @@ export async function checkBackendMismatch(
   organizationId: string,
   resolvedComputeTargetId: string | undefined,
   latestCompletedLoopComputeTargetId?: string | null
-): Promise<NextResponse<{
-  success: false;
-  error: string;
-  data: BackendMismatchBody;
-}> | null> {
+): Promise<NextResponse<ApiResult<never>> | null> {
   let previousTargetId: string | null;
   let hasPriorLoop: boolean;
   if (latestCompletedLoopComputeTargetId === undefined) {
@@ -359,10 +356,12 @@ export async function checkBackendMismatch(
     preferredComputeTargetId: currentTargetId,
     documentId,
   };
-  return NextResponse.json(
-    { success: false, error: mismatchBody.message, data: mismatchBody },
-    { status: 409 }
-  );
+  // Body shape is shared with the frontend via `ApiConflictBody<BackendMismatchBody>`;
+  // outer cast to `ApiResult<never>` keeps the standard auth-wrapper contract
+  // (NextResponse is invariant in its body parameter).
+  return NextResponse.json(conflictBody(mismatchBody.message, mismatchBody), {
+    status: 409,
+  }) as NextResponse<ApiResult<never>>;
 }
 
 /**

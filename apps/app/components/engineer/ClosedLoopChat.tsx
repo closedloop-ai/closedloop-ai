@@ -87,19 +87,19 @@ import {
   createCodexStreamState,
   readCodexStream,
 } from "@/lib/engineer/codex-stream";
+import {
+  closedloopChatHistoryOptions,
+  closedloopPlanOptions,
+  closedloopStatusOptions,
+  type PlanResponse,
+} from "@/lib/engineer/queries/closedloop";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { reposOptions } from "@/lib/engineer/queries/repos";
-import {
-  type PlanResponse,
-  symphonyChatHistoryOptions,
-  symphonyPlanOptions,
-  symphonyStatusOptions,
-} from "@/lib/engineer/queries/symphony";
 import { getTextContent } from "@/lib/engineer/utils";
 
 export type LeftPaneTab = "plan" | "changes" | "comments";
 
-type SymphonyChatProps = {
+type ClosedLoopChatProps = {
   isOpen: boolean;
   onClose: () => void;
   ticketId: string;
@@ -112,10 +112,10 @@ type SymphonyChatProps = {
 };
 
 /**
- * Symphony Chat Dialog
+ * ClosedLoop Chat Dialog
  * A side-by-side view with the implementation plan on the left and chat on the right
  */
-export function SymphonyChat({
+export function ClosedLoopChat({
   isOpen,
   onClose,
   ticketId,
@@ -124,7 +124,7 @@ export function SymphonyChat({
   contextRepoPaths,
   prInfo,
   initialTab,
-}: Readonly<SymphonyChatProps>) {
+}: Readonly<ClosedLoopChatProps>) {
   const isMobile = useIsMobile();
   const [input, setInput] = useState("");
   const [activeTab, setActiveTab] = useState<LeftPaneTab>("plan");
@@ -142,7 +142,7 @@ export function SymphonyChat({
     if (globalThis.localStorage === undefined) {
       return 0.5;
     }
-    const stored = localStorage.getItem("symphony-chat-split");
+    const stored = localStorage.getItem("closedloop-chat-split");
     const parsed = stored ? Number(stored) : Number.NaN;
     return parsed >= 0.3 && parsed <= 0.7 ? parsed : 0.5;
   });
@@ -211,7 +211,7 @@ export function SymphonyChat({
   // (invalidateAfterResponse) after stream completion/stop, not on tab focus.
   // Tab-focus refetches caused duplicate messages when pendingUserMessage was still set.
   const { data: history, isLoading: isLoadingHistory } = useQuery({
-    ...symphonyChatHistoryOptions(ticketId, repoPath),
+    ...closedloopChatHistoryOptions(ticketId, repoPath),
     enabled: isOpen,
     refetchOnWindowFocus: false,
   });
@@ -227,24 +227,24 @@ export function SymphonyChat({
 
   // Load plan content
   const { data: plan, isLoading: isLoadingPlan } = useQuery({
-    ...symphonyPlanOptions(ticketId, repoPath),
+    ...closedloopPlanOptions(ticketId, repoPath),
     enabled: isOpen,
   });
 
-  // Load Symphony status to detect completion
-  const { data: symphonyStatus } = useQuery({
-    ...symphonyStatusOptions(ticketId, repoPath),
+  // Load ClosedLoop status to detect completion
+  const { data: closedloopStatus } = useQuery({
+    ...closedloopStatusOptions(ticketId, repoPath),
     enabled: isOpen,
     refetchInterval: 5000, // Poll every 5 seconds while dialog is open
   });
 
-  // Comments-only mode: PR linked but no Symphony session
-  const isCommentsOnly = !!prInfo && !symphonyStatus?.exists;
+  // Comments-only mode: PR linked but no ClosedLoop session
+  const isCommentsOnly = !!prInfo && !closedloopStatus?.exists;
 
-  // Determine if Symphony run is completed (show tabs when completed)
+  // Determine if ClosedLoop run is completed (show tabs when completed)
   const isCompleted =
-    symphonyStatus?.status === "COMPLETED" ||
-    symphonyStatus?.status === "AWAITING_USER";
+    closedloopStatus?.status === "COMPLETED" ||
+    closedloopStatus?.status === "AWAITING_USER";
 
   // Reset tab when dialog opens (use initialTab if provided, else "plan")
   useEffect(() => {
@@ -367,10 +367,10 @@ export function SymphonyChat({
   // Awaits chat history so streaming content stays visible until fresh data arrives.
   const invalidateAfterResponse = useCallback(async () => {
     await queryClient.invalidateQueries({
-      queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+      queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
     });
     queryClient.invalidateQueries({
-      queryKey: queryKeys.symphonyPlan(ticketId, repoPath),
+      queryKey: queryKeys.closedloopPlan(ticketId, repoPath),
     });
     const worktreePath = getWorktreePath(repoPath, ticketId, worktreeParentDir);
     queryClient.invalidateQueries({
@@ -579,7 +579,7 @@ export function SymphonyChat({
             }
           );
           await queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+            queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
           });
         },
         onError: (error) => {
@@ -727,7 +727,7 @@ export function SymphonyChat({
       /* best-effort */
     });
     queryClient.invalidateQueries({
-      queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+      queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
     });
     debate.startDebateMode();
   }, [codexData?.available, debate, ticketId, repoPath, queryClient]);
@@ -755,7 +755,7 @@ export function SymphonyChat({
       /* best-effort */
     });
     queryClient.invalidateQueries({
-      queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+      queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
     });
     debate.handleEndDebate();
     toast.success("Debate ended");
@@ -1327,7 +1327,7 @@ export function SymphonyChat({
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
         setLeftPaneFraction((cur) => {
-          localStorage.setItem("symphony-chat-split", String(cur));
+          localStorage.setItem("closedloop-chat-split", String(cur));
           return cur;
         });
       };
@@ -1413,7 +1413,7 @@ export function SymphonyChat({
       );
       if (response.ok) {
         queryClient.invalidateQueries({
-          queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+          queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
         });
       }
     } catch (err) {
@@ -1634,7 +1634,7 @@ export function SymphonyChat({
 
   // Chat header
   const chatHeader = (
-    <SymphonyChatHeader
+    <ClosedLoopChatHeader
       autoDebate={debate.autoDebate}
       currentRound={debate.currentRound}
       debateMode={debate.debateMode}
@@ -1681,7 +1681,7 @@ export function SymphonyChat({
 
   // Input area
   const inputArea = (
-    <SymphonyChatInputArea
+    <ClosedLoopChatInputArea
       activeTab={activeTab}
       autoDebate={debate.autoDebate}
       canSend={canSend}
@@ -1779,7 +1779,7 @@ export function SymphonyChat({
         <AlertDialogHeader>
           <AlertDialogTitle>Clear chat history?</AlertDialogTitle>
           <AlertDialogDescription>
-            This will remove all saved messages from this Symphony chat.
+            This will remove all saved messages from this ClosedLoop chat.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -2451,7 +2451,7 @@ const MessageBubble = memo(
         {isUser ? (
           <UserMessageContent content={message.content}>
             {(text) => (
-              <SymphonyUserText mentions={message.mentions} text={text} />
+              <ClosedLoopUserText mentions={message.mentions} text={text} />
             )}
           </UserMessageContent>
         ) : (
@@ -2684,7 +2684,7 @@ function findLastAssistantIndex(messages: ChatMessage[]): number {
 /**
  * Chat button to be placed in toolbars
  */
-export function SymphonyChatButton({
+export function ClosedLoopChatButton({
   onClick,
   hasMessages = false,
 }: Readonly<{
@@ -2730,7 +2730,7 @@ function transformImageSrc(
   return src;
 }
 
-/* ---------- Extracted helpers to reduce SymphonyChat cognitive complexity ---------- */
+/* ---------- Extracted helpers to reduce ClosedLoopChat cognitive complexity ---------- */
 
 /**
  * Build the message content to send (with optional context and image paths)
@@ -3115,7 +3115,7 @@ function buildRebasePrompt(branch: string) {
 /**
  * Symphony-specific user text renderer with inline images, mentions, and @codex highlighting.
  */
-function SymphonyUserText({
+function ClosedLoopUserText({
   text,
   mentions,
 }: Readonly<{ text: string; mentions?: string[] }>) {
@@ -3157,7 +3157,7 @@ function SymphonyUserText({
  * Look backwards from cursor for an @ that starts a mention.
  * Returns the index of @ if found, or -1.
  */
-function SymphonyChatHeader({
+function ClosedLoopChatHeader({
   isStreaming,
   debateMode,
   autoDebate,
@@ -3502,7 +3502,7 @@ function ChatMessagesArea({
   );
 }
 
-type SymphonyChatInputAreaProps = Readonly<{
+type ClosedLoopChatInputAreaProps = Readonly<{
   selectedContext: SelectedContext | null;
   onClearContext: () => void;
   pendingImages: PendingImage[];
@@ -3541,7 +3541,7 @@ type SymphonyChatInputAreaProps = Readonly<{
   onClearChat: () => void;
 }>;
 
-function SymphonyChatInputArea({
+function ClosedLoopChatInputArea({
   selectedContext,
   onClearContext,
   pendingImages,
@@ -3578,7 +3578,7 @@ function SymphonyChatInputArea({
   messageCount,
   historyCount,
   onClearChat,
-}: SymphonyChatInputAreaProps) {
+}: ClosedLoopChatInputAreaProps) {
   const needsHighlight =
     selectedMentions.length > 0 ||
     input.includes("`") ||

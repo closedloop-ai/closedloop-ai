@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { env } from "@/env";
 
 /**
- * Ticket details to pass to Symphony
+ * Ticket details to pass to the ClosedLoop execution engine
  */
 export type TicketDetails = {
   identifier: string;
@@ -39,10 +39,10 @@ export type ActiveSession = {
 };
 
 /**
- * Result from the useSymphonyLaunch hook
+ * Result from the useClosedLoopLaunch hook
  * Supports multiple active sessions simultaneously
  */
-export type UseSymphonyLaunchResult = {
+export type UseClosedLoopLaunchResult = {
   // Multiple sessions
   activeSessions: ActiveSession[];
 
@@ -81,11 +81,11 @@ export type UseSymphonyLaunchResult = {
 const POLL_INTERVAL_MS = 2000;
 
 /**
- * Hook to launch Symphony run-loop.sh script for tickets.
- * Sessions are persisted to ~/.symphony/sessions.json via API.
+ * Hook to launch ClosedLoop run-loop.sh script for tickets.
+ * Sessions are persisted to ~/.closedloop/sessions.json via API.
  * Supports multiple active sessions simultaneously.
  */
-export function useSymphonyLaunch(): UseSymphonyLaunchResult {
+export function useClosedLoopLaunch(): UseClosedLoopLaunchResult {
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [launchingTickets, setLaunchingTickets] = useState<Set<string>>(
     new Set()
@@ -104,7 +104,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         setActiveSessions(sessions);
       })
       .catch((err) => {
-        console.error("[useSymphonyLaunch] Failed to load sessions:", err);
+        console.error("[useClosedLoopLaunch] Failed to load sessions:", err);
       });
   }, []);
 
@@ -120,7 +120,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
     [activeSessions]
   );
 
-  // Launch Symphony for a ticket
+  // Launch ClosedLoop for a ticket
   const launch = useCallback(
     async (
       ticketIdentifier: string,
@@ -128,7 +128,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       ticket?: TicketDetails,
       baseBranch?: string
     ): Promise<{ launched: boolean; alreadyRunning: boolean }> => {
-      console.log("[useSymphonyLaunch] launch called", {
+      console.log("[useClosedLoopLaunch] launch called", {
         ticketIdentifier,
         repoPath,
         baseBranch,
@@ -146,7 +146,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
 
       try {
         console.log(
-          "[useSymphonyLaunch] Making POST to /api/gateway/symphony/launch"
+          "[useClosedLoopLaunch] Making POST to /api/gateway/symphony/launch"
         );
 
         const url = "/api/gateway/symphony/launch";
@@ -180,13 +180,16 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         }
 
         const data = await response.json();
-        console.log("[useSymphonyLaunch] Response:", { ok: response.ok, data });
+        console.log("[useClosedLoopLaunch] Response:", {
+          ok: response.ok,
+          data,
+        });
 
         if (!response.ok) {
           throw new Error(data.error || "Failed to launch ClosedLoop");
         }
 
-        // Save session to ~/.symphony/sessions.json via API
+        // Save session to ~/.closedloop/sessions.json via API
         // Local handler returns `workDir`, Electron relay returns `worktreePath`.
         const resolvedWorktreePath = data.workDir ?? data.worktreePath;
         const contextRepoPaths = ticket?.contextRepoPaths;
@@ -259,7 +262,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: session.pid }),
         }).catch((err) => {
-          console.error("[useSymphonyLaunch] Failed to kill process:", err);
+          console.error("[useClosedLoopLaunch] Failed to kill process:", err);
         });
       }
 
@@ -270,7 +273,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
           method: "DELETE",
         }
       ).catch((err) => {
-        console.error("[useSymphonyLaunch] Failed to delete session:", err);
+        console.error("[useClosedLoopLaunch] Failed to delete session:", err);
       });
 
       // Remove from local state
@@ -290,7 +293,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pid: session.pid }),
         }).catch((err) => {
-          console.error("[useSymphonyLaunch] Failed to kill process:", err);
+          console.error("[useClosedLoopLaunch] Failed to kill process:", err);
         });
       }
 
@@ -300,7 +303,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
           method: "DELETE",
         }
       ).catch((err) => {
-        console.error("[useSymphonyLaunch] Failed to delete session:", err);
+        console.error("[useClosedLoopLaunch] Failed to delete session:", err);
       });
     }
 

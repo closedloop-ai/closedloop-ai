@@ -41,6 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   type User,
@@ -73,6 +74,7 @@ import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { useMultiRepoPrdEnabled } from "@/hooks/use-multi-repo-prd-enabled";
+import { getErrorMessage } from "@/lib/api-error";
 import {
   DOCUMENT_STATUS_LABELS,
   DOCUMENT_TYPE_BADGE_LABELS,
@@ -380,11 +382,18 @@ export function CreateDocumentModal({
       },
       {
         onSuccess: (artifact) => {
-          runLoop.mutate({
-            documentId: artifact.id,
-            command: RunLoopCommand.GeneratePrd,
-            ...(additionalRepos.length > 0 && { additionalRepos }),
-          });
+          runLoop.mutate(
+            {
+              documentId: artifact.id,
+              command: RunLoopCommand.GeneratePrd,
+              ...(additionalRepos.length > 0 && { additionalRepos }),
+            },
+            {
+              onError: (error) => {
+                toast.error(getErrorMessage(error));
+              },
+            }
+          );
           handleClose();
           onSuccess?.(artifact);
         },

@@ -54,7 +54,7 @@ vi.mock("@/lib/db-utils", () => ({
 
 // --- Imports (after mocks) ---
 
-import { LoopCommand } from "@repo/api/src/types/loop";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
@@ -210,10 +210,10 @@ describe("loopsService.findInheritedAdditionalRepos", () => {
         expect(where.artifactId).toBe("doc-1");
         expect(where.organizationId).toBe("org-1");
         const statusJson = JSON.stringify(where.status);
-        expect(statusJson).not.toContain("FAILED");
-        expect(statusJson).not.toContain("PENDING");
-        expect(statusJson).not.toContain("CLAIMED");
-        expect(statusJson).not.toContain("RUNNING");
+        expect(statusJson).not.toContain(LoopStatus.Failed);
+        expect(statusJson).not.toContain(LoopStatus.Pending);
+        expect(statusJson).not.toContain(LoopStatus.Claimed);
+        expect(statusJson).not.toContain(LoopStatus.Running);
       }
     });
 

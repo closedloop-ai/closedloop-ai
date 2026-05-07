@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.13",
-    "@clerk/testing": "^2.0.14",
+    "@clerk/testing": "^2.0.25",
     "@playwright/test": "^1.58.2",
     "@repo/typescript-config": "workspace:*",
     "@turbo/gen": "^2.8.14",
@@ -77,11 +77,11 @@
       "hono": ">=4.12.12",
       "@hono/node-server": ">=1.19.13",
       "handlebars": ">=4.7.9",
-      "fast-xml-parser": ">=5.5.7",
+      "fast-xml-parser": ">=5.7.0",
       "defu": ">=6.1.5",
       "dompurify": ">=3.4.0",
       "protobufjs": ">=7.5.5 <8.0.0",
-      "undici": ">=6.24.0 <8.0.0",
+      "undici": ">=7.24.0 <8.0.0",
       "flatted": ">=3.4.0",
       "socket.io-parser": ">=4.2.6",
       "express-rate-limit": ">=8.2.2",
@@ -91,7 +91,11 @@
       "picomatch": ">=4.0.4",
       "brace-expansion": ">=2.0.3",
       "lodash": ">=4.18.0",
-      "lodash-es": ">=4.18.0"
+      "lodash-es": ">=4.18.0",
+      "axios": ">=1.15.2",
+      "tar": ">=6.2.1 <7.0.0",
+      "postcss": ">=8.5.10",
+      "ip-address": ">=10.1.1"
     }
   },
   "type": "module"

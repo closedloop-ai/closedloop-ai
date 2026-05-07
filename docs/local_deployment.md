@@ -27,7 +27,7 @@ corepack enable
 
 ```bash
 git clone <repository-url>
-cd symphony-alpha
+cd closedloop-ai
 pnpm install
 ```
 
@@ -44,7 +44,7 @@ docker compose ps
 This starts PostgreSQL with:
 - **User**: `postgres`
 - **Password**: `password`
-- **Database**: `symphony`
+- **Database**: `closedloop_ai`
 - **Port**: `5432`
 
 ### 3. Copy Environment Variables from AWS Secrets Manager
@@ -71,7 +71,7 @@ The secrets from AWS contain a production/cloud database URL. You need to overri
 In **each** of the three `.env.local` files (`apps/app/.env.local`, `apps/api/.env.local`, `apps/web/.env.local`), update the `DATABASE_URL`:
 
 ```bash
-DATABASE_URL="postgresql://postgres:password@localhost:5432/symphony?schema=public"
+DATABASE_URL="postgresql://postgres:password@localhost:5432/closedloop_ai?schema=public"
 ```
 
 ### 5. Configure packages/database/.env
@@ -79,7 +79,7 @@ DATABASE_URL="postgresql://postgres:password@localhost:5432/symphony?schema=publ
 The Prisma CLI also needs the database URL. Create or update `packages/database/.env`:
 
 ```bash
-DATABASE_URL="postgresql://postgres:password@localhost:5432/symphony?schema=public"
+DATABASE_URL="postgresql://postgres:password@localhost:5432/closedloop_ai?schema=public"
 ```
 
 ### 6. Initialize the Database

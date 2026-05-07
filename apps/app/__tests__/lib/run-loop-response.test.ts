@@ -6,9 +6,24 @@
  * backend_mismatch discriminants.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api-error";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
+
+vi.mock("@repo/design-system/components/ui/sonner", () => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
+const mockToastError = toast.error as ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  mockToastError.mockClear();
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -113,6 +128,170 @@ describe("handleRunLoopResponse — 429 rate limit", () => {
     expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
     expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fallback toast for unhandled errors
+// ---------------------------------------------------------------------------
+
+describe("handleRunLoopResponse — fallback toast for unhandled errors", () => {
+  const baseCallbacks = () => ({
+    onMultipleTargets: vi.fn(),
+    onBackendMismatch: vi.fn(),
+    onSuccess: vi.fn(),
+    onRateLimited: vi.fn(),
+  });
+
+  it("toasts the message for ApiError with status 500", () => {
+    handleRunLoopResponse(
+      new ApiError("Internal Server Error", 500),
+      baseCallbacks()
+    );
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Internal Server Error");
+  });
+
+  it("toasts the message for ApiError with status 403", () => {
+    handleRunLoopResponse(new ApiError("Forbidden", 403), baseCallbacks());
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Forbidden");
+  });
+
+  it("toasts the message for a plain Error (network failure)", () => {
+    handleRunLoopResponse(new Error("Network down"), baseCallbacks());
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Network down");
+  });
+
+  it("toasts a generic message for non-Error values", () => {
+    handleRunLoopResponse("oops", baseCallbacks());
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("An unexpected error occurred");
+  });
+
+  it("toasts when 409 has no conflict body", () => {
+    handleRunLoopResponse(
+      new ApiError("Conflict", 409, undefined, undefined),
+      baseCallbacks()
+    );
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Conflict");
+  });
+
+  it("does NOT toast for a successful response", () => {
+    handleRunLoopResponse(
+      { loopId: "loop-1", status: "running" },
+      baseCallbacks()
+    );
+
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("does NOT toast when onRateLimited handles a 429", () => {
+    handleRunLoopResponse(new ApiError("Rate limited", 429), baseCallbacks());
+
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("does NOT toast when a 409 conflict body is routed to a callback", () => {
+    handleRunLoopResponse(
+      new ApiError("Conflict", 409, undefined, makeMultipleTargetsBody()),
+      baseCallbacks()
+    );
+
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 409 loop_already_active branch
+// ---------------------------------------------------------------------------
+
+describe("handleRunLoopResponse — 409 loop_already_active", () => {
+  const makeLoopAlreadyActiveBody = () =>
+    wrapInApiResult({
+      error: "loop_already_active" as const,
+      loopId: "loop-existing-456",
+      command: "EVALUATE_FEATURE",
+      status: "RUNNING",
+    });
+
+  it("calls onLoopAlreadyActive with the payload when error is loop_already_active", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      makeLoopAlreadyActiveBody()
+    );
+    const onLoopAlreadyActive = vi.fn();
+    const callbacks = {
+      onMultipleTargets: vi.fn(),
+      onBackendMismatch: vi.fn(),
+      onLoopAlreadyActive,
+      onSuccess: vi.fn(),
+      onRateLimited: vi.fn(),
+    };
+
+    handleRunLoopResponse(error, callbacks);
+
+    expect(onLoopAlreadyActive).toHaveBeenCalledOnce();
+    expect(onLoopAlreadyActive).toHaveBeenCalledWith({
+      error: "loop_already_active",
+      loopId: "loop-existing-456",
+      command: "EVALUATE_FEATURE",
+      status: "RUNNING",
+    });
+    expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
+    expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when onLoopAlreadyActive is omitted and error is loop_already_active", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      makeLoopAlreadyActiveBody()
+    );
+    const callbacks = {
+      onMultipleTargets: vi.fn(),
+      onBackendMismatch: vi.fn(),
+      onSuccess: vi.fn(),
+      // onLoopAlreadyActive intentionally omitted
+    };
+
+    expect(() => handleRunLoopResponse(error, callbacks)).not.toThrow();
+    expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
+    expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call onLoopAlreadyActive for other 409 discriminants", () => {
+    const error = new ApiError(
+      "Conflict",
+      409,
+      undefined,
+      makeMultipleTargetsBody()
+    );
+    const onLoopAlreadyActive = vi.fn();
+    const callbacks = {
+      onMultipleTargets: vi.fn(),
+      onBackendMismatch: vi.fn(),
+      onLoopAlreadyActive,
+      onSuccess: vi.fn(),
+      onRateLimited: vi.fn(),
+    };
+
+    handleRunLoopResponse(error, callbacks);
+
+    expect(onLoopAlreadyActive).not.toHaveBeenCalled();
+    expect(callbacks.onMultipleTargets).toHaveBeenCalledOnce();
   });
 });
 

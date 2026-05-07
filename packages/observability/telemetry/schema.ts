@@ -38,6 +38,12 @@ export const TelemetryCategory = {
   ElectronUpdateSucceeded: "electron_update.succeeded",
   // Q-001: ElectronUpdateFailed requires cross-repo coordination with closedloop-electron
   ElectronUpdateFailed: "electron_update.failed",
+  // Desktop onboarding popup events (AC-001)
+  OnboardingPopupShown: "onboarding.popup_shown",
+  OnboardingPopupCtaClicked: "onboarding.popup_cta_clicked",
+  OnboardingPopupDismissedSession: "onboarding.popup_dismissed_session",
+  OnboardingPopupDismissedPermanent: "onboarding.popup_dismissed_permanent",
+  OnboardingPopupSuppressedAuto: "onboarding.popup_suppressed_auto",
 } as const;
 
 export type TelemetryCategory =

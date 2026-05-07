@@ -1,18 +1,23 @@
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import type {
+  CreateLoopResponse,
+  LoopAlreadyActiveBody,
+} from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import {
-  errorResponse,
   parseBody,
   scheduleLogFlushAfter,
   successResponse,
 } from "@/lib/route-utils";
-import { isConcurrentLoopLimitError, loopsService } from "../../service";
+import { handleLoopServiceError } from "../../loop-error-responses";
+import { loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 
-export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
+type ResumeLoopRouteResponse = CreateLoopResponse | LoopAlreadyActiveBody;
+
+export const POST = withAnyAuth<ResumeLoopRouteResponse, "/loops/[id]/resume">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -87,10 +92,7 @@ export const POST = withAnyAuth<CreateLoopResponse, "/loops/[id]/resume">(
 
       return successResponse(result);
     } catch (error) {
-      if (isConcurrentLoopLimitError(error)) {
-        return errorResponse(error.message, error, 429);
-      }
-      return errorResponse("Failed to resume loop", error);
+      return handleLoopServiceError(error, "Failed to resume loop");
     }
   },
   { requiredScopes: ["write"] }

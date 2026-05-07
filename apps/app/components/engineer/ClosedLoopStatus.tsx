@@ -13,9 +13,9 @@ import {
   Play,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { symphonyStatusOptions } from "@/lib/engineer/queries/symphony";
+import { closedloopStatusOptions } from "@/lib/engineer/queries/closedloop";
 
-type SymphonyStatusProps = {
+type ClosedLoopStatusProps = {
   ticketId: string;
   repoPath: string;
   onStop?: () => void;
@@ -105,15 +105,15 @@ function getStatusColor(status: string | null | undefined) {
 }
 
 /**
- * SymphonyStatus component displays real-time Symphony execution status.
+ * ClosedLoopStatus component displays real-time Symphony execution status.
  * Polls state.json every 2 seconds for updates.
  */
-export function SymphonyStatus({
+export function ClosedLoopStatus({
   ticketId,
   repoPath,
   onStop,
   onResume,
-}: Readonly<SymphonyStatusProps>) {
+}: Readonly<ClosedLoopStatusProps>) {
   const [resumeClicked, setResumeClicked] = useState(false);
   const [prevStatus, setPrevStatus] = useState<string | null | undefined>(
     undefined
@@ -121,7 +121,7 @@ export function SymphonyStatus({
   const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: status, isLoading } = useQuery({
-    ...symphonyStatusOptions(ticketId, repoPath),
+    ...closedloopStatusOptions(ticketId, repoPath),
     // Poll every 2 seconds while running, or while waiting for resume to take effect
     refetchInterval: (query) => {
       if (resumeClicked) {

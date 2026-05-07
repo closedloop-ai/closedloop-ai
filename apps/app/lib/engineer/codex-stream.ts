@@ -1,7 +1,7 @@
 /**
  * Shared Codex NDJSON stream reader.
  *
- * Extracts the duplicated Codex parsing logic from CommentChat, SymphonyChat,
+ * Extracts the duplicated Codex parsing logic from CommentChat, ClosedLoopChat,
  * and use-codex-debate into a single correct implementation that uses
  * readNdjsonLines (proper chunk buffering) instead of chunk.split("\n").
  */

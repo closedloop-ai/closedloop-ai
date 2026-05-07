@@ -14,6 +14,7 @@ import type {
 } from "@repo/api/src/types/workstream";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { cn } from "@repo/design-system/lib/utils";
+import { loopErrorCodeLabels } from "@/lib/loop-error-labels";
 
 type StatusBadgeProps = {
   status: string;
@@ -49,32 +50,6 @@ const COLOR_PROGRESS = "bg-info/10 text-info-foreground border-info/30";
 const COLOR_PENDING = "bg-warning/10 text-warning-foreground border-warning/30";
 const COLOR_INACTIVE = "bg-muted text-muted-foreground border-muted";
 const COLOR_AI = "bg-ai/10 text-ai-foreground border-ai/30";
-
-/**
- * PR status colors per PRD requirements (AC3.1):
- * - OPEN → blue (in progress)
- * - MERGED → green (success)
- * - CLOSED → red (failure/abandoned)
- */
-export const prStatusColors: Record<string, string> = {
-  OPEN: COLOR_PROGRESS,
-  MERGED: COLOR_SUCCESS,
-  CLOSED: COLOR_FAILURE,
-};
-
-/**
- * PR review decision colors per PRD requirements (AC3.2):
- * - APPROVED → green (success)
- * - CHANGES_REQUESTED → red (needs work)
- * - COMMENTED → yellow (feedback provided)
- * - DISMISSED → gray (inactive/cancelled)
- */
-export const prReviewDecisionColors: Record<string, string> = {
-  APPROVED: COLOR_SUCCESS,
-  CHANGES_REQUESTED: COLOR_FAILURE,
-  COMMENTED: COLOR_PENDING,
-  DISMISSED: COLOR_INACTIVE,
-};
 
 export const previewDeploymentStateColors: Record<string, string> = {
   READY: COLOR_SUCCESS,
@@ -280,16 +255,12 @@ const loopStatusLabels: Record<LoopStatus, string> = {
   [LoopStatus.TimedOut]: "Timed Out",
 };
 
-export const loopErrorCodeLabels: Partial<Record<LoopErrorCode, string>> = {
-  [LoopErrorCode.NoWorkProduced]: "No output produced",
-  [LoopErrorCode.ContextLimitExceeded]: "Context limit exceeded",
-  [LoopErrorCode.PlanStateUnavailable]: "Plan state unavailable",
-};
-
 export const loopErrorCodeColors: Partial<Record<LoopErrorCode, string>> = {
   [LoopErrorCode.NoWorkProduced]: COLOR_PENDING,
   [LoopErrorCode.ContextLimitExceeded]: COLOR_FAILURE,
   [LoopErrorCode.PlanStateUnavailable]: COLOR_FAILURE,
+  [LoopErrorCode.StaleDispatch]: COLOR_FAILURE,
+  [LoopErrorCode.RunnerError]: COLOR_FAILURE,
 };
 
 export function LoopStatusBadge({

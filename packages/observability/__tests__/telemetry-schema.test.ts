@@ -329,6 +329,69 @@ describe("desktopTelemetryEventSchema", () => {
       );
     }
   });
+
+  it("accepts payload with TelemetryCategory.OnboardingPopupShown", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.OnboardingPopupShown,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.category).toBe(TelemetryCategory.OnboardingPopupShown);
+    }
+  });
+
+  it("accepts payload with TelemetryCategory.OnboardingPopupCtaClicked", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.OnboardingPopupCtaClicked,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.category).toBe(
+        TelemetryCategory.OnboardingPopupCtaClicked
+      );
+    }
+  });
+
+  it("accepts payload with TelemetryCategory.OnboardingPopupDismissedSession", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.OnboardingPopupDismissedSession,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.category).toBe(
+        TelemetryCategory.OnboardingPopupDismissedSession
+      );
+    }
+  });
+
+  it("accepts payload with TelemetryCategory.OnboardingPopupDismissedPermanent", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.OnboardingPopupDismissedPermanent,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.category).toBe(
+        TelemetryCategory.OnboardingPopupDismissedPermanent
+      );
+    }
+  });
+
+  it("accepts payload with TelemetryCategory.OnboardingPopupSuppressedAuto", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.OnboardingPopupSuppressedAuto,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.category).toBe(
+        TelemetryCategory.OnboardingPopupSuppressedAuto
+      );
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

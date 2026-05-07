@@ -17,10 +17,10 @@ import {
 import { useState } from "react";
 import {
   type CaseScore,
+  closedloopJudgesOptions,
   EvalStatus,
   type EvaluationReport,
-  symphonyJudgesOptions,
-} from "@/lib/engineer/queries/symphony";
+} from "@/lib/engineer/queries/closedloop";
 import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type JudgesViewerProps = {
@@ -46,7 +46,7 @@ export function JudgesViewer({
   onClose,
 }: Readonly<JudgesViewerProps>) {
   const { data, isLoading, isError, error, refetch } = useQuery(
-    symphonyJudgesOptions(ticketId, repoPath)
+    closedloopJudgesOptions(ticketId, repoPath)
   );
 
   const [expandedScoreId, setExpandedScoreId] = useState<string | null>(null);

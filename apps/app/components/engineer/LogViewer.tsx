@@ -4,7 +4,7 @@ import { Dialog, DialogTitle } from "@repo/design-system/components/ui/dialog";
 import { ChevronDown, Terminal } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
-import type { LogResponse } from "@/lib/engineer/queries/symphony";
+import type { LogResponse } from "@/lib/engineer/queries/closedloop";
 import { JsonlLogViewer } from "./JsonlLogViewer";
 
 type LogViewerProps = {

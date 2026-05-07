@@ -29,6 +29,8 @@ export {
 export {
   LoopErrorCode,
   LoopErrorCodeSchema,
+  RunnerErrorSubcode,
+  RunnerErrorSubcodeSchema,
 } from "@closedloop-ai/loops-api/error-codes";
 export type {
   LoopEvent,
@@ -58,6 +60,17 @@ export { LoopCommand, LoopStatus, type TokensByModel };
 
 // --- API-specific types (not in shared contract) ---
 
+/**
+ * Body shape for the 409 `loop_already_active` conflict response.
+ * Defined here so frontend can import from @repo/api without reaching into apps/api.
+ */
+export type LoopAlreadyActiveBody = {
+  error: "loop_already_active";
+  loopId: string;
+  command: LoopCommand;
+  status: LoopStatus;
+};
+
 export type SourceContextType = typeof ArtifactType.Document;
 
 // Compute target summary (for loop list/detail views)
@@ -65,6 +78,12 @@ export type ComputeTargetSummary = {
   id: string;
   machineName: string;
   isOnline: boolean;
+};
+
+export type LoopError = {
+  code: string;
+  message: string;
+  result?: JsonObject;
 };
 
 // Core Loop entity
@@ -98,7 +117,7 @@ export type Loop = {
   estimatedCost: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
-  error: { code: string; message: string } | null;
+  error: LoopError | null;
   documentVersion: number | null;
   metadata: JsonObject;
   uploadedArtifacts: JsonObject | null;

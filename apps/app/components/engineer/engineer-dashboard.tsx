@@ -78,7 +78,7 @@ export function EngineerDashboard() {
   } | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Listen for the custom event from SymphonyChat
+  // Listen for the custom event from ClosedLoopChat
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as {

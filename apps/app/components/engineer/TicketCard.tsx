@@ -24,7 +24,7 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import { SymphonyStatus } from "@/components/engineer/SymphonyStatus";
+import { ClosedLoopStatus } from "@/components/engineer/ClosedLoopStatus";
 import {
   type PRReviewsResponse,
   prReviewsOptions,
@@ -59,19 +59,19 @@ const WORKFLOW_STAGES = [
  * During coding, progress is fractional (1.0–2.0) based on plan.json
  * task completion: 1 + (completedTasks / totalTasks).
  *
- * NOTE: `symphonyExecuting` means the user has accepted the plan and coding
+ * NOTE: `closedloopExecuting` means the user has accepted the plan and coding
  * is underway. Do NOT derive coding status from planExists or symphony phase
  * alone — plan.json can exist during planning, and phase may briefly show
  * "Planning" on resume before transitioning to coding.
  */
 export type WorkflowState = {
   hasWorkDirectory: boolean;
-  symphonyCompleted: boolean;
+  closedloopCompleted: boolean;
   hasPushed: boolean;
   hasPR: boolean;
-  symphonyExecuting?: boolean;
+  closedloopExecuting?: boolean;
   isRunning?: boolean;
-  symphonyAwaitingUser?: boolean;
+  closedloopAwaitingUser?: boolean;
   taskProgress?: { pending: number; completed: number; total: number };
 };
 
@@ -82,10 +82,10 @@ export function getWorkflowProgress(state: WorkflowState): number {
   if (state.hasPushed) {
     return 3;
   }
-  if (state.symphonyCompleted) {
+  if (state.closedloopCompleted) {
     return 2;
   }
-  if (state.symphonyExecuting) {
+  if (state.closedloopExecuting) {
     // During coding, use task progress to show granular progress from 1.0 to 2.0
     // (25% to 50% of the overall bar).
     // Use a small minimum (0.01) so the stage label shows "Coding..." not "Planning..."
@@ -95,14 +95,14 @@ export function getWorkflowProgress(state: WorkflowState): number {
     }
     return 1.01; // Coding started but no task data yet
   }
-  if (state.symphonyAwaitingUser) {
+  if (state.closedloopAwaitingUser) {
     return 1; // Plan created, awaiting user acceptance
   }
   if (state.hasWorkDirectory) {
     return 1;
   }
   if (state.isRunning) {
-    return 1; // Symphony running but plan not yet created
+    return 1; // ClosedLoop running but plan not yet created
   }
   return 0;
 }
@@ -225,12 +225,12 @@ export type TicketCardProps = {
   onCreatePR?: () => void;
   /** Handler to delete the worktree */
   onDeleteWorktree?: (ticketId: string, worktreePath: string) => void;
-  /** Symphony has completed execution */
-  symphonyCompleted?: boolean;
-  /** Symphony is actively executing code (past planning phase) */
-  symphonyExecuting?: boolean;
+  /** ClosedLoop has completed execution */
+  closedloopCompleted?: boolean;
+  /** ClosedLoop is actively executing code (past planning phase) */
+  closedloopExecuting?: boolean;
   /** Plan is created and awaiting user acceptance */
-  symphonyAwaitingUser?: boolean;
+  closedloopAwaitingUser?: boolean;
   /** Changes have been pushed to remote */
   hasPushed?: boolean;
   /** PR info if created */
@@ -262,10 +262,10 @@ export type TicketCardProps = {
   isDeploying?: boolean;
   /** Handler to tear down a deployment */
   onTeardown?: (ticketId: string) => void;
-  /** Symphony was stopped by the user */
-  symphonyStopped?: boolean;
-  /** Handler to stop a running Symphony process */
-  onStopSymphony?: (ticketId: string) => void;
+  /** ClosedLoop was stopped by the user */
+  closedloopStopped?: boolean;
+  /** Handler to stop a running ClosedLoop process */
+  onStopClosedLoop?: (ticketId: string) => void;
   /** Handler to resume Symphony execution after plan update */
   onResumeExecution?: (ticketId: string) => void;
   /** Whether resume execution is in progress */
@@ -374,14 +374,14 @@ export function ReviewStatusBadge({
  */
 type TicketCardActionsProps = {
   ticket: EngineerTicket;
-  isSymphonyActive: boolean;
+  isClosedLoopActive: boolean;
   hasWorkDirectory?: boolean;
   worktreePath?: string | null;
   repoPath?: string | null;
   isLaunching?: boolean;
   isRunning?: boolean;
-  symphonyCompleted?: boolean;
-  symphonyAwaitingUser?: boolean;
+  closedloopCompleted?: boolean;
+  closedloopAwaitingUser?: boolean;
   hasPushed?: boolean;
   prInfo?: { url: string; number: number } | null;
   isCreatingPR?: boolean;
@@ -396,8 +396,8 @@ type TicketCardActionsProps = {
   reviewsData?: PRReviewsResponse;
   onStartPlanning?: (ticketId: string) => void;
   onDeleteWorktree?: (ticketId: string, worktreePath: string) => void;
-  symphonyStopped?: boolean;
-  onStopSymphony?: (ticketId: string) => void;
+  closedloopStopped?: boolean;
+  onStopClosedLoop?: (ticketId: string) => void;
   onCommitPush?: (ticketId: string) => void;
   onResumeExecution?: (ticketId: string) => void;
   onCreatePR?: () => void;
@@ -679,23 +679,23 @@ export function LearningsIndicator({
 
 function TicketCardActions({
   ticket,
-  isSymphonyActive,
+  isClosedLoopActive,
   hasWorkDirectory,
   worktreePath,
   repoPath,
   isLaunching,
   isRunning,
-  symphonyCompleted,
+  closedloopCompleted,
   hasPushed,
   prInfo,
   isCreatingPR,
   isResuming,
   deployInfo,
   reviewsData,
-  symphonyStopped,
+  closedloopStopped,
   onStartPlanning,
   onDeleteWorktree,
-  onStopSymphony,
+  onStopClosedLoop,
   onCommitPush,
   onResumeExecution,
   onCreatePR,
@@ -717,15 +717,17 @@ function TicketCardActions({
       )}
 
       {/* Real-time status - show when running or stopped, hide when completed */}
-      {(isRunning || symphonyStopped) && repoPath && !symphonyCompleted && (
-        <SymphonyStatus
+      {(isRunning || closedloopStopped) && repoPath && !closedloopCompleted && (
+        <ClosedLoopStatus
           onResume={
             onResumeExecution
               ? () => onResumeExecution(ticket.identifier)
               : undefined
           }
           onStop={
-            onStopSymphony ? () => onStopSymphony(ticket.identifier) : undefined
+            onStopClosedLoop
+              ? () => onStopClosedLoop(ticket.identifier)
+              : undefined
           }
           repoPath={repoPath}
           ticketId={ticket.identifier}
@@ -733,7 +735,7 @@ function TicketCardActions({
       )}
 
       {/* Start Planning / Resume Button */}
-      {!isSymphonyActive && (
+      {!isClosedLoopActive && (
         <PlanningButton
           hasWorkDirectory={hasWorkDirectory}
           onDeleteWorktree={onDeleteWorktree}
@@ -744,7 +746,7 @@ function TicketCardActions({
       )}
 
       {/* State 1: Completed but not pushed */}
-      {symphonyCompleted && !hasPushed && !isSymphonyActive && (
+      {closedloopCompleted && !hasPushed && !isClosedLoopActive && (
         <CommitPushButton
           isResuming={isResuming}
           onCommitPush={onCommitPush}
@@ -753,10 +755,10 @@ function TicketCardActions({
       )}
 
       {/* State 2: Pushed but no PR */}
-      {symphonyCompleted &&
+      {closedloopCompleted &&
         hasPushed &&
         !prInfo &&
-        !isSymphonyActive &&
+        !isClosedLoopActive &&
         onCreatePR && (
           <Button
             className="w-full"
@@ -784,7 +786,7 @@ function TicketCardActions({
       )}
 
       {/* Link PR button — only when no PR, no active Symphony, and handler provided */}
-      {!(prInfo || isSymphonyActive) && onLinkPR && (
+      {!(prInfo || isClosedLoopActive) && onLinkPR && (
         <Button
           className="w-full"
           onClick={() => onLinkPR(ticket.identifier)}
@@ -848,7 +850,7 @@ export function TicketCard({
   onCommitPush,
   onCreatePR,
   onDeleteWorktree,
-  symphonyCompleted,
+  closedloopCompleted,
   hasPushed,
   prInfo,
   isCreatingPR,
@@ -856,15 +858,15 @@ export function TicketCard({
   onReopen,
   isStarred,
   onToggleStar,
-  symphonyExecuting,
-  symphonyAwaitingUser,
+  closedloopExecuting,
+  closedloopAwaitingUser,
   taskProgress,
   deployInfo,
   onDeploy,
   isDeploying,
   onTeardown,
-  symphonyStopped,
-  onStopSymphony,
+  closedloopStopped,
+  onStopClosedLoop,
   onResumeExecution,
   isResuming,
   pendingClaudeMdPath,
@@ -879,15 +881,15 @@ export function TicketCard({
   onLinkPR,
   onViewComments,
 }: Readonly<TicketCardProps>) {
-  const isSymphonyActive = !!(isRunning || isLaunching);
+  const isClosedLoopActive = !!(isRunning || isLaunching);
   const workflowProgress = getWorkflowProgress({
     hasWorkDirectory: hasWorkDirectory ?? false,
-    symphonyCompleted: symphonyCompleted ?? false,
+    closedloopCompleted: closedloopCompleted ?? false,
     hasPushed: hasPushed ?? false,
     hasPR: !!prInfo,
-    symphonyExecuting,
+    closedloopExecuting,
     isRunning,
-    symphonyAwaitingUser,
+    closedloopAwaitingUser,
     taskProgress,
   });
 
@@ -1024,17 +1026,19 @@ export function TicketCard({
 
         {/* Action area */}
         <TicketCardActions
+          closedloopCompleted={closedloopCompleted}
+          closedloopStopped={closedloopStopped}
           codexAvailable={codexAvailable}
           codexReviewRunning={codexReviewRunning}
           deployInfo={deployInfo}
           hasPushed={hasPushed}
           hasWorkDirectory={hasWorkDirectory}
+          isClosedLoopActive={isClosedLoopActive}
           isCreatingPR={isCreatingPR}
           isDeploying={isDeploying}
           isLaunching={isLaunching}
           isResuming={isResuming}
           isRunning={isRunning}
-          isSymphonyActive={isSymphonyActive}
           onCodexReview={onCodexReview}
           onCommitPush={onCommitPush}
           onCreatePR={onCreatePR}
@@ -1044,14 +1048,12 @@ export function TicketCard({
           onReopen={onReopen}
           onResumeExecution={onResumeExecution}
           onStartPlanning={onStartPlanning}
-          onStopSymphony={onStopSymphony}
+          onStopClosedLoop={onStopClosedLoop}
           onTeardown={onTeardown}
           onViewComments={onViewComments}
           prInfo={prInfo}
           repoPath={repoPath}
           reviewsData={reviewsData}
-          symphonyCompleted={symphonyCompleted}
-          symphonyStopped={symphonyStopped}
           ticket={ticket}
           worktreePath={worktreePath}
         />

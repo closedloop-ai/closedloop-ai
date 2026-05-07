@@ -13,13 +13,13 @@ import {
   markCommentResponded,
   resetCommentStatus,
 } from "@/lib/engineer/pr-comment-tracker";
-import { gitStatusOptions } from "@/lib/engineer/queries/git";
-import { queryKeys } from "@/lib/engineer/queries/keys";
-import { reposOptions } from "@/lib/engineer/queries/repos";
 import {
   type ChatMessage,
   commentChatHistoryOptions,
-} from "@/lib/engineer/queries/symphony";
+} from "@/lib/engineer/queries/closedloop";
+import { gitStatusOptions } from "@/lib/engineer/queries/git";
+import { queryKeys } from "@/lib/engineer/queries/keys";
+import { reposOptions } from "@/lib/engineer/queries/repos";
 
 export type UseCommentChatOptions = {
   commentId: string;

@@ -26,23 +26,23 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
+import {
+  ClosedLoopChat,
+  type LeftPaneTab,
+} from "@/components/engineer/ClosedLoopChat";
 import { JudgesViewer } from "@/components/engineer/JudgesViewer";
 import { LogViewer } from "@/components/engineer/LogViewer";
 import { PlanViewer } from "@/components/engineer/PlanViewer";
-import {
-  type LeftPaneTab,
-  SymphonyChat,
-} from "@/components/engineer/SymphonyChat";
 import { TicketCard } from "@/components/engineer/TicketCard";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useActiveTicketStatus } from "@/hooks/engineer/use-active-ticket-status";
 import { useTicketPlanDocument } from "@/hooks/engineer/use-ticket-plan-document";
 import { useDocument } from "@/hooks/queries/use-documents";
 import {
-  symphonyChatHistoryOptions,
-  symphonyLogsOptions,
-  symphonyPlanOptions,
-} from "@/lib/engineer/queries/symphony";
+  closedloopChatHistoryOptions,
+  closedloopLogsOptions,
+  closedloopPlanOptions,
+} from "@/lib/engineer/queries/closedloop";
 import type { EngineerTicket } from "@/types/engineer";
 
 type ActiveTicketCardProps = {
@@ -68,7 +68,7 @@ type ActiveTicketCardProps = {
   onDeploy?: (ticketId: string) => void;
   isDeploying?: boolean;
   onTeardown?: (ticketId: string) => void;
-  onStopSymphony?: (ticketId: string) => void;
+  onStopClosedLoop?: (ticketId: string) => void;
   onResumeExecution?: (ticketId: string) => void;
   isResuming?: boolean;
   /** Path to CLAUDE.md if it has uncommitted changes */
@@ -142,7 +142,7 @@ export function ActiveTicketCard({
   onDeploy,
   isDeploying,
   onTeardown,
-  onStopSymphony,
+  onStopClosedLoop,
   onResumeExecution,
   isResuming,
   pendingClaudeMdPath,
@@ -179,7 +179,7 @@ export function ActiveTicketCard({
 
   // Detect whether a plan exists (used to show/hide the Plan tab)
   const { data: planData } = useQuery({
-    ...symphonyPlanOptions(ticket.identifier, repoPath ?? ""),
+    ...closedloopPlanOptions(ticket.identifier, repoPath ?? ""),
     enabled: hasActiveSession,
   });
   const hasPlan = !!planData?.planExists;
@@ -195,7 +195,7 @@ export function ActiveTicketCard({
 
   // Chat history query (for unread badge)
   const { data: chatHistory } = useQuery({
-    ...symphonyChatHistoryOptions(ticket.identifier, repoPath ?? ""),
+    ...closedloopChatHistoryOptions(ticket.identifier, repoPath ?? ""),
     enabled: hasActiveSession,
     staleTime: 30_000,
   });
@@ -215,7 +215,7 @@ export function ActiveTicketCard({
 
   // Logs query (enabled when dialog is open and session is active)
   const { data: logs } = useQuery({
-    ...symphonyLogsOptions(ticket.identifier, repoPath ?? ""),
+    ...closedloopLogsOptions(ticket.identifier, repoPath ?? ""),
     enabled: showLogs && hasActiveSession,
     refetchInterval: showLogs ? 2000 : false,
   });
@@ -250,19 +250,19 @@ export function ActiveTicketCard({
     : linkedIsStatusLoaded;
 
   // Overflow menu items visibility
-  const isSymphonyActive = isExecuting || isLaunchingOrAccepting;
+  const isClosedLoopActive = isExecuting || isLaunchingOrAccepting;
   const showCodexReview =
     !!codexAvailable &&
     !!onCodexReview &&
     (isCompleted || hasPushed || !!prInfo) &&
-    !isSymphonyActive;
+    !isClosedLoopActive;
   const showDeploy =
     (isCompleted || hasPushed || !!prInfo) &&
     !!onDeploy &&
     !deployInfo &&
-    !isSymphonyActive;
+    !isClosedLoopActive;
   const showResumeExecution =
-    !!onResumeExecution && isCompleted && !hasPushed && !isSymphonyActive;
+    !!onResumeExecution && isCompleted && !hasPushed && !isClosedLoopActive;
   const hasPostActionItems =
     showCodexReview || showDeploy || showResumeExecution;
   const hasOverflowItems = hasActiveSession || hasPostActionItems;
@@ -360,6 +360,10 @@ export function ActiveTicketCard({
       <TicketCard
         branchMerged={branchMerged}
         childTicketIds={childTicketIds}
+        closedloopAwaitingUser={isAwaitingUser}
+        closedloopCompleted={isCompleted}
+        closedloopExecuting={isCoding}
+        closedloopStopped={isStopped}
         codexAvailable={codexAvailable}
         codexReviewRunning={codexReviewRunning}
         deployInfo={deployInfo}
@@ -382,16 +386,12 @@ export function ActiveTicketCard({
         onLearningsClick={onLearningsClick}
         onParentClick={onParentClick}
         onResumeExecution={onResumeExecution}
-        onStopSymphony={onStopSymphony}
+        onStopClosedLoop={onStopClosedLoop}
         onTeardown={onTeardown}
         parentTicketId={parentTicketId}
         pendingClaudeMdPath={pendingClaudeMdPath}
         prInfo={prInfo}
         repoPath={repoPath}
-        symphonyAwaitingUser={isAwaitingUser}
-        symphonyCompleted={isCompleted}
-        symphonyExecuting={isCoding}
-        symphonyStopped={isStopped}
         taskProgress={taskProgress}
         ticket={ticket}
       />
@@ -496,7 +496,7 @@ export function ActiveTicketCard({
 
       {/* Chat dialog */}
       {repoPath && (
-        <SymphonyChat
+        <ClosedLoopChat
           contextRepoPaths={contextRepoPaths}
           initialTab={chatInitialTab}
           isOpen={showChat}
