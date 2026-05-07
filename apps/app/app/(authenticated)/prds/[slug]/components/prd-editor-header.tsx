@@ -81,19 +81,6 @@ export function PRDEditorHeader({
 }: Readonly<PRDEditorHeaderProps>) {
   const requestChangesFlag = useFeatureFlag("prd-request-changes");
 
-  /** Check if a specific command is disabled based on generation status. */
-  function commandDisabled(
-    targetCommand: GenerationStatus["command"],
-    localMutationPending = false
-  ): boolean {
-    return isCommandDisabled({
-      generationStatus,
-      isLoading: generationStatusLoading,
-      targetCommand,
-      localMutationPending,
-    });
-  }
-
   const breadcrumbs: BreadcrumbEntry[] = prd.project?.teams?.[0]?.id
     ? [
         {
@@ -168,7 +155,12 @@ export function PRDEditorHeader({
             Decompose into Features
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={commandDisabled("evaluate_prd", isEvaluating)}
+            disabled={isCommandDisabled({
+              generationStatus,
+              isLoading: generationStatusLoading,
+              targetCommand: "evaluate_prd",
+              localMutationPending: isEvaluating,
+            })}
             onClick={() => onEvaluatePrd()}
           >
             <GaugeIcon className="h-4 w-4" />
@@ -180,10 +172,12 @@ export function PRDEditorHeader({
           </DropdownMenuItem>
           {requestChangesFlag?.enabled && (
             <DropdownMenuItem
-              disabled={commandDisabled(
-                "request_prd_changes",
-                isGenerating || isRequestingChanges
-              )}
+              disabled={isCommandDisabled({
+                generationStatus,
+                isLoading: generationStatusLoading,
+                targetCommand: "request_prd_changes",
+                localMutationPending: isGenerating || isRequestingChanges,
+              })}
               onClick={() => onRequestChanges()}
             >
               <MessageSquareIcon className="h-4 w-4" />

@@ -9,7 +9,7 @@ import type {
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { z } from "zod";
 
-import { ApiError } from "@/lib/api-error";
+import { ApiError, getErrorMessage } from "@/lib/api-error";
 
 const createLoopResponseSchema = z.object({
   loopId: z.string(),
@@ -54,7 +54,10 @@ export function handleRunLoopResponse(
 
   // Error case: route 409 conflict responses by discriminant
   if (response instanceof ApiError && response.status === 409) {
-    // ApiError.data is the raw ApiResult: { success: false, error: string, data: ConflictBody }
+    // 409 conflict bodies extend ApiResult<never> with an extra `data` field
+    // carrying the conflict shape: { success: false, error, data: ConflictBody }.
+    // This is non-canonical (canonical ApiResult.failure has no data field), so
+    // the shape is described inline here rather than reusing ApiResult<T>.
     const apiResult = response.data as
       | {
           data?:
@@ -65,10 +68,14 @@ export function handleRunLoopResponse(
       | undefined;
     const conflictBody = apiResult?.data;
 
-    if (conflictBody?.error === "loop_already_active") {
-      callbacks.onLoopAlreadyActive?.(conflictBody as LoopAlreadyActiveBody);
+    if (
+      conflictBody?.error === "loop_already_active" &&
+      callbacks.onLoopAlreadyActive
+    ) {
+      callbacks.onLoopAlreadyActive(conflictBody as LoopAlreadyActiveBody);
       return;
     }
+    // If onLoopAlreadyActive is absent, fall through to the trailing toast.error.
     if (conflictBody?.error === "multiple_targets") {
       callbacks.onMultipleTargets(conflictBody as ComputeTargetConflictBody);
       return;
@@ -84,11 +91,4 @@ export function handleRunLoopResponse(
 
 function isCreateLoopResponse(value: unknown): value is CreateLoopResponse {
   return createLoopResponseSchema.safeParse(value).success;
-}
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof ApiError || error instanceof Error) {
-    return error.message;
-  }
-  return "An unexpected error occurred";
 }

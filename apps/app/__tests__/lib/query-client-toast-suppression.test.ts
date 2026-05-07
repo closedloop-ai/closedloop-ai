@@ -8,6 +8,7 @@
 
 import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api-error";
 
 const mockToastError = vi.fn();
 
@@ -44,9 +45,11 @@ describe("QueryClient mutations.onError toast suppression", () => {
             ) {
               return;
             }
-            mockToastError(
-              error instanceof Error ? error.message : "Unknown error"
-            );
+            const message =
+              error instanceof ApiError || error instanceof Error
+                ? error.message
+                : "An unexpected error occurred";
+            mockToastError(message);
           },
         },
       },

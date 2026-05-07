@@ -11,6 +11,7 @@ import type {
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { getCommandLabels } from "@/lib/loop-display";
@@ -71,6 +72,7 @@ type RequestChangesResolver = (result: boolean) => void;
 export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   // TanStack Query mutation — all loop operations route through run-loop
   const runLoop = useRunLoop();
+  const router = useRouter();
   const preLoopGate = useOptionalPreLoopSystemCheckGate();
 
   // Multi-target conflict state
@@ -106,28 +108,31 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   );
 
   /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
-  const routeConflictError = useCallback((error: unknown): void => {
-    handleRunLoopResponse(error, {
-      onMultipleTargets: (conflict) =>
-        setMultiTargetState({ availableTargets: conflict.availableTargets }),
-      onBackendMismatch: (body) => setBackendMismatchState(body),
-      onLoopAlreadyActive: (payload: LoopAlreadyActiveBody) => {
-        const label = getCommandLabels(payload.command).noun;
-        toast.error(`${label} is already running on this document`, {
-          action: {
-            label: "View Loop",
-            onClick: () => {
-              globalThis.window?.location.assign(`/loops/${payload.loopId}`);
+  const routeConflictError = useCallback(
+    (error: unknown): void => {
+      handleRunLoopResponse(error, {
+        onMultipleTargets: (conflict) =>
+          setMultiTargetState({ availableTargets: conflict.availableTargets }),
+        onBackendMismatch: (body) => setBackendMismatchState(body),
+        onLoopAlreadyActive: (payload: LoopAlreadyActiveBody) => {
+          const label = getCommandLabels(payload.command).noun;
+          toast.error(`${label} is already running on this document`, {
+            action: {
+              label: "View Loop",
+              onClick: () => {
+                router.push(`/loops/${payload.loopId}`);
+              },
             },
-          },
-        });
-      },
-      onSuccess: () => {
-        // unreachable: error handlers only receive thrown errors
-      },
-      onRateLimited: (message) => toast.error(message),
-    });
-  }, []);
+          });
+        },
+        onSuccess: () => {
+          // unreachable: error handlers only receive thrown errors
+        },
+        onRateLimited: (message) => toast.error(message),
+      });
+    },
+    [router]
+  );
 
   const runLoopMutationWithOptionalPreLoopCheck = useCallback(
     (params: RunLoopMutationParams, execute: () => void): boolean => {

@@ -8,10 +8,12 @@
  */
 
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
+import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import {
   PreLoopCommand,
   type PreLoopMetadata,
@@ -48,6 +50,19 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 vi.mock("@/lib/run-loop-response", () => ({
   handleRunLoopResponse: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+  usePathname: () => "/",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -303,24 +318,18 @@ describe("useDocumentRunLoop", () => {
   });
 
   describe("routeConflictError — loop_already_active toast", () => {
-    test("displays toast with command label and deep link for loop_already_active 409", async () => {
-      const { handleRunLoopResponse } = vi.mocked(
-        await import("@/lib/run-loop-response")
-      );
-
+    test("displays toast with command label and deep link for loop_already_active 409", () => {
       // Capture the callbacks passed to handleRunLoopResponse when routeConflictError fires
-      handleRunLoopResponse.mockImplementationOnce((_error, callbacks) => {
-        // Simulate the loop_already_active branch
-        callbacks.onLoopAlreadyActive?.({
-          error: "loop_already_active",
-          loopId: "loop-existing-999",
-          command: "EVALUATE_FEATURE",
-          status: "RUNNING",
-        });
-      });
-
-      const { toast } = vi.mocked(
-        await import("@repo/design-system/components/ui/sonner")
+      vi.mocked(handleRunLoopResponse).mockImplementationOnce(
+        (_error, callbacks) => {
+          // Simulate the loop_already_active branch
+          callbacks.onLoopAlreadyActive?.({
+            error: "loop_already_active",
+            loopId: "loop-existing-999",
+            command: "EVALUATE_FEATURE",
+            status: "RUNNING",
+          });
+        }
       );
 
       const { result } = renderHook(

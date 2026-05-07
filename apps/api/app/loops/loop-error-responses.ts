@@ -14,8 +14,6 @@ import {
   isUnauthorizedRepoError,
 } from "./loop-errors";
 
-export type { LoopAlreadyActiveBody } from "@repo/api/src/types/loop";
-
 /**
  * Build the 409 "loop already active" response. The body extends ApiResult
  * with an extra `data` field (consumed by the frontend via ApiError.data.data).

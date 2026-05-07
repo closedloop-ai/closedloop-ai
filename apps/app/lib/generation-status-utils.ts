@@ -116,10 +116,14 @@ export function isCommandDisabled(opts: {
   generationStatus: GenerationStatus | undefined;
   isLoading: boolean;
   targetCommand: GenerationStatus["command"];
-  localMutationPending: boolean;
+  localMutationPending?: boolean;
 }): boolean {
-  const { generationStatus, isLoading, targetCommand, localMutationPending } =
-    opts;
+  const {
+    generationStatus,
+    isLoading,
+    targetCommand,
+    localMutationPending = false,
+  } = opts;
 
   return (
     localMutationPending ||

@@ -3,7 +3,7 @@
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
-import { ApiError } from "./api-error";
+import { ApiError, getErrorMessage } from "./api-error";
 
 type QueryProviderProps = {
   children: ReactNode;
@@ -19,16 +19,6 @@ export function QueryProvider({ children }: Readonly<QueryProviderProps>) {
       {children}
     </QueryClientProvider>
   );
-}
-
-/**
- * Get a user-friendly error message from an error object.
- */
-function getErrorMessage(error: unknown): string {
-  if (error instanceof ApiError || error instanceof Error) {
-    return error.message;
-  }
-  return "An unexpected error occurred";
 }
 
 function makeQueryClient() {
@@ -53,10 +43,7 @@ function makeQueryClient() {
       mutations: {
         retry: false,
         onError: (error, _variables, _onMutateResult, mutation) => {
-          if (
-            (mutation?.meta as Record<string, unknown> | undefined)
-              ?.suppressDefaultErrorToast === true
-          ) {
+          if (mutation?.meta?.suppressDefaultErrorToast === true) {
             return;
           }
           const message = getErrorMessage(error);
