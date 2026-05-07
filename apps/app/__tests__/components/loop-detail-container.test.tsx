@@ -25,6 +25,8 @@ const CACHE_WRITE = /cache write/i;
 const CACHE_READ = /cache read/i;
 const NO_OUTPUT_PRODUCED = /No output produced/;
 const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
+const CLAUDE_RATE_LIMIT_ERROR = /^Error: Claude rate limit$/;
+const CLAUDE_RATE_LIMIT_MESSAGE = /Claude rate limit reached\./;
 const ERROR_LABEL = /^Error:/;
 
 vi.mock("next/navigation", () => ({
@@ -81,7 +83,10 @@ import {
   useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
-import { createMockLoopWithUser } from "../fixtures/loops";
+import {
+  createMockLoopWithUser,
+  RUNNER_RATE_LIMIT_LOOP_ERROR,
+} from "../fixtures/loops";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -714,6 +719,29 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
 
     expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
     expect(screen.queryByText(ERROR_LABEL)).not.toBeInTheDocument();
+  });
+
+  it("renders runner failure reason from result subcode when flag is disabled", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: false,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: RUNNER_RATE_LIMIT_LOOP_ERROR,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-runner-error" />);
+
+    expect(screen.getByText(CLAUDE_RATE_LIMIT_ERROR)).toBeInTheDocument();
+    expect(screen.getByText(CLAUDE_RATE_LIMIT_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
   });
 
   it("renders raw 'NO_WORK_PRODUCED' string (not 'No output produced') when flag is disabled", () => {

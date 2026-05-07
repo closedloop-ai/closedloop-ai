@@ -37,6 +37,7 @@ import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { useState } from "react";
 import { useLoopEventsPaginated } from "@/hooks/queries/use-loops";
 import { formatDateTime, formatRelativeTime } from "@/lib/date-utils";
+import { getLoopErrorTitle } from "@/lib/loop-error-display";
 
 type LoopAuditLogProps = {
   loopId: string;
@@ -93,7 +94,7 @@ function getEventDetails(event: LoopEvent): string {
       return `Tokens: ${tokens.input} in / ${tokens.output} out`;
     }
     case "error":
-      return `${event.code}: ${event.message}`;
+      return `${getLoopErrorTitle(event)}: ${event.message}`;
     case "cancelled":
       return event.reason ?? "Cancelled";
     default:

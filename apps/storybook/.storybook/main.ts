@@ -11,6 +11,8 @@ const require = createRequire(import.meta.url);
 const getAbsolutePath = (value: string) =>
   dirname(require.resolve(join(value, "package.json")));
 
+const zodPath = getAbsolutePath("zod");
+
 const config: StorybookConfig = {
   stories: [
     "../stories/**/*.mdx",
@@ -26,6 +28,17 @@ const config: StorybookConfig = {
     options: {},
   },
   staticDirs: ["../public"],
+  webpackFinal: (config) => {
+    config.resolve ??= {};
+    // @hookform/resolvers/zod imports zod/v4/core, but pnpm can hoist a
+    // transitive zod@3 into the virtual store. Force Storybook's webpack build
+    // to resolve zod through this package's direct zod@4 dependency.
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      zod: zodPath,
+    };
+    return config;
+  },
 };
 
 export default config;

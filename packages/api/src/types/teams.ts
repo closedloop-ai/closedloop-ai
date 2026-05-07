@@ -59,3 +59,35 @@ export type UpdateTeamMemberInput = {
   userId: string;
   role: TeamRole;
 };
+
+export type TeamRepositoryRepoSummary = {
+  id: string;
+  installationId: string;
+  githubRepoId: string;
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+};
+
+export type TeamRepository = {
+  id: string;
+  teamId: string;
+  installationRepositoryId: string;
+  isDefaultSelected: boolean;
+  isPrimary: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  repository: TeamRepositoryRepoSummary;
+};
+
+export type AddTeamRepositoryInput = {
+  installationRepositoryId: string;
+  isDefaultSelected?: boolean;
+  isPrimary?: boolean;
+};
+
+export type UpdateTeamRepositoryInput = {
+  isDefaultSelected?: boolean;
+  isPrimary?: boolean;
+};

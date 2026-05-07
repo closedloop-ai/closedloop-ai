@@ -32,6 +32,7 @@ vi.mock("@/lib/date-utils", () => ({
 // --- Imports ---
 
 import { useLoopEventsPaginated } from "@/hooks/queries/use-loops";
+import { RUNNER_RATE_LIMIT_EVENT } from "../../../__tests__/fixtures/loops";
 import { LoopAuditLog } from "../loop-audit-log";
 
 // Top-level regex constants (Biome useTopLevelRegex)
@@ -45,6 +46,8 @@ const SOME_LOG_CONTENT_REGEX = /some log tail content/;
 const LINE_A_REGEX = /line A/;
 const DIAG_VERSION_200_REGEX = /Diagnostics version: 2\.0\.0/;
 const DIAG_VERSION_300_REGEX = /Diagnostics version: 3\.0\.0/;
+const RUNNER_RATE_LIMIT_SUMMARY_REGEX =
+  /Claude rate limit: Claude rate limit reached\./;
 
 function makeResponse(events: LoopEvent[]): {
   data: LoopEventsPaginatedResponse;
@@ -98,6 +101,18 @@ describe("LoopAuditLog EventRow — error expandability", () => {
       screen.getByText(SOME_ERROR_REGEX).closest("tr") as Element
     );
     expect(screen.queryByText(LOG_TAIL_REGEX)).not.toBeInTheDocument();
+  });
+
+  it("error row renders runner failure reason from result subcode", () => {
+    vi.mocked(useLoopEventsPaginated).mockReturnValue(
+      makeResponse([RUNNER_RATE_LIMIT_EVENT]) as any
+    );
+
+    render(<LoopAuditLog loopId="loop-1" />);
+
+    expect(
+      screen.getByText(RUNNER_RATE_LIMIT_SUMMARY_REGEX)
+    ).toBeInTheDocument();
   });
 
   it("error row with tokenUsage is expandable", () => {

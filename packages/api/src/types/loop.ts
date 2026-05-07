@@ -29,6 +29,8 @@ export {
 export {
   LoopErrorCode,
   LoopErrorCodeSchema,
+  RunnerErrorSubcode,
+  RunnerErrorSubcodeSchema,
 } from "@closedloop-ai/loops-api/error-codes";
 export type {
   LoopEvent,
@@ -78,6 +80,12 @@ export type ComputeTargetSummary = {
   isOnline: boolean;
 };
 
+export type LoopError = {
+  code: string;
+  message: string;
+  result?: JsonObject;
+};
+
 // Core Loop entity
 export type Loop = {
   id: string;
@@ -109,7 +117,7 @@ export type Loop = {
   estimatedCost: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
-  error: { code: string; message: string } | null;
+  error: LoopError | null;
   documentVersion: number | null;
   metadata: JsonObject;
   uploadedArtifacts: JsonObject | null;
