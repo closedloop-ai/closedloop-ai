@@ -32,6 +32,10 @@ import type { FullTicketDetails } from "@/hooks/engineer/use-engineer-features";
 import { useStartPlanLoop } from "@/hooks/engineer/use-start-plan-loop";
 import { useClosedLoopLaunch } from "@/hooks/engineer/useClosedLoopLaunch";
 import {
+  MountDeployHealthAction,
+  resolveMountDeployHealthAction,
+} from "@/lib/engineer/deploy-health";
+import {
   clearDeployment,
   type DeployInfo,
   getActiveDeploymentForRepo,
@@ -700,24 +704,25 @@ export function TicketList({
       })
         .then((r) => r.json())
         .then((data) => {
-          if (data.alive) {
-            if (info.healthCheckFailed) {
-              updateDeployment(ticketId, {
-                healthCheckFailed: false,
-                consecutiveFailures: 0,
-              });
-              setDeployStatus((prev) => ({
-                ...prev,
-                [ticketId]: prev[ticketId]
-                  ? {
-                      ...prev[ticketId]!,
-                      healthCheckFailed: false,
-                      consecutiveFailures: 0,
-                    }
-                  : null,
-              }));
-            }
-          } else {
+          const action = resolveMountDeployHealthAction(info, data);
+          if (action === MountDeployHealthAction.ResetFailure) {
+            updateDeployment(ticketId, {
+              healthCheckFailed: false,
+              consecutiveFailures: 0,
+            });
+            setDeployStatus((prev) => ({
+              ...prev,
+              [ticketId]: prev[ticketId]
+                ? {
+                    ...prev[ticketId]!,
+                    healthCheckFailed: false,
+                    consecutiveFailures: 0,
+                  }
+                : null,
+            }));
+            return;
+          }
+          if (action === MountDeployHealthAction.ClearDeployment) {
             clearDeployment(ticketId);
             setDeployStatus((prev) => ({ ...prev, [ticketId]: null }));
           }

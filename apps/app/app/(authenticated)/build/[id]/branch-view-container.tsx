@@ -32,6 +32,9 @@ type BranchWorktreeResponse = {
   repoPath: string | null;
 };
 
+// Phase 6 will replace this placeholder with relay-provided local file entries.
+const EMPTY_LOCAL_FILES: BranchViewData["committedFiles"] = [];
+
 async function fetchBranchWorktree(params: {
   repoFullName: string;
   headBranch: string;
@@ -147,12 +150,8 @@ export function BranchViewContainer({
     null
   );
 
-  // Local files will be populated in Phase 6 via engineer relay
-  const localFiles: BranchViewData["committedFiles"] = [];
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: localFiles is static today; add to deps when Phase 6 makes it dynamic
   const allFiles = useMemo(
-    () => (data ? buildAllFileEntries(data, localFiles) : []),
+    () => (data ? buildAllFileEntries(data, EMPTY_LOCAL_FILES) : []),
     [data]
   );
   const showDiffView = selectedFileId !== null;
@@ -241,7 +240,7 @@ export function BranchViewContainer({
           ) : (
             <BranchViewContent
               data={data}
-              localFiles={localFiles}
+              localFiles={EMPTY_LOCAL_FILES}
               onSelectComment={handleSelectComment}
               onSelectFile={setSelectedFileId}
               selectedCommentId={selectedCommentId}

@@ -134,7 +134,7 @@ function withFakeHome(fakeHome, fn) {
     if (hadHome) {
       process.env.HOME = origHome;
     } else {
-      delete process.env.HOME;
+      Reflect.deleteProperty(process.env, "HOME");
     }
   }
 }

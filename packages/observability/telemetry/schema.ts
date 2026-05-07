@@ -30,6 +30,7 @@ export const TelemetryCategory = {
   CommandTimeout: "command.timeout",
   CommandCancelled: "command.cancelled",
   CommandGatewayError: "command.gateway_error",
+  DesktopOutboundNetworkDecision: "desktop.outbound_network_decision",
   PreflightBinaryNotFound: "preflight.binary_not_found",
   PreflightScriptNotFound: "preflight.script_not_found",
   PreflightSpawnFailed: "preflight.spawn_failed",
@@ -61,6 +62,77 @@ export const TelemetrySeverity = {
 
 export type TelemetrySeverity =
   (typeof TelemetrySeverity)[keyof typeof TelemetrySeverity];
+
+export const OutboundNetworkSurface = {
+  Unknown: "unknown",
+  LoopAttachmentDownload: "loop_attachment_download",
+  DeployHealthCheck: "deploy_health_check",
+} as const;
+
+export type OutboundNetworkSurface =
+  (typeof OutboundNetworkSurface)[keyof typeof OutboundNetworkSurface];
+
+export const OutboundNetworkDecision = {
+  Unknown: "unknown",
+  Allowed: "allowed",
+  Denied: "denied",
+} as const;
+
+export type OutboundNetworkDecision =
+  (typeof OutboundNetworkDecision)[keyof typeof OutboundNetworkDecision];
+
+export const OutboundNetworkDestinationClass = {
+  Unknown: "unknown",
+  External: "external",
+  Invalid: "invalid",
+  IpLiteral: "ip_literal",
+  LinkLocal: "link_local",
+  Loopback: "loopback",
+  Metadata: "metadata",
+  Private: "private",
+  S3PathStyle: "s3_path_style",
+  S3VirtualHosted: "s3_virtual_hosted",
+} as const;
+
+export type OutboundNetworkDestinationClass =
+  (typeof OutboundNetworkDestinationClass)[keyof typeof OutboundNetworkDestinationClass];
+
+export const OutboundNetworkDecisionReason = {
+  Unknown: "unknown",
+  Allowed: "allowed",
+  AttachmentHostNotAllowed: "attachment_host_not_allowed",
+  CredentialedUrl: "credentialed_url",
+  DeployHostNotAllowed: "deploy_host_not_allowed",
+  InvalidUrl: "invalid_url",
+  IpLiteralNotAllowed: "ip_literal_not_allowed",
+  LinkLocalAddressNotAllowed: "link_local_address_not_allowed",
+  MetadataAddressNotAllowed: "metadata_address_not_allowed",
+  PathStyleS3NotAllowed: "path_style_s3_not_allowed",
+  PrivateAddressNotAllowed: "private_address_not_allowed",
+  UnsupportedProtocol: "unsupported_protocol",
+} as const;
+
+export type OutboundNetworkDecisionReason =
+  (typeof OutboundNetworkDecisionReason)[keyof typeof OutboundNetworkDecisionReason];
+
+function objectValues<T extends Record<string, string>>(values: T) {
+  return new Set(Object.values(values));
+}
+
+/**
+ * Preserve desktop-originated outbound telemetry across version skew by mapping
+ * newer classification strings to a bounded generic value instead of rejecting
+ * the whole event. Non-string values remain invalid.
+ */
+function tolerantOutboundValue<T extends Record<string, string>>(values: T) {
+  const knownValues = objectValues(values);
+  return z.preprocess((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    return knownValues.has(value) ? value : values.Unknown;
+  }, z.enum(values));
+}
 
 // ---------------------------------------------------------------------------
 // ErrorClass
@@ -152,6 +224,17 @@ const decisionTableVerificationDiagnosticsSchema = z.discriminatedUnion(
   ]
 );
 
+const outboundNetworkDiagnosticsSchema = z.object({
+  surface: tolerantOutboundValue(OutboundNetworkSurface),
+  decision: tolerantOutboundValue(OutboundNetworkDecision),
+  reason: tolerantOutboundValue(OutboundNetworkDecisionReason),
+  destinationClass: tolerantOutboundValue(OutboundNetworkDestinationClass),
+  protocol: z.string().optional(),
+  hostname: z.string().optional(),
+  port: z.string().optional(),
+  statusCode: z.number().int().nonnegative().optional(),
+});
+
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
   exitCode: z.number().optional(),
@@ -190,6 +273,7 @@ const desktopTelemetryDiagnosticsSchema = z.object({
   diagnosticsVersion: z.number().optional(),
   decisionTableVerification:
     decisionTableVerificationDiagnosticsSchema.optional(),
+  outboundNetwork: outboundNetworkDiagnosticsSchema.optional(),
   spawnMeta: z
     .object({
       command: z.string(),

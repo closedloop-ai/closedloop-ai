@@ -16,6 +16,8 @@ export type DeployStatusResponse = {
 export type DeployHealthResponse = {
   alive: boolean;
   statusCode?: number | null;
+  error?: string;
+  code?: string;
 };
 
 /* ---------- Query option factories ---------- */

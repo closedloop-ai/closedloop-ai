@@ -7,6 +7,10 @@ import {
 import type { TelemetryTraceContext } from "../telemetry/schema";
 import {
   desktopTelemetryEventSchema,
+  OutboundNetworkDecision,
+  OutboundNetworkDecisionReason,
+  OutboundNetworkDestinationClass,
+  OutboundNetworkSurface,
   TelemetryCategory,
   TelemetrySeverity,
   telemetryDiagnosticsSchema,
@@ -211,6 +215,23 @@ describe("telemetryDiagnosticsSchema", () => {
     }
   });
 
+  it("accepts outbound network decision diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      outboundNetwork: {
+        surface: OutboundNetworkSurface.LoopAttachmentDownload,
+        decision: OutboundNetworkDecision.Denied,
+        reason: OutboundNetworkDecisionReason.AttachmentHostNotAllowed,
+        destinationClass: OutboundNetworkDestinationClass.External,
+        protocol: "https:",
+        hostname: "attacker.example.com",
+        port: "443",
+        statusCode: 403,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it("accepts absence of ackLatencyMs (optional)", () => {
     const result = telemetryDiagnosticsSchema.safeParse({});
     expect(result.success).toBe(true);
@@ -327,6 +348,64 @@ describe("desktopTelemetryEventSchema", () => {
       expect(result.data.diagnostics?.decisionTableVerification).toEqual(
         reportedDecisionTableVerification
       );
+    }
+  });
+
+  it("preserves outbound-network diagnostics from desktop wire payloads", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopOutboundNetworkDecision,
+      diagnostics: {
+        outboundNetwork: {
+          surface: OutboundNetworkSurface.DeployHealthCheck,
+          decision: OutboundNetworkDecision.Allowed,
+          reason: OutboundNetworkDecisionReason.Allowed,
+          destinationClass: OutboundNetworkDestinationClass.Loopback,
+          protocol: "http:",
+          hostname: "app.localhost",
+          port: "3000",
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.outboundNetwork?.hostname).toBe(
+        "app.localhost"
+      );
+    }
+  });
+
+  it("preserves outbound-network telemetry with unknown classification values", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopOutboundNetworkDecision,
+      diagnostics: {
+        outboundNetwork: {
+          surface: "future_surface",
+          decision: "future_decision",
+          reason: "future_reason",
+          destinationClass: "future_destination_class",
+          protocol: "http:",
+          hostname: "app.localhost",
+          port: "3000",
+          rawUrl: "http://app.localhost:3000/private?token=secret",
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.outboundNetwork).toEqual({
+        surface: OutboundNetworkSurface.Unknown,
+        decision: OutboundNetworkDecision.Unknown,
+        reason: OutboundNetworkDecisionReason.Unknown,
+        destinationClass: OutboundNetworkDestinationClass.Unknown,
+        protocol: "http:",
+        hostname: "app.localhost",
+        port: "3000",
+      });
+      expect(JSON.stringify(result.data)).not.toContain("token=secret");
     }
   });
 
@@ -521,6 +600,90 @@ describe("buildDesktopTelemetryPayload", () => {
       reportedDecisionTableVerification
     );
   });
+
+  it("builds outbound-network payload without URL path, query, or credentials", () => {
+    const result = buildDesktopTelemetryPayload({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopOutboundNetworkDecision,
+      diagnostics: {
+        outboundNetwork: {
+          surface: OutboundNetworkSurface.LoopAttachmentDownload,
+          decision: OutboundNetworkDecision.Denied,
+          reason: OutboundNetworkDecisionReason.AttachmentHostNotAllowed,
+          destinationClass: OutboundNetworkDestinationClass.External,
+          protocol: "https:",
+          hostname: "attacker.example.com",
+          port: "443",
+          path: "/users/123/object.txt",
+          query: "X-Amz-Credential=secret",
+          rawUrl:
+            "https://attacker.example.com/users/123/object.txt?X-Amz-Signature=secret",
+        },
+      },
+    });
+
+    expect(result.category).toBe(
+      TelemetryCategory.DesktopOutboundNetworkDecision
+    );
+    expect(result).toMatchObject({
+      diagnostics: {
+        outboundNetwork: {
+          surface: OutboundNetworkSurface.LoopAttachmentDownload,
+          decision: OutboundNetworkDecision.Denied,
+          reason: OutboundNetworkDecisionReason.AttachmentHostNotAllowed,
+          destinationClass: OutboundNetworkDestinationClass.External,
+          protocol: "https:",
+          hostname: "attacker.example.com",
+          port: "443",
+        },
+      },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("/users/123");
+    expect(serialized).not.toContain("X-Amz-Credential");
+    expect(serialized).not.toContain("X-Amz-Signature");
+    expect(serialized).not.toContain("secret");
+  });
+
+  it("builds outbound-network payload for unknown classification values", () => {
+    const result = buildDesktopTelemetryPayload({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopOutboundNetworkDecision,
+      diagnostics: {
+        outboundNetwork: {
+          surface: "future_surface",
+          decision: "future_decision",
+          reason: "future_reason",
+          destinationClass: "future_destination_class",
+          protocol: "http:",
+          hostname: "app.localhost",
+          port: "3000",
+          rawUrl: "http://app.localhost:3000/private?token=secret",
+        },
+      },
+    });
+
+    expect(result.category).toBe(
+      TelemetryCategory.DesktopOutboundNetworkDecision
+    );
+    expect(result).toMatchObject({
+      diagnostics: {
+        outboundNetwork: {
+          surface: OutboundNetworkSurface.Unknown,
+          decision: OutboundNetworkDecision.Unknown,
+          reason: OutboundNetworkDecisionReason.Unknown,
+          destinationClass: OutboundNetworkDestinationClass.Unknown,
+          protocol: "http:",
+          hostname: "app.localhost",
+          port: "3000",
+        },
+      },
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("telemetry.validation_failed");
+    expect(serialized).not.toContain("token=secret");
+    expect(serialized).not.toContain("/private");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -599,6 +762,35 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     });
     expect(result?.exitCode).toBe(1);
     expect(result?.tokenUsage).toEqual({ inputTokens: 10, outputTokens: 5 });
+  });
+
+  it("keeps only descriptor fields for outbound network diagnostics", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      outboundNetwork: {
+        surface: OutboundNetworkSurface.LoopAttachmentDownload,
+        decision: OutboundNetworkDecision.Denied,
+        reason: OutboundNetworkDecisionReason.AttachmentHostNotAllowed,
+        destinationClass: OutboundNetworkDestinationClass.External,
+        protocol: "https:",
+        hostname: "attacker.example.com",
+        port: "443",
+        rawUrl:
+          "https://attacker.example.com/users/123/object.txt?X-Amz-Signature=secret",
+        path: "/users/123/object.txt",
+      },
+    } as never);
+
+    expect(result?.outboundNetwork).toEqual({
+      surface: OutboundNetworkSurface.LoopAttachmentDownload,
+      decision: OutboundNetworkDecision.Denied,
+      reason: OutboundNetworkDecisionReason.AttachmentHostNotAllowed,
+      destinationClass: OutboundNetworkDestinationClass.External,
+      protocol: "https:",
+      hostname: "attacker.example.com",
+      port: "443",
+    });
+    expect(JSON.stringify(result)).not.toContain("X-Amz-Signature");
+    expect(JSON.stringify(result)).not.toContain("/users/123");
   });
 });
 

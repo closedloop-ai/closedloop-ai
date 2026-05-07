@@ -54,6 +54,7 @@ function sanitizeTextTail(value: string): string {
  * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
  * - Strip lines containing credential patterns
  * - Allowlist spawnMeta.envSnapshot to only safe env var keys
+ * - Keep only descriptor fields for outbound-network diagnostics
  */
 export function sanitizeDesktopTelemetryDiagnostics(
   diagnostics: TelemetryDiagnostics | undefined
@@ -85,6 +86,26 @@ export function sanitizeDesktopTelemetryDiagnostics(
       }
     }
     sanitized.spawnMeta = { ...sanitized.spawnMeta, envSnapshot: filtered };
+  }
+
+  if (sanitized.outboundNetwork) {
+    const outboundNetwork = sanitized.outboundNetwork;
+    sanitized.outboundNetwork = {
+      surface: outboundNetwork.surface,
+      decision: outboundNetwork.decision,
+      reason: outboundNetwork.reason,
+      destinationClass: outboundNetwork.destinationClass,
+      ...(outboundNetwork.protocol !== undefined && {
+        protocol: outboundNetwork.protocol,
+      }),
+      ...(outboundNetwork.hostname !== undefined && {
+        hostname: outboundNetwork.hostname,
+      }),
+      ...(outboundNetwork.port !== undefined && { port: outboundNetwork.port }),
+      ...(outboundNetwork.statusCode !== undefined && {
+        statusCode: outboundNetwork.statusCode,
+      }),
+    };
   }
 
   return sanitized;
