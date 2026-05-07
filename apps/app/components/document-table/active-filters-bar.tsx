@@ -64,7 +64,7 @@ export function ActiveFiltersBar({
         <DropdownMenuTrigger asChild>
           <button
             aria-label="Add filter"
-            className="inline-flex items-center self-stretch rounded-md border px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="inline-flex items-center self-stretch rounded-md border px-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             type="button"
           >
             <PlusIcon className="size-3.5" />

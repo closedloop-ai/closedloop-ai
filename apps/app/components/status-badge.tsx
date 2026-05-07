@@ -51,32 +51,6 @@ const COLOR_PENDING = "bg-warning/10 text-warning-foreground border-warning/30";
 const COLOR_INACTIVE = "bg-muted text-muted-foreground border-muted";
 const COLOR_AI = "bg-ai/10 text-ai-foreground border-ai/30";
 
-/**
- * PR status colors per PRD requirements (AC3.1):
- * - OPEN → blue (in progress)
- * - MERGED → green (success)
- * - CLOSED → red (failure/abandoned)
- */
-export const prStatusColors: Record<string, string> = {
-  OPEN: COLOR_PROGRESS,
-  MERGED: COLOR_SUCCESS,
-  CLOSED: COLOR_FAILURE,
-};
-
-/**
- * PR review decision colors per PRD requirements (AC3.2):
- * - APPROVED → green (success)
- * - CHANGES_REQUESTED → red (needs work)
- * - COMMENTED → yellow (feedback provided)
- * - DISMISSED → gray (inactive/cancelled)
- */
-export const prReviewDecisionColors: Record<string, string> = {
-  APPROVED: COLOR_SUCCESS,
-  CHANGES_REQUESTED: COLOR_FAILURE,
-  COMMENTED: COLOR_PENDING,
-  DISMISSED: COLOR_INACTIVE,
-};
-
 export const previewDeploymentStateColors: Record<string, string> = {
   READY: COLOR_SUCCESS,
   SUCCESS: COLOR_SUCCESS,
