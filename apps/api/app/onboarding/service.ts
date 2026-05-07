@@ -73,7 +73,6 @@ export const onboardingService = {
       teamCount,
       projectCount,
       githubInstallation,
-      linearIntegration,
       googleIntegration,
       userCount,
     ] = await Promise.all([
@@ -86,12 +85,6 @@ export const onboardingService = {
       withDb((db) =>
         db.gitHubInstallation.findFirst({
           where: { organizationId, status: { in: ["ACTIVE", "SUSPENDED"] } },
-          select: { id: true },
-        })
-      ),
-      withDb((db) =>
-        db.linearIntegration.findUnique({
-          where: { organizationId },
           select: { id: true },
         })
       ),
@@ -138,13 +131,6 @@ export const onboardingService = {
         label: "Add Anthropic API key",
         description: "Required for AI-powered workflows",
         completed: hasAnthropicKey,
-        href: "/settings?tab=integrations",
-      },
-      {
-        id: ChecklistItemId.ConnectLinear,
-        label: "Connect Linear",
-        description: "Sync issues and project tracking",
-        completed: linearIntegration !== null,
         href: "/settings?tab=integrations",
       },
       {
