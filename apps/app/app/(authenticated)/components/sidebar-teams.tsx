@@ -38,10 +38,10 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { TeamModal } from "@/app/(authenticated)/teams/components/team-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { useDeleteTeam, useTeams } from "@/hooks/queries/use-teams";
 import { useIsMounted } from "@/hooks/use-is-mounted";
-import { TeamModal } from "./team-modal";
 
 const TEAM_PATTERN = /^\/teams\/([^/]+)/;
 

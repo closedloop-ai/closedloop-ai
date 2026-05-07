@@ -64,7 +64,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 // Mock team-modal to simplify testing
-vi.mock("../team-modal", () => ({
+vi.mock("@/app/(authenticated)/teams/components/team-modal", () => ({
   TeamModal: ({ trigger }: { trigger: React.ReactNode; team?: unknown }) => (
     <div data-testid="team-modal">{trigger}</div>
   ),

@@ -27,6 +27,7 @@ import {
   UserIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { useGitHubIntegrationStatus } from "@/hooks/queries/use-github-integration";
 import { useTeamMembers } from "@/hooks/use-team-members";
@@ -34,6 +35,7 @@ import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 import { DefaultRepositoryPicker } from "./default-repository-picker";
+import { DefaultRepositoryWarning } from "./default-repository-warning";
 
 /** Matches SelectTrigger size="sm" styling so all property cells look uniform. */
 const selectTriggerClassName =
@@ -52,6 +54,8 @@ export function OverviewProperties({
   onUpdateAssignee,
   onUpdateTargetDate,
 }: Readonly<OverviewPropertiesProps>) {
+  const params = useParams<{ teamId: string }>();
+  const activeTeamId = params?.teamId ?? "";
   const teamIds = useMemo(
     () => project.teams.map((team) => team.id),
     [project.teams]
@@ -175,11 +179,19 @@ export function OverviewProperties({
         <div className="flex min-w-[120px] flex-col gap-1.5">
           <span className="text-muted-foreground text-xs">Repo</span>
           {isGitHubConnected ? (
-            <DefaultRepositoryPicker
-              currentSettings={project.settings}
-              defaultRepository={projectSettings.defaultRepository}
-              projectId={project.id}
-            />
+            <>
+              <DefaultRepositoryPicker
+                currentSettings={project.settings}
+                defaultRepository={projectSettings.defaultRepository}
+                projectId={project.id}
+              />
+              {activeTeamId ? (
+                <DefaultRepositoryWarning
+                  defaultRepository={projectSettings.defaultRepository}
+                  teamId={activeTeamId}
+                />
+              ) : null}
+            </>
           ) : (
             <Button
               asChild

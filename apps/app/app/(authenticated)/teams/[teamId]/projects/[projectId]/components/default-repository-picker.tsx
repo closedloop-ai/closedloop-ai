@@ -29,7 +29,7 @@ export function DefaultRepositoryPicker({
   projectId,
   currentSettings,
   defaultRepository,
-}: DefaultRepositoryPickerProps) {
+}: Readonly<DefaultRepositoryPickerProps>) {
   const [selectedRepoId, setSelectedRepoId] = useState(
     defaultRepository?.repoId ?? ""
   );
@@ -37,7 +37,7 @@ export function DefaultRepositoryPicker({
     defaultRepository?.branch ?? ""
   );
 
-  const updateProject = useUpdateProject();
+  const { mutate: mutateProject } = useUpdateProject();
 
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
     useGitHubIntegrationStatus();
@@ -89,7 +89,7 @@ export function DefaultRepositoryPicker({
   const saveDefault = useCallback(
     (repoId: string, repoFullName: string, branch: string) => {
       setSelectedBranch(branch);
-      updateProject.mutate({
+      mutateProject({
         id: projectId,
         settings: {
           ...currentSettings,
@@ -97,7 +97,7 @@ export function DefaultRepositoryPicker({
         },
       });
     },
-    [projectId, currentSettings, updateProject]
+    [projectId, currentSettings, mutateProject]
   );
 
   // Auto-select default branch when branches load for a new repo selection

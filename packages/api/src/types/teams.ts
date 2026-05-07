@@ -1,6 +1,8 @@
 // Team types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+import type { BasicUser } from "./user";
+
 export const TeamRole = {
   Owner: "OWNER",
   Admin: "ADMIN",
@@ -28,13 +30,7 @@ export type TeamMember = {
   userId: string;
   role: TeamRole;
   createdAt: Date;
-  user: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    email: string;
-    avatarUrl: string | null;
-  };
+  user: BasicUser;
 };
 
 export type CreateTeamInput = {

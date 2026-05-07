@@ -30,6 +30,7 @@ vi.mock("@/hooks/queries/use-teams", () => ({
     isPending: false,
   }),
   useDeleteTeam: () => ({
+    mutate: vi.fn(),
     mutateAsync: vi.fn(),
     isPending: false,
   }),
@@ -40,6 +41,7 @@ vi.mock("@/hooks/queries/use-teams", () => ({
   }),
   useRemoveTeamMember: () => ({
     mutate: vi.fn(),
+    mutateAsync: vi.fn(),
     isPending: false,
   }),
   useTeamMembers: () => ({
@@ -48,8 +50,32 @@ vi.mock("@/hooks/queries/use-teams", () => ({
   }),
   useUpdateTeamMemberRole: () => ({
     mutate: vi.fn(),
+    mutateAsync: vi.fn(),
     isPending: false,
   }),
+  useTeamRepositories: () => ({
+    data: [],
+    isLoading: false,
+  }),
+  useAddTeamRepository: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+  useUpdateTeamRepository: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+  useRemoveTeamRepository: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+}));
+
+vi.mock("@/hooks/use-multi-repo-config-enabled", () => ({
+  useMultiRepoConfigEnabled: () => false,
 }));
 
 vi.mock("@repo/design-system/components/ui/avatar", () => ({
