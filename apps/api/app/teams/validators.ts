@@ -21,3 +21,20 @@ export const addMemberValidator = z.object({
 export const updateMemberValidator = z.object({
   role: teamRoleSchema,
 });
+
+export const addTeamRepositoryValidator = z.object({
+  installationRepositoryId: z.uuid(),
+  isDefaultSelected: z.boolean().optional(),
+  isPrimary: z.boolean().optional(),
+});
+
+export const updateTeamRepositoryValidator = z
+  .object({
+    isDefaultSelected: z.boolean().optional(),
+    isPrimary: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      data.isDefaultSelected !== undefined || data.isPrimary !== undefined,
+    { message: "At least one field must be provided" }
+  );

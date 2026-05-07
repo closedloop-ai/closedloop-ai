@@ -497,9 +497,10 @@ model Team {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization  @relation(fields: [organizationId], references: [id])
+  organization Organization     @relation(fields: [organizationId], references: [id])
   members      TeamMember[]
   projects     ProjectTeam[]
+  repositories TeamRepository[]
 
   @@unique([organizationId, slug])
   @@map("teams")
@@ -519,6 +520,25 @@ model TeamMember {
   @@unique([teamId, userId])
   @@index([userId])
   @@map("team_members")
+}
+
+/// Per-team curated list of GitHub repositories with default-selection and primary designation
+model TeamRepository {
+  id                       String   @id @default(uuid(7)) @db.Uuid
+  teamId                   String   @map("team_id") @db.Uuid
+  installationRepositoryId String   @map("installation_repository_id") @db.Uuid
+  isDefaultSelected        Boolean  @default(false) @map("is_default_selected")
+  isPrimary                Boolean  @default(false) @map("is_primary")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  team       Team                         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  repository GitHubInstallationRepository @relation(fields: [installationRepositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, installationRepositoryId])
+  @@index([installationRepositoryId])
+  @@map("team_repositories")
 }
 
 /// Many-to-many relationship for projects belonging to multiple teams
@@ -1295,6 +1315,7 @@ model GitHubInstallationRepository {
   // Relations
   installation       GitHubInstallation  @relation(fields: [installationId], references: [id], onDelete: Cascade)
   pullRequestDetails PullRequestDetail[]
+  teamRepositories   TeamRepository[]
 
   @@unique([installationId, githubRepoId])
   @@map("github_installation_repositories")

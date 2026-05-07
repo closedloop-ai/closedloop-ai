@@ -17,6 +17,7 @@ import {
 import type { DocumentVersion } from "@repo/api/src/types/document-version";
 import {
   type AdditionalRepoRef,
+  type LoopCommand,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -57,6 +58,12 @@ export const documentKeys = {
   previewDeployment: (id: string) =>
     [...documentKeys.detail(id), "preview-deployment"] as const,
   related: (id: string) => [...documentKeys.detail(id), "related"] as const,
+  inheritedAdditionalRepos: (id: string, command: LoopCommand) =>
+    [
+      ...documentKeys.detail(id),
+      "inherited-additional-repos",
+      command,
+    ] as const,
 };
 
 // Queries
