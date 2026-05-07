@@ -63,8 +63,11 @@ export function PRDEditor({
   const [showComments, setShowComments] = useState(true);
 
   // Fetch generation status with adaptive polling (stops when terminal)
-  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
-    useDocumentGenerationStatus(prd.id, { polling: true });
+  const {
+    data: generationStatus,
+    isLoading: generationStatusLoading,
+    invalidateCache: invalidateArtifactCache,
+  } = useDocumentGenerationStatus(prd.id, { polling: true });
   const dismissGenerationStatus = useDismissDocumentGenerationStatus();
 
   const { data: judgesReport } = usePrdJudgesFeedback(prd.id);
@@ -144,6 +147,8 @@ export function PRDEditor({
       {/* Header */}
       <PRDEditorHeader
         canShowPanel={chatFlag?.enabled === true}
+        generationStatus={generationStatus}
+        generationStatusLoading={generationStatusLoading}
         isEvaluating={prdActions.isEvaluating}
         isGenerating={prdActions.isGenerating}
         isPending={isPending}

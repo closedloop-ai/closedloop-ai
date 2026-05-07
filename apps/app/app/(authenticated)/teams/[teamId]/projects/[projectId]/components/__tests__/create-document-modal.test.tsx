@@ -508,10 +508,15 @@ describe("CreateDocumentModal", () => {
       screen.getByRole("button", { name: GENERATE_PRD_REGEX }).click();
 
       await waitFor(() => {
-        expect(mockRunLoopMutate).toHaveBeenCalledWith({
-          documentId: "new-prd-123",
-          command: RunLoopCommand.GeneratePrd,
-        });
+        expect(mockRunLoopMutate).toHaveBeenCalledWith(
+          {
+            documentId: "new-prd-123",
+            command: RunLoopCommand.GeneratePrd,
+          },
+          expect.objectContaining({
+            onError: expect.any(Function),
+          })
+        );
       });
     });
   });

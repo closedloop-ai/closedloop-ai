@@ -1,11 +1,16 @@
+import type { ApiConflictBody } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import type {
+  CreateLoopResponse,
+  LoopAlreadyActiveBody,
+} from "@repo/api/src/types/loop";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { z } from "zod";
 
-import { ApiError } from "@/lib/api-error";
+import { ApiError, getErrorMessage } from "@/lib/api-error";
 
 const createLoopResponseSchema = z.object({
   loopId: z.string(),
@@ -15,6 +20,7 @@ const createLoopResponseSchema = z.object({
 type RunLoopResponseCallbacks = {
   onMultipleTargets: (targets: ComputeTargetConflictBody) => void;
   onBackendMismatch: (body: BackendMismatchBody) => void;
+  onLoopAlreadyActive?: (payload: LoopAlreadyActiveBody) => void;
   onSuccess: (response: CreateLoopResponse) => void;
   onRateLimited?: (message: string) => void;
 };
@@ -29,8 +35,7 @@ type RunLoopResponseCallbacks = {
  *
  * 409 conflict responses are thrown as ApiError by apiFetch. The conflict body
  * is nested at `apiError.data.data` (ApiResult.data = conflict body).
- * Non-conflict errors are not handled and should be caught by the caller or
- * the global QueryClient mutations.onError toast handler.
+ * Unrecognized errors fall back to a toast so they are always surfaced to the user.
  */
 export function handleRunLoopResponse(
   response: unknown,
@@ -48,26 +53,38 @@ export function handleRunLoopResponse(
     return;
   }
 
-  // Error case: route 409 conflict responses by discriminant
-  if (!(response instanceof ApiError) || response.status !== 409) {
-    return;
+  // Error case: route 409 conflict responses by discriminant.
+  // The wire shape is `ApiConflictBody<F>` from @repo/api — a typed failure
+  // body shared between server and client.
+  if (response instanceof ApiError && response.status === 409) {
+    const apiResult = response.data as
+      | ApiConflictBody<
+          | ComputeTargetConflictBody
+          | BackendMismatchBody
+          | LoopAlreadyActiveBody
+        >
+      | undefined;
+    const conflictBody = apiResult?.data;
+
+    if (
+      conflictBody?.error === "loop_already_active" &&
+      callbacks.onLoopAlreadyActive
+    ) {
+      callbacks.onLoopAlreadyActive(conflictBody as LoopAlreadyActiveBody);
+      return;
+    }
+    // If onLoopAlreadyActive is absent, fall through to the trailing toast.error.
+    if (conflictBody?.error === "multiple_targets") {
+      callbacks.onMultipleTargets(conflictBody as ComputeTargetConflictBody);
+      return;
+    }
+    if (conflictBody?.error === "backend_mismatch") {
+      callbacks.onBackendMismatch(conflictBody as BackendMismatchBody);
+      return;
+    }
   }
 
-  // ApiError.data is the raw ApiResult: { success: false, error: string, data: ConflictBody }
-  const apiResult = response.data as
-    | { data?: ComputeTargetConflictBody | BackendMismatchBody }
-    | undefined;
-  const conflictBody = apiResult?.data;
-
-  if (!conflictBody) {
-    return;
-  }
-
-  if (conflictBody.error === "multiple_targets") {
-    callbacks.onMultipleTargets(conflictBody as ComputeTargetConflictBody);
-  } else if (conflictBody.error === "backend_mismatch") {
-    callbacks.onBackendMismatch(conflictBody as BackendMismatchBody);
-  }
+  toast.error(getErrorMessage(response));
 }
 
 function isCreateLoopResponse(value: unknown): value is CreateLoopResponse {

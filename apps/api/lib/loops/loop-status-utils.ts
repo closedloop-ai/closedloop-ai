@@ -59,6 +59,8 @@ export function mapLoopCommand(command: string): GenerationStatus["command"] {
       return "evaluate_feature";
     case "REQUEST_PRD_CHANGES":
       return "request_prd_changes";
+    case "GENERATE_PRD":
+      return "generate_prd";
     default:
       return null;
   }

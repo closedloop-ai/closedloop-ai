@@ -213,6 +213,7 @@ export type GenerationStatus = {
     | "chat"
     | "request_changes"
     | "request_prd_changes"
+    | "generate_prd"
     | "explore"
     | "decompose"
     | "evaluate_prd"

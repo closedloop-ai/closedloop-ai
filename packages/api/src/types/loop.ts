@@ -60,6 +60,17 @@ export { LoopCommand, LoopStatus, type TokensByModel };
 
 // --- API-specific types (not in shared contract) ---
 
+/**
+ * Body shape for the 409 `loop_already_active` conflict response.
+ * Defined here so frontend can import from @repo/api without reaching into apps/api.
+ */
+export type LoopAlreadyActiveBody = {
+  error: "loop_already_active";
+  loopId: string;
+  command: LoopCommand;
+  status: LoopStatus;
+};
+
 export type SourceContextType = typeof ArtifactType.Document;
 
 // Compute target summary (for loop list/detail views)

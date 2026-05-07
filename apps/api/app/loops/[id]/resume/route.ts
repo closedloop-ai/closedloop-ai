@@ -1,4 +1,7 @@
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import type {
+  CreateLoopResponse,
+  LoopAlreadyActiveBody,
+} from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
@@ -8,10 +11,7 @@ import {
   scheduleLogFlushAfter,
   successResponse,
 } from "@/lib/route-utils";
-import {
-  handleLoopServiceError,
-  type LoopAlreadyActiveBody,
-} from "../../loop-error-responses";
+import { handleLoopServiceError } from "../../loop-error-responses";
 import { loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";
 

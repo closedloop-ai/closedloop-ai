@@ -4,6 +4,7 @@ import {
   LEGACY_DESKTOP_API_NAMESPACE,
 } from "@repo/api/src/desktop-api-namespace";
 import { success } from "@repo/api/src/types/common";
+import type { LoopAlreadyActiveBody } from "@repo/api/src/types/loop";
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -11,7 +12,6 @@ import { z } from "zod";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import {
   handleLoopServiceError,
-  type LoopAlreadyActiveBody,
   loopAlreadyActiveResponse,
 } from "@/app/loops/loop-error-responses";
 import { repoSchema } from "@/app/loops/validators";
