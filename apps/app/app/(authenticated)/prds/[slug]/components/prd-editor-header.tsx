@@ -144,7 +144,12 @@ export function PRDEditorHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            disabled={isGenerating || generationStatusLoading}
+            disabled={isCommandDisabled({
+              generationStatus,
+              isLoading: generationStatusLoading,
+              targetCommand: "generate_prd",
+              localMutationPending: isGenerating,
+            })}
             onClick={() => onGeneratePrd()}
           >
             <PrdIcon className="h-4 w-4" />
