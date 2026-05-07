@@ -47,7 +47,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactElement } from "react";
 import { createContext, useContext } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import {
@@ -312,6 +312,27 @@ function TruncatedTitle({ text }: { text: string }) {
   );
 }
 
+function CellTooltip({
+  children,
+  text,
+}: {
+  children: ReactElement;
+  text?: string | null;
+}) {
+  if (!text) {
+    return children;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent className="max-w-xs break-words text-left">
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function TypeCell({ item }: { item: DocumentRowItem }) {
   if (item.kind === "project") {
     return (
@@ -361,25 +382,29 @@ function ParentCell({ item: _item }: { item: DocumentRowItem }) {
   if (parentTitle && parentHref) {
     return (
       <div className="h-11 w-[124px] shrink-0 border-l">
-        <Link
-          className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
-          href={parentHref}
-          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-        >
-          <span className="truncate font-medium text-muted-foreground text-xs">
-            {parentTitle}
-          </span>
-        </Link>
+        <CellTooltip text={parentTitle}>
+          <Link
+            className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
+            href={parentHref}
+            onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+          >
+            <span className="truncate font-medium text-muted-foreground text-xs">
+              {parentTitle}
+            </span>
+          </Link>
+        </CellTooltip>
       </div>
     );
   }
 
   return (
-    <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-      <span className="truncate font-medium text-muted-foreground text-xs">
-        {parentTitle ?? "\u2014"}
-      </span>
-    </div>
+    <CellTooltip text={parentTitle}>
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+        <span className="truncate font-medium text-muted-foreground text-xs">
+          {parentTitle ?? "\u2014"}
+        </span>
+      </div>
+    </CellTooltip>
   );
 }
 
@@ -445,6 +470,7 @@ function AssigneeCell({ item }: { item: DocumentRowItem }) {
     );
   }
   const assignee = item.data.assignee ?? null;
+  const assigneeLabel = assignee ? getUserDisplayName(assignee) : "Unassigned";
 
   const trigger = (
     <button
@@ -470,39 +496,45 @@ function AssigneeCell({ item }: { item: DocumentRowItem }) {
 
   if (!(onUpdateAssignee && teamMembers)) {
     return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center gap-0 border-l px-3 py-2">
-        <div className="flex shrink-0 items-center justify-center p-1.5">
-          <AssigneeAvatar
-            assignee={assignee}
-            className="size-5"
-            disableLink
-            disableTooltip
-          />
+      <CellTooltip text={assigneeLabel}>
+        <div className="flex h-11 w-[124px] shrink-0 items-center gap-0 border-l px-3 py-2">
+          <div className="flex shrink-0 items-center justify-center p-1.5">
+            <AssigneeAvatar
+              assignee={assignee}
+              className="size-5"
+              disableLink
+              disableTooltip
+            />
+          </div>
+          {assignee && (
+            <span className="truncate font-medium text-muted-foreground text-xs">
+              {assignee.firstName} {assignee.lastName}
+            </span>
+          )}
         </div>
-        {assignee && (
-          <span className="truncate font-medium text-muted-foreground text-xs">
-            {assignee.firstName} {assignee.lastName}
-          </span>
-        )}
-      </div>
+      </CellTooltip>
     );
   }
 
   return (
-    <UserSelectPopover
-      onSelect={(user) => onUpdateAssignee(item.data.id, user?.id ?? null)}
-      trigger={trigger}
-      users={teamMembers}
-      value={
-        assignee
-          ? {
-              id: assignee.id,
-              name: getUserDisplayName(assignee),
-              avatarUrl: assignee.avatarUrl || undefined,
-            }
-          : null
-      }
-    />
+    <CellTooltip text={assigneeLabel}>
+      <div className="h-11 w-[124px] shrink-0">
+        <UserSelectPopover
+          onSelect={(user) => onUpdateAssignee(item.data.id, user?.id ?? null)}
+          trigger={trigger}
+          users={teamMembers}
+          value={
+            assignee
+              ? {
+                  id: assignee.id,
+                  name: getUserDisplayName(assignee),
+                  avatarUrl: assignee.avatarUrl || undefined,
+                }
+              : null
+          }
+        />
+      </div>
+    </CellTooltip>
   );
 }
 
@@ -681,25 +713,29 @@ function ProjectCell({ item }: { item: DocumentRowItem }) {
   if (projectName && projectHref) {
     return (
       <div className="h-11 w-[124px] shrink-0 border-l">
-        <Link
-          className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
-          href={projectHref}
-          onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-        >
-          <span className="truncate font-medium text-muted-foreground text-xs">
-            {projectName}
-          </span>
-        </Link>
+        <CellTooltip text={projectName}>
+          <Link
+            className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
+            href={projectHref}
+            onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+          >
+            <span className="truncate font-medium text-muted-foreground text-xs">
+              {projectName}
+            </span>
+          </Link>
+        </CellTooltip>
       </div>
     );
   }
 
   return (
-    <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-      <span className="truncate font-medium text-muted-foreground text-xs">
-        {projectName ?? "\u2014"}
-      </span>
-    </div>
+    <CellTooltip text={projectName}>
+      <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
+        <span className="truncate font-medium text-muted-foreground text-xs">
+          {projectName ?? "\u2014"}
+        </span>
+      </div>
+    </CellTooltip>
   );
 }
 
