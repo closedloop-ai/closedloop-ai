@@ -23,7 +23,6 @@ export async function createRoom(
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
-
     if (!liveblocks) {
       // Not configured - skip room creation (RoomProvider will auto-create)
       return { success: true };
@@ -62,17 +61,9 @@ export async function resetRoom(
       return { success: true };
     }
 
-    await withProsemirrorDocument(
-      { roomId, client: liveblocks },
-      async (api) => {
-        return await api.clearContent();
-      }
+    await withProsemirrorDocument({ roomId, client: liveblocks }, (api) =>
+      api.clearContent()
     );
-
-    const threads = await liveblocks.getThreads({ roomId });
-    for (const thread of threads.data) {
-      await liveblocks.deleteThread({ roomId, threadId: thread.id });
-    }
 
     return { success: true };
   } catch (error) {
@@ -93,7 +84,6 @@ export async function deleteRoom(
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
-
     if (!liveblocks) {
       // Not an error - just not configured
       return { success: true };
@@ -124,7 +114,6 @@ export async function updateRoomMetadata(
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
-
     if (!liveblocks) {
       return { success: true };
     }
