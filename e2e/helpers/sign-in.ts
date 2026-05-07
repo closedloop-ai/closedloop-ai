@@ -1,5 +1,7 @@
 import type { Page } from "@playwright/test";
-import { gotoAuthenticatedApp } from "./app-bootstrap";
+import { gotoAuthenticatedApp, waitForClerkUser } from "./app-bootstrap";
+import { getClerkBearerToken } from "./clerk-token";
+import { ensureWizardCompleted } from "./onboarding";
 
 const CONTINUE_BUTTON = /continue/i;
 const SIGN_IN_PATH_PREFIX = "/sign-in";
@@ -46,6 +48,16 @@ export async function authenticateToApp(
     (url) => !url.pathname.startsWith(SIGN_IN_PATH_PREFIX),
     { waitUntil: "domcontentloaded" }
   );
+
+  // Persist `wizardCompletedAt` server-side BEFORE OnboardingGuard's first
+  // /onboarding query runs. On a fresh preview deployment that query is slow
+  // (cold start + parallel count queries), and a slow first call hangs
+  // waitForAuthenticatedEntry until it times out. Calling complete-wizard
+  // here both warms the route and pins wizardCompleted=true persistently, so
+  // OnboardingGuard renders children quickly on every subsequent navigation.
+  await waitForClerkUser(page);
+  const token = await getClerkBearerToken(page);
+  await ensureWizardCompleted(page.request, token);
 
   await gotoAuthenticatedApp(page);
 }

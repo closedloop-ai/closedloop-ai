@@ -47,7 +47,7 @@ type MeProbeResult = {
 
 type AuthenticatedEntry = "shell" | "onboarding";
 
-async function waitForClerkUser(page: Page) {
+export async function waitForClerkUser(page: Page) {
   await page.waitForFunction(
     () => (window as ClerkWindow).Clerk !== undefined,
     undefined,
