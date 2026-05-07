@@ -381,8 +381,8 @@ function ParentCell({ item: _item }: { item: DocumentRowItem }) {
 
   if (parentTitle && parentHref) {
     return (
-      <CellTooltip text={parentTitle}>
-        <div className="h-11 w-[124px] shrink-0 border-l">
+      <div className="h-11 w-[124px] shrink-0 border-l">
+        <CellTooltip text={parentTitle}>
           <Link
             className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
             href={parentHref}
@@ -392,8 +392,8 @@ function ParentCell({ item: _item }: { item: DocumentRowItem }) {
               {parentTitle}
             </span>
           </Link>
-        </div>
-      </CellTooltip>
+        </CellTooltip>
+      </div>
     );
   }
 
@@ -712,8 +712,8 @@ function ProjectCell({ item }: { item: DocumentRowItem }) {
 
   if (projectName && projectHref) {
     return (
-      <CellTooltip text={projectName}>
-        <div className="h-11 w-[124px] shrink-0 border-l">
+      <div className="h-11 w-[124px] shrink-0 border-l">
+        <CellTooltip text={projectName}>
           <Link
             className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
             href={projectHref}
@@ -723,8 +723,8 @@ function ProjectCell({ item }: { item: DocumentRowItem }) {
               {projectName}
             </span>
           </Link>
-        </div>
-      </CellTooltip>
+        </CellTooltip>
+      </div>
     );
   }
 
