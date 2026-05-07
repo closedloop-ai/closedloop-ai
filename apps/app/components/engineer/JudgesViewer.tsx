@@ -354,9 +354,9 @@ function CaseScoreRow({
           </span>
         </div>
         <span className="text-muted-foreground text-xs">
-          {getScore(score) !== null
-            ? formatScorePercent(getScore(score)!)
-            : "N/A"}
+          {getScore(score) === null
+            ? "N/A"
+            : formatScorePercent(getScore(score)!)}
         </span>
       </button>
       {isExpanded && (
@@ -387,9 +387,9 @@ function CaseScoreRow({
                     </span>
                     <span className="text-sm">
                       Score:{" "}
-                      {metric.score != null
-                        ? formatScorePercent(metric.score)
-                        : "N/A"}
+                      {metric.score == null
+                        ? "N/A"
+                        : formatScorePercent(metric.score)}
                     </span>
                   </div>
                   {metric.threshold !== null && (

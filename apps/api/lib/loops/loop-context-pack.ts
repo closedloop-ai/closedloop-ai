@@ -131,7 +131,7 @@ function logDesktopExecuteRawPlanDecision({
     rawPlanRecordAttached: rawPlan !== undefined,
     rawPlanContentPresent: rawPlanContent !== undefined,
     rawPlanContentMatchesArtifact:
-      rawPlanContent !== undefined ? rawPlanContent === artifactContent : null,
+      rawPlanContent === undefined ? null : rawPlanContent === artifactContent,
     rawPlanContentLength: rawPlanContent?.length ?? null,
     artifactContentLength: artifactContent.length,
     omissionReason:
@@ -175,12 +175,12 @@ async function fetchPrimaryArtifact(
   // the version the loop was created for, so the stale-write guard in the
   // ingest handler can accurately compare versions.
   const artifactVersion =
-    loop.documentVersion != null
-      ? await documentVersionService.getByVersion(
+    loop.documentVersion == null
+      ? await documentVersionService.getLatest(artifact.id)
+      : await documentVersionService.getByVersion(
           artifact.id,
           loop.documentVersion
-        )
-      : await documentVersionService.getLatest(artifact.id);
+        );
   const rawPlan = await fetchDesktopExecuteRawPlanState(
     loop,
     String(artifact.type),

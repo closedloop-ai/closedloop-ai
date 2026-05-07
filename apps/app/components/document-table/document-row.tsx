@@ -627,13 +627,13 @@ function ScoreCellFromFeedback({
   const score = deriveScoreDisplay(items);
   return (
     <div className="flex h-11 w-[124px] shrink-0 items-center border-l px-3 py-2">
-      {score !== null ? (
-        <span className="truncate font-medium text-green-600 text-xs dark:text-green-400">
-          {score}
-        </span>
-      ) : (
+      {score === null ? (
         <span className="font-medium text-muted-foreground text-xs">
           {"\u2014"}
+        </span>
+      ) : (
+        <span className="truncate font-medium text-green-600 text-xs dark:text-green-400">
+          {score}
         </span>
       )}
     </div>

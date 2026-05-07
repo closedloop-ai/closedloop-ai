@@ -50,9 +50,9 @@ async function encryptRow<T extends BackfillRow>(
 
   await config.update(row.id, {
     accessTokenEncrypted: encryptedAccessToken,
-    ...(encryptedRefreshToken !== null
-      ? { refreshTokenEncrypted: encryptedRefreshToken }
-      : {}),
+    ...(encryptedRefreshToken === null
+      ? {}
+      : { refreshTokenEncrypted: encryptedRefreshToken }),
   });
 
   return true;

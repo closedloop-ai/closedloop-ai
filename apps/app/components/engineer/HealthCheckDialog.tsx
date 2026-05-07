@@ -152,9 +152,9 @@ export function HealthCheckDialog({
       staleTime: LATEST_RELEASE_STALE_TIME_MS,
     });
   const latestVersion =
-    latestVersionOverride !== undefined
-      ? latestVersionOverride
-      : (latestRelease?.version ?? null);
+    latestVersionOverride === undefined
+      ? (latestRelease?.version ?? null)
+      : latestVersionOverride;
   const healthCheckQueryOptions = useMemo(
     () =>
       healthCheckOptions(targetKey, expectedMcpUrl, {

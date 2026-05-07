@@ -395,9 +395,9 @@ export async function getLatestDeploymentStatusForRef(
 
   try {
     const octokit =
-      options?.installationId !== undefined
-        ? await getInstallationOctokit(options.installationId)
-        : await getAuthenticatedOctokit();
+      options?.installationId === undefined
+        ? await getAuthenticatedOctokit()
+        : await getInstallationOctokit(options.installationId);
     const environment =
       options?.environment === null ? undefined : options?.environment;
 

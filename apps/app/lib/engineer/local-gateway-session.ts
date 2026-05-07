@@ -239,15 +239,14 @@ export async function ensureLocalGatewaySession(
   }
 
   if (inflightExchange) {
-    if (inflightExchange.port !== port) {
-      inflightExchange.cancelled = true;
-      inflightExchange = null;
-    } else {
+    if (inflightExchange.port === port) {
       return applyExchangeOutcome(
         inflightExchange,
         await inflightExchange.promise
       );
     }
+    inflightExchange.cancelled = true;
+    inflightExchange = null;
   }
 
   // Concurrent intercepted engineer requests can all need bootstrap at once,

@@ -1693,13 +1693,13 @@ async function attemptLlmCommit({
 
     const { stdout, stderr, status } = result;
 
-    if (status !== 0) {
+    if (status === 0) {
+      log("info", `LLM commit (${fullName}) completed successfully`);
+    } else {
       log(
         "error",
         `LLM commit (${fullName}) exited with code ${status} (best-effort, falling through to safety commit)`
       );
-    } else {
-      log("info", `LLM commit (${fullName}) completed successfully`);
     }
 
     // Log tail of output for debugging
@@ -4184,11 +4184,11 @@ export {
   getWorkspaceStateUploadPrefixes,
   HarnessError,
   isPeerWriteEnabled,
+  parsePrInfo,
   parseTokenUsage,
   parseTokenUsageFromJsonl,
   parseTokenUsageFromJsonlFile,
   parseTokenUsageFromRegex,
-  parsePrInfo,
   redactSensitive,
   refreshGitHubToken,
   registerSecret,

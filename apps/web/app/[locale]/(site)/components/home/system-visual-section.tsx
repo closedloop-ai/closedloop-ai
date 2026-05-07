@@ -309,11 +309,11 @@ const WorkspaceGroup = () => {
       <GroupLabel>Workspace</GroupLabel>
       {workspaceItems.map((item) => (
         <SidebarMenuItem icon={item.icon} key={item.label} label={item.label}>
-          {item.badge !== null ? (
+          {item.badge === null ? null : (
             <span className="rounded-full bg-primary/15 px-1.5 py-px font-medium text-[10px] text-primary">
               {item.badge}
             </span>
-          ) : null}
+          )}
         </SidebarMenuItem>
       ))}
     </div>

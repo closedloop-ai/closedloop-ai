@@ -338,7 +338,7 @@ function CommentRow({
                 <FileCode className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate font-mono text-muted-foreground text-xs">
                   {comment.path}
-                  {comment.line != null ? `:${comment.line}` : ""}
+                  {comment.line == null ? "" : `:${comment.line}`}
                 </span>
               </div>
             ) : null}
@@ -386,7 +386,7 @@ function CommentRow({
                 </div>
               </div>
             ))}
-            {comment.kind !== CommentKind.IssueComment ? (
+            {comment.kind === CommentKind.IssueComment ? null : (
               <Button
                 className="h-7 text-muted-foreground text-xs"
                 onClick={onReplyToggle}
@@ -396,7 +396,7 @@ function CommentRow({
                 <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
                 Reply
               </Button>
-            ) : null}
+            )}
           </div>
         </>
       ) : null}

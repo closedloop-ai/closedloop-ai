@@ -32,7 +32,7 @@
     "check-deps": "npx check-dependency-version-consistency"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.3.13",
+    "@biomejs/biome": "2.4.13",
     "@clerk/testing": "^2.0.25",
     "@playwright/test": "^1.58.2",
     "@repo/typescript-config": "workspace:*",

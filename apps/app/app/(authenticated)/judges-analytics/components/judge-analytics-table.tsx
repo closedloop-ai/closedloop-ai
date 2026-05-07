@@ -29,7 +29,7 @@ type JudgeAnalyticsTableProps = {
 };
 
 function formatOrDash(value: number | null): string {
-  return value !== null ? formatScorePercent(value) : "\u2014";
+  return value === null ? "\u2014" : formatScorePercent(value);
 }
 
 const JUDGE_SORT_COLUMNS = [

@@ -108,9 +108,9 @@ export const enumOptionsService = {
       const option = await tx.customFieldEnumOption.update({
         where: { id: optionId, customFieldId },
         data: {
-          ...(input.name !== undefined ? { name: input.name } : {}),
-          ...(input.color !== undefined ? { color: input.color } : {}),
-          ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.color === undefined ? {} : { color: input.color }),
+          ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
         },
       });
 
@@ -140,9 +140,9 @@ export const enumOptionsService = {
         await Promise.all(
           affectedValues.map(async (cfv) => {
             const rawValue =
-              cfv.enumValueId !== null
-                ? cfv.enumValueId
-                : cfv.multiEnumValueIds;
+              cfv.enumValueId === null
+                ? cfv.multiEnumValueIds
+                : cfv.enumValueId;
 
             const displayValue = await computeDisplayValue(
               fieldWithUpdatedOptions,

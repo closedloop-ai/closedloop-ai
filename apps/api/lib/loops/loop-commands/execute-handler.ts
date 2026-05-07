@@ -182,14 +182,14 @@ export function executionArtifactsFromUpload(
   // Apply main's legacy base_ref→base_branch fallback before strict validation
   // so v1 desktop payloads that only carry base_branch still parse.
   const normalizedUploaded =
-    uploaded.executionResult !== undefined
-      ? {
+    uploaded.executionResult === undefined
+      ? uploaded
+      : {
           ...uploaded,
           executionResult: withLegacyUploadBaseRefFallback(
             uploaded.executionResult
           ),
-        }
-      : uploaded;
+        };
 
   const parsed = executionUploadSchema.parse(normalizedUploaded);
   const codeJudgesReport = (parsed.codeJudges as JudgesReport) ?? null;

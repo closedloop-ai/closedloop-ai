@@ -92,9 +92,9 @@ export async function POST(
     // to a latency-sensitive refresh path (the harness calls this endpoint
     // when its installation token is near expiry).
     const additionalRepos =
-      bodyAdditionalRepos !== undefined
-        ? bodyAdditionalRepos
-        : authorizedAdditionalRepos;
+      bodyAdditionalRepos === undefined
+        ? authorizedAdditionalRepos
+        : bodyAdditionalRepos;
     const [freshToken, additionalRepoTokens] = await Promise.all([
       resolveGitHubToken(claims.organizationId, loop.repo.fullName),
       Promise.all(

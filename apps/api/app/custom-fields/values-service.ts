@@ -689,16 +689,16 @@ function toValueDetail(
   peopleMap: Map<string, BasicUser>
 ): CustomFieldValueDetail {
   const enumValue =
-    row.enumValue !== null
-      ? {
+    row.enumValue === null
+      ? null
+      : {
           id: row.enumValue.id,
           customFieldId: row.enumValue.customFieldId,
           name: row.enumValue.name,
           color: row.enumValue.color,
           enabled: row.enumValue.enabled,
           sortOrder: row.enumValue.sortOrder,
-        }
-      : null;
+        };
 
   const peopleValues: BasicUser[] = row.peopleValueIds
     .map((id) => peopleMap.get(id))

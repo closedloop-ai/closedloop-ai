@@ -229,7 +229,7 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
         targetType: target == null ? "null/undefined" : typeof target,
         hasDriverAdapterError: driverAdapterError != null,
         hasConstraint: constraint != null,
-        constraintKeys: constraint != null ? Object.keys(constraint) : [],
+        constraintKeys: constraint == null ? [] : Object.keys(constraint),
       },
     }
   );

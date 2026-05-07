@@ -73,11 +73,11 @@ export function useStreamReader(dispatch: Dispatch<ChatStreamAction>) {
         onEvent: (event: Record<string, unknown>) =>
           callbacks?.onEvent?.(event),
       };
-      return options?.initialContent !== undefined
-        ? readChatStream(reader, handlers, {
+      return options?.initialContent === undefined
+        ? readChatStream(reader, handlers)
+        : readChatStream(reader, handlers, {
             initialContent: options.initialContent,
-          })
-        : readChatStream(reader, handlers);
+          });
     },
     [dispatch]
   );

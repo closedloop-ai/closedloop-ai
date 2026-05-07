@@ -43,9 +43,9 @@ export function SectionHeader({
         <span className="shrink-0 font-semibold text-lg">{title}</span>
       )}
       <div className="min-w-0 flex-1" />
-      {children != null ? (
+      {children == null ? null : (
         <div className="flex shrink-0 items-center gap-2">{children}</div>
-      ) : null}
+      )}
     </div>
   );
 }

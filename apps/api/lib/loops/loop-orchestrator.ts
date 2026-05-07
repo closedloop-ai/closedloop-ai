@@ -1293,7 +1293,7 @@ async function handleLoopError(
     error: {
       code: event.code,
       message: event.message,
-      ...(event.result !== undefined ? { result: event.result } : {}),
+      ...(event.result === undefined ? {} : { result: event.result }),
     },
     ...buildErrorCostFields(event),
     ...prSession,

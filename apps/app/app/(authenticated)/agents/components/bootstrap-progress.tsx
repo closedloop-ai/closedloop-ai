@@ -83,9 +83,9 @@ export function BootstrapProgress({
           <CheckCircle2Icon className="mt-0.5 h-5 w-5 shrink-0 text-green-500" />
           <div>
             <p className="font-medium text-sm">
-              Generated {totalAgents} agent{totalAgents !== 1 ? "s" : ""} from{" "}
+              Generated {totalAgents} agent{totalAgents === 1 ? "" : "s"} from{" "}
               {successRepos.length} repositor
-              {successRepos.length !== 1 ? "ies" : "y"}
+              {successRepos.length === 1 ? "y" : "ies"}
             </p>
             {result.totalCreated > 0 && (
               <Badge className="mt-1 mr-1" variant="secondary">
@@ -111,7 +111,7 @@ export function BootstrapProgress({
               <CheckCircle2Icon className="h-3.5 w-3.5 text-green-500" />
               <span>{repo.fullName}</span>
               <span className="text-muted-foreground">
-                — {repo.agentCount} agent{repo.agentCount !== 1 ? "s" : ""}
+                — {repo.agentCount} agent{repo.agentCount === 1 ? "" : "s"}
               </span>
             </li>
           ))}

@@ -87,7 +87,7 @@ function mockDbCalls(
   const mockFindUnique = vi
     .fn()
     .mockResolvedValue(
-      artifactSubtype !== null ? { subtype: artifactSubtype } : null
+      artifactSubtype === null ? null : { subtype: artifactSubtype }
     );
   const mockUpdate = vi.fn().mockResolvedValue({
     id: "artifact-123",

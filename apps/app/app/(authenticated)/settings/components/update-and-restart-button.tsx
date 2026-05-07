@@ -73,9 +73,9 @@ function getSessionStorageKey(targetId: string): string {
 
 function readStoredCommandId(targetId: string): string | null {
   try {
-    return globalThis.window !== undefined
-      ? sessionStorage.getItem(getSessionStorageKey(targetId))
-      : null;
+    return globalThis.window === undefined
+      ? null
+      : sessionStorage.getItem(getSessionStorageKey(targetId));
   } catch {
     return null;
   }
@@ -176,9 +176,9 @@ function UpdateAndRestartButtonInner({
   const isUpdating = isDispatching || isPolling;
 
   const currentVersion =
-    buttonState.kind !== "hidden"
-      ? (validatePluginVersion(buttonState.currentVersion) ?? "Unknown")
-      : "Unknown";
+    buttonState.kind === "hidden"
+      ? "Unknown"
+      : (validatePluginVersion(buttonState.currentVersion) ?? "Unknown");
   const newVersion = validatePluginVersion(releaseInfo?.version) ?? "Unknown";
 
   // Stabilize callback refs to avoid spurious effect re-runs when parent

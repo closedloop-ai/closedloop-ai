@@ -10,10 +10,15 @@
             "style": "type"
           }
         },
-        "noNonNullAssertion": "off"
+        "noNonNullAssertion": "off",
+        // Biome 2.4: defer substring→slice migration to separate PR
+        "noSubstr": "warn",
+        "noDescendingSpecificity": "warn"
       },
       "suspicious": {
-        "noEmptyBlockStatements": "off"
+        "noEmptyBlockStatements": "off",
+        // Biome 2.4: defer array-index-key fixes to separate PR
+        "noArrayIndexKey": "warn"
       }
     }
   },

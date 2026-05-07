@@ -246,7 +246,7 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
   const filters = {
-    ...(typeFilter !== "all" ? { type: typeFilter as LoopEventType } : {}),
+    ...(typeFilter === "all" ? {} : { type: typeFilter as LoopEventType }),
     limit: 200,
   };
 
@@ -305,9 +305,9 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
       {events.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-dashed p-12 text-center">
           <p className="text-muted-foreground text-sm">
-            {typeFilter !== "all"
-              ? `No ${eventTypeLabels[typeFilter as LoopEventType] ?? typeFilter} events found`
-              : "No events recorded for this loop"}
+            {typeFilter === "all"
+              ? "No events recorded for this loop"
+              : `No ${eventTypeLabels[typeFilter as LoopEventType] ?? typeFilter} events found`}
           </p>
         </div>
       ) : (

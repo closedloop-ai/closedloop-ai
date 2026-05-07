@@ -124,7 +124,7 @@ export const agentsService = {
   ): Promise<{ agents: AgentSummary[]; total: number }> {
     const where: Prisma.AgentWhereInput = {
       organizationId,
-      ...(options?.enabled !== undefined ? { enabled: options.enabled } : {}),
+      ...(options?.enabled === undefined ? {} : { enabled: options.enabled }),
       ...(options?.search
         ? {
             OR: [
@@ -240,12 +240,12 @@ export const agentsService = {
       const updated = await tx.agent.update({
         where: { id: existing.id },
         data: {
-          ...(input.name !== undefined ? { name: input.name } : {}),
-          ...(input.description !== undefined
-            ? { description: input.description }
-            : {}),
-          ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
-          ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.description === undefined
+            ? {}
+            : { description: input.description }),
+          ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+          ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
           ...(needsVersion ? { currentVersion: newVersion } : {}),
         },
         include: AGENT_DETAIL_INCLUDE,

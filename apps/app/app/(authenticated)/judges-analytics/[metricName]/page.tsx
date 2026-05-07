@@ -76,7 +76,7 @@ export default function JudgeDetailPage() {
         <p className="text-muted-foreground text-sm">
           {judge.scoreCount} total scores across {judge.promptVersions.length}{" "}
           version
-          {judge.promptVersions.length !== 1 ? "s" : ""}
+          {judge.promptVersions.length === 1 ? "" : "s"}
         </p>
       </div>
 

@@ -776,7 +776,7 @@ export function LearningsDialog({
             <div className="mb-3 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2.5">
               <Brain className="size-4 shrink-0 text-amber-500" />
               <span className="flex-1 text-amber-700 text-sm dark:text-amber-400">
-                {pendingCount} pending learning{pendingCount !== 1 ? "s" : ""}{" "}
+                {pendingCount} pending learning{pendingCount === 1 ? "" : "s"}{" "}
                 to process
               </span>
               <button

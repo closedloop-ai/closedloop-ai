@@ -316,7 +316,7 @@ export function useRunLoop() {
         {
           command,
           prompt,
-          ...(computeTargetId !== undefined ? { computeTargetId } : {}),
+          ...(computeTargetId === undefined ? {} : { computeTargetId }),
           ...(backendOverride ? { backendOverride } : {}),
           ...(repo ? { repo } : {}),
           ...(additionalRepos ? { additionalRepos } : {}),

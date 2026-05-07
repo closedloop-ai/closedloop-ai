@@ -13,7 +13,7 @@ export function PrCommentContextCard({
       {context.filePath ? (
         <div className="rounded-md bg-muted px-2 py-2 font-mono text-[11px] text-foreground leading-snug">
           {context.filePath}
-          {context.line != null ? `:${context.line}` : ""}
+          {context.line == null ? "" : `:${context.line}`}
         </div>
       ) : null}
       <div className="rounded-md bg-muted p-2 text-foreground text-xs leading-relaxed">

@@ -20,7 +20,7 @@ export async function GET(
 
     const rangeParam = url.searchParams.get("range");
     const rangeDays =
-      rangeParam !== null ? Number.parseInt(rangeParam, 10) : undefined;
+      rangeParam === null ? undefined : Number.parseInt(rangeParam, 10);
     const modelsParam = url.searchParams.get("models");
     const models = modelsParam
       ? modelsParam.split(",").filter(Boolean)

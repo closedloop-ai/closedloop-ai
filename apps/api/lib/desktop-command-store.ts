@@ -814,7 +814,7 @@ export const desktopCommandStore = {
           ...(nextState.status ? { status: nextState.status } : {}),
           ...(nextState.startedAt ? { startedAt: nextState.startedAt } : {}),
           ...(nextState.finishedAt ? { finishedAt: nextState.finishedAt } : {}),
-          ...(nextState.error !== undefined ? { error: nextState.error } : {}),
+          ...(nextState.error === undefined ? {} : { error: nextState.error }),
         },
       });
 
@@ -930,9 +930,9 @@ export const desktopCommandStore = {
       db.desktopCommandEvent.findMany({
         where: {
           commandId,
-          ...(options?.afterSequence != null
-            ? { sequence: { gt: options.afterSequence } }
-            : {}),
+          ...(options?.afterSequence == null
+            ? {}
+            : { sequence: { gt: options.afterSequence } }),
         },
         orderBy: { sequence: "asc" },
       })

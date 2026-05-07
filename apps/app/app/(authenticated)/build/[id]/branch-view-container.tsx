@@ -150,9 +150,9 @@ export function BranchViewContainer({
   // Local files will be populated in Phase 6 via engineer relay
   const localFiles: BranchViewData["committedFiles"] = [];
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: localFiles is static today; add to deps when Phase 6 makes it dynamic
   const allFiles = useMemo(
     () => (data ? buildAllFileEntries(data, localFiles) : []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- localFiles is static today; add to deps when Phase 6 makes it dynamic
     [data]
   );
   const showDiffView = selectedFileId !== null;

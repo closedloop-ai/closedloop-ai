@@ -37,7 +37,6 @@ describe("GET /health/db", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // biome-ignore lint/performance/noDelete: test cleanup must remove env var (not set string "undefined")
     delete process.env.DB_HEALTH_TOKEN;
   });
 

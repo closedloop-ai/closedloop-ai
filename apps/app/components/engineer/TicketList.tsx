@@ -1641,9 +1641,9 @@ export function TicketList({
                     onLinkPR={handleLinkPR}
                     onParentClick={handleParentClick}
                     onStartPlanning={
-                      ticket.sourceType !== TicketSourceType.ImplementationPlan
-                        ? handleStartPlanning
-                        : undefined
+                      ticket.sourceType === TicketSourceType.ImplementationPlan
+                        ? undefined
+                        : handleStartPlanning
                     }
                     onTeardown={handleTeardown}
                     onToggleStar={handleToggleStar}
@@ -1840,9 +1840,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType !== TicketSourceType.ImplementationPlan
-                      ? handleStartPlanning
-                      : undefined
+                    ticket.sourceType === TicketSourceType.ImplementationPlan
+                      ? undefined
+                      : handleStartPlanning
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -1880,9 +1880,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType !== TicketSourceType.ImplementationPlan
-                      ? handleStartPlanning
-                      : undefined
+                    ticket.sourceType === TicketSourceType.ImplementationPlan
+                      ? undefined
+                      : handleStartPlanning
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -1957,9 +1957,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType !== TicketSourceType.ImplementationPlan
-                      ? handleStartPlanning
-                      : undefined
+                    ticket.sourceType === TicketSourceType.ImplementationPlan
+                      ? undefined
+                      : handleStartPlanning
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -1997,9 +1997,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType !== TicketSourceType.ImplementationPlan
-                      ? handleStartPlanning
-                      : undefined
+                    ticket.sourceType === TicketSourceType.ImplementationPlan
+                      ? undefined
+                      : handleStartPlanning
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}

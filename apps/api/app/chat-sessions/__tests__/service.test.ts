@@ -130,17 +130,17 @@ function buildMockDb() {
       const updated: Row = {
         ...existing,
         messages:
-          args.data.messages !== undefined
-            ? ([...(args.data.messages as ChatMessage[])] as ChatMessage[])
-            : existing.messages,
+          args.data.messages === undefined
+            ? existing.messages
+            : ([...(args.data.messages as ChatMessage[])] as ChatMessage[]),
         sessionId:
-          args.data.sessionId !== undefined
-            ? (args.data.sessionId as string | null)
-            : existing.sessionId,
+          args.data.sessionId === undefined
+            ? existing.sessionId
+            : (args.data.sessionId as string | null),
         sessionSourceId:
-          args.data.sessionSourceId !== undefined
-            ? (args.data.sessionSourceId as string | null)
-            : existing.sessionSourceId,
+          args.data.sessionSourceId === undefined
+            ? existing.sessionSourceId
+            : (args.data.sessionSourceId as string | null),
         updatedAt: nextDate(),
       };
       store.set(keyOf(userId, chatKey), updated);
