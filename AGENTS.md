@@ -115,3 +115,5 @@ Vitest is the default test runner across `apps/api`, `apps/app`, `apps/mcp`, `ap
 
 ## Commit & Pull Request Guidelines
 Recent commits use ticket-prefixed, imperative subjects such as `FEAT-55: Add client-side auth bridge`. The repository’s `.gitmessage` template expects a short subject, bullet summary, and explicit `Testing:` and `Risks:` sections. Prefer branch names like `feat/*`, `fix/*`, `docs/*`, and `refactor/*`. PRs should follow `.github/pull_request_template.md`: summarize the change, link the related issue, confirm self-review and local test coverage, and attach screenshots for UI changes. Avoid force-pushing after review starts.
+
+PR descriptions must keep the template's `## Feature Flags` attestation with an applicable checked box, or use `[flag:N/A]` with a concise justification when the change does not introduce feature-flagged functionality.

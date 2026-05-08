@@ -2,6 +2,8 @@ import { log } from "@repo/observability/log";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
 import {
+  DesktopShutdownTrigger,
+  DesktopUpdateTrigger,
   desktopTelemetryEventSchema,
   OutboundNetworkDecision,
   OutboundNetworkDecisionReason,
@@ -577,6 +579,171 @@ describe("handleTelemetryEvent — decision-table verification telemetry", () =>
     expect(entry?.diagnostics?.decisionTableVerification).toEqual(
       reportedDecisionTableVerification
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (h1) handleTelemetryEvent — desktop update/shutdown telemetry
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — desktop update and shutdown telemetry", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs accepted electron update telemetry with queryable origin/category and sanitized diagnostics", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.ElectronUpdateFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Electron update failed",
+        diagnostics: {
+          desktopUpdate: {
+            trigger: "apply-before-downloaded",
+            status: "available",
+            version: "0.14.29",
+            error: "Update has not finished downloading yet",
+            downloaded: false,
+            readyToInstall: false,
+            rawLog: "authorization: Bearer secret",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.origin).toBe(Origin.Desktop);
+    expect(meta.category).toBe(TelemetryCategory.ElectronUpdateFailed);
+    expect(meta.diagnostics).toMatchObject({
+      desktopUpdate: {
+        trigger: "apply-before-downloaded",
+        status: "available",
+        version: "0.14.29",
+        error: "Update has not finished downloading yet",
+        downloaded: false,
+        readyToInstall: false,
+      },
+    });
+    expect(JSON.stringify(meta)).not.toContain("Bearer secret");
+    expect(JSON.stringify(meta)).not.toContain("rawLog");
+  });
+
+  it("logs accepted shutdown failure telemetry with queryable origin/category", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopShutdownFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Desktop shutdown failed",
+        diagnostics: {
+          desktopShutdown: {
+            trigger: "outer-hard-exit",
+            result: "timed_out",
+            phase: "server.stop",
+            elapsedMs: 8000,
+            duringUpdate: true,
+            outerHardExit: true,
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.origin).toBe(Origin.Desktop);
+    expect(meta.category).toBe(TelemetryCategory.DesktopShutdownFailed);
+    expect(meta.diagnostics).toMatchObject({
+      desktopShutdown: {
+        trigger: "outer-hard-exit",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 8000,
+        duringUpdate: true,
+        outerHardExit: true,
+      },
+    });
+  });
+
+  it("preserves update telemetry when desktop sends an unknown trigger", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.ElectronUpdateFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Electron update failed",
+        diagnostics: {
+          desktopUpdate: {
+            trigger: "future-update-trigger",
+            status: "available",
+            error: "new updater path failed",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      desktopUpdate: {
+        trigger: DesktopUpdateTrigger.Unknown,
+        status: "available",
+        error: "new updater path failed",
+      },
+    });
+  });
+
+  it("preserves shutdown telemetry when desktop sends an unknown trigger", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopShutdownFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Desktop shutdown failed",
+        diagnostics: {
+          desktopShutdown: {
+            trigger: "future-shutdown-trigger",
+            result: "failed",
+            phase: "future.phase",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      desktopShutdown: {
+        trigger: DesktopShutdownTrigger.Unknown,
+        result: "failed",
+        phase: "future.phase",
+      },
+    });
   });
 });
 

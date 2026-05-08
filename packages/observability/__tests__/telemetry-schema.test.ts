@@ -6,6 +6,8 @@ import {
 } from "../telemetry/emitter";
 import type { TelemetryTraceContext } from "../telemetry/schema";
 import {
+  DesktopShutdownTrigger,
+  DesktopUpdateTrigger,
   desktopTelemetryEventSchema,
   OutboundNetworkDecision,
   OutboundNetworkDecisionReason,
@@ -233,6 +235,59 @@ describe("telemetryDiagnosticsSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts bounded desktop update diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      desktopUpdate: {
+        trigger: "renderer-apply-update",
+        status: "downloaded",
+        version: "0.14.29",
+        percent: 100,
+        downloaded: true,
+        readyToInstall: true,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts bounded desktop shutdown diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      desktopShutdown: {
+        trigger: "shutdown-sequence",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 5002,
+        duringUpdate: true,
+        outerHardExit: false,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("maps unknown desktop update and shutdown triggers to a safe value", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      desktopUpdate: {
+        trigger: "future-update-trigger",
+        status: "downloaded",
+      },
+      desktopShutdown: {
+        trigger: "future-shutdown-trigger",
+        result: "failed",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.desktopUpdate?.trigger).toBe(
+        DesktopUpdateTrigger.Unknown
+      );
+      expect(result.data.desktopShutdown?.trigger).toBe(
+        DesktopShutdownTrigger.Unknown
+      );
+    }
+  });
+
   it("accepts absence of ackLatencyMs (optional)", () => {
     const result = telemetryDiagnosticsSchema.safeParse({});
     expect(result.success).toBe(true);
@@ -407,6 +462,123 @@ describe("desktopTelemetryEventSchema", () => {
         port: "3000",
       });
       expect(JSON.stringify(result.data)).not.toContain("token=secret");
+    }
+  });
+
+  it("preserves desktop update diagnostics from desktop wire payloads", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.ElectronUpdateFailed,
+      diagnostics: {
+        desktopUpdate: {
+          trigger: "apply-before-downloaded",
+          status: "available",
+          version: "0.14.29",
+          error: "Update has not finished downloading yet",
+          downloaded: false,
+          readyToInstall: false,
+          rawLog: "authorization: Bearer secret",
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.desktopUpdate).toEqual({
+        trigger: "apply-before-downloaded",
+        status: "available",
+        version: "0.14.29",
+        error: "Update has not finished downloading yet",
+        downloaded: false,
+        readyToInstall: false,
+      });
+      expect(JSON.stringify(result.data)).not.toContain("Bearer secret");
+    }
+  });
+
+  it("preserves desktop shutdown diagnostics from desktop wire payloads", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopShutdownFailed,
+      diagnostics: {
+        desktopShutdown: {
+          trigger: "outer-hard-exit",
+          result: "timed_out",
+          phase: "server.stop",
+          elapsedMs: 8001,
+          duringUpdate: true,
+          outerHardExit: true,
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.desktopShutdown).toEqual({
+        trigger: "outer-hard-exit",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 8001,
+        duringUpdate: true,
+        outerHardExit: true,
+      });
+    }
+  });
+
+  it("preserves desktop diagnostics when wire triggers are unknown", () => {
+    const updateResult = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.ElectronUpdateFailed,
+      diagnostics: {
+        desktopUpdate: {
+          trigger: "future-update-trigger",
+          status: "available",
+          error: "new updater path failed",
+        },
+      },
+    });
+    const shutdownResult = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopShutdownFailed,
+      diagnostics: {
+        desktopShutdown: {
+          trigger: "future-shutdown-trigger",
+          result: "failed",
+          phase: "future.phase",
+        },
+      },
+    });
+
+    expect(updateResult.success).toBe(true);
+    if (updateResult.success) {
+      expect(updateResult.data.diagnostics?.desktopUpdate).toEqual({
+        trigger: DesktopUpdateTrigger.Unknown,
+        status: "available",
+        error: "new updater path failed",
+      });
+    }
+
+    expect(shutdownResult.success).toBe(true);
+    if (shutdownResult.success) {
+      expect(shutdownResult.data.diagnostics?.desktopShutdown).toEqual({
+        trigger: DesktopShutdownTrigger.Unknown,
+        result: "failed",
+        phase: "future.phase",
+      });
+    }
+  });
+
+  it("accepts update/shutdown categories when diagnostics are omitted", () => {
+    for (const category of [
+      TelemetryCategory.ElectronUpdateInitiated,
+      TelemetryCategory.ElectronUpdateFailed,
+      TelemetryCategory.DesktopShutdownFailed,
+    ]) {
+      const result = desktopTelemetryEventSchema.safeParse({
+        ...validDesktopWirePayload,
+        category,
+      });
+      expect(result.success).toBe(true);
     }
   });
 

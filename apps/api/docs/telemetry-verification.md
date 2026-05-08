@@ -31,6 +31,8 @@ Without the pipeline rule, fall back to **raw-text searches** against the unpars
 *command.queued*
 *command.acknowledged*
 *job.started*
+*electron_update.failed*
+*desktop.shutdown_failed*
 *telemetry.validation_failed*
 ```
 
@@ -50,7 +52,7 @@ Set the following variables in `apps/api/.env.local`:
 
 ## Trigger Scenarios
 
-All four scenarios require `DD_API_KEY`, `DD_SITE`, and `DD_ENV` to be set. Scenario (a) additionally uses `$CLOSEDLOOP_API_KEY` — an org-issued API key. Scenarios (b), (c), and (d) use `$INTERNAL_API_SECRET` — the relay↔API shared secret from `apps/api/.env.local`. Replace each with the value from your local env.
+All five scenarios require `DD_API_KEY`, `DD_SITE`, and `DD_ENV` to be set. Scenario (a) additionally uses `$CLOSEDLOOP_API_KEY` — an org-issued API key. Scenarios (b), (c), (d), and (e) use `$INTERNAL_API_SECRET` — the relay↔API shared secret from `apps/api/.env.local`. Replace each with the value from your local env.
 
 ### (a) API-native command lifecycle
 
@@ -98,7 +100,79 @@ curl -X POST http://localhost:3002/internal/relay/socket-event \
 
 Expected: structured log entry in Datadog with `category: "job.started"` and `origin: "desktop"`.
 
-### (c) Validation failure trigger
+### (c) Desktop update and shutdown failure telemetry
+
+Simulate critical Desktop failure events sent through the existing relay-forwarded `desktop.telemetry` path. These events are intentionally bounded diagnostics only; raw log content is not part of the accepted schema, and unknown raw-log fields are stripped before Datadog logging.
+
+```sh
+curl -X POST http://localhost:3002/internal/relay/socket-event \
+  -H "Content-Type: application/json" \
+  -H "x-internal-secret: $INTERNAL_API_SECRET" \
+  -d '{
+    "event": "desktop.telemetry",
+    "targetId": "<your-compute-target-id>",
+    "payload": {
+      "schemaVersion": "1",
+      "category": "electron_update.failed",
+      "severity": "error",
+      "timestamp": "2024-01-01T00:00:00.000Z",
+      "trace": {
+        "commandId": "",
+        "operationId": "desktop-update-test-001",
+        "computeTargetId": "<your-compute-target-id>",
+        "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
+        "schemaVersion": "1"
+      },
+      "diagnostics": {
+        "desktopUpdate": {
+          "trigger": "apply-before-downloaded",
+          "status": "available",
+          "downloaded": false,
+          "readyToInstall": false,
+          "error": "Update not downloaded"
+        }
+      }
+    }
+  }'
+```
+
+```sh
+curl -X POST http://localhost:3002/internal/relay/socket-event \
+  -H "Content-Type: application/json" \
+  -H "x-internal-secret: $INTERNAL_API_SECRET" \
+  -d '{
+    "event": "desktop.telemetry",
+    "targetId": "<your-compute-target-id>",
+    "payload": {
+      "schemaVersion": "1",
+      "category": "desktop.shutdown_failed",
+      "severity": "error",
+      "timestamp": "2024-01-01T00:00:00.000Z",
+      "trace": {
+        "commandId": "",
+        "operationId": "desktop-shutdown-test-001",
+        "computeTargetId": "<your-compute-target-id>",
+        "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
+        "schemaVersion": "1"
+      },
+      "diagnostics": {
+        "desktopShutdown": {
+          "trigger": "outer-hard-exit",
+          "result": "timed_out",
+          "phase": "server.stop",
+          "duringUpdate": true,
+          "outerHardExit": true,
+          "elapsedMs": 12000,
+          "error": "Shutdown exceeded hard exit timeout"
+        }
+      }
+    }
+  }'
+```
+
+Expected: each Datadog log has top-level `origin: "desktop"` and top-level `category` set to the submitted category, so `@origin:"desktop" @category:"electron_update.failed"` and `@origin:"desktop" @category:"desktop.shutdown_failed"` resolve without the JSON pipeline rule. `diagnostics.desktopUpdate` and `diagnostics.desktopShutdown` contain only schema-bounded fields; no raw log upload is accepted.
+
+### (d) Validation failure trigger
 
 Same endpoint as (b), but with an intentionally invalid payload (missing required `schemaVersion` field). This triggers `telemetry.validation_failed`:
 
@@ -124,7 +198,7 @@ curl -X POST http://localhost:3002/internal/relay/socket-event \
 
 Expected: log entry with `category: "telemetry.validation_failed"` and `issues` array describing the missing `schemaVersion`.
 
-### (d) Connection lifecycle events
+### (e) Connection lifecycle events
 
 Connection lifecycle events require an actual Socket.IO connection from a desktop worker to the relay. They split by origin:
 
@@ -179,6 +253,26 @@ These arrive via `handleTelemetryEvent()` which sets `origin = Origin.Desktop`. 
 | `@category:"electron_update.initiated" @origin:"desktop"` | `TelemetryCategory.ElectronUpdateInitiated` |
 | `@category:"electron_update.succeeded" @origin:"desktop"` | `TelemetryCategory.ElectronUpdateSucceeded` |
 | `@category:"electron_update.failed" @origin:"desktop"` | `TelemetryCategory.ElectronUpdateFailed` |
+| `@category:"desktop.shutdown_failed" @origin:"desktop"` | `TelemetryCategory.DesktopShutdownFailed` |
+
+Desktop update and shutdown failure diagnostics are logged under `diagnostics.desktopUpdate` and `diagnostics.desktopShutdown` respectively. Accepted fields are bounded and intentionally operational:
+
+| Diagnostic path | Values | Notes |
+|---|---|---|
+| `diagnostics.desktopUpdate.trigger` | `"updater-error"` \| `"check-for-updates"` \| `"manual-check"` \| `"apply-before-downloaded"` \| `"renderer-apply-update"` \| `"unknown"` | Why Desktop emitted the update telemetry; newer unrecognized trigger strings are normalized to `"unknown"` |
+| `diagnostics.desktopUpdate.status` | string up to 64 chars | Current packaged updater status |
+| `diagnostics.desktopUpdate.version` | string up to 64 chars | Downloaded or available version when known |
+| `diagnostics.desktopUpdate.percent` | number `0..100` | Download progress when known |
+| `diagnostics.desktopUpdate.downloaded` | boolean | Whether the package was downloaded before apply |
+| `diagnostics.desktopUpdate.readyToInstall` | boolean | Whether the renderer should expose `Update & restart` |
+| `diagnostics.desktopUpdate.error` | string up to 512 chars | Sanitized error summary only |
+| `diagnostics.desktopShutdown.trigger` | `"before-quit"` \| `"shutdown-sequence"` \| `"shutdown-rejected"` \| `"outer-hard-exit"` \| `"unknown"` | Where shutdown failure was observed; newer unrecognized trigger strings are normalized to `"unknown"` |
+| `diagnostics.desktopShutdown.result` | `"timed_out"` \| `"failed"` | Shutdown result classification |
+| `diagnostics.desktopShutdown.phase` | string up to 128 chars | Failing shutdown phase |
+| `diagnostics.desktopShutdown.duringUpdate` | boolean | Whether failure happened during update apply |
+| `diagnostics.desktopShutdown.outerHardExit` | boolean | Whether the outer hard-exit timeout fired |
+| `diagnostics.desktopShutdown.elapsedMs` | non-negative integer | Time from shutdown start to failure report |
+| `diagnostics.desktopShutdown.error` | string up to 512 chars | Sanitized error summary only |
 
 ### Relay connection events (origin: `relay`)
 
