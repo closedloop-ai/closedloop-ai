@@ -1,4 +1,8 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
+import {
+  getNotificationEntityPath,
+  NotificationEntityKind,
+} from "@repo/api/src/types/notification-routes";
 import type { Workstream } from "@repo/api/src/types/workstream";
 import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
 import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
@@ -91,7 +95,10 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
         organizationId: user.organizationId,
         entityType: AssignmentEntityType.Workstream,
         entityTitle: workstream.title,
-        entityUrl: `/workstreams/${workstream.id}`,
+        entityUrl: getNotificationEntityPath({
+          kind: NotificationEntityKind.Workstream,
+          workstreamId: workstream.id,
+        }),
         subjectId: workstream.id,
       });
 
