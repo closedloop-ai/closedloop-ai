@@ -1,8 +1,8 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { getProjectSettings } from "@repo/api/src/types/project";
 import { withDb } from "@repo/database";
 import { z } from "zod";
+import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
 import { pullRequestService } from "@/app/pull-requests/pull-request-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -64,18 +64,20 @@ export const POST = withAnyAuth<
         return notFoundResponse("Project");
       }
 
-      const defaultRepository = getProjectSettings(
-        (project.settings ?? {}) as JsonObject
-      ).defaultRepository;
-      if (!defaultRepository) {
+      const resolved = await loadProjectRepoDefaults({
+        projectId: project.id,
+        organizationId: user.organizationId,
+        projectSettings: (project.settings ?? {}) as JsonObject,
+      });
+      if (!resolved) {
         return badRequestResponse(
-          "Project has no default repository configured"
+          "Project has no primary repository configured"
         );
       }
 
       const result = await pullRequestService.upsertPullRequestArtifact({
         organizationId: user.organizationId,
-        repositoryId: defaultRepository.repoId,
+        repositoryId: resolved.primary.installationRepositoryId,
         githubId: body.githubId,
         number: body.number,
         title: body.title,

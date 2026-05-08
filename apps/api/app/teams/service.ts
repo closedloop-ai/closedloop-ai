@@ -317,6 +317,49 @@ export const teamsService = {
   },
 
   /**
+   * Get the union of repositories curated by every team a project belongs to.
+   * Org scoping flows through the project relation. Note that teams which
+   * belong to the project but have curated zero repositories produce no rows
+   * here — use `countTeamsForProject` when the resolver's `teamCount` is
+   * needed.
+   */
+  getRepositoriesByProject(
+    projectId: string,
+    organizationId: string
+  ): Promise<TeamRepository[]> {
+    return withDb((db) =>
+      db.teamRepository.findMany({
+        where: {
+          team: {
+            organizationId,
+            projects: { some: { projectId } },
+          },
+        },
+        include: TEAM_REPO_INCLUDE,
+        orderBy: [
+          { isPrimary: "desc" },
+          { isDefaultSelected: "desc" },
+          { createdAt: "asc" },
+        ],
+      })
+    );
+  },
+
+  countTeamsForProject(
+    projectId: string,
+    organizationId: string
+  ): Promise<number> {
+    return withDb((db) =>
+      db.projectTeam.count({
+        where: {
+          projectId,
+          team: { organizationId },
+        },
+      })
+    );
+  },
+
+  /**
    * Add a repository to a team's curated list.
    * Verifies the installation repo belongs to the team's organization.
    * Enforces exactly-one-primary: if isPrimary is requested, also forces isDefaultSelected

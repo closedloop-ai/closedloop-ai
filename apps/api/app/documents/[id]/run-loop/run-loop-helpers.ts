@@ -12,7 +12,6 @@ import {
   LoopCommand,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
-import { getProjectSettings } from "@repo/api/src/types/project";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
@@ -20,6 +19,7 @@ import { documentPullRequestService } from "@/app/documents/document-pull-reques
 import type { documentGenerationService } from "@/app/documents/generation-service";
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
+import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
 import {
   type ComputeTargetRouteResult,
   resolveComputeTargetForRoute,
@@ -153,7 +153,7 @@ export function resolveEvaluateCodeTargetBranch(
   pr: PullRequestInfo | null,
   repoFullName?: string | null
 ): { ok: true; branch: string } | { ok: false; message: string } {
-  if (!pr || pr.state !== PullRequestState.Open) {
+  if (pr?.state !== PullRequestState.Open) {
     return {
       ok: false,
       message:
@@ -232,21 +232,29 @@ export async function resolveLoopContext(
 
   const workstream = resolvedWorkstream ?? artifact.workstream;
 
-  const projectSettings = getProjectSettings(
-    (workstream?.project?.settings ?? {}) as JsonObject
-  );
+  const project = workstream?.project ?? null;
+  const resolvedRepoDefaults = project
+    ? await loadProjectRepoDefaults({
+        projectId: project.id,
+        organizationId,
+        projectSettings: (project.settings ?? {}) as JsonObject,
+      })
+    : null;
 
   const targetRepo =
     body.repo?.fullName ??
     artifact.targetRepo ??
     source?.targetRepo ??
-    projectSettings.defaultRepository?.repoFullName;
+    resolvedRepoDefaults?.primary.fullName;
 
+  // Per Q-002 of PLN-237, the resolved branch is no longer stored on the
+  // project — the GitHub default branch is the canonical choice and must
+  // come from the caller (frontend resolves it via `useGitHubBranches`) or
+  // an upstream artifact/source. We keep "main" only as a last-resort guard.
   const targetBranch =
     body.repo?.branch ??
     artifact.targetBranch ??
     source?.targetBranch ??
-    projectSettings.defaultRepository?.branch ??
     "main";
 
   const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];
