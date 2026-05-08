@@ -7,6 +7,7 @@ import {
   OutboundNetworkDecisionReason,
   OutboundNetworkDestinationClass,
   OutboundNetworkSurface,
+  SupportUploadReason,
   TelemetryCategory,
   TelemetrySeverity,
   telemetryDiagnosticsSchema,
@@ -705,6 +706,83 @@ describe("handleTelemetryEvent — outbound network telemetry", () => {
     });
     expect(JSON.stringify(entry)).not.toContain("token=secret");
     expect(JSON.stringify(entry)).not.toContain("/private");
+  });
+});
+
+describe("handleTelemetryEvent — support upload telemetry", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("flushes support upload diagnostics in Datadog metadata", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      text: () => Promise.resolve("accepted"),
+    });
+    globalThis.fetch = fetchMock;
+    process.env.DD_API_KEY = "test-key";
+    process.env.DD_SITE = "datadoghq.com";
+    process.env.DD_SERVICE = "api";
+    process.env.ORIGIN = Origin.Api;
+    vi.resetModules();
+
+    const { log: freshLog } = await import("@repo/observability/log");
+    const { handleTelemetryEvent: freshHandler } = await import(
+      "@/lib/desktop-telemetry-handler"
+    );
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopSupportUpload,
+        message: "Support upload failed",
+        diagnostics: {
+          supportUpload: {
+            outcome: "failed",
+            loopId: "loop-1",
+            s3StateKeySuffix: "run-1",
+            attemptedLogicalNames: ["claude-output.jsonl", "perf.jsonl"],
+            attemptedUploadedNames: ["claude-output.jsonl"],
+            reason: SupportUploadReason.EventPostFailed,
+            uploadedCount: 1,
+            durationMs: 123,
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      diagnostics?: {
+        supportUpload?: Record<string, unknown>;
+      };
+      telemetryMessage?: string;
+    }>;
+    const entry = body.find(
+      (event) => event.category === TelemetryCategory.DesktopSupportUpload
+    );
+
+    expect(entry?.telemetryMessage).toBe("Support upload failed");
+    expect(entry?.diagnostics?.supportUpload).toEqual({
+      outcome: "failed",
+      loopId: "loop-1",
+      s3StateKeySuffix: "run-1",
+      attemptedLogicalNames: ["claude-output.jsonl", "perf.jsonl"],
+      attemptedUploadedNames: ["claude-output.jsonl"],
+      reason: SupportUploadReason.EventPostFailed,
+      uploadedCount: 1,
+      durationMs: 123,
+    });
   });
 });
 

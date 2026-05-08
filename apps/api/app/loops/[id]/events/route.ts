@@ -17,7 +17,7 @@ import {
   listLoopEventsQueryValidator,
   loopEventPayloadValidator,
   normalizeLoopEvent,
-  TERMINAL_LOOP_EVENTS,
+  shouldIgnoreEventForTerminalLoop,
   TERMINAL_LOOP_STATUSES,
   validateNormalizedEvent,
 } from "../../validators";
@@ -42,12 +42,6 @@ function extractEventNonce(request: Request): string | Response {
     );
   }
   return nonce;
-}
-
-function isIgnoredForTerminalLoop(status: string, eventType: string): boolean {
-  return (
-    TERMINAL_LOOP_STATUSES.has(status) && !TERMINAL_LOOP_EVENTS.has(eventType)
-  );
 }
 
 function mapEventHandlingError(error: unknown): Response | null {
@@ -162,7 +156,7 @@ export async function POST(
       return errorResponse("Loop not found", new Error("Forbidden"), 403);
     }
 
-    if (isIgnoredForTerminalLoop(loop.status, event.type)) {
+    if (shouldIgnoreEventForTerminalLoop(loop.status, event.type)) {
       return successResponse({
         received: true as const,
         ignored: true as const,

@@ -5,6 +5,7 @@
 
 import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMutateAsync = vi.fn();
@@ -28,6 +29,9 @@ const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
 const CLAUDE_RATE_LIMIT_ERROR = /^Error: Claude rate limit$/;
 const CLAUDE_RATE_LIMIT_MESSAGE = /Claude rate limit reached\./;
 const ERROR_LABEL = /^Error:/;
+const ARTIFACTS_TAB_NAME = /Artifacts/i;
+const SUPPORT_CLAUDE_OUTPUT_LINK = /claude-output\.jsonl/i;
+const SUPPORT_PERF_LINK = /perf\.jsonl/i;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -872,5 +876,87 @@ describe("LoopDetailContainer -- diagnostics UI", () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     expect(screen.getByText("stderr output here")).toBeInTheDocument();
+  });
+});
+
+describe("LoopDetailContainer -- support artifacts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  it("renders an empty state under the Artifacts tab when there are no support artifacts", async () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({ supportArtifacts: [] } as never),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(screen.queryByText("Support Artifacts")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: ARTIFACTS_TAB_NAME })
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("tab", { name: ARTIFACTS_TAB_NAME })
+    );
+
+    expect(
+      screen.getByText("No support artifacts uploaded")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("This loop did not produce support artifacts.")
+    ).toBeInTheDocument();
+  });
+
+  it("renders support artifact download links under the Artifacts tab", async () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        supportArtifacts: [
+          {
+            name: "claude-output.jsonl",
+            key: "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
+            downloadUrl: "https://download.example/claude",
+            sizeBytes: 12,
+          },
+          {
+            name: "perf.jsonl",
+            key: "org-1/loops/loop-1/run-1/support/perf.jsonl",
+            downloadUrl: "https://download.example/perf",
+            sizeBytes: 34,
+          },
+        ],
+      } as never),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    expect(
+      screen.queryByRole("link", { name: SUPPORT_CLAUDE_OUTPUT_LINK })
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("tab", { name: ARTIFACTS_TAB_NAME })
+    );
+
+    expect(screen.getByText("Support Artifacts")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: SUPPORT_CLAUDE_OUTPUT_LINK })
+    ).toHaveAttribute("href", "https://download.example/claude");
+    expect(
+      screen.getByRole("link", { name: SUPPORT_PERF_LINK })
+    ).toHaveAttribute("href", "https://download.example/perf");
   });
 });

@@ -56,6 +56,8 @@ const eventTypeBadgeStyles: Record<LoopEventType, string> = {
     "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
   artifact_created:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
+  support_bundle_uploaded:
+    "bg-cyan-100 text-cyan-800 border-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400 dark:border-cyan-800",
   completed:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
   error:
@@ -70,6 +72,7 @@ const eventTypeLabels: Record<LoopEventType, string> = {
   progress: "Progress",
   tool_call: "Tool Call",
   artifact_created: "Artifact Created",
+  support_bundle_uploaded: "Support Uploaded",
   completed: "Completed",
   error: "Error",
   cancelled: "Cancelled",
@@ -89,6 +92,13 @@ function getEventDetails(event: LoopEvent): string {
       return `${event.tool} - ${event.status}`;
     case "artifact_created":
       return `Created ${event.artifactType} (${event.artifactId})`;
+    case "support_bundle_uploaded": {
+      const fileCount =
+        event.files && event.files.length > 0
+          ? event.files.length
+          : event.keys.length;
+      return `Uploaded ${fileCount} support file(s)`;
+    }
     case "completed": {
       const tokens = event.tokensUsed ?? { input: 0, output: 0 };
       return `Tokens: ${tokens.input} in / ${tokens.output} out`;
@@ -114,6 +124,9 @@ function isExpandableEvent(event: LoopEvent): boolean {
   }
   if (event.type === "cancelled" && event.reason) {
     return true;
+  }
+  if (event.type === "support_bundle_uploaded") {
+    return event.keys.length > 0;
   }
   if (event.type === "error") {
     const e = event as LoopEventError;
@@ -144,6 +157,12 @@ function getExpandedContent(event: LoopEvent): string | null {
       return JSON.stringify(event.result, null, 2);
     case "cancelled":
       return event.reason ?? null;
+    case "support_bundle_uploaded":
+      return JSON.stringify(
+        event.files?.length ? event.files : event.keys.map((key) => ({ key })),
+        null,
+        2
+      );
     case "error": {
       const e = event as LoopEventError;
       const parts: string[] = [];
@@ -169,7 +188,7 @@ function truncateDetails(text: string, maxLength = 100): string {
   if (text.length <= maxLength) {
     return text;
   }
-  return `${text.substring(0, maxLength)}...`;
+  return `${text.slice(0, maxLength)}...`;
 }
 
 // -- Event Row --

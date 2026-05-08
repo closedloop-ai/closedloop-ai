@@ -14,6 +14,7 @@ export const LoopEventType = {
   Progress: "progress",
   ToolCall: "tool_call",
   ArtifactCreated: "artifact_created",
+  SupportBundleUploaded: "support_bundle_uploaded",
   Completed: "completed",
   Error: "error",
   Cancelled: "cancelled",
@@ -145,6 +146,36 @@ export const LoopEventArtifactCreatedSchema = z.object({
   loopId: z.string().optional(),
 });
 
+export type LoopSupportBundleFile = {
+  name: string;
+  key: string;
+  sizeBytes?: number;
+};
+
+export const LoopSupportBundleFileSchema = z.object({
+  name: z.string().min(1),
+  key: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative().optional(),
+});
+
+export type LoopEventSupportBundleUploaded = {
+  type: "support_bundle_uploaded";
+  keys: string[];
+  files?: LoopSupportBundleFile[];
+  timestamp: string;
+  correlationId?: string;
+  loopId?: string;
+};
+
+export const LoopEventSupportBundleUploadedSchema = z.object({
+  type: z.literal("support_bundle_uploaded"),
+  keys: z.array(z.string().min(1)).min(1).max(2),
+  files: z.array(LoopSupportBundleFileSchema).max(2).optional(),
+  timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
+});
+
 export type LoopEventCompleted = {
   type: "completed";
   result: LoopCompletedResult;
@@ -241,6 +272,7 @@ export type LoopEvent =
   | LoopEventProgress
   | LoopEventToolCall
   | LoopEventArtifactCreated
+  | LoopEventSupportBundleUploaded
   | LoopEventCompleted
   | LoopEventError
   | LoopEventCancelled;
@@ -251,6 +283,7 @@ export const LoopEventSchema = z.discriminatedUnion("type", [
   LoopEventProgressSchema,
   LoopEventToolCallSchema,
   LoopEventArtifactCreatedSchema,
+  LoopEventSupportBundleUploadedSchema,
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
   LoopEventCancelledSchema,

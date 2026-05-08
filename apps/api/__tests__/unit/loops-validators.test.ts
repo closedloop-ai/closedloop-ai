@@ -7,6 +7,7 @@ import {
   manualEventPayloadValidator,
   manualEventValidator,
   normalizeLoopEvent,
+  shouldIgnoreEventForTerminalLoop,
   TERMINAL_LOOP_EVENTS,
   TERMINAL_LOOP_STATUSES,
   validateNormalizedEvent,
@@ -295,6 +296,38 @@ describe("validateNormalizedEvent — error event validation", () => {
   });
 });
 
+describe("validateNormalizedEvent — support bundle uploaded validation", () => {
+  it("accepts valid support bundle metadata", () => {
+    const result = validateNormalizedEvent({
+      type: LoopEventType.SupportBundleUploaded,
+      keys: [
+        "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
+        "org-1/loops/loop-1/run-1/support/perf.jsonl",
+      ],
+      files: [
+        {
+          name: "claude-output.jsonl",
+          key: "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
+          sizeBytes: 123,
+        },
+      ],
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("rejects support bundle metadata without keys", () => {
+    const result = validateNormalizedEvent({
+      type: LoopEventType.SupportBundleUploaded,
+      keys: [],
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(result).toContain("keys");
+  });
+});
+
 describe("normalizeLoopEvent", () => {
   it("flattens envelope format { type, data } into a flat LoopEvent", () => {
     const body = {
@@ -383,6 +416,35 @@ describe("TERMINAL_LOOP_EVENTS", () => {
     expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Output)).toBe(false);
     expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Progress)).toBe(false);
     expect(TERMINAL_LOOP_EVENTS.has(LoopEventType.Started)).toBe(false);
+  });
+});
+
+describe("shouldIgnoreEventForTerminalLoop", () => {
+  it("accepts support bundle events after FAILED and TIMED_OUT only", () => {
+    expect(
+      shouldIgnoreEventForTerminalLoop(
+        LoopStatus.Failed,
+        LoopEventType.SupportBundleUploaded
+      )
+    ).toBe(false);
+    expect(
+      shouldIgnoreEventForTerminalLoop(
+        LoopStatus.TimedOut,
+        LoopEventType.SupportBundleUploaded
+      )
+    ).toBe(false);
+    expect(
+      shouldIgnoreEventForTerminalLoop(
+        LoopStatus.Completed,
+        LoopEventType.SupportBundleUploaded
+      )
+    ).toBe(true);
+    expect(
+      shouldIgnoreEventForTerminalLoop(
+        LoopStatus.Cancelled,
+        LoopEventType.SupportBundleUploaded
+      )
+    ).toBe(true);
   });
 });
 

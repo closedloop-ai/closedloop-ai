@@ -11,6 +11,7 @@ import {
   OutboundNetworkDecisionReason,
   OutboundNetworkDestinationClass,
   OutboundNetworkSurface,
+  SupportUploadReason,
   TelemetryCategory,
   TelemetrySeverity,
   telemetryDiagnosticsSchema,
@@ -684,6 +685,58 @@ describe("buildDesktopTelemetryPayload", () => {
     expect(serialized).not.toContain("token=secret");
     expect(serialized).not.toContain("/private");
   });
+});
+
+it("preserves desktop support upload diagnostics", () => {
+  const result = buildDesktopTelemetryPayload({
+    ...validDesktopWirePayload,
+    category: TelemetryCategory.DesktopSupportUpload,
+    diagnostics: {
+      supportUpload: {
+        outcome: "failed",
+        loopId: "loop-1",
+        s3StateKeySuffix: "run-1",
+        attemptedLogicalNames: ["claude-output.jsonl", "perf.jsonl"],
+        attemptedUploadedNames: ["claude-output.jsonl"],
+        reason: SupportUploadReason.EventPostFailed,
+        uploadedCount: 1,
+        durationMs: 123,
+      },
+    },
+  });
+
+  const diagnostics = result.diagnostics as Record<string, unknown>;
+  expect(result.category).toBe(TelemetryCategory.DesktopSupportUpload);
+  expect(diagnostics.supportUpload).toEqual({
+    outcome: "failed",
+    loopId: "loop-1",
+    s3StateKeySuffix: "run-1",
+    attemptedLogicalNames: ["claude-output.jsonl", "perf.jsonl"],
+    attemptedUploadedNames: ["claude-output.jsonl"],
+    reason: SupportUploadReason.EventPostFailed,
+    uploadedCount: 1,
+    durationMs: 123,
+  });
+});
+
+it("maps unknown desktop support upload reasons to a bounded value", () => {
+  const result = buildDesktopTelemetryPayload({
+    ...validDesktopWirePayload,
+    category: TelemetryCategory.DesktopSupportUpload,
+    diagnostics: {
+      supportUpload: {
+        outcome: "failed",
+        reason:
+          "missing upload URL for org-1/loops/loop-1/run-1/support/claude-output.jsonl",
+      },
+    },
+  });
+
+  const diagnostics = result.diagnostics as {
+    supportUpload?: { reason?: unknown };
+  };
+  expect(diagnostics.supportUpload?.reason).toBe(SupportUploadReason.Unknown);
+  expect(JSON.stringify(result)).not.toContain("org-1/loops/loop-1");
 });
 
 // ---------------------------------------------------------------------------

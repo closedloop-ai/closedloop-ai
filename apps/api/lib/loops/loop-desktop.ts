@@ -209,6 +209,7 @@ type LaunchDesktopOpts = {
   desktopApiNamespace?: DesktopApiNamespace;
   closedLoopAuthToken: string;
   apiBaseUrl: string;
+  s3StateKey?: string;
   contextPack: ContextPack;
   documentSlug?: string;
   parentLoopId?: string;
@@ -260,6 +261,7 @@ export async function launchLoopOnDesktop(
     localRepoPath,
     additionalRepos,
     documentId,
+    s3StateKey,
   } = opts;
   const namespace = await resolveDesktopApiNamespace(
     computeTargetId,
@@ -275,6 +277,7 @@ export async function launchLoopOnDesktop(
       command,
       closedLoopAuthToken,
       apiBaseUrl,
+      ...(s3StateKey ? { s3StateKey } : {}),
       artifacts: contextPack.artifacts,
       prompt: contextPack.prompt ?? null,
       repo: contextPack.repoInfo ?? null,

@@ -6,6 +6,7 @@ import {
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
   LoopEventOutputSchema,
+  LoopEventSupportBundleUploadedSchema,
   LoopEventType,
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
@@ -173,6 +174,10 @@ const eventSchemaByType: Record<
     schema: LoopEventErrorSchema.omit({ type: true }),
     fallback: "invalid error event",
   },
+  support_bundle_uploaded: {
+    schema: LoopEventSupportBundleUploadedSchema.omit({ type: true }),
+    fallback: "invalid support bundle uploaded event",
+  },
 };
 
 export function validateNormalizedEvent(
@@ -250,6 +255,32 @@ export const TERMINAL_LOOP_EVENTS = new Set<string>([
   LoopEventType.Error,
   LoopEventType.Cancelled,
 ]);
+
+const SUPPORT_EVENT_TERMINAL_STATUSES = new Set<string>([
+  LoopStatus.Failed,
+  LoopStatus.TimedOut,
+]);
+
+/**
+ * Return true when a runner event should be ignored because the loop is already
+ * terminal. Support bundle metadata is the only non-terminal event accepted
+ * after FAILED/TIMED_OUT so Desktop crash recovery can publish support links.
+ */
+export function shouldIgnoreEventForTerminalLoop(
+  status: string,
+  eventType: string
+): boolean {
+  if (!TERMINAL_LOOP_STATUSES.has(status)) {
+    return false;
+  }
+  if (TERMINAL_LOOP_EVENTS.has(eventType)) {
+    return false;
+  }
+  return !(
+    eventType === LoopEventType.SupportBundleUploaded &&
+    SUPPORT_EVENT_TERMINAL_STATUSES.has(status)
+  );
+}
 
 /**
  * Normalize a loop event from either envelope { type, data: {...} } or

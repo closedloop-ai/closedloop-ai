@@ -41,11 +41,12 @@ export type {
   LoopEventOutput,
   LoopEventProgress,
   LoopEventStarted,
+  LoopEventSupportBundleUploaded,
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
   LoopEventToolCall,
-  LoopEventType,
 } from "@closedloop-ai/loops-api/events";
+export { LoopEventType } from "@closedloop-ai/loops-api/events";
 export type {
   ModelTokenUsage,
   TokenUsage,
@@ -142,10 +143,18 @@ export type AdditionalRepoRefWithPr = AdditionalRepoRef & {
   pullRequest?: PullRequestInfo | null;
 };
 
+export type LoopSupportArtifact = {
+  name: string;
+  key: string;
+  downloadUrl: string;
+  sizeBytes?: number;
+};
+
 // Loop detail view — same as LoopWithUser but with PR-enriched additional repos
 export type LoopDetail = Omit<LoopWithUser, "additionalRepos"> & {
   additionalRepos: AdditionalRepoRefWithPr[] | null;
   primaryPullRequest: PullRequestInfo | null;
+  supportArtifacts?: LoopSupportArtifact[];
 };
 
 // Additional repository references for multi-repo loop execution

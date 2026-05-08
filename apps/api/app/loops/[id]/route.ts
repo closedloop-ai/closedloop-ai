@@ -20,7 +20,9 @@ export const GET = withAnyAuth<LoopDetail, "/loops/[id]">(
     try {
       const { id } = await params;
 
-      const loop = await loopsService.findById(id, user.organizationId);
+      const loop = await loopsService.findById(id, user.organizationId, {
+        includeSupportArtifacts: true,
+      });
 
       if (!loop) {
         return notFoundResponse("Loop");
