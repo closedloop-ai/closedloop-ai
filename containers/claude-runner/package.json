@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test harness-agent.test.mjs"
+    "test": "tsx --test harness-agent.test.mjs lib/user-visible-loop-failure.test.mjs lib/auth-challenge-detection.test.mjs"
   },
   "dependencies": {
     "@closedloop-ai/loops-api": "workspace:*",

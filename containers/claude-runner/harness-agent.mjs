@@ -16,7 +16,7 @@
  */
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -41,11 +41,19 @@ import {
 import { normalizeModelName } from "@closedloop-ai/loops-api/tokens";
 
 import {
+  detectAuthChallengeFromJsonl,
+  detectAuthChallengeFromJsonlFile,
+} from "./lib/auth-challenge-detection.mjs";
+import {
   buildMountPathsFooter,
   buildPeerLocalPaths,
   DEFAULT_PEERS_DIR,
   writePeerReposManifest,
 } from "./lib/peer-context.mjs";
+import {
+  readUserVisibleLoopFailure,
+  USER_VISIBLE_LOOP_FAILURE_SECRET_ENV,
+} from "./lib/user-visible-loop-failure.mjs";
 
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — lazy-loaded on first use (not needed for unit tests)
@@ -1717,12 +1725,83 @@ async function attemptLlmCommit({
         `LLM commit (${fullName}) stderr (tail): ${redactSensitive(tail)}`
       );
     }
+
+    // Tertiary guard: on non-zero exit, scan the Claude native session
+    // transcript for auth/rate-limit/billing signals. The transcript lives at
+    // ~/.claude/projects/<cwdHash>/<sessionId>.jsonl where <cwdHash> is the
+    // workDir with every "/" replaced by "-".
+    if (status !== 0) {
+      return scanLlmCommitAuthChallenge(stdout, workDir, fullName);
+    }
+    return null;
   } catch (err) {
     log(
       "error",
       `LLM commit (${fullName}) failed (best-effort): ${redactSensitive(err.message)}`
     );
+    // On unexpected throw there may be no stdout, so pass empty string.
+    return scanLlmCommitAuthChallenge("", workDir, fullName);
   }
+}
+
+/**
+ * Extract a session ID from the full stdout of a `claude -p` invocation,
+ * then locate the native session transcript at
+ * `~/.claude/projects/<cwdHash>/<sessionId>.jsonl` and scan it for
+ * auth/rate-limit/billing challenge signals.
+ *
+ * Returns the error text string if an auth challenge is found, or null.
+ *
+ * @param {string} stdout - Full stdout captured from the Claude CLI spawn.
+ * @param {string} cwd - Working directory passed to the spawn (used to derive
+ *   the Claude project hash: every "/" is replaced with "-").
+ * @param {string} label - Identifier used for log messages (e.g. repo fullName).
+ * @returns {string | null}
+ */
+function scanLlmCommitAuthChallenge(stdout, cwd, label) {
+  // Extract session ID from stdout (first match across all lines).
+  let sessionId = null;
+  for (const line of stdout.split("\n")) {
+    sessionId = extractSessionId(line);
+    if (sessionId) {
+      break;
+    }
+  }
+
+  if (!sessionId) {
+    log(
+      "info",
+      `LLM commit (${label}): no session ID found in stdout, skipping native transcript auth scan`
+    );
+    return null;
+  }
+
+  // Derive the Claude project directory from the cwd.
+  // Claude CLI maps a working directory to a project slug by replacing every
+  // "/" with "-", producing e.g. "-workspace-repo" for "/workspace/repo".
+  const cwdHash = cwd.replaceAll("/", "-");
+  const homeDir = process.env.HOME || os.homedir();
+  const transcriptPath = path.join(
+    homeDir,
+    ".claude",
+    "projects",
+    cwdHash,
+    `${sessionId}.jsonl`
+  );
+
+  log(
+    "info",
+    `LLM commit (${label}): scanning native transcript at ${transcriptPath}`
+  );
+
+  const authSignal = detectAuthChallengeFromJsonlFile(transcriptPath);
+  if (authSignal !== null) {
+    log(
+      "info",
+      `LLM commit (${label}): auth challenge detected from native transcript: ${authSignal}`
+    );
+  }
+  return authSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -2059,6 +2138,12 @@ function labelPrIncomplete({ workDir, fullName, prNumber, githubToken }) {
 // Session ID capture
 // ---------------------------------------------------------------------------
 let capturedSessionId = null;
+// Auth challenge signal detected from the LLM-commit Claude CLI run. Set by
+// finalizeRepoWithLlm() when attemptLlmCommit() detects an auth/rate-limit
+// error in the native session transcript. Checked by reportFinalStatus()
+// before emitting a COMPLETED event so the run is reclassified as
+// AUTH_CHALLENGE rather than incorrectly completing.
+let llmCommitAuthChallenge = null;
 const RE_SESSION_ID =
   /(?:Session:\s*|"session_id"\s*:\s*")([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
@@ -3645,7 +3730,7 @@ async function finalizeRepoWithLlm(repo, safetyCommitMsg) {
   registerSecret(repo.githubToken);
 
   try {
-    await attemptLlmCommit({
+    const authSignal = await attemptLlmCommit({
       workDir: repo.workDir,
       fullName: repo.fullName,
       baseBranch: repo.baseBranch,
@@ -3654,6 +3739,11 @@ async function finalizeRepoWithLlm(repo, safetyCommitMsg) {
       loopId: config.loopId,
       anthropicApiKey: config.anthropicApiKey,
     });
+    // Propagate the first detected auth challenge to reportFinalStatus so it
+    // can emit an AuthChallenge error instead of incorrectly completing.
+    if (authSignal != null && llmCommitAuthChallenge == null) {
+      llmCommitAuthChallenge = authSignal;
+    }
   } catch (err) {
     log(
       "error",
@@ -3729,6 +3819,8 @@ async function reportFinalStatus(
     tokenUsage,
     startTime,
     symphonyWorkDir: swDir,
+    userVisibleLoopFailureSecret,
+    spawnStartedAt,
   }
 ) {
   // Step 0: Refresh GitHub token before commit/push (token may have expired
@@ -3812,6 +3904,74 @@ async function reportFinalStatus(
     });
     log("info", "Reported TIMED_OUT event");
     process.exit(1);
+  }
+
+  // Check for a primary marker (intentional user-visible failure) before
+  // falling through to the generic exitCode branch.
+  const primaryMarker = readUserVisibleLoopFailure({
+    claudeWorkDir: workDir,
+    markerNotBeforeMs: spawnStartedAt,
+    signingSecret: userVisibleLoopFailureSecret,
+  });
+  if (primaryMarker !== null) {
+    log(
+      "info",
+      `User-visible runner failure detected: ${primaryMarker.code} ${primaryMarker.result.subcode}`
+    );
+    await reportEvent({
+      type: "error",
+      code: primaryMarker.code,
+      message: primaryMarker.message,
+      result: buildEventResult(prInfo, results, {
+        subcode: primaryMarker.result.subcode,
+      }),
+      tokensUsed: {
+        input: tokenUsage.totalInput,
+        output: tokenUsage.totalOutput,
+      },
+      ...(tokenUsage.tokensByModel
+        ? { tokensByModel: tokenUsage.tokensByModel }
+        : {}),
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+    log("info", "Reported USER_VISIBLE_FAILURE event");
+    return;
+  }
+
+  // Secondary JSONL guard: scan claude-output.jsonl for auth/rate-limit/billing
+  // error entries that the primary marker may have missed (e.g. when the Claude
+  // CLI exits non-zero without writing a marker file).
+  // Tertiary guard: check for an auth/rate-limit signal detected from the
+  // LLM-commit Claude CLI native session transcript. This catches auth failures
+  // that occur during the post-run commit step and would otherwise be silently
+  // swallowed, causing a spurious COMPLETED event when exitCode is 0.
+  const jsonlAuthSignal = detectAuthChallengeFromJsonl(workDir);
+  const authChallengeSignal = jsonlAuthSignal ?? llmCommitAuthChallenge;
+  if (authChallengeSignal != null) {
+    const source =
+      jsonlAuthSignal == null ? "LLM-commit tertiary guard" : "JSONL guard";
+    log(
+      "info",
+      `Auth challenge detected from ${source}: ${authChallengeSignal}`
+    );
+    await reportEvent({
+      type: "error",
+      code: LoopErrorCode.AuthChallenge,
+      message: authChallengeSignal,
+      result: buildEventResult(prInfo, results),
+      tokensUsed: {
+        input: tokenUsage.totalInput,
+        output: tokenUsage.totalOutput,
+      },
+      ...(tokenUsage.tokensByModel
+        ? { tokensByModel: tokenUsage.tokensByModel }
+        : {}),
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+    log("info", `Reported AUTH_CHALLENGE event (${source})`);
+    return;
   }
 
   if (exitCode === 0) {
@@ -3988,6 +4148,7 @@ async function main() {
     );
 
     // Step 5: Build environment for the child process
+    const userVisibleLoopFailureSecret = randomBytes(32).toString("base64url");
     const childEnv = {
       ...setupEnvVars, // env vars from .closedloop-ai/loops-setup.sh (NODE_OPTIONS, etc.)
       ANTHROPIC_API_KEY: config.anthropicApiKey,
@@ -3996,10 +4157,12 @@ async function main() {
       HOME: process.env.HOME || os.homedir(),
       PATH: process.env.PATH,
       LANG: process.env.LANG || "C.UTF-8",
+      [USER_VISIBLE_LOOP_FAILURE_SECRET_ENV]: userVisibleLoopFailureSecret,
     };
 
     // Step 6: Execute
     log("info", `Executing: ${cmd} ${args.join(" ")}`);
+    const spawnStartedAt = Date.now();
     const { result, timedOut } = await executeWithTimeout(
       cmd,
       args,
@@ -4035,6 +4198,8 @@ async function main() {
       tokenUsage,
       startTime,
       symphonyWorkDir,
+      userVisibleLoopFailureSecret,
+      spawnStartedAt,
     });
 
     // Exit with the child's exit code
@@ -4192,6 +4357,7 @@ export {
   redactSensitive,
   refreshGitHubToken,
   registerSecret,
+  reportFinalStatus,
   resetHarnessState,
   snapshotTokens,
   syncPlanFromContextPack,
