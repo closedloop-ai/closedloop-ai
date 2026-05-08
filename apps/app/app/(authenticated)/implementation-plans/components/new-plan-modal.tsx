@@ -2,7 +2,10 @@
 
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { getProjectSettings } from "@repo/api/src/types/project";
+import {
+  getProjectSettings,
+  resolveProjectRepoDefaults,
+} from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -33,7 +36,12 @@ import {
 } from "@/hooks/queries/use-documents";
 import { useInheritedAdditionalRepos } from "@/hooks/queries/use-loops";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
+import { useMultiRepoConfigEnabled } from "@/hooks/use-multi-repo-config-enabled";
 import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
+import {
+  toResolverTeamRepo,
+  useTeamRepositoriesUnion,
+} from "@/hooks/use-team-repositories-union";
 import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { AdditionalReposPicker } from "./additional-repos-picker";
@@ -57,14 +65,6 @@ type NewPlanModalProps = {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 };
-
-function validateMissingRepo(
-  isLoadingProject: boolean,
-  targetRepo: string,
-  defaultRepoFullName: string | undefined
-): boolean {
-  return !(isLoadingProject || targetRepo || defaultRepoFullName);
-}
 
 function isCreateSubmitDisabled(
   isSubmitting: boolean,
@@ -194,17 +194,20 @@ export function NewPlanModal({
     useState(false);
   const hasPrePopulated = useRef(false);
 
-  // Fetch project details for default repository
+  // Fetch project details and resolve the project's primary repo (override →
+  // single-team inheritance → legacy fallback) in one hook so the launch
+  // dialog stays at a single integration point. When `multi-repo-config` is
+  // off the resolver collapses to legacy `defaultRepository` only — team
+  // repos are not even fetched.
+  const multiRepoConfigEnabled = useMultiRepoConfigEnabled();
   const effectiveProjectId = source?.projectId ?? selectedProjectId;
-  const { data: projectData, isLoading: isLoadingProject } = useProject(
-    effectiveProjectId ?? ""
-  );
-  const projectSettings = getProjectSettings(projectData?.settings ?? {});
-  const missingRepo = validateMissingRepo(
-    isLoadingProject,
-    targetRepo,
-    projectSettings.defaultRepository?.repoFullName
-  );
+  const { primaryRepoId, primaryFullName, missingRepo, isLoadingResolved } =
+    useNewPlanRepoState({
+      open,
+      effectiveProjectId,
+      targetRepo,
+      teamReposEnabled: multiRepoConfigEnabled,
+    });
 
   // Fetch PRDs when modal opens (skip if we have a source)
   const { data: prds = [], isLoading: loadingPrds } = useDocuments(
@@ -257,21 +260,18 @@ export function NewPlanModal({
     }
   }, [selectedSource, source]);
 
-  // Pre-populate from project default repository when modal opens
-  useEffect(() => {
-    const defaultRepo = projectSettings.defaultRepository;
-    if (
-      open &&
-      !(source?.targetRepo || targetRepo) &&
-      defaultRepo &&
-      !hasPrePopulated.current
-    ) {
-      setSelectedRepoId(defaultRepo.repoId);
-      setTargetRepo(defaultRepo.repoFullName);
-      setTargetBranch(defaultRepo.branch);
-      hasPrePopulated.current = true;
-    }
-  }, [open, projectSettings.defaultRepository, source?.targetRepo, targetRepo]);
+  // Pre-populate from the resolved project primary when the modal opens.
+  useResolvedPrimaryPrepopulation({
+    open,
+    sourceTargetRepo: source?.targetRepo,
+    targetRepo,
+    primaryRepoId,
+    primaryFullName,
+    isLoadingResolved,
+    hasPrePopulatedRef: hasPrePopulated,
+    setSelectedRepoId,
+    setTargetRepo,
+  });
 
   const handleTitleChange = (value: string): void => {
     setTitle(value);
@@ -649,4 +649,191 @@ function useInheritAdditionalReposFromSource({
   }, [isFetched, inherited, sourceId, onSeed]);
 
   return { pickerKey, markUserEdited };
+}
+
+type UseResolvedPrimaryPrepopulationArgs = {
+  open: boolean;
+  sourceTargetRepo: string | null | undefined;
+  targetRepo: string;
+  primaryRepoId: string | undefined;
+  primaryFullName: string | undefined;
+  // True while the team-repo union is still loading. The effect must not fire
+  // during this window because the resolver would otherwise return the legacy
+  // `defaultRepository` fallback and `hasPrePopulatedRef` would short-circuit
+  // any later correction once the override pool finishes loading (P1 review
+  // finding on PR #1115).
+  isLoadingResolved: boolean;
+  hasPrePopulatedRef: { current: boolean };
+  setSelectedRepoId: (id: string) => void;
+  setTargetRepo: (name: string) => void;
+};
+
+// Pre-populates the launch dialog's primary repo from the project resolution
+// chain (override → single-team inheritance → legacy fallback). Branch is left
+// empty so `RepoBranchSelector` picks the GitHub default branch on its own —
+// branches are never stored at team or project level (Q-002 of PLN-237). When
+// the project is multi-team without an override, `primaryRepoId` is undefined
+// here and the user is forced to pick — see T-3.2.
+function useResolvedPrimaryPrepopulation({
+  open,
+  sourceTargetRepo,
+  targetRepo,
+  primaryRepoId,
+  primaryFullName,
+  isLoadingResolved,
+  hasPrePopulatedRef,
+  setSelectedRepoId,
+  setTargetRepo,
+}: UseResolvedPrimaryPrepopulationArgs): void {
+  useEffect(() => {
+    if (
+      !open ||
+      hasPrePopulatedRef.current ||
+      isLoadingResolved ||
+      sourceTargetRepo ||
+      targetRepo ||
+      !primaryRepoId ||
+      !primaryFullName
+    ) {
+      return;
+    }
+    setSelectedRepoId(primaryRepoId);
+    setTargetRepo(primaryFullName);
+    hasPrePopulatedRef.current = true;
+  }, [
+    open,
+    sourceTargetRepo,
+    targetRepo,
+    primaryRepoId,
+    primaryFullName,
+    isLoadingResolved,
+    hasPrePopulatedRef,
+    setSelectedRepoId,
+    setTargetRepo,
+  ]);
+}
+
+type UseResolvedProjectRepoDefaultsArgs = {
+  projectData: ReturnType<typeof useProject>["data"];
+  projectSettings: ReturnType<typeof getProjectSettings>;
+  enabled: boolean;
+};
+
+type UseResolvedProjectRepoDefaultsResult = {
+  resolved: ReturnType<typeof resolveProjectRepoDefaults>;
+  primaryRepoId: string | undefined;
+  primaryFullName: string | undefined;
+  isLoading: boolean;
+};
+
+// Composes the resolution chain (project override → single-team inheritance
+// → legacy fallback) with team-repo data fetched per project team. Returns the
+// pool-resolved primary so callers can pre-populate the launch dialog without
+// re-implementing the chain. The legacy `defaultRepository.repoFullName` is
+// surfaced as `primaryFullName` only when the legacy id matches the resolved
+// primary (pre-migration projects whose legacy repo isn't in any team pool).
+type UseNewPlanRepoStateArgs = {
+  open: boolean;
+  effectiveProjectId: string | undefined;
+  targetRepo: string;
+  // Off → resolver runs without team repos, falling back to the legacy
+  // `defaultRepository` only. Avoids fetching the team-repo union when the
+  // multi-repo project config flag is not enabled.
+  teamReposEnabled: boolean;
+};
+
+type UseNewPlanRepoStateResult = {
+  primaryRepoId: string | undefined;
+  primaryFullName: string | undefined;
+  missingRepo: boolean;
+  // Surfaces `useResolvedProjectRepoDefaults`'s loading flag (which folds in
+  // the team-repo union fetch) so callers can gate the prepopulation effect
+  // until the override pool has actually finished loading.
+  isLoadingResolved: boolean;
+};
+
+// Wraps `useProject` + `useResolvedProjectRepoDefaults` + the launch-dialog's
+// missing-repo gate so the modal body has a single integration point. Loading
+// states are folded into `missingRepo` (false while loading) so the user can't
+// see a transient "no repo" error before the resolver finishes.
+function useNewPlanRepoState({
+  open,
+  effectiveProjectId,
+  targetRepo,
+  teamReposEnabled,
+}: UseNewPlanRepoStateArgs): UseNewPlanRepoStateResult {
+  const { data: projectData, isLoading: isLoadingProject } = useProject(
+    effectiveProjectId ?? ""
+  );
+  const projectSettings = getProjectSettings(projectData?.settings ?? {});
+  const {
+    primaryRepoId,
+    primaryFullName,
+    isLoading: isLoadingResolved,
+  } = useResolvedProjectRepoDefaults({
+    projectData,
+    projectSettings,
+    enabled: open && teamReposEnabled,
+  });
+  const missingRepo = !(
+    isLoadingProject ||
+    isLoadingResolved ||
+    targetRepo ||
+    primaryFullName
+  );
+  return {
+    primaryRepoId,
+    primaryFullName,
+    missingRepo,
+    isLoadingResolved: isLoadingProject || isLoadingResolved,
+  };
+}
+
+function useResolvedProjectRepoDefaults({
+  projectData,
+  projectSettings,
+  enabled,
+}: UseResolvedProjectRepoDefaultsArgs): UseResolvedProjectRepoDefaultsResult {
+  const teamIds = useMemo(
+    () => projectData?.teams.map((t) => t.id) ?? [],
+    [projectData?.teams]
+  );
+  const { repositories, isLoading } = useTeamRepositoriesUnion({
+    teamIds,
+    enabled: enabled && teamIds.length > 0,
+  });
+  const resolved = useMemo(() => {
+    if (!projectData) {
+      return null;
+    }
+    return resolveProjectRepoDefaults({
+      projectSettings,
+      teamRepos: repositories.map(toResolverTeamRepo),
+      teamCount: teamIds.length,
+    });
+  }, [projectData, projectSettings, repositories, teamIds.length]);
+
+  if (!resolved) {
+    return {
+      resolved: null,
+      primaryRepoId: undefined,
+      primaryFullName: undefined,
+      isLoading,
+    };
+  }
+  const primaryFromPool = repositories.find(
+    (r) => r.installationRepositoryId === resolved.primaryRepoId
+  );
+  const legacy = projectSettings.defaultRepository;
+  const primaryFullName =
+    primaryFromPool?.repository.fullName ??
+    (legacy?.repoId === resolved.primaryRepoId
+      ? legacy.repoFullName
+      : undefined);
+  return {
+    resolved,
+    primaryRepoId: resolved.primaryRepoId,
+    primaryFullName,
+    isLoading,
+  };
 }

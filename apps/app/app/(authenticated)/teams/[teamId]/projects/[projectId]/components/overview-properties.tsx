@@ -1,8 +1,14 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { ProjectWithDetails } from "@repo/api/src/types/project";
-import { getProjectSettings } from "@repo/api/src/types/project";
+import type {
+  ProjectSettings,
+  ProjectWithDetails,
+} from "@repo/api/src/types/project";
+import {
+  getProjectSettings,
+  resolveProjectRepoDefaults,
+} from "@repo/api/src/types/project";
 import {
   Avatar,
   AvatarFallback,
@@ -10,6 +16,11 @@ import {
 } from "@repo/design-system/components/ui/avatar";
 import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@repo/design-system/components/ui/popover";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
@@ -24,18 +35,25 @@ import {
   ArrowRightIcon,
   CalendarIcon,
   ChevronDownIcon,
+  GitBranchIcon,
   UserIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { useGitHubIntegrationStatus } from "@/hooks/queries/use-github-integration";
+import { useMultiRepoConfigEnabled } from "@/hooks/use-multi-repo-config-enabled";
 import { useTeamMembers } from "@/hooks/use-team-members";
+import {
+  toResolverTeamRepo,
+  useTeamRepositoriesUnion,
+} from "@/hooks/use-team-repositories-union";
 import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 import { DefaultRepositoryPicker } from "./default-repository-picker";
 import { DefaultRepositoryWarning } from "./default-repository-warning";
+import { RepoOverridePicker } from "./repo-override-picker";
 
 /** Matches SelectTrigger size="sm" styling so all property cells look uniform. */
 const selectTriggerClassName =
@@ -54,8 +72,6 @@ export function OverviewProperties({
   onUpdateAssignee,
   onUpdateTargetDate,
 }: Readonly<OverviewPropertiesProps>) {
-  const params = useParams<{ teamId: string }>();
-  const activeTeamId = params?.teamId ?? "";
   const teamIds = useMemo(
     () => project.teams.map((team) => team.id),
     [project.teams]
@@ -65,6 +81,14 @@ export function OverviewProperties({
   const projectSettings = getProjectSettings(project.settings);
   const targetDate = ensureDate(project.targetDate);
   const isGitHubConnected = githubStatus?.connected === true;
+  const multiRepoConfigEnabled = useMultiRepoConfigEnabled();
+  const params = useParams<{ teamId: string }>();
+  const activeTeamId = params?.teamId ?? "";
+  const repoSummary = useRepoSummary({
+    teamIds,
+    settings: projectSettings,
+    enabled: isGitHubConnected && multiRepoConfigEnabled,
+  });
 
   const assigneeTrigger = (
     <button className={selectTriggerClassName} type="button">
@@ -176,37 +200,139 @@ export function OverviewProperties({
           />
         </div>
 
-        <div className="flex min-w-[120px] flex-col gap-1.5">
-          <span className="text-muted-foreground text-xs">Repo</span>
-          {isGitHubConnected ? (
-            <>
-              <DefaultRepositoryPicker
-                currentSettings={project.settings}
-                defaultRepository={projectSettings.defaultRepository}
-                projectId={project.id}
-              />
-              {activeTeamId ? (
-                <DefaultRepositoryWarning
-                  defaultRepository={projectSettings.defaultRepository}
-                  teamId={activeTeamId}
-                />
-              ) : null}
-            </>
-          ) : (
-            <Button
-              asChild
-              className="w-full justify-between shadow-none"
-              size="sm"
-              variant="outline"
-            >
-              <Link href="/settings?tab=integrations">
-                Connect GitHub
-                <ArrowRightIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-              </Link>
-            </Button>
-          )}
+        <div className="flex min-w-[175px] flex-col gap-1.5">
+          <span className="text-muted-foreground text-xs">
+            {multiRepoConfigEnabled ? "Repos" : "Repo"}
+          </span>
+          <RepoCell
+            activeTeamId={activeTeamId}
+            isGitHubConnected={isGitHubConnected}
+            multiRepoConfigEnabled={multiRepoConfigEnabled}
+            project={project}
+            projectSettings={projectSettings}
+            repoSummary={repoSummary}
+            triggerClassName={selectTriggerClassName}
+          />
         </div>
       </div>
     </div>
   );
+}
+
+type RepoCellProps = {
+  activeTeamId: string;
+  isGitHubConnected: boolean;
+  multiRepoConfigEnabled: boolean;
+  project: ProjectWithDetails;
+  projectSettings: ProjectSettings;
+  repoSummary: string;
+  triggerClassName: string;
+};
+
+// Splits the Repo cell into three reachable states so OverviewProperties
+// itself stays under the cognitive-complexity ceiling: GitHub disconnected
+// (CTA), legacy single-repo picker (flag off), or the new override popover
+// (flag on). The legacy branch is kept verbatim so projects that have not
+// been migrated to repositoryOverrides retain the existing UX.
+function RepoCell({
+  activeTeamId,
+  isGitHubConnected,
+  multiRepoConfigEnabled,
+  project,
+  projectSettings,
+  repoSummary,
+  triggerClassName,
+}: RepoCellProps) {
+  if (!isGitHubConnected) {
+    return (
+      <Button
+        asChild
+        className="w-full justify-between shadow-none"
+        size="sm"
+        variant="outline"
+      >
+        <Link href="/settings?tab=integrations">
+          Connect GitHub
+          <ArrowRightIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </Link>
+      </Button>
+    );
+  }
+  if (!multiRepoConfigEnabled) {
+    return (
+      <>
+        <DefaultRepositoryPicker
+          currentSettings={project.settings}
+          defaultRepository={projectSettings.defaultRepository}
+          projectId={project.id}
+        />
+        {activeTeamId ? (
+          <DefaultRepositoryWarning
+            defaultRepository={projectSettings.defaultRepository}
+            teamId={activeTeamId}
+          />
+        ) : null}
+      </>
+    );
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button className={triggerClassName} type="button">
+          <GitBranchIcon className="h-4 w-4 shrink-0 text-foreground" />
+          <span className="truncate">{repoSummary}</span>
+          <ChevronDownIcon className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(32rem,calc(100vw-2rem))]">
+        <RepoOverridePicker
+          currentOverride={projectSettings.repositoryOverrides}
+          currentSettings={project.settings}
+          projectId={project.id}
+          teams={project.teams}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function useRepoSummary({
+  teamIds,
+  settings,
+  enabled,
+}: {
+  teamIds: string[];
+  settings: ProjectSettings;
+  enabled: boolean;
+}): string {
+  const { repositories, isLoading } = useTeamRepositoriesUnion({
+    teamIds,
+    enabled,
+  });
+  if (!enabled) {
+    return "Connect GitHub";
+  }
+  if (isLoading) {
+    return "Loading…";
+  }
+  const resolved = resolveProjectRepoDefaults({
+    projectSettings: settings,
+    teamRepos: repositories.map(toResolverTeamRepo),
+    teamCount: teamIds.length,
+  });
+  if (!resolved) {
+    return "Set defaults";
+  }
+  const primary = repositories.find(
+    (r) => r.installationRepositoryId === resolved.primaryRepoId
+  );
+  const primaryLabel =
+    primary?.repository.fullName ??
+    settings.defaultRepository?.repoFullName ??
+    "primary";
+  const extras = resolved.selectedRepoIds.length - 1;
+  if (extras <= 0) {
+    return primaryLabel;
+  }
+  return `${primaryLabel} +${extras}`;
 }

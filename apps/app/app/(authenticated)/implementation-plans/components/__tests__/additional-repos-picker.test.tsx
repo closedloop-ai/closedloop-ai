@@ -66,6 +66,17 @@ vi.mock("@/hooks/queries/use-loops", () => ({
   }),
 }));
 
+// PLN-237: NewPlanModal resolves the project's primary repo via
+// `useTeamRepositoriesUnion` (TanStack `useQueries`). Stub it so this test
+// doesn't need a QueryClientProvider.
+vi.mock("@/hooks/use-team-repositories-union", () => ({
+  useTeamRepositoriesUnion: () => ({
+    repositories: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // ---- Regex constants (top-level to satisfy Biome useTopLevelRegex) ----
 
 const ADD_REPO_REGEX = /add repository/i;
