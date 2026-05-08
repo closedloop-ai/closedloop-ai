@@ -148,7 +148,7 @@ pnpm install && docker compose up -d && pnpm dev
 
 ## Legacy Identifiers
 
-Some internal identifiers use "Symphony" (an earlier codename). These don't affect the product and are preserved to avoid breaking runtime behavior — e.g., `/api/gateway/symphony/*` routes, `symphony-{env}` GitHub App names.
+Some internal identifiers use "Symphony" (an earlier codename). These don't affect the product and are preserved to avoid breaking runtime behavior — e.g., `/api/gateway/symphony/*` routes.
 
 ## License
 

@@ -12,8 +12,8 @@ Repository: closedloop-ai (Next.js monorepo on next-forge template)
 | **apps/app** | Main authenticated application - dashboard, artifact editor, team/project management | Frontend SPA | Next.js 16, React 19, TanStack Query, TipTap, Tailwind CSS |
 | **apps/api** | Backend-for-Frontend API server - all database operations, webhook handling, service integrations | Backend API | Next.js 16 (API routes), Prisma, Zod, Svix, adm-zip |
 | **apps/web** | Marketing/public website with home, pricing, and contact pages | Marketing Site | Next.js 16, Tailwind CSS, MDX, i18n |
-| **apps/docs** | Documentation site | Documentation | Mintlify |
-| **apps/email** | Email template preview environment | Dev Tooling | React Email |
+| **apps/mcp** | MCP server for Claude Code CLI integration | Infrastructure | Hono, MCP SDK |
+| **apps/relay** | WebSocket relay for desktop compute targets | Infrastructure | Socket.io |
 | **apps/storybook** | Component library development environment | Dev Tooling | Storybook |
 | **apps/studio** | Prisma Studio for database browsing | Dev Tooling | Prisma Studio |
 | **packages/database** | Prisma ORM client, schema, migrations (PostgreSQL) | Shared Library | Prisma 7, PostgreSQL 16, Neon (prod) |
@@ -284,8 +284,8 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 - **Authentication:** Clerk (SSO, social login, email/password, MFA supported via Clerk)
 - **Session management:** Clerk JWT tokens, validated server-side in API via `auth()` from `@repo/auth/server`
 - **Organization isolation:** All database queries are scoped by `organizationId`. The `withAnyAuth()` wrapper extracts orgId from either API key or JWT and enforces this on every API route.
-- **Role-based access:** Clerk organization roles (`org:admin`, `org:member`) gate admin-only features in the frontend (Settings > Admin tab uses `<Protect role="org:admin">`). Backend does not yet enforce granular role-based permissions beyond org membership.
-- **Team roles:** OWNER, ADMIN, MEMBER at the team level (stored in database, used for display; enforcement is a TODO)
+- **Role-based access:** Clerk organization roles (`org:admin`, `org:member`) gate admin-only features in both frontend (`<Protect role="org:admin">`) and backend (admin-gated API routes for agents, custom fields, compute mode, etc.)
+- **Team roles:** OWNER, ADMIN, MEMBER at the team level (stored in database; enforcement is being expanded)
 - **Approver roles:** PM, Designer, Tech Lead, Engineer, Stakeholder (used in approval workflows)
 
 ### Application Security
@@ -394,7 +394,7 @@ These constraints should inform product decisions:
 | **Source code never leaves customer infra** | Core differentiator but limits what the control plane can analyze or display. Codebase summaries must be pre-indexed. |
 | **Multi-org user model (1 User record per org)** | Profile updates must sync across all orgs. Role assignments are per-org. |
 | **Artifact versioning via documentSlug** | All versions share a slug; only one is `isLatest`. Deleting an artifact deletes all versions. Version-specific collaboration rooms (Liveblocks) are created per version. |
-| **No granular backend permissions** | Any org member can currently perform any operation via API. Frontend-only role gating is not secure. Admin features need backend enforcement before expanding. |
+| **Expanding backend permissions** | Admin-gated routes exist for agents, custom fields, and compute mode. Remaining routes use org-scoping; granular role enforcement is being expanded. |
 | **Workstream state machine (17 states)** | Complex state transitions need careful handling. Adding new states requires schema migration. |
 | **Template system is per-org** | Templates are stored as artifacts with unique constraint on (organizationId, templateForType). Only one template per type per org. |
 | **No offline support** | Application requires network connectivity for all operations. |

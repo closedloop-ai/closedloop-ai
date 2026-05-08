@@ -33,7 +33,7 @@ export const CTA = ({ dictionary }: CTAProps) => {
               <a
                 href={
                   env.NEXT_PUBLIC_DOCS_URL ??
-                  "https://github.com/closedloop-ai/claude_code"
+                  "https://github.com/closedloop-ai/claude-plugins"
                 }
                 rel="noopener noreferrer"
                 target="_blank"
