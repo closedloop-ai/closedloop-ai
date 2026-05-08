@@ -1,0 +1,51 @@
+---
+title: Refine a plan with Codex
+description: Use the Claude-vs-Codex debate loop to pressure-test and refine an implementation plan.
+---
+
+`/code:plan-with-codex` runs a debate loop where Claude drafts an implementation plan and Codex reviews it, iterating until Codex approves or you hit the round budget.
+
+## Requirements
+
+- `codex` CLI installed and on `PATH`.
+- an existing plan or a prompt to generate one.
+
+## Command
+
+```bash
+claude /code:plan-with-codex [--max-rounds N] [--plan-file PATH] [--codex-model MODEL] "<prompt>"
+```
+
+Defaults:
+
+- `--max-rounds 15`
+- `--codex-model gpt-5.4`
+
+## How it works
+
+`debate-loop.sh` alternates:
+
+1. `@code:plan-agent` (opus) drafts or revises the plan.
+2. `@code:codex-review` skill runs Codex against the plan.
+3. Codex emits `VERDICT:APPROVED` or `VERDICT:NEEDS_CHANGES` with concrete feedback.
+4. If `NEEDS_CHANGES`, the plan agent revises.
+5. Loop until `APPROVED` or max rounds.
+
+Session resume is supported via a `{stem}.state` sidecar file tracking round and Codex session ID.
+
+## Output
+
+- the refined plan file (or a new file if you did not specify one)
+- a record of each round's verdict and feedback
+
+## When to use it
+
+- when the plan touches unfamiliar territory and a second-model pressure test is valuable
+- when you want structural disagreement to surface blind spots
+- before launching a large loop, to avoid burning iterations on a flawed plan
+
+## Why two models disagree usefully
+
+Claude and Codex have different priors. A plan that satisfies both tends to have fewer holes than a plan approved by one model alone. The debate is not consensus-seeking; it is adversarial, and that is what makes it useful.
+
+After the plan is approved, hand it to `/code:code --plan <file>` to execute it through the standard loop.

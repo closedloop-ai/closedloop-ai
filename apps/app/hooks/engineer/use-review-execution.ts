@@ -1,0 +1,981 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
+import { env } from "@/env";
+import type {
+  ReviewFinding,
+  ReviewVerdict,
+} from "@/lib/engineer/codex-review-parser";
+import {
+  checkExistingReview,
+  markFindingCommented,
+  markReviewDeclined,
+  postDeclineComment,
+  saveReviewFindings,
+} from "@/lib/engineer/review-findings-api";
+import {
+  buildCommentBody,
+  resolveFindingPath,
+  resolveFullPath,
+  stripWorktreePath,
+} from "@/lib/engineer/review-path-utils";
+import {
+  type AnnotatedFinding,
+  splitReviewOutput,
+} from "@/lib/engineer/review-split";
+import {
+  type StreamReviewResult,
+  streamReviewOutput,
+} from "@/lib/engineer/review-stream";
+
+const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped"]);
+const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_TRANSIENT_RETRY_ATTEMPTS = 2;
+const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
+
+type UseReviewExecutionParams = {
+  ticketId: string;
+  repoPath: string;
+  prNumber: number;
+  branchName: string;
+  config: ReviewConfig;
+  initialOutput?: string;
+  commitSha?: string;
+  prFiles?: string[];
+  duplicateIndices?: Set<number>;
+  prCommentDupIndices?: Set<number>;
+  onReviewComplete?: (
+    output: string,
+    findingCount: number,
+    findings?: ReviewFinding[]
+  ) => void;
+  onStructuredFindings?: (findings: ReviewFinding[]) => void;
+  onAllCommented?: () => void;
+};
+
+type UseReviewExecutionReturn = {
+  // State
+  reviewOutput: string;
+  isReviewing: boolean;
+  reviewDone: boolean;
+  reviewCommand: string | null;
+  reviewContextPercent: number | null;
+  effectiveVerdict: ReviewVerdict | null;
+  hasDeclineVerdict: boolean;
+  showFindings: boolean;
+  declined: boolean;
+  findingsRevealed: boolean;
+  isSubmittingDecline: boolean;
+  submittedFindings: Set<number>;
+  submittingFindings: Set<number>;
+  reviewSplit: {
+    processLog: string;
+    findings: AnnotatedFinding[];
+    verdict?: ReviewVerdict;
+  } | null;
+  reviewStartedAt: string;
+  // Actions
+  handleStopReview: () => Promise<void>;
+  handleDecline: () => Promise<void>;
+  handleSubmitComment: (index: number, finding: ReviewFinding) => Promise<void>;
+  setFindingsRevealed: (v: boolean) => void;
+};
+
+function isTransientCodexUpstreamError(text: string | undefined): boolean {
+  if (!text) {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("http error: 503") ||
+    lower.includes("service unavailable") ||
+    lower.includes("unexpected status 503") ||
+    lower.includes("upstream connect error") ||
+    lower.includes("remote connection failure") ||
+    lower.includes("wss://chatgpt.com/backend-api/codex/responses") ||
+    lower.includes("https://chatgpt.com/backend-api/codex/responses")
+  );
+}
+
+export function useReviewExecution(
+  params: UseReviewExecutionParams
+): UseReviewExecutionReturn {
+  const {
+    ticketId,
+    repoPath,
+    prNumber,
+    branchName,
+    config,
+    initialOutput,
+    commitSha,
+    prFiles,
+    duplicateIndices,
+    prCommentDupIndices,
+    onReviewComplete,
+    onStructuredFindings,
+    onAllCommented,
+  } = params;
+
+  // Phase 1: review streaming
+  const [reviewOutput, setReviewOutput] = useState(initialOutput ?? "");
+  const [isReviewing, setIsReviewing] = useState(!initialOutput);
+  const [reviewDone, setReviewDone] = useState(!!initialOutput);
+  const abortRef = useRef<AbortController | null>(null);
+  const [submittedFindings, setSubmittedFindings] = useState<Set<number>>(
+    new Set()
+  );
+  const [submittingFindings, setSubmittingFindings] = useState<Set<number>>(
+    new Set()
+  );
+  const [declined, setDeclined] = useState(false);
+  const [findingsRevealed, setFindingsRevealed] = useState(false);
+  const [isSubmittingDecline, setIsSubmittingDecline] = useState(false);
+  const [asyncVerdict, setAsyncVerdict] = useState<ReviewVerdict | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const findingsSavedRef = useRef(false);
+  const [reviewCommand, setReviewCommand] = useState<string | null>(null);
+  const [reviewContextPercent, setReviewContextPercent] = useState<
+    number | null
+  >(null);
+  const [structuredFindings, setStructuredFindings] = useState<
+    ReviewFinding[] | null
+  >(null);
+  const completedExtractionKeysRef = useRef(new Set<string>());
+  const inFlightExtractionKeyRef = useRef<string | null>(null);
+
+  // Refs for parent callbacks — avoids depending on callback identity in effects
+  const onReviewCompleteRef = useRef(onReviewComplete);
+  onReviewCompleteRef.current = onReviewComplete;
+  const onStructuredFindingsRef = useRef(onStructuredFindings);
+  onStructuredFindingsRef.current = onStructuredFindings;
+
+  // Guard against StrictMode double-mount
+  const hasStartedRef = useRef(false);
+  const reviewStartedAtRef = useRef(
+    initialOutput ? new Date().toISOString() : ""
+  );
+
+  // Fetch persisted findings to restore commented status and hydrate
+  // humanized bodies (written to disk by triggerExtraction in a prior mount).
+  const findingsUrl = `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+  const { data: savedFindings } = useQuery<{
+    findings: Array<ReviewFinding & { commented: boolean }>;
+    declined?: boolean;
+    declineReason?: string;
+  }>({
+    queryKey: ["review-findings", ticketId, repoPath, config.provider],
+    queryFn: () => fetch(findingsUrl).then((r) => r.json()),
+    enabled: reviewDone,
+  });
+
+  // Sync submitted findings and declined status from persisted data.
+  // Also hydrate structuredFindings when disk has humanized bodies — this
+  // recovers humanized comments after the component remounts (the parent
+  // flips initialOutput on completion, which changes the React key and
+  // destroys the in-memory structuredFindings state populated by
+  // triggerExtraction in the previous mount).
+  useEffect(() => {
+    if (!savedFindings?.findings) {
+      return;
+    }
+    const commented = new Set<number>();
+    savedFindings.findings.forEach((f, i) => {
+      if (f.commented) {
+        commented.add(i);
+      }
+    });
+    if (commented.size > 0) {
+      setSubmittedFindings((prev) => {
+        const merged = new Set(prev);
+        for (const i of commented) {
+          merged.add(i);
+        }
+        return merged;
+      });
+    }
+    if (savedFindings.declined) {
+      setDeclined(true);
+    }
+    const hasHumanized = savedFindings.findings.some(
+      (f) => typeof f.humanizedBody === "string" && f.humanizedBody.trim()
+    );
+    // Hydrate structuredFindings from disk when:
+    // 1. Disk has humanized bodies (from extraction), OR
+    // 2. Stream parser found nothing but disk has findings (code-review skill bridge)
+    const streamParsedEmpty =
+      reviewOutput &&
+      splitReviewOutput(reviewOutput, config.provider).findings.length === 0;
+    if (
+      hasHumanized ||
+      (streamParsedEmpty && savedFindings.findings.length > 0)
+    ) {
+      setStructuredFindings((prev) => {
+        if (prev && prev.length > 0) {
+          return prev;
+        }
+        return savedFindings.findings.map(({ commented: _c, ...rest }) => rest);
+      });
+    }
+  }, [savedFindings, reviewOutput, config.provider]);
+
+  // Split completed review output into thinking (process log) + findings
+  const reviewSplit = useMemo(() => {
+    if (!(reviewDone && reviewOutput)) {
+      return null;
+    }
+    const split = splitReviewOutput(reviewOutput, config.provider);
+    const sourceFindings = structuredFindings ?? split.findings;
+    const annotated = sourceFindings.map((f, i) => ({
+      ...f,
+      originalIndex: i,
+    }));
+    const filtered =
+      prFiles && prFiles.length > 0
+        ? annotated.filter((f) => {
+            if (!f.file) {
+              return true;
+            }
+            const short = stripWorktreePath(f.file);
+            const resolved = resolveFullPath(short, prFiles);
+            return resolved !== null && resolved !== "ambiguous";
+          })
+        : annotated;
+    return {
+      processLog: split.processLog,
+      findings: filtered,
+      verdict: split.verdict,
+    };
+  }, [reviewDone, reviewOutput, config.provider, prFiles, structuredFindings]);
+
+  // Notify parent when all findings have been individually commented (fire once)
+  const allCommentedFiredRef = useRef(false);
+  useEffect(() => {
+    if (!reviewSplit || reviewSplit.findings.length === 0) {
+      return;
+    }
+    if (
+      reviewSplit.findings.every((f) =>
+        submittedFindings.has(f.originalIndex)
+      ) &&
+      !allCommentedFiredRef.current
+    ) {
+      allCommentedFiredRef.current = true;
+      onAllCommented?.();
+    }
+  }, [reviewSplit, onAllCommented, submittedFindings]);
+
+  // Notify parent when restoring a previous review. Do NOT re-save findings
+  // here: on remount (e.g. after review completes and the React key flips from
+  // "live" to "restored"), the disk may already contain humanized findings
+  // written by the extract route. Re-saving the basic log-parser findings
+  // would clobber humanizedBody and other fields.
+  useEffect(() => {
+    if (!initialOutput) {
+      return;
+    }
+    const split = splitReviewOutput(initialOutput, config.provider);
+    onReviewCompleteRef.current?.(
+      initialOutput,
+      split.findings.length,
+      split.findings
+    );
+  }, [config.provider, initialOutput]);
+
+  /** Split output, notify callback, persist findings. Returns the split result. */
+  function finalizeReviewOutput(output: string) {
+    setReviewOutput(output);
+    setReviewDone(true);
+    // Fallback: if the stream's sessionId event was missed, parse the codex
+    // banner out of the accumulated output. createCodexStream always forwards
+    // stdout (banner included) as "output" events, so the session id appears
+    // in the raw text even if the dedicated event was lost.
+    if (config.provider === "codex" && !sessionIdRef.current) {
+      const match = CODEX_SESSION_ID_REGEX.exec(output);
+      if (match) {
+        sessionIdRef.current = match[1];
+        console.log(
+          `[review-extract] Recovered codex session ID from output: ${match[1]}`
+        );
+      }
+    }
+    const split = splitReviewOutput(output, config.provider);
+    onReviewCompleteRef.current?.(
+      output,
+      split.findings.length,
+      split.findings
+    );
+    if (split.findings.length > 0) {
+      findingsSavedRef.current = true;
+      saveReviewFindings(
+        ticketId,
+        repoPath,
+        config.provider,
+        config.model,
+        split.findings
+      );
+    }
+    return split;
+  }
+
+  /** Post-stream provider-specific follow-ups: seed session ID, extraction, verdict. */
+  function handlePostStreamActions(
+    split: ReturnType<typeof splitReviewOutput>
+  ) {
+    console.log(
+      `[review-extract-gate] provider=${config.provider}, sessionId=${sessionIdRef.current ?? "NULL"}, findingsCount=${split.findings.length}`
+    );
+
+    if (config.provider === "claude" && sessionIdRef.current) {
+      fetch(
+        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: sessionIdRef.current }),
+        }
+      ).catch((err) =>
+        console.warn("[review] Failed to seed session ID:", err)
+      );
+    }
+
+    if (config.provider === "codex" && sessionIdRef.current) {
+      console.log("[review-extract-gate] Firing codex triggerExtraction");
+      triggerExtraction(sessionIdRef.current);
+    } else if (
+      config.provider === "claude" &&
+      split.findings.length > 0 &&
+      sessionIdRef.current
+    ) {
+      console.log("[review-extract-gate] Firing claude triggerExtraction");
+      triggerExtraction(sessionIdRef.current);
+    } else {
+      console.warn(
+        `[review-extract-gate] Skipped triggerExtraction — provider=${config.provider}, sessionId=${sessionIdRef.current ?? "NULL"}, findingsCount=${split.findings.length}`
+      );
+    }
+
+    if (!split.verdict && sessionIdRef.current) {
+      triggerVerdictExtraction(sessionIdRef.current);
+    }
+  }
+
+  function buildReviewBody() {
+    return {
+      instructions: config.instructions || undefined,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
+      reviewMode: config.reviewMode,
+      baseBranch: "main",
+      repoPath,
+      branchName,
+      provider: config.provider || "codex",
+      useBaseRepo: config.useBaseRepo || undefined,
+    };
+  }
+
+  async function runReviewAttempt(
+    signal: AbortSignal,
+    transientRetryAttempt: number
+  ) {
+    reviewStartedAtRef.current = new Date().toISOString();
+    setIsReviewing(true);
+    setReviewDone(false);
+    if (transientRetryAttempt === 0) {
+      setStructuredFindings(null);
+      completedExtractionKeysRef.current.clear();
+      inFlightExtractionKeyRef.current = null;
+    }
+    let accumulatedOutput = "";
+
+    try {
+      if (transientRetryAttempt === 0) {
+        const existing = await checkExistingReview(
+          ticketId,
+          repoPath,
+          config.provider,
+          signal
+        );
+
+        if (existing.kind === "completed" || existing.kind === "terminal") {
+          if (existing.sessionId) {
+            sessionIdRef.current = existing.sessionId;
+          }
+          const split = finalizeReviewOutput(existing.log);
+          if (existing.kind === "completed") {
+            handlePostStreamActions(split);
+          } else if (!split.verdict && sessionIdRef.current) {
+            triggerVerdictExtraction(sessionIdRef.current);
+          }
+          return;
+        }
+
+        if (existing.kind === "running") {
+          setReviewOutput(existing.log);
+          await pollRunningReview(signal);
+          return;
+        }
+      }
+
+      setReviewOutput("");
+
+      const response = await fetch(
+        `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(buildReviewBody()),
+          signal,
+        }
+      );
+
+      console.log(
+        "[review-stream] POST response:",
+        response.status,
+        "body?",
+        !!response.body,
+        "headers:",
+        Object.fromEntries(response.headers.entries())
+      );
+
+      if (response.status === 409) {
+        console.log("[review-stream] 409 — falling back to poll");
+        await pollRunningReview(signal);
+        return;
+      }
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null);
+        throw new Error(
+          errBody?.error ?? `Failed to start review: ${response.status}`
+        );
+      }
+
+      // Read commandId from response header (primary channel)
+      let commandId = response.headers.get("x-relay-command-id") ?? undefined;
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
+
+      console.log("[review-stream] Starting stream read");
+      let result: StreamReviewResult = await streamReviewOutput(
+        reader,
+        (text) => {
+          accumulatedOutput = text;
+          setReviewOutput(text);
+        },
+        (sid) => {
+          sessionIdRef.current = sid;
+        },
+        setReviewCommand,
+        setReviewContextPercent
+      );
+      // In-band relay_meta as backup for commandId
+      commandId ??= result.commandId;
+      let lastSeq = result.lastSeq;
+
+      console.log(
+        "[review-stream] Stream ended, accumulated:",
+        result.text.length,
+        "chars, terminalState:",
+        result.terminalState
+      );
+
+      if (result.terminalState === "done") {
+        const split = finalizeReviewOutput(result.text);
+        toast.success("Code review completed");
+        handlePostStreamActions(split);
+        return;
+      }
+
+      if (result.terminalState === "terminal_error") {
+        const combinedErrorText = result.terminalError ?? "";
+        const shouldRetryTransientCodexError =
+          config.provider === "codex" &&
+          transientRetryAttempt < MAX_TRANSIENT_RETRY_ATTEMPTS &&
+          isTransientCodexUpstreamError(combinedErrorText);
+        if (shouldRetryTransientCodexError) {
+          const nextAttempt = transientRetryAttempt + 1;
+          const backoffMs = Math.min(5000 * 2 ** transientRetryAttempt, 30_000);
+          toast.info(
+            `Codex service is temporarily unavailable. Retrying (${nextAttempt}/${MAX_TRANSIENT_RETRY_ATTEMPTS})...`
+          );
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, backoffMs);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true }
+            );
+          });
+          if (signal.aborted) {
+            setReviewDone(true);
+            return;
+          }
+          await runReviewAttempt(signal, nextAttempt);
+          return;
+        }
+        toast.error("Review failed", {
+          description:
+            result.terminalError ??
+            "The review command encountered a terminal error",
+        });
+        setReviewDone(true);
+        onReviewCompleteRef.current?.(accumulatedOutput, 0);
+        return;
+      }
+
+      // Stream dropped without terminal event — try reconnect if relay mode
+      if (commandId) {
+        let attempts = 0;
+        while (attempts < MAX_RECONNECT_ATTEMPTS && !signal.aborted) {
+          attempts++;
+
+          // Exponential backoff: 1s, 2s, 4s, ... capped at 30s
+          const delay = Math.min(1000 * 2 ** (attempts - 1), 30_000);
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, delay);
+            signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true }
+            );
+          });
+          if (signal.aborted) {
+            break;
+          }
+
+          console.log(
+            `[review-stream] Reconnect attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS}`
+          );
+
+          try {
+            const reconnectHeaders: Record<string, string> = {
+              "Content-Type": "application/json",
+              "x-relay-after-sequence": String(lastSeq ?? 0),
+            };
+            if (commandId) {
+              reconnectHeaders["x-relay-command-id"] = commandId;
+            }
+            const reconnectResponse = await fetch(
+              `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
+              {
+                method: "POST",
+                headers: reconnectHeaders,
+                body: JSON.stringify(buildReviewBody()),
+                signal,
+              }
+            );
+
+            if (!reconnectResponse.ok) {
+              console.log(
+                `[review-stream] Reconnect response: ${reconnectResponse.status}`
+              );
+              // 4xx = auth/client error, stop retrying; 5xx = transient, keep trying
+              if (reconnectResponse.status < 500) {
+                break;
+              }
+              continue;
+            }
+
+            const reconnectReader = reconnectResponse.body?.getReader();
+            if (!reconnectReader) {
+              break;
+            }
+
+            result = await streamReviewOutput(
+              reconnectReader,
+              (text) => {
+                accumulatedOutput = text;
+                setReviewOutput(text);
+              },
+              (sid) => {
+                sessionIdRef.current = sid;
+              },
+              setReviewCommand,
+              setReviewContextPercent,
+              {
+                accumulated: accumulatedOutput,
+                commandId,
+                lastSeq,
+              }
+            );
+
+            // Preserve prior metadata across reconnects
+            commandId ??= result.commandId;
+            lastSeq = result.lastSeq ?? lastSeq;
+
+            if (result.terminalState === "done") {
+              const split = finalizeReviewOutput(result.text);
+              toast.success("Code review completed");
+              handlePostStreamActions(split);
+              return;
+            }
+
+            if (result.terminalState === "terminal_error") {
+              toast.error("Review failed", {
+                description:
+                  result.terminalError ??
+                  "The review command encountered a terminal error",
+              });
+              setReviewDone(true);
+              onReviewCompleteRef.current?.(accumulatedOutput, 0);
+              return;
+            }
+
+            // Stream dropped again — loop continues
+          } catch (err) {
+            if (err instanceof DOMException && err.name === "AbortError") {
+              throw err;
+            }
+            console.error("[review-stream] Reconnect error:", err);
+            break;
+          }
+        }
+      }
+
+      // Reconnect exhausted or no commandId — fall back to poll
+      console.log(
+        "[review-stream] Stream ended without done event — falling back to poll"
+      );
+      setReviewOutput(accumulatedOutput);
+      await pollRunningReview(signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setReviewDone(true);
+        onReviewCompleteRef.current?.(accumulatedOutput, 0);
+        return;
+      }
+      console.error("Review error:", err);
+      toast.error("Failed to run review", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      setReviewDone(true);
+      onReviewCompleteRef.current?.(accumulatedOutput, 0);
+    } finally {
+      if (transientRetryAttempt === 0) {
+        setIsReviewing(false);
+        abortRef.current = null;
+      }
+    }
+  }
+
+  const handleTerminalPollStatus = (
+    data: { status: string; log?: string },
+    accumulatedOutput: string
+  ) => {
+    const finalOutput = data.log || accumulatedOutput;
+    const split = finalizeReviewOutput(finalOutput);
+    if (data.status === "completed") {
+      toast.success("Code review completed");
+      handlePostStreamActions(split);
+    }
+    if (data.status !== "completed" && !split.verdict && sessionIdRef.current) {
+      triggerVerdictExtraction(sessionIdRef.current);
+    }
+  };
+
+  const pollRunningReview = async (signal: AbortSignal) => {
+    const statusUrl = `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+    let pollCount = 0;
+    let lastKnownOutput = "";
+    console.log("[poll] Starting poll for running review");
+    while (!signal.aborted) {
+      try {
+        pollCount++;
+        const res = await fetch(statusUrl, { signal });
+        const data = await res.json();
+        console.log(
+          `[poll] #${pollCount}: status=${data.status}, log length=${data.log?.length ?? 0}, hasReview=${data.hasReview}`
+        );
+
+        if (data.log) {
+          setReviewOutput(data.log);
+          lastKnownOutput = data.log;
+        }
+
+        if (data.sessionId && !sessionIdRef.current) {
+          sessionIdRef.current = data.sessionId;
+        }
+
+        if (TERMINAL_STATUSES.has(data.status)) {
+          console.log(
+            `[poll] Terminal status: ${data.status}, log: ${data.log?.length ?? 0} chars`
+          );
+          handleTerminalPollStatus(data, lastKnownOutput);
+          return;
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          console.log("[poll] Aborted");
+          return;
+        }
+        console.log("[poll] Error:", err);
+      }
+
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2000);
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+    }
+  };
+
+  const handleStopReview = useCallback(async () => {
+    abortRef.current?.abort();
+    try {
+      const response = await fetch(
+        `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repo: repoPath, provider: config.provider }),
+        }
+      );
+      toast[response.ok ? "success" : "error"](
+        response.ok ? "Review stopped" : "Failed to stop review"
+      );
+    } catch {
+      toast.error("Failed to stop review");
+    }
+  }, [ticketId, repoPath, config.provider]);
+
+  // Start the review on mount (skip if restoring a previous result)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally one-shot mount effect; adding runReviewAttempt would restart streams
+  useEffect(() => {
+    if (initialOutput) {
+      return;
+    }
+    if (hasStartedRef.current) {
+      return; // StrictMode re-mount — stream is already active
+    }
+    hasStartedRef.current = true;
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    runReviewAttempt(controller.signal, 0).catch((error: unknown) => {
+      console.error("[review] Failed to start review", error);
+    });
+    // NOTE: no cleanup abort — the stream continues across StrictMode re-mounts.
+    // The Stop button calls handleStopReview which aborts via abortRef.
+  }, [initialOutput]);
+
+  const handleSubmitComment = useCallback(
+    async (index: number, finding: ReviewFinding) => {
+      if (duplicateIndices?.has(index) || prCommentDupIndices?.has(index)) {
+        return;
+      }
+      setSubmittingFindings((prev) => new Set(prev).add(index));
+
+      const filePath = resolveFindingPath(finding, commitSha, prFiles);
+      const body = buildCommentBody(finding, filePath);
+
+      try {
+        const response = await fetch("/api/gateway/git/pr/inline-comment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            repoPath,
+            prNumber,
+            body,
+            path: filePath,
+            line: filePath && finding.line ? finding.line : undefined,
+            commitSha: filePath ? commitSha : undefined,
+          }),
+        });
+
+        if (response.ok) {
+          setSubmittedFindings((prev) => new Set(prev).add(index));
+          markFindingCommented(ticketId, repoPath, config.provider, index);
+          toast.success("Comment posted");
+        } else {
+          const data = await response.json();
+          toast.error("Failed to post comment", { description: data.error });
+        }
+      } catch {
+        toast.error("Failed to post comment");
+      } finally {
+        setSubmittingFindings((prev) => {
+          const next = new Set(prev);
+          next.delete(index);
+          return next;
+        });
+      }
+    },
+    [
+      ticketId,
+      repoPath,
+      prNumber,
+      commitSha,
+      config.provider,
+      duplicateIndices,
+      prCommentDupIndices,
+      prFiles,
+    ]
+  );
+
+  const triggerExtraction = useCallback(
+    async (sid: string) => {
+      const key = `${config.provider}:${sid}`;
+      if (
+        completedExtractionKeysRef.current.has(key) ||
+        inFlightExtractionKeyRef.current === key
+      ) {
+        return;
+      }
+      inFlightExtractionKeyRef.current = key;
+      try {
+        console.log(
+          `[review-extract] Triggering extraction for ${config.provider} with session ${sid}`
+        );
+        const res = await fetch(
+          `/api/gateway/codex/review-extract/${encodeURIComponent(ticketId)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repoPath,
+              sessionId: sid,
+              provider: config.provider,
+              expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
+            }),
+          }
+        );
+        const data = await res.json();
+        if (Array.isArray(data.findings) && data.findings.length > 0) {
+          setStructuredFindings(data.findings);
+          console.log(
+            `[review-extract] Got ${data.findings.length} structured findings`
+          );
+          onStructuredFindingsRef.current?.(data.findings);
+          saveReviewFindings(
+            ticketId,
+            repoPath,
+            config.provider,
+            config.model,
+            data.findings
+          );
+        } else {
+          console.log(
+            "[review-extract] No structured findings returned",
+            data.error ?? ""
+          );
+        }
+        completedExtractionKeysRef.current.add(key);
+      } catch (err) {
+        console.warn("[review-extract] Extraction failed silently:", err);
+      } finally {
+        if (inFlightExtractionKeyRef.current === key) {
+          inFlightExtractionKeyRef.current = null;
+        }
+      }
+    },
+    [ticketId, repoPath, config.provider, config.model]
+  );
+
+  const triggerVerdictExtraction = useCallback(
+    async (sid: string) => {
+      try {
+        console.log(
+          `[review-verdict] Triggering verdict extraction with session ${sid}`
+        );
+        const res = await fetch(
+          `/api/gateway/codex/review-verdict/${encodeURIComponent(ticketId)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repoPath,
+              sessionId: sid,
+              provider: config.provider,
+              expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
+            }),
+          }
+        );
+        if (!res.ok) {
+          console.warn("[review-verdict] Server error:", res.status);
+          return;
+        }
+        const data = await res.json();
+        if (data.verdict) {
+          console.log(
+            `[review-verdict] Got verdict: ${data.verdict.verdict} — ${data.verdict.reason}`
+          );
+          setAsyncVerdict(data.verdict);
+        } else {
+          console.log("[review-verdict] No verdict returned", data.error ?? "");
+        }
+      } catch (err) {
+        console.warn("[review-verdict] Extraction failed silently:", err);
+      }
+    },
+    [ticketId, repoPath, config.provider]
+  );
+
+  const effectiveVerdict = asyncVerdict ?? reviewSplit?.verdict ?? null;
+  const hasDeclineVerdict = effectiveVerdict?.verdict === "decline";
+  const showFindings = !hasDeclineVerdict || (!declined && findingsRevealed);
+
+  const handleDecline = useCallback(async () => {
+    const reason = asyncVerdict?.reason ?? reviewSplit?.verdict?.reason;
+    if (!reason) {
+      return;
+    }
+    setIsSubmittingDecline(true);
+    try {
+      await markReviewDeclined(ticketId, repoPath, config.provider, reason);
+      await postDeclineComment(repoPath, prNumber, reason);
+      setDeclined(true);
+      setFindingsRevealed(false);
+      toast.success("Decline comment posted to PR");
+    } catch {
+      toast.error("Failed to post decline comment");
+    } finally {
+      setIsSubmittingDecline(false);
+    }
+  }, [
+    asyncVerdict?.reason,
+    reviewSplit?.verdict?.reason,
+    repoPath,
+    prNumber,
+    ticketId,
+    config.provider,
+  ]);
+
+  return {
+    reviewOutput,
+    isReviewing,
+    reviewDone,
+    reviewCommand,
+    reviewContextPercent,
+    effectiveVerdict,
+    hasDeclineVerdict,
+    showFindings,
+    declined,
+    findingsRevealed,
+    isSubmittingDecline,
+    submittedFindings,
+    submittingFindings,
+    reviewSplit,
+    reviewStartedAt: reviewStartedAtRef.current,
+    handleStopReview,
+    handleDecline,
+    handleSubmitComment,
+    setFindingsRevealed,
+  };
+}

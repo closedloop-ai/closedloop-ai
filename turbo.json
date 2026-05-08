@@ -1,0 +1,61 @@
+{
+  "$schema": "https://v2-9-6.turborepo.dev/schema.json",
+  "globalDependencies": ["**/.env.*local"],
+  "ui": "tui",
+  "envMode": "loose",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build", "test"],
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "**/generated/**",
+        "storybook-static/**"
+      ]
+    },
+    "@repo/database#build": {
+      "cache": false,
+      "dependsOn": ["^build"]
+    },
+    "@repo/mcp#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "@closedloop-ai/loops-api#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"]
+    },
+    "figma:typecheck": {
+      "dependsOn": ["^figma:typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^test"]
+    },
+    "api#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
+    "app#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
+    "analyze": {
+      "dependsOn": ["^analyze"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "translate": {
+      "dependsOn": ["^translate"],
+      "cache": false
+    },
+    "clean": {
+      "cache": false
+    },
+    "//#clean": {
+      "cache": false
+    }
+  }
+}

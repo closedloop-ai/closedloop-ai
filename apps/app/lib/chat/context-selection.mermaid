@@ -1,0 +1,78 @@
+%% Chat context selection
+%%
+%% Documents the per-screen chat context flow after the refactor. Each screen
+%% owns a thin wrapper that composes its context via a pure builder function
+%% in lib/chat/contexts/* and renders the shared ChatDrawerPanel. Adding a new
+%% screen is additive: write a new wrapper + a new builder; no shared-file
+%% edits required.
+flowchart TD
+  Start([User opens a chat on some screen]) --> Screen{Which screen?}
+
+  Screen -- "plan-editor<br/>prd-editor" --> DocumentDrawer["DocumentChatDrawer<br/>(components/chat/DocumentChatDrawer.tsx)<br/>props: documentId / slug / title / type"]
+  Screen -- "branch-view-container" --> BranchDrawer["BranchChatDrawer<br/>(build/[id]/components/branch-chat-drawer.tsx)<br/>props: data / contextSelection / showFilesystemNotice / worktreePath"]
+
+  %% ----- Document wrapper -----
+  subgraph DocumentPath [Document path]
+    DocumentDrawer --> DocumentHealth["useQuery(healthCheckOptions())<br/>mcpAvailability = claude.closedloopAvailable ?? null"]
+    DocumentHealth --> DocumentUrl["resolve url via globalThis.location.href<br/>(SSR-safe: empty string on server)"]
+    DocumentUrl --> DocumentBuilder["buildDocumentChatContext(doc, mcpAvailability)<br/>(lib/chat/contexts/document-context.ts)"]
+    DocumentBuilder --> DocumentBase["emit metadata: type, title, slug, url"]
+    DocumentBase --> DocumentMcp{mcpAvailability}
+    DocumentMcp -- "null (pending)" --> DocumentMcpInstr["append MCP_INSTRUCTIONS<br/>(optimistic)"]
+    DocumentMcp -- "closedloopAvailable = true" --> DocumentMcpInstr
+    DocumentMcp -- "closedloopAvailable = false" --> DocumentInline{inlineContent?}
+    DocumentInline -- "yes" --> DocumentInlineBody["append '## Document Content' + inlineContent"]
+    DocumentInline -- "no" --> DocumentMcpDown["append 'MCP server unavailable' note"]
+    DocumentMcpInstr --> DocumentResult[(context string)]
+    DocumentInlineBody --> DocumentResult
+    DocumentMcpDown --> DocumentResult
+    DocumentResult --> DocumentKey["chatKey = 'document:' + documentId<br/>cwd = undefined"]
+  end
+
+  %% ----- Branch wrapper -----
+  subgraph BranchPath [Branch path]
+    BranchDrawer --> BranchHealth["useQuery(healthCheckOptions())<br/>mcpAvailability = claude.closedloopAvailable ?? null"]
+    BranchHealth --> BranchBuilder["buildBranchChatContext(branch, mcpAvailability)<br/>(lib/chat/contexts/branch-context.ts)"]
+    BranchBuilder --> BranchBase["emit PR metadata: prTitle, prHtmlUrl, repoFullName, headBranch, baseBranch"]
+    BranchBase --> FeatureCheck{featureSlug or featureTitle?}
+    FeatureCheck -- "yes" --> FeatureSection["buildSection('Linked Feature', [...])"]
+    FeatureCheck -- "no" --> PlanCheck
+    FeatureSection --> PlanCheck{producedByPlanSlug or producedByPlanTitle?}
+    PlanCheck -- "yes" --> PlanSection["buildSection('Implementation Plan', [...])"]
+    PlanCheck -- "no" --> WorktreeCheck
+    PlanSection --> WorktreeCheck{worktreePath?}
+    WorktreeCheck -- "yes" --> WorktreeSection["buildSection('Working Directory', [...])"]
+    WorktreeCheck -- "no" --> BranchMcpCheck
+    WorktreeSection --> BranchMcpCheck{"featureSlug OR producedByPlanSlug<br/>AND mcpAvailability null or available?"}
+    BranchMcpCheck -- "yes" --> BranchMcpInstr["append MCP_INSTRUCTIONS"]
+    BranchMcpCheck -- "no" --> BranchResult[(context string)]
+    BranchMcpInstr --> BranchResult
+    BranchResult --> BranchKey["chatKey = 'branch:' + data.externalLinkId<br/>cwd = worktreePath ?? undefined"]
+    BranchDrawer -.-> BranchNotice{"showFilesystemNotice?"}
+    BranchNotice -- "yes" --> BranchNoticeYes["notice = 'No local checkout was found<br/>for this PR branch ...'"]
+    BranchNotice -- "no" --> BranchNoticeNo[(notice = null)]
+    BranchDrawer -.-> BranchSlot{contextSelection?}
+    BranchSlot -- "non-null" --> BranchSlotYes["contextSlot = &lt;PrCommentContextCard /&gt;"]
+    BranchSlot -- "null" --> BranchSlotNo[(contextSlot = null)]
+  end
+
+  %% ----- Shared drawer -----
+  DocumentKey --> Drawer["ChatDrawerPanel<br/>(components/chat/ChatDrawerPanel.tsx)<br/>owns useResizableWidth + useChatSession"]
+  BranchKey --> Drawer
+  BranchNoticeYes --> Drawer
+  BranchNoticeNo --> Drawer
+  BranchSlotYes --> Drawer
+  BranchSlotNo --> Drawer
+  Drawer --> Chat["useChatSession POSTs<br/>{ chatKey, userMessage, context, provider, cwd?, apiBaseUrl, apiAuthToken }<br/>to /api/gateway/chat"]
+
+  classDef decision fill:#fef3c7,stroke:#b45309,color:#1f2937
+  classDef documentbox fill:#fce7f3,stroke:#be185c,color:#1f2937
+  classDef branchbox fill:#dbeafe,stroke:#1e40af,color:#1f2937
+  classDef shared fill:#e0e7ff,stroke:#4338ca,color:#1f2937
+  classDef terminal fill:#bbf7d0,stroke:#166534,color:#1f2937
+
+  class Screen,DocumentMcp,DocumentInline,FeatureCheck,PlanCheck,WorktreeCheck,BranchMcpCheck,BranchNotice,BranchSlot decision
+  class DocumentDrawer,DocumentHealth,DocumentUrl,DocumentBuilder,DocumentBase,DocumentMcpInstr,DocumentInlineBody,DocumentMcpDown,DocumentKey documentbox
+  class BranchDrawer,BranchHealth,BranchBuilder,BranchBase,FeatureSection,PlanSection,WorktreeSection,BranchMcpInstr,BranchKey,BranchNoticeYes,BranchSlotYes branchbox
+  class Drawer,Chat shared
+  class Start,DocumentResult,BranchResult,BranchNoticeNo,BranchSlotNo terminal

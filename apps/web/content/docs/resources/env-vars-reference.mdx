@@ -1,0 +1,97 @@
+---
+title: Environment variables reference
+description: Every environment variable read by the desktop client and the Claude Code plugins.
+---
+
+This page lists every environment variable the desktop client and the plugins read, grouped by component.
+
+## Desktop client — API keys
+
+| Variable | Purpose |
+|---|---|
+| `CLOSEDLOOP_API_KEY` | Primary API key. Takes precedence over stored safeStorage key. |
+| `SYMPHONY_API_KEY` | Legacy fallback key if the above is unset and no stored key exists. |
+
+## Desktop client — gateway auth (dev only)
+
+Guarded by `!app.isPackaged`. These are unsafe in packaged builds and are enforced as dev-only.
+
+| Variable | Purpose |
+|---|---|
+| `CL_LOCAL_GATEWAY_DEBUG_AUTH=1` | Enable the "Mint Debug Token" UI button. |
+| `CL_LOCAL_GATEWAY_NO_AUTH=1` | Bypass all gateway auth. Dangerous. |
+| `CL_LOCAL_GATEWAY_PROD_ORIGINS_ONLY=1` | Strict origin whitelist, used when dev is pointed at a production relay. |
+
+## Desktop client — origins
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CL_RELAY_ORIGIN` | `https://relay.closedloop.ai` | Cloud relay origin. |
+| `CL_WEB_APP_ORIGIN` | `https://app.closedloop.ai` | Web app origin. |
+| `CL_AUTH_API_ORIGIN` | `https://api.closedloop.ai` | REST API origin. |
+| `CL_POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog host. |
+| `CL_POSTHOG_API_KEY` | unset | PostHog API key. Unset disables PostHog. |
+
+## Desktop client — symphony and worktree
+
+| Variable | Purpose |
+|---|---|
+| `SYMPHONY_GATEWAY_FALLBACK_ORIGIN` | Fallback proxy origin for unimplemented routes. |
+| `SYMPHONY_WORKTREE_PARENT_DIR` | Override worktree parent (default: sibling of repo). |
+| `CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE=1` | Bypass normal Symphony pipeline, run raw Claude. |
+| `CL_PLUGIN_VERSION` | Override `code@closedloop-ai` plugin version (semver, max 64 chars). |
+
+## Desktop client — tailer and watcher tuning
+
+| Variable | Purpose |
+|---|---|
+| `CLOSEDLOOP_TAILER_POLL_MS` | Output tailer poll interval. |
+| `CLOSEDLOOP_TAILER_THROTTLE_MS` | Tailer event throttle. |
+| `CLOSEDLOOP_WATCHER_POLL_MS` | Boot-recovery live-loop PID watcher interval (default 3000 ms). |
+
+## Desktop client — passed to children (informational)
+
+| Variable | Purpose |
+|---|---|
+| `CLOSEDLOOP_WORKDIR` | Working directory for run artifacts. |
+| `HOME`, `USER`, `SHELL`, `TERM`, `NODE_ENV` | Inherited into deploy children for shell sanity. |
+
+## Plugins — session environment
+
+Written to `{WORKDIR}/.closedloop-ai/config.env` by `setup-closedloop.sh`, injected via `subagent-start-hook.sh`.
+
+| Variable | Purpose |
+|---|---|
+| `CLOSEDLOOP_WORKDIR` | Absolute path to the work directory. |
+| `CLAUDE_PLUGIN_ROOT` | Absolute path to the plugin install dir. |
+| `CLOSEDLOOP_PRD_FILE` | PRD file path (auto-detected). |
+| `CLOSEDLOOP_PLAN_FILE` | Pre-supplied plan file path. |
+| `CLOSEDLOOP_MAX_ITERATIONS` | Loop iteration cap (default 10). |
+| `CLOSEDLOOP_AGENT_ID` | Current agent's unique ID. |
+| `CLOSEDLOOP_PROMPT_FILE` | Orchestrator prompt file (default `prompt.md`). |
+| `CLOSEDLOOP_RUN_ID` | `YYYYMMDD-HHMMSS-<hex>`. |
+| `CLOSEDLOOP_ITERATION` | Current iteration number. |
+| `CLOSEDLOOP_ACTIVE_GOAL` | Current goal (default `reduce-failures`). |
+| `CLOSEDLOOP_REPO_MAP` | Multi-repo mapping. |
+| `CLOSEDLOOP_ADD_DIRS` | Additional directories. |
+| `CLOSEDLOOP_ADD_DIR_NAMES` | Names for add dirs. |
+
+## Plugins — other
+
+| Variable | Purpose |
+|---|---|
+| `CLAUDE_BIN` | Claude executable path (set by closedloop-electron desktop). |
+| `CLAUDE_ORG_ID` | Organization ID for `/push-learnings` and `/pull-learnings`. |
+| `CLAUDE_WORKSPACE_REPOS` | Peer repo discovery. |
+| `CLOSEDLOOP_API_KEY` | Used by `upload-artifact` script mode. |
+| `NEXT_PUBLIC_MCP_SERVER_URL` | MCP server URL for `upload-artifact`. |
+| `ANTHROPIC_API_KEY` | For `count_tokens.py`. |
+| `GOAL_EVALUATOR_SCRIPT` | Custom goal evaluator script. |
+| `POST_LOOP_REVIEW_CYCLES` | Default 2 cycles of post-loop review. |
+
+## CI secrets
+
+| Variable | Purpose |
+|---|---|
+| `SLACK_GITHUB_REPO_WEBHOOK_URL` | Release notifications. |
+| `GITHUB_TOKEN` | Automatic in CI; needs `contents: write`. |

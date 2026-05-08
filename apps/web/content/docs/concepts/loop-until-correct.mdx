@@ -1,0 +1,49 @@
+---
+title: Loop until correct
+description: Why ClosedLoop.ai retries bounded phases with promises and validation instead of accepting one-shot outputs.
+---
+
+Most agent systems take a single output and hope it is correct. ClosedLoop.ai does not.
+
+Each phase in a loop is a **promise** (a specific exit condition) plus a **validation** (a deterministic check) plus a **budget** (a max iteration count).
+
+## How it works
+
+An agent starts a phase, does work, and emits a promise token at the end:
+
+```
+<promise>PLAN_VALIDATED</promise>
+```
+
+A `SubagentStop` hook (`loop-stop-hook.sh`) reads the state file, checks the promise token against the configured validation script, and either:
+
+- lets the agent exit successfully, or
+- blocks the exit with an error message, increments the iteration counter, and forces the agent to retry.
+
+## Configured loop agents
+
+The loop agents in `plugins/code/scripts/loop-agents.json`:
+
+| Agent | Max iterations | Promise |
+|---|---|---|
+| `code:plan-draft-writer` | 10 | `PLAN_VALIDATED` |
+| `code:plan-writer` | 5 | `PLAN_WRITER_COMPLETE` |
+| `code:plan-validator` | 5 | `PLAN_VALIDATION_COMPLETE` |
+| `code:implementation-subagent` | 4 | `IMPLEMENTATION_VERIFIED` |
+| `code:code-reviewer` | 5 | `CODE_REVIEW_PASSED` |
+
+If an agent cannot satisfy the promise within its budget, it returns control with an explicit failure the orchestrator can surface.
+
+## Why bounded retries beat one-shot
+
+Unbounded retries make agents spiral. Zero retries make agents flaky. A small, named budget lets the system be both reliable and fast:
+
+- Most agents converge in one or two iterations.
+- A deterministic gate means "almost right" still fails, so agents stop producing plausible-looking but broken output.
+- The budget caps the worst case so the loop cannot run forever.
+
+## Why this pairs with judgment
+
+Loop-until-correct gets the output to pass a deterministic gate. Judges grade whether the output actually matches the spec. You need both: the first catches structural errors, the second catches semantic drift.
+
+See [Judges](../mechanisms/judges) for how scoring works.

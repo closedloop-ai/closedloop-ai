@@ -1,0 +1,84 @@
+---
+title: Claude Code plugins
+description: The six plugins that ship the ClosedLoop.ai agent and orchestration layer.
+---
+
+ClosedLoop.ai distributes its agent and orchestration layer as six Claude Code plugins. Each plugin is a self-contained marketplace entry that installs under `~/.claude/plugins/cache/closedloop-ai/`.
+
+## The roster
+
+| Plugin | Purpose |
+|---|---|
+| [`bootstrap`](./plugins/bootstrap) | Meta-orchestrator that reads your codebase and generates a project-specific agent suite and critic config. |
+| [`code`](./plugins/code) | The hub plugin. Implements the full ClosedLoop autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation. |
+| [`code-review`](./plugins/code-review) | Multi-agent partitioned code review with deterministic hygiene checks, risk-based routing, caching, and GitHub PR inline comments. |
+| [`judges`](./plugins/judges) | LLM-as-judge framework with 21 judge agents that score plans, code, and PRDs. |
+| [`platform`](./plugins/platform) | Claude Code expert guidance, prompt engineering, mermaid diagrams, artifact upload, and skill scaffolding. |
+| [`self-learning`](./plugins/self-learning) | Pattern capture and organizational knowledge sharing. Stores patterns in TOON format with deterministic success rates. |
+
+## How they fit together
+
+Plugins have implicit cross-dependencies:
+
+- `code` depends on `judges` (via the `eval-cache` and `run-judges` skills).
+- `code` depends on `self-learning` (via `learning-quality` skill and the 7 Python pipeline scripts called from `run-loop.sh`).
+- `code-review` depends on `code` (uses `code:code-review-worker`).
+- `code-review` depends on `judges` (reuses `validate_judge_report` and `JUDGE_REGISTRY`).
+- `bootstrap` depends on `code` (uses `code:find-plugin-file`).
+
+The `docs/dependencies.md` file in the plugins repo has the full graph.
+
+## Slash commands
+
+Commands are namespaced by plugin (`/<plugin>:<command>`). The full reference is at [Commands reference](../resources/commands-reference). The most-used commands:
+
+- `/code:code` — start a ClosedLoop coding session against a PRD or plan.
+- `/code:amend-plan` — interactively amend a running plan.
+- `/code:cancel-code` — stop a running loop.
+- `/code:plan-with-codex` — run a Claude-versus-Codex debate to refine a plan.
+- `/code-review:start` — run multi-agent partitioned code review.
+- `/self-learning:process-learnings` — classify and merge pending learnings.
+- `/self-learning:push-learnings`, `/pull-learnings` — sync org-level patterns.
+- `/bootstrap:start` — generate a project-specific agent suite.
+
+## Agents
+
+The `code` plugin ships 23 agents (planning, implementation, cross-repo, support). The `judges` plugin ships 21 judge agents plus a context manager. The `bootstrap` plugin ships 8 agents for the discovery and generation pipeline.
+
+Agents are Markdown files with YAML frontmatter declaring `name`, `description`, `model`, `tools`, and `skills`. Model selection follows a cost/signal convention:
+
+- **Opus** for creative or structural work (plan drafting, high-signal judges).
+- **Sonnet** for implementation and validation.
+- **Haiku** for lightweight coordination and formatting.
+
+## Skills
+
+Skills are deterministic or semi-deterministic playbooks invoked as `plugin:skill-name`. Examples:
+
+- `code:plan-validate` — Python plan validator (VALID / FORMAT_ISSUES / EMPTY_FILE).
+- `code:critic-cache`, `code:build-status-cache`, `code:cross-repo-cache` — cache gates.
+- `code:closedloop-env`, `code:find-plugin-file` — environment helpers.
+- `code:iterative-retrieval` — 4-phase dispatch/evaluate/refine/loop retrieval protocol.
+- `code:prd-creator` — PRD scaffolding with ID conventions (US-###, AC-###.#, Q-###).
+- `judges:run-judges`, `judges:artifact-type-tailored-context`, `judges:eval-cache`.
+- `self-learning:toon-format`, `self-learning:learning-quality`.
+- `platform:claude-code-expert`, `platform:context-engineering`, `platform:mermaid-visualizer`, `platform:upload-artifact`, `platform:claude-creator`.
+
+## Hooks
+
+The `code` plugin registers lifecycle hooks in `plugins/code/hooks/hooks.json`:
+
+| Event | Script | Purpose |
+|---|---|---|
+| `SessionStart` | `session-start-hook.sh` | Create PID → session mapping. |
+| `SessionEnd` | `session-end-hook.sh` | Clean stale session state. |
+| `SubagentStart` | `subagent-start-hook.sh` | Set up loop state; inject up to 15 relevant org patterns; inject env vars. |
+| `SubagentStop` (order 1) | `loop-stop-hook.sh` | Validate loop agent promise tokens; force retries up to per-agent budget. |
+| `SubagentStop` (order 2) | `subagent-stop-hook.sh` | Enforce learning capture; update `outcomes.log` and `perf.jsonl`. |
+| `PreToolUse` | `pretooluse-hook.sh` | Inject tool-specific patterns (Bash, Write, Edit). |
+
+## Versioning
+
+Each plugin has its own version in its `.claude-plugin/plugin.json` manifest. The `code@closedloop-ai` plugin version is reported in `desktop.hello.pluginVersion`. Override it for tests with `CL_PLUGIN_VERSION` (semver, max 64 characters).
+
+Every plugin change must update `CHANGELOG.md` (enforced by the repo's pre-push hook when `git config core.hooksPath .githooks` is active).

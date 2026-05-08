@@ -1,0 +1,84 @@
+---
+title: Code review
+description: How to run multi-agent code review locally and in CI, including GitHub PR integration.
+---
+
+ClosedLoop.ai's `/code-review:start` runs multi-agent, partitioned code review with deterministic hygiene, risk-based routing, and caching. It works on the current branch, on staged changes, on specific files, or on a GitHub PR.
+
+## Local branch review
+
+```bash
+claude /code-review:start
+```
+
+Reviews the current branch against main. Results land in `.closedloop-ai/code-review/cr-<random>/`.
+
+## Staged review
+
+```bash
+claude /code-review:start staged
+```
+
+Reviews only what is currently staged. Useful before committing.
+
+## Specific files
+
+```bash
+claude /code-review:start path/to/file1.ts path/to/file2.ts
+```
+
+## PR review
+
+```bash
+claude /code-review:start 123
+```
+
+Reviews PR #123. With `--github`, posts inline comments and a summary comment via `gh` and resolves outdated threads.
+
+## Flags
+
+- `--github` — CI handoff mode; posts to the PR.
+- `--hygiene-only` — skip LLM review, run only deterministic checks.
+- `--base <ref>` — override the base ref.
+- `--since-last-review` — incremental review since the last cached review hash.
+- `--full-review` — ignore the incremental cache.
+
+## What happens
+
+1. **Hygiene** — deterministic checks run first (file size, trailing whitespace, TODO density, etc.).
+2. **Partitioning** — the diff is split into partitions.
+3. **Routing** — each partition is routed to a model based on risk signals.
+4. **Parallel review** — `code-review-worker` subagents run concurrently.
+5. **Collection** — findings aggregate into `code-review-findings.json`.
+6. **Validation** — findings pass a Pydantic schema check.
+7. **Summary** — `code-review-summary.md` is written.
+8. **Verdict** — `verdict.json` reports `approve`, `needs_attention`, or `changes_requested`.
+
+## GitHub integration
+
+With `--github`:
+
+- Inline comments post at the correct line and file.
+- Outdated review threads are resolved automatically.
+- A summary comment lands on the PR.
+- Verdict is surfaced so CI can gate merges.
+
+## Caching
+
+`code-review` caches results by diff hash. Re-running on the same diff is near-instant. `--since-last-review` supports incremental review on long-lived branches.
+
+## CI pattern
+
+```yaml
+# github/workflows/code-review.yml (sketch)
+- run: claude /code-review:start ${{ github.event.pull_request.number }} --github
+```
+
+Couple this with ClosedLoop.ai's `judges` reports on the plan and code, and you have a full grading pipeline for every PR.
+
+## When to run
+
+- Locally, before committing (`staged` or default branch review).
+- In CI, on every PR (`<pr-number> --github`).
+- Incrementally on large branches, to review only the new delta.
+- In parallel with the `code` plugin's built-in `code-reviewer` agent — they complement each other; the built-in reviewer gates implementation phases, while `/code-review:start` is for PR-level triage.

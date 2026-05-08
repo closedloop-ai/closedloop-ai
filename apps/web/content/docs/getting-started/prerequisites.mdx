@@ -1,0 +1,77 @@
+---
+title: Prerequisites
+description: The exact tools, versions, and system dependencies you need before installing ClosedLoop.ai.
+---
+
+ClosedLoop.ai relies on a specific toolchain so agents can execute reliably. Install everything below before you install the plugins or the desktop client.
+
+## Required tools
+
+| Tool | Minimum version | Used by |
+|---|---|---|
+| Claude Code CLI | current stable | the six ClosedLoop plugins and every loop |
+| Python | 3.11+ (3.13 recommended) | plugin tooling (self-learning, code-review, judges) |
+| Node.js | 22+ | desktop client build and runtime |
+| pnpm | 9.15+ | desktop client workspace |
+| `just` | current | desktop client command runner |
+| `jq` | current | plugin installers and shell scripts |
+| `git` | 2.30+ | plan/critic/judge workflows and worktrees |
+| `gh` CLI | current | PR automation (creation, comments, reviews) |
+| `bash` | 3.2+ | plugin shell scripts |
+
+## Optional tools
+
+| Tool | Purpose |
+|---|---|
+| Codex CLI | plan debate loops, `plan-with-codex`, and Codex code review |
+| Playwright | visual QA phase (the visual-qa subagent uses headless browsers) |
+| `tree-sitter` Python package | richer code map extraction in the `code` plugin |
+
+## Operating system support
+
+| OS | Desktop client | Plugins |
+|---|---|---|
+| macOS (Apple Silicon and Intel) | packaged DMG, primary target | supported |
+| Linux | runs in dev mode via `just desktop-dev`; not packaged | supported |
+| Windows | not supported for the desktop client | plugins work inside WSL or supported terminals |
+
+## Accounts and credentials
+
+- A ClosedLoop.ai account with access to at least one team and project.
+- A ClosedLoop API key. The desktop client reads it from `CLOSEDLOOP_API_KEY` or from encrypted local storage. `SYMPHONY_API_KEY` is accepted as a legacy fallback.
+- A GitHub account authorized for any repositories you plan to connect, and `gh auth login` completed.
+
+## Installing the base tools
+
+### macOS
+
+```bash
+# Claude Code CLI
+brew install anthropic/claude/claude
+
+# Language toolchains
+brew install node@22 python@3.13 pnpm just jq git gh
+
+# Enable pnpm via corepack
+corepack enable && corepack prepare pnpm@9.15.0 --activate
+```
+
+### Linux (Debian or Ubuntu)
+
+```bash
+# Language toolchains
+sudo apt-get update
+sudo apt-get install -y python3.13 python3-pip jq git
+
+# Node via nvm (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+nvm install 22
+corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+# just
+cargo install just
+
+# Claude Code CLI and gh via their official installers
+```
+
+After you finish this page, continue to [Install the plugins](./install-plugins).

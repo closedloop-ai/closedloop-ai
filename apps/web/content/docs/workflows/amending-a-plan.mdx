@@ -1,0 +1,62 @@
+---
+title: Amending a Plan
+description: "Use /code:amend-plan to refine an in-flight plan without losing the work that came before it."
+---
+
+Plans drift. New information appears mid-loop; reviewers raise concerns; the implementation reveals assumptions that were wrong. ClosedLoop's amendment flow handles this without starting the plan over.
+
+## When to amend
+
+- A teammate leaves a review comment that changes the scope.
+- An open question got answered in a design review.
+- The first implementation pass revealed a missing task.
+- You want to cut scope and ship sooner.
+
+Amendments are always applied to the plan artifact, not to a new chat session. The plan's `amendments` array records what changed and why.
+
+## The command
+
+```
+/code:amend-plan --workdir [path] --message "<text>" [--state-file [path]]
+```
+
+The amend handler recognizes four intent types:
+
+- **Directive** – "add a task to migrate the old sessions table"
+- **Question** – "what happens if the migration fails halfway?"
+- **Confirmation** – "yes, remove task 3"
+- **Unstructured input** – anything else, delegated to `amend-extractor` for classification
+
+Amendment state is persisted in `amend-session.json` so a multi-turn amendment can survive GitHub workflow runs and CI restarts.
+
+## What actually happens
+
+1. The handler loads the current plan and the conversation history.
+2. The `amend-extractor` subagent classifies the message.
+3. The `plan-editing-conventions` skill defines how tasks, acceptance criteria, and open questions are mutated.
+4. The plan writer applies the change via MERGE mode and re-validates.
+5. The plan's `amendments` array gains a new entry with the message, the classification, and the resulting delta.
+
+## From the web app
+
+The web app's plan editor calls the same handler. Every amendment you make in the UI shows up in the plan's `amendments` array identically.
+
+## Best practices
+
+- One message, one intent. Long amendments get classified less reliably.
+- Reference tasks by their ID from the plan rather than paraphrasing.
+- Use `/code:amend-plan` iteratively during the plan review checkpoint instead of regenerating the plan from scratch.
+
+## Related reading
+
+<Cards>
+  <Card title="PRD to plan to execution" href="./planning-with-codex">
+    Where amendment fits in the end-to-end workflow.
+  </Card>
+  <Card title="Artifacts" href="../mechanisms/artifacts">
+    The plan schema and its `amendments` field.
+  </Card>
+  <Card title="Judges" href="../mechanisms/judges">
+    How amended plans are re-scored.
+  </Card>
+</Cards>

@@ -1,0 +1,46 @@
+---
+title: ClosedLoop.ai vs chat-based workflows
+description: A comparison for teams deciding between a control plane and loosely structured chat execution.
+---
+
+## Chat-based workflows
+
+- fast to start
+- useful for ideation
+- weak on coordination and artifact history
+- no shared review trail
+- no pattern capture
+- inconsistent across team members
+
+Chat wins when the task is exploratory and single-user. It loses when coordination, audit, or repeatability matter.
+
+## ClosedLoop.ai
+
+- slower to set up initially
+- stronger for repeatable execution
+- keeps artifacts, loops, and review connected
+- durable PRDs, plans, critics, judges, learnings
+- sandbox and approval policy on every operation
+- self-learning that compounds across runs and teams
+
+## Shared review trail
+
+| Dimension | Chat | ClosedLoop.ai |
+|---|---|---|
+| Durable artifact | no | yes (`plan.json`, `plan.md`) |
+| Critics | no | parallel critics with cache |
+| Judges | no | 21 LLM-as-judge agents |
+| Approvals | no | per-operation risk tier + always-allow rules |
+| Sandbox | implicit | explicit allowlist + hard-denies |
+| Learning | per-user | per-team via `org-patterns.toon` |
+| Cross-repo | manual | native discovery + peer PRDs |
+| Observability | none | PostHog + Datadog telemetry streams |
+| Reproducibility | low | every run archived |
+
+## When to use each
+
+Use chat when the task is exploratory, single-user, and disposable.
+
+Use ClosedLoop.ai when the work needs to move through a team reliably.
+
+Teams usually use both: chat for ideation, ClosedLoop.ai for shipped work. The boundary moves over time as the team gets comfortable running more work through the loop.

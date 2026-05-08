@@ -1,0 +1,72 @@
+---
+title: Hooks and Runtime
+description: Five Claude Code hooks that inject context, track agent state, and enforce loop promises.
+---
+
+The `code` plugin registers five hooks in `hooks/hooks.json`. They are the machinery that makes each iteration of the loop stateful even though each `claude -p` invocation is otherwise stateless.
+
+## The five hooks
+
+| Event | Script | Role |
+| --- | --- | --- |
+| `SessionStart` | `session-start-hook.sh` | Write a PID-to-session-ID map for the current Claude session so later hooks can correlate. |
+| `SessionEnd` | `session-end-hook.sh` | Clean stale mappings, expire PID files older than 24 hours, remove orphaned `.agent-types/` entries. |
+| `SubagentStart` | `subagent-start-hook.sh` | On every subagent launch, bootstrap loop-agent state, inject up to 15 relevant organization patterns, inject a `<closedloop-environment>` block. |
+| `PreToolUse` (matcher `Read|Bash|Write|Edit`) | `pretooluse-hook.sh` | Inject tool-specific patterns (up to 10), auto-allow `.closedloop-ai/` paths, and enforce a credential-theft blocklist. |
+| `SubagentStop` | `loop-stop-hook.sh` → `subagent-stop-hook.sh` | Check the completion promise, run the validator, gate exit or block with feedback; then enforce learning acknowledgments and log outcomes. |
+
+## What hooks inject
+
+### Organization learnings
+
+`subagent-start-hook.sh` reads `~/.closedloop-ai/learnings/org-patterns.toon`, filters by agent name, sorts by category priority (`mistake > convention > pattern > insight`) and confidence, and injects up to 15 as an `<organization-learnings>` block. This is how the team's accumulated knowledge reaches every subagent without bloating the prompt.
+
+### Environment context
+
+A `<closedloop-environment>` block is always injected with:
+
+- `CLOSEDLOOP_WORKDIR`
+- `CLAUDE_PLUGIN_ROOT`
+- `CLOSEDLOOP_REPO_MAP`, `CLOSEDLOOP_ADD_DIRS`, `CLOSEDLOOP_ADD_DIR_NAMES` (multi-repo)
+- `CLOSEDLOOP_SELF_LEARNING` flag
+- `CLOSEDLOOP_START_SHA`
+
+This means subagents can always resolve the workdir and the peer repo map without reading project files.
+
+### Tool-specific learnings
+
+`pretooluse-hook.sh` fires before `Read`, `Bash`, `Write`, or `Edit`. It filters learnings by tool tags (for example, `build/test` tags before `Bash`; language-specific conventions before `Write` or `Edit`) and injects up to 10.
+
+## Loop-agent exit enforcement
+
+`loop-stop-hook.sh` is the enforcement layer for loop agents:
+
+1. Read the subagent's state and the expected completion promise.
+2. Scan the subagent's final output for the promise.
+3. If the validator script succeeds, allow exit.
+4. Otherwise, increment the iteration counter and re-launch the subagent with blocking feedback describing what failed.
+
+This is what makes the `plan-writer` reliably produce a validated plan and the `implementation-subagent` reliably reach `IMPLEMENTATION_VERIFIED`.
+
+## Outcome logging
+
+`subagent-stop-hook.sh` appends an entry to `.learnings/outcomes.log` for every subagent stop, capturing the agent, the iteration, the tokens used, and the terminal result. These outcomes feed the self-learning success-rate computation.
+
+## Security behavior
+
+- `pretooluse-hook.sh` enforces a credential-theft blocklist that prevents subagents from running specific dangerous commands against secret material.
+- `.closedloop-ai/` paths are always auto-allowed so state updates never surface as approval prompts.
+
+## Related reading
+
+<Cards>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    What the hooks inject context into.
+  </Card>
+  <Card title="Self-learning" href="./self-learning">
+    The pattern store that the hooks read from.
+  </Card>
+  <Card title="Loops" href="./loops">
+    Where the `SubagentStop` enforcement fits in the 18-phase flow.
+  </Card>
+</Cards>

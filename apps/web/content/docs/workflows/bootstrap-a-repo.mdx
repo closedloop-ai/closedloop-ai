@@ -1,0 +1,74 @@
+---
+title: Bootstrap a repo
+description: Generate a project-specific suite of expert agents and critic configuration from an existing codebase.
+---
+
+Bootstrap is how you turn a new repository into a first-class ClosedLoop.ai project. The `bootstrap` plugin reads your code and docs, identifies domains and languages, and generates agent prompts that know your code.
+
+## Prerequisites
+
+- the six ClosedLoop plugins installed
+- a project with at least a `README.md`; `CLAUDE.md` and `ARCHITECTURE.md` help a lot
+- a sandbox that includes this repo
+
+## Run it
+
+```bash
+claude /bootstrap:start
+```
+
+Or:
+
+```bash
+claude /bootstrap:agent-bootstrap --depth medium --strategy backup
+```
+
+## Useful flags
+
+- `--depth quick|medium|deep` — how deeply to explore.
+- `--focus <area>` — focus on one domain.
+- `--dry-run` — plan without writing.
+- `--update` — regenerate only agents whose project-context hash has changed.
+- `--strategy backup|skip|overwrite|interactive` — conflict strategy (default `backup`).
+- `--add-domain <domain>` — add a specific domain.
+
+## What it does
+
+Nine phases:
+
+1. Ingest `CLAUDE.md`, `README`, `ARCHITECTURE.md`, and manifests → `discovery/project-context.md`.
+2. Detect languages by file count → `discovery/languages.json` (parallel with 3).
+3. Identify domains → `discovery/domains.json` (parallel with 2).
+4. Map domains and languages to candidate agents (always adds `test-strategist` and `security-privacy`) → `synthesis/expert-agents.json`.
+5. Decompose complex agents into specialists; emit `critic-gates.json` → `synthesis/decomposed-agents.json`.
+6. Pre-generation validation → `synthesis/generation-validation.json`.
+7. Generate agents (fan-out, max 5 concurrent) → `.claude/agents/<name>.md` and `.closedloop-ai/bootstrap-metadata.json`.
+8. Per-file validation → `synthesis/agent-validation.json`.
+9. Final validation → `validation-report.json` and `bootstrap-report.md`.
+
+## What you get
+
+- A set of `.claude/agents/*.md` tailored to your codebase, each with domain-appropriate colors, descriptions, and skill wiring.
+- `.closedloop-ai/settings/critic-gates.json` that the `code` plugin uses to pick critics per task type.
+- A persistent `.closedloop-ai/bootstrap-metadata.json` with SHA-256 hashes so `--update` can detect changes.
+
+## When to re-run
+
+- When the project's architecture changes materially.
+- When you add a new domain (`--add-domain`).
+- When you want to refresh agents against new conventions (`--update`).
+- On demand with `--dry-run` to compare what the generator would produce to the current agents.
+
+## Output location
+
+```
+.claude/agents/<agent-name>.md
+.closedloop-ai/bootstrap-metadata.json
+.closedloop-ai/settings/critic-gates.json
+.closedloop-ai/bootstrap/<timestamp>/discovery/
+.closedloop-ai/bootstrap/<timestamp>/synthesis/
+.closedloop-ai/bootstrap/<timestamp>/validation-report.json
+.closedloop-ai/bootstrap/<timestamp>/bootstrap-report.md
+```
+
+After bootstrap, run your first loop with `/code:code` to validate the agent suite against a real task.

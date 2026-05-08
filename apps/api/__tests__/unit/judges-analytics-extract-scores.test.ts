@@ -1,0 +1,342 @@
+/**
+ * Unit tests for aggregateJudgeScoreRows -- the pure aggregation function that
+ * converts JudgeScore rows into a nested Map keyed by
+ * ArtifactType -> aggregationKey -> { scores, documentIds, promptName, metricName }.
+ *
+ * Uses scenario-registry pattern with describe.each for parametrized execution.
+ */
+import { DocumentType } from "@repo/api/src/types/document";
+import { vi } from "vitest";
+
+vi.mock("@repo/database", async () => {
+  const { createDatabaseMock } = await import("../fixtures/database-mock");
+  return createDatabaseMock();
+});
+
+import {
+  aggregateJudgeScoreRows,
+  type JudgeScoreInput,
+} from "@/app/judges-analytics/service";
+import {
+  isCanonicalJudgePromptName,
+  normalizeJudgeName,
+} from "@/lib/judge-name-utils";
+
+// ---------------------------------------------------------------------------
+// Factory helpers
+// ---------------------------------------------------------------------------
+
+/** Builds a JudgeScoreInput ready for aggregateJudgeScoreRows. */
+function buildJudgeScoreInput(
+  documentId: string,
+  type: DocumentType,
+  caseId: string,
+  score: number,
+  metricName?: string,
+  promptId?: string | null
+): JudgeScoreInput {
+  return {
+    caseId,
+    metricName: metricName ?? caseId,
+    promptId: promptId ?? null,
+    score,
+    evaluation: {
+      documentId,
+      entityId: documentId,
+      documentType: type,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Result assertion helpers
+// ---------------------------------------------------------------------------
+
+type FlatResult = {
+  type: DocumentType;
+  judgeName: string;
+  scores: number[];
+  documentIds: string[];
+  promptName: string;
+  metricName: string;
+};
+
+/**
+ * Converts the nested Map returned by aggregateJudgeScoreRows into a flat, sorted
+ * array so deep equality assertions are order-insensitive and readable.
+ */
+function flattenResults(
+  map: Map<
+    DocumentType,
+    Map<
+      string,
+      {
+        scores: number[];
+        documentIds: Set<string>;
+        promptName: string;
+        metricName: string;
+      }
+    >
+  >
+): FlatResult[] {
+  const flat: FlatResult[] = [];
+  for (const [type, judgeMap] of map) {
+    for (const [judgeName, data] of judgeMap) {
+      flat.push({
+        type,
+        judgeName,
+        scores: [...data.scores],
+        documentIds: [...data.documentIds].sort(),
+        promptName: data.promptName,
+        metricName: data.metricName,
+      });
+    }
+  }
+  return flat.sort((a, b) =>
+    a.type === b.type
+      ? a.judgeName.localeCompare(b.judgeName)
+      : a.type.localeCompare(b.type)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario registry
+// ---------------------------------------------------------------------------
+
+type ScenarioConfig = {
+  name: string;
+  description: string;
+  judgeScores: JudgeScoreInput[];
+  expected: FlatResult[];
+};
+
+const SCENARIO_REGISTRY: ScenarioConfig[] = [
+  // 1. Base case
+  {
+    name: "empty_judge_scores",
+    description: "Returns an empty Map when given no judge score rows",
+    judgeScores: [],
+    expected: [],
+  },
+
+  // 2. Happy path -- single row, single judge
+  {
+    name: "single_row_single_judge",
+    description: "One JudgeScore row produces a single Map entry",
+    judgeScores: [
+      buildJudgeScoreInput("a1", DocumentType.Prd, "judge-A", 0.85),
+    ],
+    expected: [
+      {
+        type: DocumentType.Prd,
+        judgeName: "judge-A",
+        scores: [0.85],
+        documentIds: ["a1"],
+        promptName: "judge_a",
+        metricName: "judge-A",
+      },
+    ],
+  },
+
+  // 3. Multiple rows -- same type, same judge
+  {
+    name: "multiple_rows_same_type_same_judge",
+    description:
+      "Scores accumulate and artifact IDs are de-duplicated within the same judge",
+    judgeScores: [
+      buildJudgeScoreInput(
+        "a1",
+        DocumentType.ImplementationPlan,
+        "judge-B",
+        0.7
+      ),
+      buildJudgeScoreInput(
+        "a2",
+        DocumentType.ImplementationPlan,
+        "judge-B",
+        0.9
+      ),
+      // Duplicate artifact ID -- should NOT duplicate in documentIds set
+      buildJudgeScoreInput(
+        "a1",
+        DocumentType.ImplementationPlan,
+        "judge-B",
+        0.6
+      ),
+    ],
+    expected: [
+      {
+        type: DocumentType.ImplementationPlan,
+        judgeName: "judge-B",
+        scores: [0.7, 0.9, 0.6],
+        documentIds: ["a1", "a2"],
+        promptName: "judge_b",
+        metricName: "judge-B",
+      },
+    ],
+  },
+
+  // 4. Multiple types and judges
+  {
+    name: "multiple_types_and_judges",
+    description:
+      "Rows spanning different types and judges produce correctly partitioned Map entries",
+    judgeScores: [
+      buildJudgeScoreInput("a1", DocumentType.Prd, "judge-A", 0.8),
+      buildJudgeScoreInput("a1", DocumentType.Prd, "judge-B", 0.75),
+      buildJudgeScoreInput(
+        "a2",
+        DocumentType.ImplementationPlan,
+        "judge-A",
+        0.9
+      ),
+    ],
+    expected: [
+      {
+        type: DocumentType.ImplementationPlan,
+        judgeName: "judge-A",
+        scores: [0.9],
+        documentIds: ["a2"],
+        promptName: "judge_a",
+        metricName: "judge-A",
+      },
+      {
+        type: DocumentType.Prd,
+        judgeName: "judge-A",
+        scores: [0.8],
+        documentIds: ["a1"],
+        promptName: "judge_a",
+        metricName: "judge-A",
+      },
+      {
+        type: DocumentType.Prd,
+        judgeName: "judge-B",
+        scores: [0.75],
+        documentIds: ["a1"],
+        promptName: "judge_b",
+        metricName: "judge-B",
+      },
+    ],
+  },
+
+  // 5. Production-style naming (case IDs as-is)
+  {
+    name: "realistic_production_naming",
+    description:
+      "Production-style case IDs (dry-judge, solid-isp-dip-judge) are used as-is for judge names",
+    judgeScores: [
+      buildJudgeScoreInput("a1", DocumentType.Prd, "dry-judge", 0.92),
+      buildJudgeScoreInput("a1", DocumentType.Prd, "solid-isp-dip-judge", 0.87),
+    ],
+    expected: [
+      {
+        type: DocumentType.Prd,
+        judgeName: "dry-judge",
+        scores: [0.92],
+        documentIds: ["a1"],
+        promptName: "dry",
+        metricName: "dry-judge",
+      },
+      {
+        type: DocumentType.Prd,
+        judgeName: "solid-isp-dip-judge",
+        scores: [0.87],
+        documentIds: ["a1"],
+        promptName: "solid_isp_dip",
+        metricName: "solid-isp-dip-judge",
+      },
+    ],
+  },
+
+  // 6. Same judge, multiple artifacts
+  {
+    name: "same_judge_multiple_artifacts",
+    description:
+      "Multiple artifacts with the same judge accumulate correctly with unique artifact IDs",
+    judgeScores: [
+      buildJudgeScoreInput(
+        "a1",
+        DocumentType.ImplementationPlan,
+        "clarity-judge",
+        0.8
+      ),
+      buildJudgeScoreInput(
+        "a2",
+        DocumentType.ImplementationPlan,
+        "clarity-judge",
+        0.9
+      ),
+      buildJudgeScoreInput(
+        "a3",
+        DocumentType.ImplementationPlan,
+        "clarity-judge",
+        0.7
+      ),
+    ],
+    expected: [
+      {
+        type: DocumentType.ImplementationPlan,
+        judgeName: "clarity-judge",
+        scores: [0.8, 0.9, 0.7],
+        documentIds: ["a1", "a2", "a3"],
+        promptName: "clarity",
+        metricName: "clarity-judge",
+      },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Parametrized test
+// ---------------------------------------------------------------------------
+
+describe("aggregateJudgeScoreRows", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe.each(SCENARIO_REGISTRY)("$name", (scenario) => {
+    it(scenario.description, () => {
+      const result = aggregateJudgeScoreRows(scenario.judgeScores);
+      const flat = flattenResults(result);
+      expect(flat).toEqual(scenario.expected);
+    });
+  });
+});
+
+describe("normalizeJudgeName", () => {
+  const NORMALIZATION_TEST_CASES = {
+    "hyphen-suffix": ["clarity-judge", "clarity"],
+    "underscore-judge-suffix": ["brevity_judge", "brevity"],
+    "uppercase-with-suffix": ["Clarity-Judge", "clarity"],
+    "score-suffix": ["clarity_score", "clarity"],
+    "hyphen-score-suffix": ["clarity-score", "clarity"],
+    "multi-word-hyphenated": ["dry-judge", "dry"],
+    "complex-hyphenated": ["solid-isp-dip-judge", "solid_isp_dip"],
+    "no-suffix": ["clarity", "clarity"],
+  } as const satisfies Record<string, readonly [string, string]>;
+
+  it.each(
+    Object.entries(NORMALIZATION_TEST_CASES)
+  )("%s: normalizeJudgeName(%p) → %p", (_, [input, expected]) => {
+    expect(normalizeJudgeName(input)).toBe(expected);
+  });
+});
+
+describe("isCanonicalJudgePromptName", () => {
+  const CANONICALITY_CASES = {
+    valid_simple: ["clarity", true],
+    valid_with_underscore: ["solid_isp_dip", true],
+    valid_with_number: ["judge_v2", true],
+    invalid_hyphen: ["clarity-judge", false],
+    invalid_uppercase: ["Clarity", false],
+    invalid_space: ["clarity judge", false],
+    invalid_empty: ["", false],
+  } as const satisfies Record<string, readonly [string, boolean]>;
+
+  it.each(
+    Object.entries(CANONICALITY_CASES)
+  )("%s: isCanonicalJudgePromptName(%p) → %p", (_, [input, expected]) => {
+    expect(isCanonicalJudgePromptName(input)).toBe(expected);
+  });
+});

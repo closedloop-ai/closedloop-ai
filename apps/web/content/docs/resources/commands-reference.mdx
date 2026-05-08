@@ -1,0 +1,133 @@
+---
+title: Commands reference
+description: Every slash command exposed by the ClosedLoop.ai Claude Code plugins.
+---
+
+Commands are namespaced by plugin (`/<plugin>:<command>`).
+
+## `/bootstrap:start`
+
+Also `/bootstrap:agent-bootstrap`. Generate a project-specific suite of expert agents from the current repo.
+
+Flags:
+
+- `--target-command <name>`
+- `--depth quick|medium|deep`
+- `--focus <area>`
+- `--output-dir <path>`
+- `--dry-run`
+- `--interactive`
+- `--update`
+- `--minimal` / `--enhance`
+- `--add-domain <domain>`
+- `--strategy backup|skip|overwrite|interactive`
+
+See [Bootstrap a repo](../workflows/bootstrap-a-repo).
+
+## `/code:code`
+
+Begin a ClosedLoop coding session against a PRD or plan.
+
+Form:
+
+```bash
+claude /code:code [working-directory] [--prompt <name>] [--prd <file>] [--plan <file>]
+```
+
+See [PRD to plan to execution](../workflows/planning-with-codex).
+
+## `/code:amend-plan`
+
+Interactively amend a running plan. Classifies your input as directive, question, confirmation, or unstructured.
+
+Form:
+
+```bash
+claude /code:amend-plan --workdir <path> --message "<text>" [--state-file <path>]
+```
+
+## `/code:cancel-code`
+
+Stop a running loop by removing its state file.
+
+## `/code:plan-with-codex`
+
+Run a Claude-vs-Codex debate loop to refine a plan.
+
+Form:
+
+```bash
+claude /code:plan-with-codex [--max-rounds N] [--plan-file PATH] [--codex-model MODEL] "<prompt>"
+```
+
+Defaults: `--max-rounds 15`, `--codex-model gpt-5.4`.
+
+See [Refine a plan with Codex](../workflows/plan-with-codex-debate).
+
+## `/code-review:start`
+
+Multi-agent partitioned code review.
+
+Form:
+
+```bash
+claude /code-review:start [scope] [--github] [--hygiene-only] [--base <ref>] [--since-last-review] [--full-review]
+```
+
+Scopes:
+
+- no arg — review current branch vs main
+- `staged` — review staged changes
+- `file1 file2 ...` — review specific files
+- `123` — review PR #123
+
+See [Code review](../workflows/code-review).
+
+## `/self-learning:process-learnings`
+
+Classify pending learnings, validate, dedupe, and merge into `org-patterns.toon`. Prunes low performers.
+
+```bash
+claude /self-learning:process-learnings [workdir]
+```
+
+## `/self-learning:export-closedloop-learnings`
+
+Merge ClosedLoop-specific pending learnings into `~/.closedloop-ai/learnings/closedloop-learnings.json`.
+
+```bash
+claude /self-learning:export-closedloop-learnings [workdir]
+```
+
+## `/self-learning:push-learnings`
+
+Export local patterns to the shared team repo. Requires `CLAUDE_ORG_ID`.
+
+See [Push and pull learnings](../workflows/push-pull-learnings).
+
+## `/self-learning:pull-learnings`
+
+Import organization patterns. Echo prevention skips patterns originating from the current project.
+
+## `/self-learning:prune-learnings`
+
+Manual pruning per `retention.yaml`.
+
+## `/self-learning:goal-stats`
+
+Pass rate, top patterns, and trends. Requires at least 5 runs.
+
+## Skills (no slash command; invoked by agents or by `@judges:run-judges`)
+
+- `@judges:run-judges --artifact-type plan|code|prd` — run judge batches.
+
+## Top-level `.claude/commands/`
+
+- `/update-documentation` — generates CHANGELOG.md and README.md updates. Must run before pushing plugin changes (enforced by `.githooks/pre-push`).
+
+## Plugin marketplace
+
+```bash
+claude /plugin marketplace install closedloop
+claude plugin list
+```

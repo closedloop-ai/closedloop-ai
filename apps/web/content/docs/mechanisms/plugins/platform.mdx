@@ -1,0 +1,79 @@
+---
+title: platform plugin
+description: Claude Code expert guidance, prompt engineering, mermaid diagrams, artifact upload, and skill scaffolding.
+---
+
+The `platform` plugin is a standalone reference plugin that ships five auto-triggered skills. It has no slash commands — skills activate based on context.
+
+## Skills (5)
+
+### claude-code-expert
+
+Quick reference for Claude Code:
+
+- YAML frontmatter patterns for agents, commands, and skills
+- 10 hook event types
+- 14 hook recipes
+- Decision framework: when to build a skill vs an agent vs a command vs a plugin
+- Style requirements (imperative voice, not second-person)
+
+References include: `agent-patterns.md`, `command-patterns.md`, `configuration.md`, `hook-recipes.md`, `skill-triggers.md`, and `sub-agents-config.schema.json`.
+
+### context-engineering
+
+9 techniques ranked by effectiveness:
+
+1. Be clear and direct
+2. Multishot examples
+3. Chain of thought
+4. XML tags
+5. Role prompting
+6. Prefill response
+7. Chain prompts
+8. Long context tips (200K-token patterns: data at top, XML doc structure, grounding quotes)
+9. Extended thinking (for STEM and constraint optimization)
+
+### mermaid-visualizer
+
+6 diagram types with a syntax reference listing prohibited symbols and safe alternatives. Used to generate architecture and flow diagrams inside docs or plans.
+
+### upload-artifact
+
+Two modes for getting artifacts into ClosedLoop.ai:
+
+**Script mode** — runs `scripts/upload_artifact.py` under `uv` as a direct Streamable-HTTP MCP client. The file content does not enter the conversation context.
+
+Required environment:
+
+- `CLOSEDLOOP_API_KEY`
+- `NEXT_PUBLIC_MCP_SERVER_URL`
+
+Flags:
+
+```
+--url --api-key --list-projects --file --title
+--type PRD|IMPLEMENTATION_PLAN|TEMPLATE
+--project-id --workstream-id --artifact-id --verify
+```
+
+**MCP fallback** — uses `mcp__closedloop__create-artifact` or `mcp__closedloop__create-artifact-version`. Loads file content into context.
+
+### claude-creator
+
+Scaffolds a new skill with `SKILL.md`, `references/`, `scripts/`, and `assets/`. Ships:
+
+- `init_skill.py` — scaffold
+- `package_skill.py` — package for distribution
+- `quick_validate.py` — local validation
+
+## Why these skills ship together
+
+They are the toolbelt for **working inside ClosedLoop.ai**:
+
+- claude-code-expert teaches you the framework.
+- context-engineering teaches you how to prompt.
+- mermaid-visualizer teaches you to diagram.
+- upload-artifact lets you push work back into the control plane.
+- claude-creator lets you extend the system.
+
+The `platform` plugin is the recommended first install for anyone learning how to build inside the ClosedLoop.ai ecosystem.

@@ -1,0 +1,117 @@
+---
+title: Troubleshooting
+description: Common failure modes, diagnostic steps, and fixes for the desktop client, the gateway, and the plugins.
+---
+
+Most ClosedLoop.ai failures fall into one of a few categories. This page is the first place to look when something goes wrong.
+
+## Tray says `error` or `degraded`
+
+**Tray `error`**
+
+- startup failed
+- open the main window; the Dashboard shows the technical detail
+- check the in-app logs under `desktop:get-logs` (exposed in the UI)
+- common causes: port conflict outside the fallback range, missing API key, malformed settings
+
+**Tray `degraded`**
+
+- the cloud socket is disconnected or awaiting hello-ack
+- local operations still work
+- the recovery timer forces a full reconnect after 2 minutes; wait or force one with Pause/Resume
+
+## `401` on `/api/gateway/*`
+
+- the session token is missing or expired, or the API key is invalid
+- check **Settings → API key** for a valid key
+- if the problem is an expired session, it will renew on next challenge-exchange
+- confirm `Origin` matches a registered origin (the web app origin)
+
+## `403 directory not allowed`
+
+- the operation tried to touch a path outside the sandbox or inside a hard-denied path
+- confirm `sandboxBaseDirectory` includes the target path
+- check for symlinks that escape the sandbox; paths are canonicalized via `fs.realpathSync.native`
+- remember hard-denies apply even inside the sandbox: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`
+
+## Port conflict
+
+- probe order: `19432 → 19433 → 19434 → 19435`
+- confirm the active port at `~/.closedloop-ai/electron-port`
+- if all four ports are busy, the tray goes `error`; free a port or quit the conflicting process
+
+## Cloud socket `auth error`
+
+- API key is invalid or revoked
+- the tray shows `Authentication failed — verify your API key in Settings`
+- re-paste the key; confirm it matches an active key in the ClosedLoop.ai web app
+
+## `claude`, `codex`, `gh`, `git`, or `python3` not found
+
+- the desktop spawns `$SHELL -ilc` to extract the real PATH; if your shell init does not export the binary, spawn will fail
+- telemetry emits `preflight.binary_not_found` or `preflight.spawn_failed`
+- override the binary path at **Settings → Binary paths** or via `PATCH /api/gateway/settings/binary-paths`
+
+## Loop hangs or never completes
+
+- check `state.json` for the current phase and status
+- if status is `AWAITING_USER`, you have an open checkpoint (answer questions or confirm changes with `/code:amend-plan`)
+- if an agent is looping on a promise, check the hook logs and the validation script output
+- cap runtime with `CLOSEDLOOP_MAX_ITERATIONS` (default 10)
+
+## Plan fails `PLAN_VALIDATED`
+
+- the plan structure violates `plan-schema.json`
+- read the validator output
+- common issues: missing acceptance criteria, mismatched array lengths, invalid task types
+- fix the plan and relaunch; the validation script will revalidate
+
+## Subagent missing `LEARNINGS_ACKNOWLEDGED`
+
+- a `learning_agent` did not acknowledge and capture learnings
+- `subagent-stop-hook.sh` will re-run the agent up to 2 times
+- if it still fails, check the agent prompt and `self-learning:learning-quality` skill availability
+
+## Judges produce low scores
+
+- the input context is thin or not grounded
+- ensure `@code:pre-explorer` ran and produced `code-map.json`
+- check judge metric justifications for the specific axes that failed
+- adjust the plan or implementation to address the gaps, then rerun judges
+
+## Log locations
+
+| Log | Location |
+|---|---|
+| In-app ring buffer (500 entries) | `desktop:get-logs` IPC, shown in Logs tab |
+| Electron stdout/stderr | console, tagged `[tag][HH:MM:SS.fff]` |
+| Symphony loop subprocess | `logPath` and `jsonlPath` per job |
+| Activity Log | `desktop-activity-log.json` |
+| Port discovery | `~/.closedloop-ai/electron-port` |
+| Gateway identity UUID | `<userData>/gateway-identity.json` |
+
+## Persistent stores to inspect
+
+All under `app.getPath("userData")`:
+
+- `desktop-settings.json`
+- `desktop-secrets.json`
+- `desktop-approvals.json`
+- `desktop-activity-log.json`
+- `desktop-job-store.json`
+- `desktop-loop-tokens.json`
+
+## Debug modes (dev only)
+
+- `CL_LOCAL_GATEWAY_DEBUG_AUTH=1` — enable debug token minting
+- `CL_LOCAL_GATEWAY_NO_AUTH=1` — disable gateway auth (dangerous)
+- `CL_LOCAL_GATEWAY_PROD_ORIGINS_ONLY=1` — stricter origin whitelist
+- enable `verboseLogging: true` in settings for extra log detail
+
+## When all else fails
+
+- quit and relaunch the desktop client; the `BootRecoveryService` reattaches live jobs and finalizes dead ones
+- check `./plugins/code/scripts/preflight-check.sh` under `plugins/self-learning/scripts/` (bundled with the plugin) for Python, jq, awk, git, and PyYAML presence
+- rerun the plugin install script to restore any missing plugin files
+
+See also the [FAQ](./faq) for common questions.

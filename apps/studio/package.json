@@ -1,0 +1,11 @@
+{
+  "name": "studio",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "prisma studio --config ../../packages/database/prisma.config.ts --port 3005",
+    "clean": "git clean -xdf .cache .turbo dist node_modules"
+  },
+  "devDependencies": {
+    "prisma": "~7.5.0"
+  }
+}

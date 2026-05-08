@@ -1,0 +1,82 @@
+---
+title: code-review plugin
+description: Multi-agent partitioned code review with deterministic hygiene checks, risk-based routing, caching, and GitHub PR inline comments.
+---
+
+The `code-review` plugin runs automated code review on a branch, a staged change, specific files, or a GitHub PR.
+
+## Command
+
+```bash
+claude /code-review:start [scope] [--github] [--hygiene-only] [--base <ref>] [--since-last-review] [--full-review]
+```
+
+Scopes:
+
+- no argument — review the current branch vs main
+- `staged` — review staged changes
+- `file1 file2 ...` — review specific files
+- `123` — review PR #123
+
+Flags:
+
+- `--github` — CI handoff mode, posts inline comments via `gh`
+- `--hygiene-only` — run only the deterministic hygiene pass
+- `--base <ref>` — override the base ref
+- `--since-last-review` — incremental review since the last stored review hash
+- `--full-review` — ignore the incremental cache
+
+## How it works
+
+1. **Hygiene pass** — deterministic checks (file size, trailing whitespace, TODO density, and so on).
+2. **Partitioning** — splits the diff into partitions for parallel review.
+3. **Risk-based routing** — picks models for each partition based on risk signals.
+4. **Parallel review** — launches `code:code-review-worker` subagents concurrently with `run_in_background: true`.
+5. **Finding collection** — aggregates findings into `code-review-findings.json`.
+6. **Validation** — runs Pydantic validation (reusing `validate_judge_report.py` from `judges`).
+7. **Summary and verdict** — writes `code-review-summary.md` and `verdict.json` (`approve | needs_attention | changes_requested`).
+8. **GitHub posting** (`--github`) — posts inline comments and a summary comment to the PR via `gh`, resolves outdated threads.
+
+## Caching
+
+- **Hash-based cache** — findings are keyed by a hash of the diff, so re-running on the same diff is instant.
+- **Incremental** — `--since-last-review` only reviews new changes since the last cached review.
+- **Session work directory** — `.closedloop-ai/code-review/cr-<random>/`.
+
+## Outputs
+
+| File | Purpose |
+|---|---|
+| `code-review-findings.json` | Validated inline findings. |
+| `code-review-threads.json` | Outdated review thread IDs to resolve. |
+| `code-review-summary.md` | PR summary comment. |
+| `verdict.json` | Final verdict. |
+
+## Dependencies on other plugins
+
+- `code:code-review-worker` and `code:code-review-guidelines` — subagent and guidelines bundle.
+- `judges` — reuses `validate_judge_report` and `JUDGE_REGISTRY` by `sys.path` import.
+
+## Python tooling
+
+`plugins/code-review/tools/python/code_review_helpers.py` exposes a 20-plus subcommand CLI:
+
+```
+setup parse-diff hygiene partition route validate compute-hashes
+cache-check cache-update auto-incremental finalize-cache
+review-state-read review-state-write post-comments resolve-threads
+session-tokens footer resolve-scope fetch-intent classify-intent
+collect-findings verdict prep-assets extract-patches
+```
+
+## Fix skill
+
+The `code-review:fix` skill (under `skills/fix/`) provides a remediation playbook when you want an agent to address the findings.
+
+## When to run
+
+- On every PR via CI (the `--github` flag is designed for this).
+- Locally before pushing, to catch issues before they hit the PR.
+- Incrementally during development to review the current branch.
+
+Use `--since-last-review` in long-lived branches to avoid re-reviewing unchanged code.

@@ -1,0 +1,15 @@
+---
+title: Subagent
+description: A specialized Claude instance launched by the orchestrator via Task.
+---
+
+A **subagent** is a specialized Claude instance launched by the orchestrator via the `Task` tool. Each subagent has:
+
+- a tightly scoped system prompt
+- a declared tool allowlist
+- a completion promise (for loop agents)
+- an optional validator script that enforces that promise
+
+The `code` plugin ships 23 subagents: planning, implementation, cross-repo, and support. The `judges` plugin ships 22 more.
+
+See [Orchestrator and subagents](../mechanisms/orchestrator) for the full roster.

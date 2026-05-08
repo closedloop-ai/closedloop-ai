@@ -1,0 +1,37 @@
+{
+  "name": "@repo/collaboration",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+  },
+  "dependencies": {
+    "@liveblocks/client": "^3.18.5",
+    "@liveblocks/node": "^3.18.5",
+    "@liveblocks/node-prosemirror": "^3.18.5",
+    "@liveblocks/react": "^3.18.5",
+    "@liveblocks/react-tiptap": "^3.18.5",
+    "@liveblocks/react-ui": "^3.18.5",
+    "@liveblocks/yjs": "^3.18.5",
+    "@repo/api": "workspace:*",
+    "@repo/observability": "workspace:*",
+    "@t3-oss/env-nextjs": "^0.13.10",
+    "@tiptap/core": "~3.22.3",
+    "@tiptap/pm": "~3.22.3",
+    "@tiptap/react": "~3.22.3",
+    "lib0": "^0.2.99",
+    "react": "19.2.5",
+    "server-only": "^0.0.1",
+    "yjs": "^13.6.27",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.3.5",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "19.2.3",
+    "vitest": "^4.0.18"
+  }
+}

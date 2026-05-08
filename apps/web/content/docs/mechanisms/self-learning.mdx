@@ -1,0 +1,85 @@
+---
+title: Self-learning
+description: How captured patterns, relevance scoring, and organizational pattern stores compound over runs.
+---
+
+Self-learning is the outer loop around the inner loop. It turns each run's behavior into durable pattern data that the next run can draw on, and lets teams share that data without losing project-level specificity.
+
+See [self-learning plugin](./plugins/self-learning) for the plugin-level reference. This page covers the mechanism: what data is captured, how it is scored, and how it influences future runs.
+
+## Capture
+
+During any run, agents classified as `learning_agents` write JSON entries to `.learnings/pending/` describing:
+
+- the task they performed
+- the pattern (or mistake) they observed
+- citations to files and line numbers
+- context tags (for example, `auth`, `api`, `testing`)
+- the agent that captured it
+
+The `subagent-stop-hook.sh` enforces that `learning_agents` acknowledge and capture learnings; agents that do not get re-run up to 2 times.
+
+## Scoring
+
+After each iteration of the code loop, `run-loop.sh` runs an 11-step pipeline:
+
+1. Emit `changed-files.json` from git diff.
+2. `pattern_relevance.py` scores patterns from 0.0 to 1.0 using context tags and keyword overlap.
+3. `merge_relevance.py` appends `|relevance_score|relevance_method` to `outcomes.log`.
+4. `evaluate_goal.py` produces `goal-outcome.json`.
+5. `merge_goal_outcome.py` appends `|goal_name|goal_success|goal_score`.
+6. `verify_citations.py` marks `|unverified` entries where citations do not exist.
+7. `merge_build_result.py` appends `|build_passed` or `|build_failed`.
+8. `claude -p '/self-learning:process-learnings'` classifies pending learnings.
+9. `write_merged_patterns.py` atomically writes TOON with `.bak`, 50-pattern cap, sorted by confidence and flags.
+10. `compute_success_rates.py` recomputes success rates and assigns flags.
+11. `claude -p '/self-learning:export-closedloop-learnings'` merges ClosedLoop-specific learnings.
+
+## Injection
+
+Future runs draw on this data automatically:
+
+- `subagent-start-hook.sh` injects up to 15 relevant org patterns into every agent's context, filtered and sorted by category (`mistake > convention > pattern > insight`) and relevance.
+- `pretooluse-hook.sh` injects tool-specific patterns on `Bash`, `Write`, and `Edit` calls. Bash calls get build and test patterns; Write and Edit get language-specific patterns chosen by file extension.
+
+Agents never see the raw pattern store. They see filtered, tool-aware, task-relevant patterns.
+
+## Goal-weighted success rates
+
+Simple mode: `success_rate = passes / applications`. Goal-weighted mode:
+
+- `goal_success=1` → full weight contribution
+- `goal_success=0` → `relevance_score * 0.5` contribution
+
+Matching is tiered from cheapest to most expensive: exact → case-insensitive → substring → Jaccard > 0.6.
+
+## Flag lifecycle
+
+Patterns get flagged as they accumulate evidence:
+
+- `[REVIEW]` — success rate below 40%
+- `[STALE]` — no application in last 10 iterations
+- `[UNTESTED]` — no applications yet
+- `[PRUNE]` — more than 20 applications with success rate below 40%
+
+Confidence is binned:
+
+- `high` >= 0.70
+- `medium` >= 0.40
+- `low` < 0.40
+
+## Organization sharing
+
+`/push-learnings` and `/pull-learnings` require `CLAUDE_ORG_ID`. Echo prevention skips patterns that originated from the current project so contributions do not cycle back into the same project.
+
+## Retention
+
+`retention.yaml` controls pruning (`max_runs`, `max_sessions`, `max_log_lines`, `max_archive_age_days`, `lock_stale_hours`, `protected_window_minutes`). `/self-learning:prune-learnings` runs the pruner manually; it also runs during step 9 of the post-iteration pipeline.
+
+## Why deterministic computation matters
+
+LLMs are extraordinary at classifying patterns but poor at counting. The pipeline delegates counting and scoring to Python scripts that operate on `outcomes.log`. This produces success rates you can trust.
+
+## Why this closes the loop
+
+The inner loop produces an output per run. The outer loop produces better runs over time. Without self-learning, you are running an agent system; with it, you are running a learning team.

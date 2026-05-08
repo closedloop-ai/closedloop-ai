@@ -1,0 +1,123 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Documentation",
+  "colors": {
+    "primary": "#0D9373"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "index",
+          "getting-started/index",
+          "getting-started/prerequisites",
+          "getting-started/install-plugins",
+          "getting-started/install-desktop",
+          "getting-started/from-onboarding-to-first-loop",
+          "getting-started/first-launch",
+          "getting-started/prepare-your-repo-and-targets",
+          "getting-started/first-loop"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/closed-loop-sdlc",
+          "concepts/spec-driven-ai-first-delivery",
+          "concepts/team-based-agentic-development",
+          "concepts/artifact-bound-delivery",
+          "concepts/loop-until-correct",
+          "concepts/control-plane"
+        ]
+      },
+      {
+        "group": "Mechanisms",
+        "pages": [
+          "mechanisms/loops",
+          "mechanisms/orchestrator",
+          "mechanisms/runtime",
+          "mechanisms/artifacts",
+          "mechanisms/context-packs",
+          "mechanisms/judges",
+          "mechanisms/bootstrap",
+          "mechanisms/code-review",
+          "mechanisms/self-learning",
+          "mechanisms/multi-repo",
+          "mechanisms/hooks",
+          "mechanisms/approvals-and-sandbox",
+          "mechanisms/desktop-client",
+          "mechanisms/desktop-gateway",
+          "mechanisms/desktop-settings",
+          "mechanisms/cloud-relay",
+          "mechanisms/process-management",
+          "mechanisms/recovery",
+          "mechanisms/telemetry"
+        ]
+      },
+      {
+        "group": "Plugins",
+        "pages": [
+          "mechanisms/plugins",
+          "mechanisms/plugins/bootstrap",
+          "mechanisms/plugins/code",
+          "mechanisms/plugins/code-review",
+          "mechanisms/plugins/judges",
+          "mechanisms/plugins/platform",
+          "mechanisms/plugins/self-learning"
+        ]
+      },
+      {
+        "group": "Workflows",
+        "pages": [
+          "workflows/bootstrap-a-repo",
+          "workflows/planning-with-codex",
+          "workflows/plan-with-codex-debate",
+          "workflows/amending-a-plan",
+          "workflows/code-review",
+          "workflows/push-pull-learnings"
+        ]
+      },
+      {
+        "group": "Resources",
+        "pages": [
+          "resources/troubleshooting",
+          "resources/faq",
+          "resources/release-notes",
+          "resources/commands-reference",
+          "resources/gateway-endpoints-reference",
+          "resources/env-vars-reference",
+          "resources/closedloop-vs-chat-based-workflows",
+          "resources/prd-template",
+          "resources/implementation-plan-template"
+        ]
+      },
+      {
+        "group": "Glossary",
+        "pages": [
+          "glossary/approval",
+          "glossary/artifact",
+          "glossary/artifact-bound",
+          "glossary/compute-target",
+          "glossary/context-pack",
+          "glossary/control-plane",
+          "glossary/critic",
+          "glossary/gateway",
+          "glossary/judge",
+          "glossary/loop",
+          "glossary/orchestrator",
+          "glossary/pattern",
+          "glossary/plan",
+          "glossary/prd",
+          "glossary/promise",
+          "glossary/runtime",
+          "glossary/sandbox",
+          "glossary/subagent",
+          "glossary/toon",
+          "glossary/worktree"
+        ]
+      }
+    ]
+  }
+}

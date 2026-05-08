@@ -1,0 +1,84 @@
+---
+title: Cloud relay
+description: The Socket.IO relay that connects your desktop client to the web app without exposing your machine.
+---
+
+The cloud relay is the transport that lets the web control plane drive work on your desktop client without any inbound network connection to your machine. It is an outbound-only Socket.IO connection from the desktop to a relay server.
+
+## Transport
+
+- Library: `socket.io-client` v4
+- Transport: websocket only
+- Namespace: `{relayOrigin}/desktop-gateway`
+- Default origin: `https://relay.closedloop.ai` (override via `CL_RELAY_ORIGIN`)
+- Auth: `auth.apiKey` in the Socket.IO handshake (read from `ApiKeyStore`)
+- Origin validation: HTTPS required, loopback allowed for development
+
+## Protocol
+
+Every message carries `{ protocolVersion: "1", messageId: UUID, timestamp: ISO-8601 }`.
+
+### Outbound events (desktop → relay)
+
+| Event | Purpose |
+|---|---|
+| `desktop.hello` | Announce `{ computeTargetId, machineName, platform, pluginVersion, desktopClientVersion, gatewayProtocolVersion, supportedOperations, maxInFlightCommands, allowedDirectoriesHash }`. |
+| `desktop.command.ack` | Ack or reject an inbound command (`accepted`, `state`, `reason`). |
+| `desktop.command.event` | Stream events back: `status | chunk | result | error | done`, carrying `sequence` numbers for resume. |
+| `desktop.presence` | Presence updates: `online | degraded | paused`, plus optional `activeCommands` and `queueDepth`. |
+| `desktop.telemetry` | Telemetry events (Datadog-bound). |
+
+### Inbound events (relay → desktop)
+
+| Event | Purpose |
+|---|---|
+| `desktop.hello.ack` | `{ computeTargetId, sessionId, serverTime, resumeFromSequence? }` — issues or reconfirms the compute target ID and supports event replay. |
+| `desktop.command` | Command envelope to dispatch to the local gateway. |
+| `desktop.cancel` | Cancel a running command by ID. |
+| `desktop.command.event.ack` | Ack for events the executor sent upstream. |
+
+## Command envelope
+
+```ts
+{
+  commandId: UUID,
+  operationId: string,
+  method: "GET" | "POST" | ...,
+  path: "/api/gateway/..." ,
+  headers?: Record<string, string>,
+  query?: Record<string, string>,
+  body?: unknown,
+  timeoutMs?: number,
+  queuedAt?: ISO,
+  lockKey?: string,
+  requiresApproval?: boolean,
+  approvalReason?: string
+}
+```
+
+The path must start with `/api/gateway/`. The cloud executor rewrites the request, injects the internal gateway token, and dispatches.
+
+## Reconnection and resume
+
+- Reconnection is enabled (backoff 1s → 30s max, 10s timeout).
+- `HELLO_ACK_TIMEOUT_MS = 10s` — if no hello-ack arrives, the client transitions to degraded and retries.
+- A recovery timer forces a full reconnect after 2 minutes of degraded state.
+- On hello-ack with `resumeFromSequence`, the executor replays buffered events above that sequence.
+- Terminal commands are retained for 10 minutes (`COMMAND_RETENTION_MS`), capped at 200 entries (`MAX_RETAINED_TERMINAL_COMMANDS`).
+
+## Concurrency
+
+- `MAX_IN_FLIGHT_COMMANDS` is enforced by the executor.
+- Commands are serialized per lock key. The default lock key is `command.lockKey` or `${operationId}:${scopedPath}`, where scoped path is derived from the body's `repoPath | worktreePath | workDir | runDir | path`.
+- This prevents two commands from racing on the same worktree while letting independent commands run in parallel.
+
+## Why outbound-only
+
+The cloud relay makes ClosedLoop.ai easier to deploy safely inside organizations:
+
+- No inbound firewall rules.
+- No port-forwarding.
+- No need to trust the web app with a machine's credentials beyond an API key.
+- All sensitive operations still pass through the localhost gateway's auth, sandbox, and approval policies.
+
+See [Desktop gateway](./desktop-gateway) for what the executor dispatches into.
