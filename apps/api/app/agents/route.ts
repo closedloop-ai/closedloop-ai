@@ -58,7 +58,7 @@ export const POST = withAnyAuth<AgentDetail, "/agents">(
     } catch (error) {
       if ((error as { code?: string }).code === "P2002") {
         return conflictResponse(
-          "An agent with this role already exists in the organization"
+          "An agent with this role already exists for this repository"
         );
       }
       return errorResponse("Failed to create agent", error);

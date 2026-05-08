@@ -69,7 +69,7 @@ describe("GET /agents", () => {
           role: "frontend-architect",
           description: "Specializes in React",
           enabled: true,
-          sourceRepo: null,
+          sourceRepo: "",
           currentVersion: 1,
           createdAt: NOW,
           updatedAt: NOW,

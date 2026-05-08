@@ -120,11 +120,14 @@ async function generateUniqueSlug(
 export const agentsService = {
   async findAll(
     organizationId: string,
-    options?: { enabled?: boolean; search?: string }
+    options?: { enabled?: boolean; search?: string; sourceRepo?: string }
   ): Promise<{ agents: AgentSummary[]; total: number }> {
     const where: Prisma.AgentWhereInput = {
       organizationId,
       ...(options?.enabled === undefined ? {} : { enabled: options.enabled }),
+      ...(options?.sourceRepo === undefined
+        ? {}
+        : { sourceRepo: options.sourceRepo }),
       ...(options?.search
         ? {
             OR: [
@@ -357,7 +360,11 @@ export const agentsService = {
       ];
       const roles = dedupedAgents.map((a) => a.role);
       const existingAgents = await tx.agent.findMany({
-        where: { organizationId, role: { in: roles } },
+        where: {
+          organizationId,
+          sourceRepo: input.sourceRepo,
+          role: { in: roles },
+        },
       });
       const byRole = new Map(existingAgents.map((a) => [a.role, a]));
 
