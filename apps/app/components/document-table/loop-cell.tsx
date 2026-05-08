@@ -13,8 +13,13 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
-import type { MouseEvent, ReactNode } from "react";
-import { useContext } from "react";
+import type {
+  ComponentPropsWithoutRef,
+  MouseEvent,
+  ReactNode,
+  Ref,
+} from "react";
+import { forwardRef, useContext } from "react";
 import { formatRelativeTime } from "@/lib/date-utils";
 import {
   deriveIsLocal,
@@ -23,7 +28,7 @@ import {
 } from "@/lib/loop-display";
 import { getUserDisplayName } from "@/lib/user-utils";
 import type { DocumentRowItem } from "./document-row";
-import { RowEditContext } from "./document-row";
+import { CellTooltip, RowEditContext } from "./document-row";
 
 // ---- Layout building blocks ----
 
@@ -39,23 +44,28 @@ function LoopCellDash() {
   );
 }
 
-function LoopLink({
-  loopId,
-  children,
-}: {
+type LoopLinkProps = {
   loopId: string;
   children: ReactNode;
-}) {
-  return (
+} & Omit<ComponentPropsWithoutRef<typeof Link>, "href" | "className" | "ref">;
+
+const LoopLink = forwardRef<HTMLAnchorElement, LoopLinkProps>(
+  ({ loopId, children, onClick, ...rest }, ref: Ref<HTMLAnchorElement>) => (
     <Link
       className={LOOP_CELL_LINK_CLASS}
       href={`/loops/${loopId}`}
-      onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+      onClick={(e: MouseEvent<HTMLAnchorElement>) => {
+        e.stopPropagation();
+        onClick?.(e);
+      }}
+      ref={ref}
+      {...rest}
     >
       {children}
     </Link>
-  );
-}
+  )
+);
+LoopLink.displayName = "LoopLink";
 
 function LoopCellRunningContent({
   isLocal,
@@ -131,24 +141,36 @@ function DefaultLoopCell({ item }: { item: DocumentRowItem }) {
 
   if (isFailed) {
     const failedLoopId = genStatus?.loopId;
-    const content = <LoopCellFailedContent label="Loop Failed" />;
+    const failedLabel = "Loop Failed";
+    const content = <LoopCellFailedContent label={failedLabel} />;
     if (failedLoopId) {
-      return <LoopLink loopId={failedLoopId}>{content}</LoopLink>;
+      return (
+        <CellTooltip text={failedLabel}>
+          <LoopLink loopId={failedLoopId}>{content}</LoopLink>
+        </CellTooltip>
+      );
     }
-    return <div className={LOOP_CELL_BASE_CLASS}>{content}</div>;
+    return (
+      <CellTooltip text={failedLabel}>
+        <div className={LOOP_CELL_BASE_CLASS}>{content}</div>
+      </CellTooltip>
+    );
   }
 
   if (!loop) {
     return <LoopCellDash />;
   }
 
+  const activeLabel = getUserDisplayName(loop.user);
   return (
-    <LoopLink loopId={loop.id}>
-      <LoopCellRunningContent
-        isLocal={deriveIsLocal(loop)}
-        label={getUserDisplayName(loop.user)}
-      />
-    </LoopLink>
+    <CellTooltip text={activeLabel}>
+      <LoopLink loopId={loop.id}>
+        <LoopCellRunningContent
+          isLocal={deriveIsLocal(loop)}
+          label={activeLabel}
+        />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 
@@ -160,13 +182,13 @@ function DefaultLoopCell({ item }: { item: DocumentRowItem }) {
 // state comes from loopSummaries (recursive scope).
 
 function renderTeamRunning(loop: LoopWithUser) {
+  const label = getUserDisplayName(loop.user);
   return (
-    <LoopLink loopId={loop.id}>
-      <LoopCellRunningContent
-        isLocal={deriveIsLocal(loop)}
-        label={getUserDisplayName(loop.user)}
-      />
-    </LoopLink>
+    <CellTooltip text={label}>
+      <LoopLink loopId={loop.id}>
+        <LoopCellRunningContent isLocal={deriveIsLocal(loop)} label={label} />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 
@@ -175,17 +197,22 @@ function renderTeamCompleted(c: LoopSummaryEntry) {
   const relativeTime = c.completedAt ? formatRelativeTime(c.completedAt) : null;
   const label = relativeTime ? `${userName} · ${relativeTime}` : userName;
   return (
-    <LoopLink loopId={c.loopId}>
-      <LoopCellCompletedContent label={label} />
-    </LoopLink>
+    <CellTooltip text={label}>
+      <LoopLink loopId={c.loopId}>
+        <LoopCellCompletedContent label={label} />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 
 function renderTeamFailed(f: LoopSummaryEntry) {
+  const label = terminalLabel(f.status, f.command);
   return (
-    <LoopLink loopId={f.loopId}>
-      <LoopCellFailedContent label={terminalLabel(f.status, f.command)} />
-    </LoopLink>
+    <CellTooltip text={label}>
+      <LoopLink loopId={f.loopId}>
+        <LoopCellFailedContent label={label} />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 
@@ -233,11 +260,16 @@ function TeamLoopCell({ item }: { item: DocumentRowItem }) {
     item.kind === "artifact" ? item.data.generationStatus : undefined;
   if (genStatus?.status === "FAILURE") {
     const failedLoopId = genStatus.loopId;
-    const content = <LoopCellFailedContent label="Loop Failed" />;
+    const failedLabel = "Loop Failed";
+    const content = <LoopCellFailedContent label={failedLabel} />;
     return failedLoopId ? (
-      <LoopLink loopId={failedLoopId}>{content}</LoopLink>
+      <CellTooltip text={failedLabel}>
+        <LoopLink loopId={failedLoopId}>{content}</LoopLink>
+      </CellTooltip>
     ) : (
-      <div className={LOOP_CELL_BASE_CLASS}>{content}</div>
+      <CellTooltip text={failedLabel}>
+        <div className={LOOP_CELL_BASE_CLASS}>{content}</div>
+      </CellTooltip>
     );
   }
 
@@ -287,34 +319,39 @@ function pickMyTasksEntry(summary: LoopSummary): {
 }
 
 function renderMyTasksActive(entry: LoopSummaryEntry) {
+  const label = getCommandLabels(entry.command).progress;
   return (
-    <LoopLink loopId={entry.loopId}>
-      <LoopCellRunningContent
-        isLocal={entry.isLocal}
-        label={getCommandLabels(entry.command).progress}
-        labelMuted={false}
-      />
-    </LoopLink>
+    <CellTooltip text={label}>
+      <LoopLink loopId={entry.loopId}>
+        <LoopCellRunningContent
+          isLocal={entry.isLocal}
+          label={label}
+          labelMuted={false}
+        />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 
 function renderMyTasksFailed(entry: LoopSummaryEntry) {
+  const label = terminalLabel(entry.status, entry.command);
   return (
-    <LoopLink loopId={entry.loopId}>
-      <LoopCellFailedContent
-        label={terminalLabel(entry.status, entry.command)}
-      />
-    </LoopLink>
+    <CellTooltip text={label}>
+      <LoopLink loopId={entry.loopId}>
+        <LoopCellFailedContent label={label} />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 
 function renderMyTasksCompleted(entry: LoopSummaryEntry) {
+  const label = getCommandLabels(entry.command).completed;
   return (
-    <LoopLink loopId={entry.loopId}>
-      <LoopCellCompletedContent
-        label={getCommandLabels(entry.command).completed}
-      />
-    </LoopLink>
+    <CellTooltip text={label}>
+      <LoopLink loopId={entry.loopId}>
+        <LoopCellCompletedContent label={label} />
+      </LoopLink>
+    </CellTooltip>
   );
 }
 

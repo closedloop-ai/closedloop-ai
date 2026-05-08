@@ -302,7 +302,7 @@ function TruncatedTitle({ text }: { text: string }) {
   );
 }
 
-function CellTooltip({
+export function CellTooltip({
   children,
   text,
 }: {
@@ -316,7 +316,7 @@ function CellTooltip({
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent className="max-w-xs break-words text-left">
+      <TooltipContent className="max-w-xs text-pretty break-words text-left">
         {text}
       </TooltipContent>
     </Tooltip>
