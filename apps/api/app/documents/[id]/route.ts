@@ -1,5 +1,9 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { Document, DocumentDetail } from "@repo/api/src/types/document";
+import {
+  getNotificationEntityPath,
+  NotificationEntityKind,
+} from "@repo/api/src/types/notification-routes";
 import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
 import { documentService } from "@/app/documents/document-service";
 import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
@@ -127,7 +131,11 @@ export const PUT = withAnyAuth<Document, "/documents/[id]">(
         organizationId: user.organizationId,
         entityType: AssignmentEntityType.Artifact,
         entityTitle: artifact.title,
-        entityUrl: `/documents/${artifact.slug}`,
+        entityUrl: getNotificationEntityPath({
+          kind: NotificationEntityKind.Artifact,
+          slug: artifact.slug,
+          subtype: artifact.type,
+        }),
         subjectId: artifact.id,
       });
 
