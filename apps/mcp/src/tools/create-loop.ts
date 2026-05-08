@@ -40,7 +40,7 @@ export function registerCreateLoop(
           .string()
           .optional()
           .describe(
-            "Repository in owner/repo format (e.g. 'closedloop-ai/example-repo')"
+            "Repository in owner/repo format (e.g. 'your-org/your-repo')"
           ),
         repoBranch: z
           .string()
