@@ -1,0 +1,10 @@
+---
+title: Promise
+description: The exit token an agent emits to declare a phase complete, validated deterministically before the loop advances.
+---
+
+A promise is a token an agent emits at the end of a phase, such as `<promise>PLAN_VALIDATED</promise>` or `<promise>IMPLEMENTATION_VERIFIED</promise>`. The `SubagentStop` hook (`loop-stop-hook.sh`) reads the state file, compares the promise to the configured validation, and either lets the agent exit or forces a retry.
+
+Promises are paired with a max iteration budget per agent.
+
+See [Loop until correct (concepts)](../concepts/loop-until-correct).

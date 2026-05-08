@@ -1,0 +1,99 @@
+---
+title: Implementation Plan Template
+description: A reusable plan shape for breaking work into execution-ready tasks.
+---
+
+Implementation plans are the bridge between intent and execution. In ClosedLoop a plan is stored as `plan.json` with a human-readable mirror `plan.md`. The template below is the shape `plan-draft-writer` produces and `plan-writer` finalizes.
+
+## Canonical JSON shape
+
+```json
+{
+  "content": "<plan summary>",
+  "pendingTasks": [
+    {
+      "id": "T-001",
+      "title": "<task title>",
+      "description": "<what must happen>",
+      "acceptanceCriteria": ["<criterion 1>", "<criterion 2>"],
+      "repository": "primary",
+      "filesOfInterest": ["src/..."]
+    }
+  ],
+  "completedTasks": [],
+  "acceptanceCriteria": ["<overall plan acceptance>"],
+  "openQuestions": ["<question waiting for human answer>"],
+  "answeredQuestions": [],
+  "gaps": [],
+  "manualTasks": [],
+  "amendments": [],
+  "repositories": {
+    "primary": { "path": "/abs/path", "isPrimary": true }
+  }
+}
+```
+
+## Human-readable template
+
+```md
+# Objective
+<one paragraph describing the goal>
+
+# Scope
+- In:
+  - <what is in>
+- Out:
+  - <what is explicitly out>
+
+# Tasks
+## T-001 <task title>
+- Description: <what must happen>
+- Acceptance criteria:
+  - <criterion 1>
+  - <criterion 2>
+- Files of interest: <paths>
+
+# Acceptance Criteria
+- <plan-wide criterion 1>
+- <plan-wide criterion 2>
+
+# Open Questions
+- <question>
+
+# Risks
+- <risk>. Mitigation: <plan>.
+
+# Validation
+- Tests to add or extend: <summary>
+- Manual checks: <summary>
+```
+
+## Rules of thumb
+
+- Each task should be implementable in a single `implementation-subagent` iteration (typically ≤ 4 internal gates).
+- Acceptance criteria are how the judges score you. Keep them independent and measurable.
+- Use `[CROSS-REPO: <peer>]` in a task title to route work to a peer repository in multi-repo mode.
+- Put open questions in `openQuestions`, not in task descriptions. That is where the plan review checkpoint picks them up.
+
+## What the planner will add
+
+`plan-draft-writer` and `plan-writer` will also populate:
+
+- task IDs (stable across amendments)
+- dependency ordering implicit in the task array
+- `filesOfInterest` harvested from `code-map.json`
+- the `repositories` map in multi-repo mode
+
+## Related reading
+
+<Cards>
+  <Card title="PRD template" href="./prd-template">
+    The artifact a plan is typically generated from.
+  </Card>
+  <Card title="Artifacts" href="../mechanisms/artifacts">
+    Where plan files live on disk.
+  </Card>
+  <Card title="Amending a plan" href="../workflows/amending-a-plan">
+    How to refine a plan without starting over.
+  </Card>
+</Cards>

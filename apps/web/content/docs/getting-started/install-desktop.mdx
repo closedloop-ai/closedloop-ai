@@ -1,0 +1,97 @@
+---
+title: Install the desktop client
+description: Install, launch, and authenticate the ClosedLoop desktop client and its localhost gateway.
+---
+
+The desktop client is the execution surface for ClosedLoop.ai. It runs a localhost HTTP gateway on port `19432` that brokers local git, filesystem, code review, and AI coding session operations, and maintains an outbound Socket.IO connection to the cloud relay so the control plane can drive work safely.
+
+## Download
+
+- **macOS:** download the latest signed, notarized universal DMG from GitHub Releases under `closedloop-ai/closedloop-electron`. Drag the `ClosedLoop.app` bundle into `/Applications`.
+- **Linux:** run the app from source with `just desktop-dev` (see below). Linux is supported for development but not yet packaged.
+- **Windows:** not supported.
+
+Packaged macOS builds auto-update via `electron-updater`. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
+
+## First launch
+
+When you launch the app for the first time, the tray icon appears in your menu bar. The tray cycles through four states:
+
+| State | Meaning |
+|---|---|
+| `starting` | The gateway is booting and the cloud socket is connecting. |
+| `ready` | The gateway is bound, capabilities detected, and the cloud socket has received a hello-ack. |
+| `degraded` | The cloud socket is disconnected or has not yet received a hello-ack. Local work still succeeds. |
+| `error` | Startup failed. Open the app to read the error. |
+
+Clicking the tray icon opens the main window. The tray also badges with the number of pending approvals so you notice high-risk operations even with the window closed.
+
+## Authenticate
+
+1. Open the main window.
+2. Paste your ClosedLoop API key into **Settings → API key**. The key is encrypted with the operating system's keychain via Electron `safeStorage` and stored in `desktop-secrets`.
+3. Confirm the status indicator flips to `ready`. If it does not, see [Troubleshooting](../resources/troubleshooting).
+
+Alternatively, export `CLOSEDLOOP_API_KEY` in your shell before launching. Environment values take precedence over stored values. The `SYMPHONY_API_KEY` variable is accepted as a legacy fallback.
+
+## Complete onboarding
+
+The built-in onboarding overlay walks you through:
+
+- confirming the API key works against the ClosedLoop API
+- registering this machine as a compute target via `POST /compute-targets/register`
+- choosing a sandbox base directory (the only path the gateway will let operations touch)
+- selecting a default approval tier (`low`, `medium`, or `high`, default `high`)
+
+Onboarding completion is persisted in `desktop-settings` so the overlay does not return.
+
+## Verify the gateway
+
+With the desktop client running, you can probe the public health route from any loopback process:
+
+```bash
+curl http://127.0.0.1:19432/health
+```
+
+A ready gateway responds with:
+
+```json
+{
+  "status": "ok",
+  "machineName": "<your-host>",
+  "capabilities": {
+    "tools": { "claude": true, "codex": true, "gh": true, "git": true, "python3": true },
+    "versions": {}
+  },
+  "version": "<package version>",
+  "port": 19432
+}
+```
+
+The active port is also written in plaintext to `~/.closedloop-ai/electron-port` so other tools can discover it.
+
+If the default port is in use, the client will fall back through `19433 → 19434 → 19435`. The discovery file always reflects the active port.
+
+## Run from source (Linux or contributors)
+
+```bash
+git clone git@github.com:closedloop-ai/closedloop-electron.git
+cd closedloop-electron
+just install
+just desktop-dev
+```
+
+Useful `just` recipes:
+
+| Command | What it does |
+|---|---|
+| `just desktop-dev` | Build and start the Electron app. |
+| `just desktop-start` | Run Electron from an existing build. |
+| `just desktop-package` | Build and package a macOS DMG under `dist-dmg/`. |
+| `just desktop-lint` | Run ESLint for desktop sources. |
+| `just desktop-typecheck` | Run `tsc --noEmit`. |
+| `just desktop-test` | Run the desktop test suite. |
+
+## Next step
+
+With the desktop client running and authenticated, continue to [Prepare your repo and targets](./prepare-your-repo-and-targets).

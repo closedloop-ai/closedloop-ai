@@ -1,0 +1,24 @@
+# Local development services for ClosedLoop.AI
+# Usage: docker compose up -d
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: closedloop-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: closedloop_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - closedloop_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d closedloop_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  closedloop_postgres_data:

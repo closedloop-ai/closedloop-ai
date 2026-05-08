@@ -1,0 +1,80 @@
+---
+title: Process management
+description: How the desktop gateway spawns, monitors, and cleans up subprocesses like the AI coding sessions.
+---
+
+Loops run as long-running subprocesses inside the desktop gateway. The `ProcessManager` in `src/server/process-manager.ts` governs how they are spawned, monitored, and cleaned up.
+
+## Spawn modes
+
+Three modes in `ProcessManager`:
+
+### `spawnStreaming`
+
+Detached process with stdout and stderr readers plus NDJSON line parsing via `onLine`. Auto-kill timer triggers when a `{ "type": "result" }` line is detected.
+
+- `resultKillDelayMs` default 30 seconds (how long to wait after a result line)
+- `resultKillGraceMs` 5 seconds (grace after SIGTERM before SIGKILL)
+- `killProcessGroup(pid)` sends SIGTERM, then SIGKILL after the grace period
+
+### `spawnDetached`
+
+Detached with stdio redirected to a log file (opens `logFile` append, unreferenced). Used for long-running background jobs.
+
+### `exec`
+
+Wraps `execFileAsync` for one-shot calls.
+
+All three modes call `assertOperationPath(cwd)` before spawning, enforcing the sandbox allowlist via `security.ts`.
+
+## Binary resolution
+
+Electron on macOS inherits a minimal PATH. The server resolves user tools by spawning the login shell (`$SHELL -ilc`) wrapped in sentinels (`__CLPATH_START__`, `__CLPATH_END__`) to extract the real PATH. `~/` is expanded; `npm_config_prefix` and `NPM_CONFIG_PREFIX` are sanitized for nvm compatibility. Result is cached for the session.
+
+`resolveBinary` / `resolveBinarySync` support overrides via `Settings → Binary paths` with result sources `override | override_invalid | path | fallback`.
+
+Supported overrides: `claude`, `gh`, `codex`, `python3`, `git`.
+
+## Symphony loop spawn
+
+Driven by `symphony-loop.ts` (the largest operation file in the desktop codebase). Plugin scripts are resolved via `findPluginScript` under `~/.claude/plugins/cache/closedloop-ai/<name>/<version>/scripts/`. Registered plugins come from `~/.claude/plugins/installed_plugins.json`.
+
+The `code@closedloop-ai` plugin version is reported in `desktop.hello.pluginVersion`. Override for tests with `CL_PLUGIN_VERSION`.
+
+## Job tracking
+
+`JobStore` (persisted in `desktop-job-store`) stores `LocalJob` entities:
+
+- `id`, `loopId`, `pid`, `status`
+- `statePath`, `logPath`, `jsonlPath`, `worktreeDir`
+- plus timestamps and metadata
+
+11 lifecycle states: `QUEUED`, `STARTING`, `RUNNING`, `AWAITING_USER`, `STOPPED`, `CANCEL_PENDING`, `COMPLETED`, `FAILED`, `CANCELLED`, `UNKNOWN`.
+
+Terminal jobs roll into a capped `terminalJobs` array (`MAX_TERMINAL_JOBS = 100`).
+
+## Boot recovery
+
+On app start, `BootRecoveryService`:
+
+1. `reattachLiveJobs()` — any job whose `pid` is still running (`isProcessRunning(pid)`) is re-tailed via `startOutputTailer`.
+2. `finalizeDeadJobs()` — processes that died while the app was down get status resolved from their `statePath` and sent `PROCESS_FAILED` / `PROCESS_STOPPED` events.
+3. `sweepOrphanedTokens()` — cleans stale entries in `LoopTokenStore` for loops no longer in `JobStore`.
+
+Watcher poll interval: `CLOSEDLOOP_WATCHER_POLL_MS` (default 3000 ms). Up to `MAX_RECOVERY_ATTEMPTS = 3`.
+
+## Output tailer
+
+`src/server/operations/output-tailer.ts` polls the claude-output JSONL file. Poll interval via `CLOSEDLOOP_TAILER_POLL_MS`; throttle via `CLOSEDLOOP_TAILER_THROTTLE_MS`. Each job tracks `lastObservedJsonlOffset` — only advanced after a successful cloud POST — so replay is safe.
+
+## Auth tokens
+
+Per-loop auth tokens live in `LoopTokenStore` (encrypted) so each loop can prove its identity when it calls back into the gateway.
+
+## Cancel
+
+Canceling a command kills the process group (`SIGTERM` then `SIGKILL` after grace). Cloud cancel commands arrive as `desktop.cancel` over the relay. Local cancel is available from the UI.
+
+## Why structured process management matters
+
+AI coding sessions are long-running, streaming, and sometimes die unpredictably. Generic subprocess plumbing leaks zombies, orphans telemetry, and drops partial output. The `ProcessManager` plus `BootRecoveryService` plus the output tailer turn all three into bounded, observable, resumable behavior.

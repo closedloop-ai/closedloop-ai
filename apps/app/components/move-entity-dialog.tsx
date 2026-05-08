@@ -1,0 +1,214 @@
+"use client";
+
+import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@repo/design-system/components/ui/dialog";
+import { Label } from "@repo/design-system/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repo/design-system/components/ui/select";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { Loader2Icon } from "lucide-react";
+import { useState } from "react";
+import { useBatchMoveArtifacts } from "@/hooks/queries/use-artifact-links";
+import { useProjects } from "@/hooks/queries/use-projects";
+
+type MovableEntity = {
+  id: string;
+  projectId?: string | null;
+};
+
+type MoveEntityDialogProps = {
+  entity?: MovableEntity;
+  entities?: MovableEntity[];
+  teamId?: string | null;
+  currentProjectId?: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess?: () => void;
+};
+
+export function MoveEntityDialog({
+  entity,
+  entities,
+  teamId,
+  currentProjectId,
+  open,
+  onOpenChange,
+  onSuccess,
+}: Readonly<MoveEntityDialogProps>) {
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [isBulkMoving, setIsBulkMoving] = useState(false);
+
+  let entitiesToMove: MovableEntity[] = [];
+  if (entities?.length) {
+    entitiesToMove = entities;
+  } else if (entity) {
+    entitiesToMove = [entity];
+  }
+  const isBulkMove = entitiesToMove.length > 1;
+  const primaryEntity = entitiesToMove[0];
+
+  const { data: projects = [] } = useProjects(teamId ?? undefined);
+  const batchMove = useBatchMoveArtifacts();
+
+  const entityProjectId = primaryEntity?.projectId ?? currentProjectId;
+  const availableProjects = projects.filter((p) => p.id !== entityProjectId);
+  const isMovePending = batchMove.isPending || isBulkMoving;
+
+  const handleMoveClick = () => {
+    if (!primaryEntity) {
+      return;
+    }
+    if (isBulkMove) {
+      executeBulkMove().catch(() => undefined);
+      return;
+    }
+    executeSingleMove();
+  };
+
+  const executeSingleMove = () => {
+    if (!primaryEntity) {
+      return;
+    }
+    batchMove.mutate(
+      {
+        artifactId: primaryEntity.id,
+        targetProjectId: selectedProjectId,
+        includeDownstream: true,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Moved with all downstream items");
+          setSelectedProjectId("");
+          onOpenChange(false);
+          onSuccess?.();
+        },
+      }
+    );
+  };
+
+  const executeBulkMove = async () => {
+    if (!(selectedProjectId && entitiesToMove.length > 0)) {
+      return;
+    }
+    setIsBulkMoving(true);
+    try {
+      const results = await Promise.allSettled(
+        entitiesToMove.map((item) =>
+          batchMove.mutateAsync({
+            artifactId: item.id,
+            targetProjectId: selectedProjectId,
+            includeDownstream: true,
+          })
+        )
+      );
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - succeeded;
+      if (failed === 0) {
+        toast.success(`Moved ${succeeded} items successfully`);
+      } else if (succeeded > 0) {
+        toast.warning(
+          `Moved ${succeeded} of ${results.length} items. ${failed} failed.`
+        );
+      } else {
+        toast.error("Failed to move items. Please try again.");
+        return;
+      }
+      setSelectedProjectId("");
+      onOpenChange(false);
+      onSuccess?.();
+    } catch {
+      /* global onError handles toast */
+    } finally {
+      setIsBulkMoving(false);
+    }
+  };
+
+  return (
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setSelectedProjectId("");
+        }
+        onOpenChange(nextOpen);
+      }}
+      open={open}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Move to Project</DialogTitle>
+          <DialogDescription>
+            Select the project you want to move{" "}
+            {isBulkMove ? "these items" : "this item"} to.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="project-select">Select project</Label>
+            <Select
+              onValueChange={setSelectedProjectId}
+              value={selectedProjectId}
+            >
+              <SelectTrigger
+                aria-label="Select destination project"
+                id="project-select"
+              >
+                <SelectValue placeholder="Choose a project" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableProjects.length === 0 ? (
+                  <SelectItem disabled value="no-projects">
+                    No available projects
+                  </SelectItem>
+                ) : (
+                  availableProjects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            disabled={isMovePending}
+            onClick={() => onOpenChange(false)}
+            variant="outline"
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={
+              !selectedProjectId ||
+              availableProjects.length === 0 ||
+              isMovePending
+            }
+            onClick={handleMoveClick}
+          >
+            {isMovePending ? (
+              <>
+                <Loader2Icon className="mr-2 size-4 animate-spin" />
+                Moving...
+              </>
+            ) : (
+              "Move"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

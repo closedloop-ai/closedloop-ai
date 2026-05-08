@@ -1,0 +1,258 @@
+{
+  "web": {
+    "global": {
+      "primaryCta": "Réservez un appel",
+      "secondaryCta": "Inscrivez-vous"
+    },
+    "header": {
+      "home": "Accueil",
+      "blog": "Blog",
+      "docs": "Docs",
+      "contact": "Contact",
+      "signIn": "Connectez-vous",
+      "signUp": "Commencez",
+      "developers": "Développeurs"
+    },
+    "home": {
+      "meta": {
+        "title": "Transformez vos opérations commerciales dès aujourd'hui",
+        "description": "Dans le monde rapide d'aujourd'hui, votre entreprise mérite mieux que des systèmes de trading obsolètes. Notre plateforme innovante rationalise les opérations, réduit la complexité et aide les petites entreprises à prospérer dans l'économie moderne."
+      },
+      "hero": {
+        "announcement": "Lisez notre dernier article"
+      },
+      "features": {
+        "title": "Outils puissants pour les entreprises modernes",
+        "description": "Découvrez comment nos fonctionnalités de pointe peuvent révolutionner vos opérations quotidiennes.",
+        "items": [
+          {
+            "title": "Opérations rationalisées",
+            "description": "Notre plateforme rationalise les opérations, réduit la complexité et aide les petites entreprises à prospérer dans l'économie moderne."
+          },
+          {
+            "title": "Analytique en temps réel",
+            "description": "Obtenez des informations instantanées sur la performance de votre entreprise grâce à des outils d'analyse et de reporting complets."
+          },
+          {
+            "title": "Flux de travail automatisés",
+            "description": "Gagnez du temps et réduisez les erreurs grâce à une automatisation intelligente qui gère les tâches répétitives pour vous."
+          },
+          {
+            "title": "Transactions sécurisées",
+            "description": "Soyez tranquille en sachant que vos opérations commerciales sont protégées par une sécurité et un cryptage de niveau entreprise."
+          }
+        ]
+      },
+      "faq": {
+        "title": "Questions fréquentes, réponses d'experts",
+        "description": "Obtenez des réponses rapides à vos questions les plus pressantes concernant notre plateforme. Nous avons compilé tout ce que vous devez savoir sur la transformation de vos opérations commerciales et le démarrage avec des solutions de trading modernes.",
+        "cta": "Des questions ? Contactez-nous",
+        "items": [
+          {
+            "question": "Qu'est-ce que la plateforme ?",
+            "answer": "La plateforme est une plateforme de trading qui vous permet de trader en toute confiance."
+          },
+          {
+            "question": "Quelle est la sécurité de la plateforme ?",
+            "answer": "Notre plateforme utilise des mesures de sécurité de niveau entreprise, y compris le cryptage de bout en bout et l'authentification multi-facteurs, pour garantir que vos activités de trading restent complètement sécurisées."
+          },
+          {
+            "question": "Quelles fonctionnalités de trading sont disponibles ?",
+            "answer": "La plateforme propose des outils de trading complets, y compris des données de marché en temps réel, des graphiques avancés, des stratégies de trading automatisées et des analyses détaillées pour soutenir une prise de décision éclairée."
+          },
+          {
+            "question": "Comment fonctionne la tarification ?",
+            "answer": "Nous proposons des niveaux de tarification flexibles conçus pour évoluer avec les besoins de votre entreprise, des plans de démarrage pour les traders individuels aux solutions d'entreprise pour les grandes organisations."
+          },
+          {
+            "question": "Quel type de support fournissez-vous ?",
+            "answer": "Notre équipe de support dédiée est disponible 24/7 par plusieurs canaux, y compris le chat en direct, l'e-mail et le téléphone. Nous fournissons également une documentation et des ressources de formation étendues."
+          }
+        ]
+      },
+      "cta": {
+        "title": "Commencez votre transformation commerciale",
+        "description": "Rejoignez des milliers d'entreprises avant-gardistes qui ont déjà modernisé leurs opérations. Notre plateforme offre les outils, le soutien et l'efficacité dont vous avez besoin pour réussir sur le marché concurrentiel d'aujourd'hui. Commencez en quelques minutes."
+      }
+    },
+    "blog": {
+      "meta": {
+        "title": "Blog",
+        "description": "Pensées, idées et opinions."
+      }
+    },
+    "developers": {
+      "meta": {
+        "title": "Livraison Logicielle par IA | Plugin Claude Code",
+        "description": "Agents d'orchestration aux meilleures pratiques prêts à l'emploi. Entièrement extensible — construit automatiquement un banc d'agents de développement adapté à votre code."
+      },
+      "hero": {
+        "badge": "Claude Code Plugin",
+        "title": "Multi-Agent SDLC",
+        "titleHighlight": "Grounded in Your Codebase.",
+        "description": "Best-practice orchestration agents out of the box. Fully extensible — automatically builds a dev agent bench tailored to your codebase.",
+        "installButton": "Install in 30 Seconds",
+        "githubButton": "View on GitHub"
+      },
+      "features": {
+        "label": "Features",
+        "title": "Bootstrap, Plan, Ship",
+        "description": "Your SDLC, orchestrated dynamically at scale — including visual QA inspection.",
+        "items": [
+          {
+            "title": "Dynamic Agent Bench",
+            "description": "Automatically generates a bench of domain-expert agents tailored to your codebase. Detects languages, frameworks, and architecture patterns — your AI team understands your project from day one."
+          },
+          {
+            "title": "MECE Task Decomposition",
+            "description": "Work is atomically broken down into mutually exclusive, collectively exhaustive items. Each task is independent, fully scoped, and ready for parallel execution with no overlaps or gaps."
+          },
+          {
+            "title": "Battery of AI Code Review",
+            "description": "Every implementation is reviewed by 13 quality judges covering SOLID principles, DRY, KISS, readability, test quality, code organization, and technical accuracy. Excellent code, every time."
+          },
+          {
+            "title": "Shared Learnings",
+            "description": "Captures patterns from every run, validates them for quality, and shares them across your org. Teams build on each other's experience — the system gets smarter with every project."
+          },
+          {
+            "title": "Caching & Token Optimization",
+            "description": "Build validation, critic evaluations, cross-repo discovery, and agent results are all cached. Minimize token usage and skip redundant work — subsequent runs execute faster and cheaper."
+          },
+          {
+            "title": "Cross-Repo Orchestration",
+            "description": "Automatically discovers peer repositories and identifies cross-repo dependencies. Generates cross-repo PRDs for missing capabilities and coordinates changes across your entire stack."
+          }
+        ]
+      },
+      "commands": {
+        "label": "Slash Commands",
+        "title": "Powerful Workflows at Your Fingertips",
+        "description": "Simple commands orchestrate complex multi-agent workflows.",
+        "items": [
+          {
+            "name": "/bootstrap",
+            "description": "Analyze your repo and generate custom domain-expert agents"
+          },
+          {
+            "name": "/code",
+            "description": "Begin a coding session with full ClosedLoop orchestration"
+          },
+          {
+            "name": "/code-review",
+            "description": "Run comprehensive code review with multi-agent validation"
+          },
+          {
+            "name": "/amend-plan",
+            "description": "Discuss and apply amendments to implementation plans"
+          },
+          {
+            "name": "/process-learnings",
+            "description": "Process pending learnings from a run into org patterns"
+          },
+          {
+            "name": "/goal-stats",
+            "description": "Analyze goal performance and improvement trends across runs"
+          }
+        ]
+      },
+      "agents": {
+        "label": "Specialized Agents",
+        "title": "Purpose-Built AI Teammates",
+        "description": "Pre-built agents for orchestration, plus custom agents generated from your codebase.",
+        "items": [
+          {
+            "name": "agent-prompt-generator",
+            "description": "Generates custom domain-expert agents tailored to your project"
+          },
+          {
+            "name": "plan-draft-writer",
+            "description": "Creates high-level implementation plan drafts from PRDs"
+          },
+          {
+            "name": "plan-writer",
+            "description": "Refines plans by merging critic feedback and implementation details"
+          },
+          {
+            "name": "code-reviewer",
+            "description": "Reviews code for quality, security, and best practices"
+          },
+          {
+            "name": "pre-explorer",
+            "description": "Pre-explores codebase to produce code maps and investigation logs"
+          },
+          {
+            "name": "implementation-subagent",
+            "description": "Implements requirements with self-verification gates"
+          },
+          {
+            "name": "build-validator",
+            "description": "Discovers and runs project validation commands"
+          },
+          {
+            "name": "visual-qa-subagent",
+            "description": "Performs visual QA inspection via Playwright automation"
+          }
+        ]
+      },
+      "installation": {
+        "label": "Get Started",
+        "title": "Install in 30 Seconds",
+        "description": "One plugin. Zero dependencies. Install via the plugin marketplace.",
+        "steps": [
+          {
+            "title": "Add the Plugin Marketplace",
+            "description": "Register the ClosedLoop marketplace with Claude Code:",
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
+          },
+          {
+            "title": "Install ClosedLoop Core",
+            "description": "Install the plugin from the marketplace:",
+            "code": "/plugin install closedloop-core"
+          },
+          {
+            "title": "Bootstrap & Code",
+            "description": "Generate agents for your project, then start coding:",
+            "code": "/bootstrap && /code \"Path to your PRD\""
+          }
+        ]
+      },
+      "cta": {
+        "title": "CodeGen that Ships",
+        "description": "Generate code you can actually merge.",
+        "primaryButton": "Get Started Free",
+        "secondaryButton": "Read the Docs"
+      }
+    },
+    "contact": {
+      "meta": {
+        "title": "Parlons de votre entreprise",
+        "description": "Planifiez une consultation avec notre équipe pour discuter de la manière dont nous pouvons aider à rationaliser vos opérations et à stimuler la croissance de votre entreprise."
+      },
+      "hero": {
+        "benefits": [
+          {
+            "title": "Consultation personnalisée",
+            "description": "Obtenez des solutions sur mesure et des conseils d'experts spécifiques aux besoins de votre entreprise."
+          },
+          {
+            "title": "Intégration transparente",
+            "description": "Nous nous intégrons parfaitement à vos systèmes existants pour garantir une transition fluide et une perturbation minimale."
+          },
+          {
+            "title": "Conseils d'experts",
+            "description": "Notre équipe d'experts vous guidera tout au long du processus, en veillant à ce que vous tiriez le meilleur parti de notre plateforme."
+          }
+        ],
+        "form": {
+          "title": "Réservez une réunion",
+          "date": "Date",
+          "firstName": "Prénom",
+          "lastName": "Nom de famille",
+          "resume": "Téléchargez votre CV",
+          "cta": "Réservez la réunion"
+        }
+      }
+    }
+  }
+}

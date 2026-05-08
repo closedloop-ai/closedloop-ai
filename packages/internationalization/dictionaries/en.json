@@ -1,0 +1,261 @@
+{
+  "web": {
+    "global": {
+      "primaryCta": "Start building",
+      "secondaryCta": "Book a demo"
+    },
+    "header": {
+      "home": "Home",
+      "blog": "Blog",
+      "docs": "Docs",
+      "contact": "Contact",
+      "signIn": "Sign in",
+      "signUp": "Get started",
+      "developers": "Developers"
+    },
+    "home": {
+      "meta": {
+        "title": "Turn First-pass PRDs into Approved Implementation Plans",
+        "description": "ClosedLoop.AI turns product intent into a durable, team-reviewed plan that engineers can approve and execute. Stop rebuilding context across handoffs. Ship faster on real, existing codebases."
+      },
+      "hero": {
+        "announcement": "Introducing AI-powered architecture planning"
+      },
+      "features": {
+        "title": "The missing step between PRD and build",
+        "description": "ClosedLoop.AI makes Implementation Plans a first-class artifact: generated from your inputs, reviewed by your team, approved with clear ownership, and saved as the system of record.",
+        "items": [
+          {
+            "title": "Generate the Implementation Plan",
+            "description": "Start from a PRD or a lightweight issue. ClosedLoop.AI generates a structured Implementation Plan using your repo context, so the plan is explicit and ready for review."
+          },
+          {
+            "title": "Review and approve, fast",
+            "description": "Assign a final approver, collect edits, and move Draft to Approved. Plans become shared context for humans and agents, not disposable chat output."
+          },
+          {
+            "title": "Immutable versions, forever",
+            "description": "Every save creates a preserved version. Keep the full history of PRDs and plans so teams can trace decisions, reuse context, and diagnose failures when output is wrong."
+          },
+          {
+            "title": "Right-sized workflows",
+            "description": "Pick a preset workflow for the work at hand. Run lean for quick fixes or add gates for higher stakes work. Human touchpoints are explicit, owned, and tracked."
+          }
+        ]
+      },
+      "faq": {
+        "title": "Common questions",
+        "description": "Clear answers for teams who want to move fast.",
+        "cta": "Still have questions? Let's talk",
+        "items": [
+          {
+            "question": "What makes ClosedLoop.AI different from using an AI chat to plan work?",
+            "answer": "ClosedLoop.AI turns planning into a shared, durable artifact. Plans are saved, versioned, reviewed, and approved as a team. That means less context loss, fewer mismatches with the PRD, and a single source of truth that humans and agents can reuse."
+          },
+          {
+            "question": "Can ClosedLoop.AI start from something smaller than a full PRD?",
+            "answer": "Yes. ClosedLoop.AI supports lightweight inputs for small units of work, like bugs and quick fixes. You can start a workflow from an issue-sized artifact, generate the plan automatically, and only add rigor when the work demands it."
+          },
+          {
+            "question": "How do approvals work?",
+            "answer": "Artifacts move from Draft to Approved with a clearly assigned final approver. In workflows, stages can be owned by a human or an agent. Human-owned stages pause for review and can be approved, approved with comments, or rejected."
+          },
+          {
+            "question": "Do you keep history, or do plans get overwritten?",
+            "answer": "ClosedLoop.AI preserves every version. Each save creates a new immutable revision, so you can always reference prior decisions, reuse past context, and see how the plan evolved as the team learned."
+          },
+          {
+            "question": "Who is ClosedLoop.AI for?",
+            "answer": "Teams building on real codebases where context matters. Especially product managers and engineering leads at small companies who want a lightweight way to turn intent into approved plans, then move quickly with confidence."
+          }
+        ]
+      },
+      "cta": {
+        "title": "Make the plan the source of truth",
+        "description": "Stop losing context between product and engineering. Generate a plan, review it quickly, approve it, and move. ClosedLoop.AI makes AI-assisted development work on brownfield codebases because the handoff is explicit, durable, and reusable.",
+        "secondaryDescription": "Loved by teams building on real codebases"
+      }
+    },
+    "blog": {
+      "meta": {
+        "title": "Blog",
+        "description": "Insights on AI-powered development, code generation, and engineering best practices."
+      }
+    },
+    "developers": {
+      "meta": {
+        "title": "AI-Powered Software Delivery | Claude Code Plugin",
+        "description": "Best-practice orchestration agents out of the box. Fully extensible — automatically builds a dev agent bench tailored to your codebase."
+      },
+      "hero": {
+        "badge": "Claude Code Plugin",
+        "title": "Multi-Agent SDLC",
+        "titleHighlight": "Grounded in Your Codebase.",
+        "description": "Best-practice orchestration agents out of the box. Fully extensible — automatically builds a dev agent bench tailored to your codebase.",
+        "installButton": "Install in 30 Seconds",
+        "githubButton": "View on GitHub"
+      },
+      "features": {
+        "label": "Features",
+        "title": "Bootstrap, Plan, Ship",
+        "description": "Your SDLC, orchestrated dynamically at scale — including visual QA inspection.",
+        "items": [
+          {
+            "title": "Dynamic Agent Bench",
+            "description": "Automatically generates a bench of domain-expert agents tailored to your codebase. Detects languages, frameworks, and architecture patterns — your AI team understands your project from day one."
+          },
+          {
+            "title": "MECE Task Decomposition",
+            "description": "Work is atomically broken down into mutually exclusive, collectively exhaustive items. Each task is independent, fully scoped, and ready for parallel execution with no overlaps or gaps."
+          },
+          {
+            "title": "Battery of AI Code Review",
+            "description": "Every implementation is reviewed by 13 quality judges covering SOLID principles, DRY, KISS, readability, test quality, code organization, and technical accuracy. Excellent code, every time."
+          },
+          {
+            "title": "Shared Learnings",
+            "description": "Captures patterns from every run, validates them for quality, and shares them across your org. Teams build on each other's experience — the system gets smarter with every project."
+          },
+          {
+            "title": "Caching & Token Optimization",
+            "description": "Build validation, critic evaluations, cross-repo discovery, and agent results are all cached. Minimize token usage and skip redundant work — subsequent runs execute faster and cheaper."
+          },
+          {
+            "title": "Cross-Repo Orchestration",
+            "description": "Automatically discovers peer repositories and identifies cross-repo dependencies. Generates cross-repo PRDs for missing capabilities and coordinates changes across your entire stack."
+          }
+        ]
+      },
+      "commands": {
+        "label": "Slash Commands",
+        "title": "Powerful Workflows at Your Fingertips",
+        "description": "Simple commands orchestrate complex multi-agent workflows.",
+        "items": [
+          {
+            "name": "/bootstrap",
+            "description": "Analyze your repo and generate custom domain-expert agents"
+          },
+          {
+            "name": "/code",
+            "description": "Begin a coding session with full ClosedLoop orchestration"
+          },
+          {
+            "name": "/code-review",
+            "description": "Run comprehensive code review with multi-agent validation"
+          },
+          {
+            "name": "/amend-plan",
+            "description": "Discuss and apply amendments to implementation plans"
+          },
+          {
+            "name": "/process-learnings",
+            "description": "Process pending learnings from a run into org patterns"
+          },
+          {
+            "name": "/goal-stats",
+            "description": "Analyze goal performance and improvement trends across runs"
+          }
+        ]
+      },
+      "agents": {
+        "label": "Specialized Agents",
+        "title": "Purpose-Built AI Teammates",
+        "description": "Pre-built agents for orchestration, plus custom agents generated from your codebase.",
+        "items": [
+          {
+            "name": "agent-prompt-generator",
+            "description": "Generates custom domain-expert agents tailored to your project"
+          },
+          {
+            "name": "plan-draft-writer",
+            "description": "Creates high-level implementation plan drafts from PRDs"
+          },
+          {
+            "name": "plan-writer",
+            "description": "Refines plans by merging critic feedback and implementation details"
+          },
+          {
+            "name": "code-reviewer",
+            "description": "Reviews code for quality, security, and best practices"
+          },
+          {
+            "name": "pre-explorer",
+            "description": "Pre-explores codebase to produce code maps and investigation logs"
+          },
+          {
+            "name": "implementation-subagent",
+            "description": "Implements requirements with self-verification gates"
+          },
+          {
+            "name": "build-validator",
+            "description": "Discovers and runs project validation commands"
+          },
+          {
+            "name": "visual-qa-subagent",
+            "description": "Performs visual QA inspection via Playwright automation"
+          }
+        ]
+      },
+      "installation": {
+        "label": "Get Started",
+        "title": "Install in 30 Seconds",
+        "description": "One plugin. Zero dependencies. Install via the plugin marketplace.",
+        "steps": [
+          {
+            "title": "Add the Plugin Marketplace",
+            "description": "Register the ClosedLoop marketplace with Claude Code:",
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
+          },
+          {
+            "title": "Install ClosedLoop Core",
+            "description": "Install the plugin from the marketplace:",
+            "code": "/plugin install closedloop-core"
+          },
+          {
+            "title": "Bootstrap & Code",
+            "description": "Generate agents for your project, then start coding:",
+            "code": "/bootstrap && /code \"Path to your PRD\""
+          }
+        ]
+      },
+      "cta": {
+        "title": "CodeGen that Ships",
+        "description": "Generate code you can actually merge.",
+        "primaryButton": "Get Started Free",
+        "secondaryButton": "Read the Docs"
+      }
+    },
+    "contact": {
+      "meta": {
+        "title": "Let's Transform How Your Team Ships Code",
+        "description": "Schedule a demo with our engineering team to see how we can help you go from PRDs to production-ready code in minutes. We'll show you real examples with your tech stack and discuss custom solutions for your engineering organization."
+      },
+      "hero": {
+        "benefits": [
+          {
+            "title": "Custom Tech Stack Integration",
+            "description": "We'll configure the platform to work seamlessly with your existing tools, frameworks, and development workflows."
+          },
+          {
+            "title": "Architecture Review Session",
+            "description": "Our engineering team will review your architecture and show you how the generated code fits into your systems."
+          },
+          {
+            "title": "Team Training & Onboarding",
+            "description": "Comprehensive onboarding for your engineering team, including best practices for reviewing and extending generated code."
+          }
+        ],
+        "form": {
+          "title": "Book a demo",
+          "date": "Preferred date",
+          "firstName": "First name",
+          "lastName": "Last name",
+          "company": "Company",
+          "role": "Your role",
+          "teamSize": "Engineering team size",
+          "cta": "Schedule demo"
+        }
+      }
+    }
+  }
+}

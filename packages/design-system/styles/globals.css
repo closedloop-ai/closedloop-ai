@@ -1,0 +1,276 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@source "../**/*.{ts,tsx}";
+
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.985 0.001 267);
+  --foreground: oklch(0.232 0 0);
+  --card: oklch(0.989 0 0);
+  --card-foreground: oklch(0.232 0 0);
+  --popover: oklch(0.989 0 0);
+  --popover-foreground: oklch(0.232 0 0);
+  --primary: oklch(0.528 0.214 267);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.925 0.058 146.3);
+  --secondary-foreground: oklch(0.381 0.113 149);
+  --muted: oklch(0.7 0 0 / 0.12);
+  --muted-foreground: oklch(0.466 0 0);
+  --accent: oklch(0.94 0.04 267);
+  --accent-foreground: oklch(0.232 0 0);
+  --destructive: oklch(0.62 0.22 29.2);
+  --destructive-foreground: oklch(1 0 0);
+  --success: oklch(0.629 0.144 155.113);
+  --success-foreground: oklch(0.35 0.1 165);
+  --warning: oklch(0.82 0.17 85);
+  --warning-foreground: oklch(0.45 0.12 85);
+  --info: oklch(0.6 0.15 250);
+  --info-foreground: oklch(0.45 0.12 250);
+  --ai: oklch(0.6 0.2 295);
+  --ai-foreground: oklch(0.4 0.15 295);
+  --border: oklch(0.5 0.008 267 / 0.1);
+  --input: oklch(1 0 0 / 0);
+  --input-border: oklch(0.5 0.008 267 / 0.14);
+  --ring: oklch(0.861 0.04 250);
+  --chart-1: oklch(0.554 0.214 266.2);
+  --chart-2: oklch(0.923 0.056 211);
+  --chart-3: oklch(0.908 0.115 148.6);
+  --chart-4: oklch(0.902 0.128 87.8);
+  --chart-5: oklch(0.756 0.162 38);
+  --radius: 0.5rem;
+  --sidebar: oklch(0.96 0.005 267);
+  --sidebar-foreground: oklch(0.253 0 0);
+  --sidebar-primary: oklch(0.322 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.92 0.008 267);
+  --sidebar-accent-foreground: oklch(0.322 0 0);
+  --sidebar-border: oklch(0.933 0 0);
+  --sidebar-ring: oklch(0.762 0 0);
+  --progress: oklch(0.6 0.005 267 / 0.2);
+  --progress-foreground: var(--primary);
+  --thinking: var(--primary);
+  --closedloop-violet: oklch(0.61 0.256 285.5);
+  --highlight: rgb(0 89 255 / 0.15);
+
+  /* Progress badge (agent status pill): fill, stroke, text. Same in dark (cascade from :root). */
+  --progress-badge-bg: oklch(0.94 0.035 317.076);
+  --progress-badge-border: oklch(0.94 0.035 317.076);
+  --progress-badge-text: oklch(0.5 0.2 319.047);
+
+  --shadow-inset:
+    0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
+
+  --font-weight-bold: 600;
+}
+
+.dark {
+  --background: oklch(0.24 0.005 270);
+  --foreground: oklch(0.948 0.002 270);
+  --card: oklch(0.285 0.012 270);
+  --card-foreground: oklch(0.943 0 0);
+  --popover: oklch(0.27 0.007 270);
+  --popover-foreground: oklch(0.943 0 0);
+  --primary: oklch(0.542 0.214 266);
+  --primary-foreground: oklch(0.976 0.014 263);
+  --secondary: oklch(0.346 0.063 150);
+  --secondary-foreground: oklch(0.808 0.176 141);
+  --muted: oklch(1 0.003 270 / 0.04);
+  --muted-foreground: oklch(0.759 0 0);
+  --accent: oklch(0.3 0.05 270);
+  --accent-foreground: oklch(0.95 0 270);
+  --destructive: oklch(0.62 0.22 29.2);
+  --destructive-foreground: oklch(1 0 0);
+  --success: oklch(0.6626 0.1659 148.11);
+  --success-foreground: oklch(0.7 0.12 165);
+  --warning: oklch(0.8068 0.1549 94.06);
+  --warning-foreground: oklch(0.85 0.15 85);
+  --info: oklch(0.55 0.12 250);
+  --info-foreground: oklch(0.75 0.15 250);
+  --ai: oklch(0.55 0.18 295);
+  --ai-foreground: oklch(0.8 0.15 295);
+  --border: oklch(1 0.005 270 / 0.06);
+  --input: oklch(0.27 0.007 270);
+  --input-border: oklch(0.5 0.01 270 / 0.25);
+  --ring: oklch(0.5 0.1 270 / 0.8);
+  --chart-1: oklch(0.385 0.158 266);
+  --chart-2: oklch(0.437 0.081 221);
+  --chart-3: oklch(0.43 0.093 158);
+  --chart-4: oklch(0.473 0.099 119);
+  --chart-5: oklch(0.4 0.094 52);
+  --sidebar: oklch(0.22 0 0);
+  --sidebar-foreground: oklch(0.887 0 0);
+  --sidebar-primary: oklch(0.476 0.199 270);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.262 0.008 270);
+  --sidebar-accent-foreground: oklch(0.961 0.002 270);
+  --sidebar-border: oklch(0.266 0.005 270);
+  --sidebar-ring: oklch(0.852 0.004 270);
+  --progress: oklch(1 0 0 / 0.14);
+  --progress-foreground: var(--primary);
+  --thinking: var(--primary);
+  --closedloop-violet: oklch(0.61 0.256 285.5);
+  --highlight: rgb(0 89 255 / 0.25);
+
+  --progress-badge-bg: oklch(0.3 0.04 317.076);
+  --progress-badge-border: oklch(0.3 0.04 317.076);
+  --progress-badge-text: oklch(0.74 0.23 319.047);
+
+  --shadow-inset:
+    0 1px 3px 0 rgb(0 0 0 / 0.35), 0 1px 2px -1px rgb(0 0 0 / 0.35);
+}
+
+@theme inline {
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-lg: 1rem;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-input-border: var(--input-border);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success-foreground: var(--success-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-success: var(--success);
+  --color-progress: var(--progress);
+  --color-progress-foreground: var(--progress-foreground);
+  --color-thinking: var(--thinking);
+  --color-closedloop-violet: var(--closedloop-violet);
+  --color-highlight: var(--highlight);
+  --color-ai: var(--ai);
+  --color-ai-foreground: var(--ai-foreground);
+  --shadow-inset: var(--shadow-inset);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+}
+
+/* This layer is added by shadcn/ui */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* This layer is by next-forge */
+@layer base {
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    @apply border-border;
+  }
+  * {
+    @apply min-w-0;
+  }
+  html {
+    text-rendering: optimizelegibility;
+  }
+  body {
+    @apply min-h-[100dvh];
+  }
+  input::placeholder,
+  textarea::placeholder {
+    @apply text-muted-foreground;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+/* Typography plugin */
+@utility prose {
+  --tw-prose-body: var(--color-foreground);
+  --tw-prose-headings: var(--color-foreground);
+  --tw-prose-lead: var(--color-muted-foreground);
+  --tw-prose-links: var(--color-primary);
+  --tw-prose-bold: var(--color-foreground);
+  --tw-prose-counters: var(--color-foreground);
+  --tw-prose-bullets: var(--color-muted-foreground);
+  --tw-prose-hr: var(--color-muted-foreground);
+  --tw-prose-quotes: var(--color-muted-foreground);
+  --tw-prose-quote-borders: var(--color-border);
+  --tw-prose-captions: var(--color-muted-foreground);
+  --tw-prose-code: var(--color-foreground);
+  --tw-prose-pre-code: var(--color-foreground);
+  --tw-prose-pre-bg: var(--color-background);
+  --tw-prose-th-borders: var(--color-border);
+  --tw-prose-td-borders: var(--color-border);
+  --tw-prose-invert-body: var(--color-foreground);
+  --tw-prose-invert-headings: var(--color-foreground);
+  --tw-prose-invert-lead: var(--color-muted-foreground);
+  --tw-prose-invert-links: var(--color-primary);
+  --tw-prose-invert-bold: var(--color-foreground);
+  --tw-prose-invert-counters: var(--color-foreground);
+  --tw-prose-invert-bullets: var(--color-foreground);
+  --tw-prose-invert-hr: var(--color-muted-foreground);
+  --tw-prose-invert-quotes: var(--color-muted-foreground);
+  --tw-prose-invert-quote-borders: var(--color-border);
+  --tw-prose-invert-captions: var(--color-muted-foreground);
+  --tw-prose-invert-code: var(--color-foreground);
+  --tw-prose-invert-pre-code: var(--color-foreground);
+  --tw-prose-invert-pre-bg: var(--color-background);
+  --tw-prose-invert-th-borders: var(--color-border);
+  --tw-prose-invert-td-borders: var(--color-border);
+}

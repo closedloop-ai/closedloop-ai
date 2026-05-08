@@ -1,0 +1,51 @@
+---
+title: "Getting Started"
+description: "The shortest path to a usable install, onboarding, and first completed loop."
+---
+
+ClosedLoop.ai works best when the initial setup is treated as system configuration, not as a one-time demo.
+
+There are three things to install before you can run a loop end-to-end:
+
+1. The **Claude Code plugins** — the agents, skills, and orchestration that power the closed loop.
+2. The **desktop client** — the localhost gateway that lets the web app drive local tools safely.
+3. A **connected repository** with at least one scoped artifact worth executing against.
+
+## Recommended path
+
+<CardGroup>
+  <Card title="Prerequisites" href="/getting-started/prerequisites">
+    The exact versions of Node, pnpm, Python, Claude Code, and system tools you need before you install anything.
+  </Card>
+
+  <Card title="Install the plugins" href="/getting-started/install-plugins">
+    One-line install for the six Claude Code plugins, plus interactive and development install paths.
+  </Card>
+
+  <Card title="Install the desktop client" href="/getting-started/install-desktop">
+    Install, launch, and authenticate the desktop client and its localhost gateway.
+  </Card>
+
+  <Card title="Prepare your repo and targets" href="/getting-started/prepare-your-repo-and-targets">
+    Make local execution predictable before you scale up docs or code generation.
+  </Card>
+
+  <Card title="From onboarding to first loop" href="/getting-started/from-onboarding-to-first-loop">
+    Convert the desktop onboarding flow into a durable setup and your first successful loop.
+  </Card>
+
+  <Card title="Run your first loop" href="/getting-started/first-loop">
+    A concrete walkthrough from an artifact to a reviewable PR with judges attached.
+  </Card>
+</CardGroup>
+
+## What success looks like
+
+By the end of this section you should have:
+
+- the six ClosedLoop Claude Code plugins installed in `~/.claude/plugins/cache/closedloop-ai/`
+- the desktop client running, with its tray icon reporting `ready` and a registered compute target
+- a sandbox directory configured, an API key stored, and a connected repository
+- one scoped artifact, executed through a full loop, landing a reviewable change
+
+Once that path works once, it works repeatably. Everything after is tuning.

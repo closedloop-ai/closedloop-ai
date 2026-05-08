@@ -1,0 +1,271 @@
+import type { JsonObject } from "@repo/api/src/types/common";
+import type { DocumentType, PlanJson } from "@repo/api/src/types/document";
+
+import {
+  EvaluationReportType,
+  type JudgesReport,
+} from "@repo/api/src/types/evaluation";
+import type { Loop } from "@repo/api/src/types/loop";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
+import { withDb } from "@repo/database";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
+import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
+import { z } from "zod";
+import { documentVersionService } from "@/app/documents/document-version-service";
+import { resetDocumentRoom } from "@/app/documents/room-utils";
+import { documentWhere } from "@/lib/artifact-adapters";
+import {
+  parseJsonArtifact,
+  upsertEvaluationWithJudgeScores,
+} from "@/lib/loops/loop-document-ingestion";
+import {
+  downloadArtifactFile,
+  downloadPromptSnapshotMarkdownEntries,
+} from "@/lib/loops/loop-state";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { judgesReportSchema } from "../judges-report-schema";
+import { defineHandler } from "./loop-command-handler";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Parsed artifacts relevant to PLAN / REQUEST_CHANGES commands. */
+export type PlanArtifacts = {
+  planContent: string | null;
+  questionsContent: string | null;
+  judgesReport: JudgesReport | null;
+  promptsSnapshot: PromptsSnapshot | null;
+};
+
+// ---------------------------------------------------------------------------
+// Download
+// ---------------------------------------------------------------------------
+
+/**
+ * Download and parse artifacts relevant to plan commands from S3.
+ * Only fetches plan.json, open-questions.md, judges.json, and prompt snapshots.
+ */
+export async function downloadPlanArtifacts(
+  stateKeyPrefix: string
+): Promise<PlanArtifacts> {
+  const [planJsonBuf, questionsBuf, judgesReportBuf, promptMarkdownEntries] =
+    await Promise.all([
+      downloadArtifactFile(stateKeyPrefix, "plan.json"),
+      downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
+      downloadArtifactFile(stateKeyPrefix, "judges.json"),
+      downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
+    ]);
+
+  const planContent = parseJsonArtifact<PlanJson>(
+    planJsonBuf,
+    "plan.json",
+    (p) => p.content
+  ) as string | null;
+
+  const questionsContent = questionsBuf ? questionsBuf.toString("utf-8") : null;
+
+  const judgesReport = parseJsonArtifact<JudgesReport>(
+    judgesReportBuf,
+    "judges.json",
+    (p) => p
+  ) as JudgesReport | null;
+
+  const promptsSnapshot: PromptsSnapshot | null =
+    parsePromptsSnapshotFromMarkdownEntries(
+      promptMarkdownEntries,
+      "[loop-document-ingestion]"
+    );
+
+  return { planContent, questionsContent, judgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion
+// ---------------------------------------------------------------------------
+
+/**
+ * Ingest plan artifacts into the platform.
+ * Creates a new artifact version with the plan content and updates status to DRAFT.
+ * Falls back to questionsContent if no plan content (mirrors handleWorkflowSuccess).
+ * Also persists judges report and creates a workstream completion event.
+ */
+export async function ingestPlanArtifacts(
+  loop: Loop,
+  organizationId: string,
+  artifacts: PlanArtifacts
+): Promise<void> {
+  const documentId = loop.documentId;
+  if (!documentId) {
+    return;
+  }
+
+  // Fall back to questions content if no plan (same as webhook path)
+  const finalContent = artifacts.planContent ?? artifacts.questionsContent;
+  if (!finalContent) {
+    log.info(
+      "[loop-document-ingestion] No plan or questions content to ingest",
+      {
+        documentId,
+      }
+    );
+    return;
+  }
+
+  await documentVersionService.createVersion(
+    documentId,
+    organizationId,
+    null,
+    finalContent
+  );
+
+  const updatedArtifact = await withDb((db) =>
+    db.artifact.update({
+      where: documentWhere({ id: documentId, organizationId }),
+      data: { status: "DRAFT" },
+      select: {
+        id: true,
+        organizationId: true,
+        slug: true,
+        subtype: true,
+        document: { select: { latestVersion: true } },
+      },
+    })
+  );
+
+  // Reset the Liveblocks room so any stale Y.Doc content is cleared.
+  if (updatedArtifact.slug) {
+    waitUntil(
+      resetDocumentRoom({
+        id: updatedArtifact.id,
+        organizationId: updatedArtifact.organizationId,
+        slug: updatedArtifact.slug,
+        type: updatedArtifact.subtype as DocumentType,
+        latestVersion: updatedArtifact.document?.latestVersion ?? 1,
+      })
+    );
+  }
+
+  // Persist prompt registry entries from snapshot (idempotent upsert)
+  await upsertFromSnapshot(organizationId, artifacts.promptsSnapshot);
+
+  // Persist judges report if available (upsert for idempotency)
+  if (artifacts.judgesReport) {
+    await withDb.tx(async (tx) => {
+      await upsertEvaluationWithJudgeScores({
+        artifactId: documentId,
+        loopId: loop.id,
+        organizationId,
+        reportType: EvaluationReportType.Plan,
+        report: artifacts.judgesReport!,
+        tx,
+      });
+    });
+
+    log.info("[loop-document-ingestion] Persisted judges report", {
+      documentId,
+      reportId: artifacts.judgesReport.report_id,
+    });
+  }
+
+  // Create workstream completion event (idempotent — skip if already exists)
+  if (loop.workstreamId) {
+    await withDb(async (db) => {
+      const existing = await db.workstreamEvent.findFirst({
+        where: {
+          workstreamId: loop.workstreamId!,
+          type: "LOOP_COMPLETED",
+          data: { path: ["loopId"], equals: loop.id },
+        },
+      });
+      if (!existing) {
+        await db.workstreamEvent.create({
+          data: {
+            workstreamId: loop.workstreamId!,
+            type: "LOOP_COMPLETED",
+            actorType: "system",
+            data: {
+              loopId: loop.id,
+              documentId,
+              command: loop.command,
+              conclusion: "success",
+            },
+          },
+        });
+      }
+    });
+  }
+
+  log.info("[loop-document-ingestion] Plan content ingested", {
+    documentId,
+    contentLength: finalContent.length,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Upload-based loading (desktop path)
+// ---------------------------------------------------------------------------
+
+const planUploadSchema = z.object({
+  plan: z
+    .object({
+      content: z.string(),
+      raw: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+  openQuestions: z.string().optional(),
+  judges: judgesReportSchema.optional(),
+});
+
+/**
+ * Extract plan artifacts from uploaded JSON (desktop harness).
+ * Mirrors downloadPlanArtifacts but reads from the DB-stored uploadedArtifacts.
+ */
+function planArtifactsFromUpload(uploaded: JsonObject): PlanArtifacts {
+  const parsed = planUploadSchema.parse(uploaded);
+  const planContent = parsed.plan?.content ?? null;
+  const questionsContent = parsed.openQuestions ?? null;
+  const judgesReport = (parsed.judges as JudgesReport) ?? null;
+  // Prompt snapshots not available in desktop upload path
+  const promptsSnapshot: PromptsSnapshot | null = null;
+
+  return { planContent, questionsContent, judgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+export const planHandler = defineHandler<PlanArtifacts>({
+  // PLAN loops require a repo — Claude needs access to the codebase to generate plans.
+  requiresRepo: true,
+  requiresParent: false,
+  includePrimaryArtifact: false,
+
+  downloadArtifacts(stateKeyPrefix: string) {
+    return downloadPlanArtifacts(stateKeyPrefix);
+  },
+
+  downloadFromUpload: planArtifactsFromUpload,
+
+  async ingest(loop: Loop, organizationId: string, artifacts: PlanArtifacts) {
+    await ingestPlanArtifacts(loop, organizationId, artifacts);
+  },
+});
+
+export const requestChangesHandler = defineHandler<PlanArtifacts>({
+  requiresRepo: true,
+  requiresParent: true,
+  includePrimaryArtifact: true,
+
+  downloadArtifacts(stateKeyPrefix: string) {
+    return downloadPlanArtifacts(stateKeyPrefix);
+  },
+
+  downloadFromUpload: planArtifactsFromUpload,
+
+  async ingest(loop: Loop, organizationId: string, artifacts: PlanArtifacts) {
+    await ingestPlanArtifacts(loop, organizationId, artifacts);
+  },
+});
