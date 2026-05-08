@@ -41,7 +41,7 @@ export const Hero = ({ dictionary }: HeroProps) => {
             </Button>
             <Button asChild className="gap-2" size="lg" variant="outline">
               <a
-                href="https://github.com/closedloop-ai/claude_code"
+                href="https://github.com/closedloop-ai/claude-plugins"
                 rel="noopener noreferrer"
                 target="_blank"
               >

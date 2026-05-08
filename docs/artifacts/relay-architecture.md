@@ -4,7 +4,7 @@ Last updated: 2026-02-27
 
 ## 1. Purpose
 
-This document is the single technical reference for ClosedLoop Relay in `symphony-alpha`.
+This document is the single technical reference for ClosedLoop Relay.
 It consolidates:
 
 - PRD intent and tier model
