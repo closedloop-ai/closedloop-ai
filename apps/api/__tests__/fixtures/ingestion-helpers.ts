@@ -47,7 +47,7 @@ export function makeSuccessResult(
     fullName: "org/repo",
     prUrl: "https://github.com/org/repo/pull/42",
     prNumber: 42,
-    prTitle: "Symphony: feature",
+    prTitle: "ClosedLoop: feature",
     branchName: "symphony/feature",
     baseBranch: "main",
     hasChanges: true,

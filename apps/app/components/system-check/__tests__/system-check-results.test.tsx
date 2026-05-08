@@ -142,7 +142,7 @@ describe("SystemCheckResults — required/optional partition", () => {
           requiredPassed,
           {
             id: "plugin-code",
-            label: "Symphony Plugin",
+            label: "ClosedLoop Plugin",
             required: true,
             passed: true,
           },
@@ -177,7 +177,7 @@ describe("SystemCheckResults — required/optional partition", () => {
       "Git"
     );
     expect(getCategoryCard(requiredSection, "Plugins").textContent).toContain(
-      "Symphony Plugin"
+      "ClosedLoop Plugin"
     );
     expect(getCategoryCard(requiredSection, "Apps").textContent).toContain(
       "Gateway Version"

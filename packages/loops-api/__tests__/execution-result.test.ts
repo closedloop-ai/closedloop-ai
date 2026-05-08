@@ -48,7 +48,7 @@ describe("parseExecutionResultFile", () => {
         has_changes: true,
         pr_url: "https://github.com/owner/repo/pull/42",
         pr_number: 42,
-        pr_title: "Symphony: feature",
+        pr_title: "ClosedLoop: feature",
         branch_name: "feat/login",
         base_ref: "main",
         base_branch: "develop",
@@ -59,7 +59,7 @@ describe("parseExecutionResultFile", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok && result.results[0].status === "success") {
-      expect(result.results[0].prTitle).toBe("Symphony: feature");
+      expect(result.results[0].prTitle).toBe("ClosedLoop: feature");
       expect(result.results[0].baseBranch).toBe("develop");
       expect(result.results[0].githubId).toBe(999);
     }
