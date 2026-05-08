@@ -142,8 +142,10 @@ export function HealthCheckDialog({
   const queryClient = useQueryClient();
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
   const displayTargetLabel = getDisplayTargetLabel(targetLabel);
+  const shouldLoadLatestRelease = latestVersionOverride === undefined;
   const latestReleaseQueryEnabled = shouldEnableLatestReleaseQuery({
-    canOpen: !isBlockingMode && canOpenThisMount.current,
+    canOpen:
+      shouldLoadLatestRelease && !isBlockingMode && canOpenThisMount.current,
     mounted,
   });
   const { data: latestRelease, isLoading: isLatestReleaseLoading } =
@@ -159,9 +161,9 @@ export function HealthCheckDialog({
     () =>
       healthCheckOptions(targetKey, expectedMcpUrl, {
         latestVersion,
-        relayTargetId: isBlockingMode ? relayTargetId : null,
+        relayTargetId,
       }),
-    [expectedMcpUrl, isBlockingMode, latestVersion, relayTargetId, targetKey]
+    [expectedMcpUrl, latestVersion, relayTargetId, targetKey]
   );
 
   // Client-only mount flag — avoids SSR/hydration mismatch
@@ -192,7 +194,7 @@ export function HealthCheckDialog({
       latestReleaseQueryEnabled: latestReleaseQueryEnabled && !isBlockingMode,
     }),
     initialData,
-    refetchOnMount: "always" as const,
+    refetchOnMount: true,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });

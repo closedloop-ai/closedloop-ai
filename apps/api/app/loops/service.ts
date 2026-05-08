@@ -15,8 +15,10 @@ import {
   type LoopEvent,
   type LoopEventsFilters,
   type LoopEventsPaginatedResponse,
+  LoopEventType,
   type LoopListFilters,
   LoopStatus,
+  type LoopSupportArtifact,
   type LoopUsageByCommand,
   type LoopUsageByUser,
   type LoopUsageSummary,
@@ -36,6 +38,10 @@ import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { basicUserSelect, getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  generateDownloadUrl,
+  validateKeyBelongsToLoop,
+} from "@/lib/loops/loop-state";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
 import { LOOP_ACTIVE_INDEX_NAME } from "./loop-constants";
 import {
@@ -47,6 +53,7 @@ import {
   ReplayDetectedError,
   UnauthorizedRepoError,
 } from "./loop-errors";
+import { shouldIgnoreEventForTerminalLoop } from "./validators";
 
 /**
  * Fetch the effective concurrent loop limit for an organization from the DB.
@@ -113,6 +120,25 @@ const TERMINAL_STATUSES = new Set<LoopStatus>([
   LoopStatus.Cancelled,
   LoopStatus.TimedOut,
 ]);
+
+type FindLoopByIdOptions = {
+  /**
+   * Resolves support artifact download URLs for detail views. Keep disabled for
+   * status/event hot paths that only need the loop record.
+   */
+  includeSupportArtifacts?: boolean;
+};
+
+const supportBundleFileSchema = z.object({
+  name: z.string().min(1).optional(),
+  key: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative().optional(),
+});
+
+const supportBundleEventDataSchema = z.object({
+  keys: z.array(z.string().min(1)).min(1).max(2),
+  files: z.array(supportBundleFileSchema).max(2).optional(),
+});
 
 /**
  * Loop statuses that the partial unique index `loops_active_artifact_command_version_key`
@@ -511,6 +537,69 @@ function toLoopWithUser(
   };
 }
 
+function supportArtifactNameFromKey(key: string): string {
+  return key.split("/").at(-1) ?? key;
+}
+
+async function resolveSupportArtifacts(
+  loopId: string,
+  organizationId: string
+): Promise<LoopSupportArtifact[]> {
+  const events = await withDb((db) =>
+    db.loopEvent.findMany({
+      where: {
+        loopId,
+        type: LoopEventType.SupportBundleUploaded,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1,
+    })
+  );
+  const event = events[0];
+  if (!event) {
+    return [];
+  }
+
+  const parsed = supportBundleEventDataSchema.safeParse(event.data);
+  if (!parsed.success) {
+    log.warn("[loops-service] Ignoring malformed support bundle event", {
+      loopId,
+      eventId: event.id,
+    });
+    return [];
+  }
+
+  const filesByKey = new Map(
+    (parsed.data.files ?? []).map((file) => [file.key, file])
+  );
+  const artifacts: LoopSupportArtifact[] = [];
+  for (const key of parsed.data.keys) {
+    if (!validateKeyBelongsToLoop(key, organizationId, loopId)) {
+      log.warn("[loops-service] Ignoring out-of-scope support artifact key", {
+        loopId,
+        key,
+      });
+      continue;
+    }
+    try {
+      const file = filesByKey.get(key);
+      artifacts.push({
+        name: file?.name ?? supportArtifactNameFromKey(key),
+        key,
+        downloadUrl: await generateDownloadUrl(key),
+        ...(file?.sizeBytes === undefined ? {} : { sizeBytes: file.sizeBytes }),
+      });
+    } catch (error) {
+      log.warn("[loops-service] Failed to generate support artifact URL", {
+        loopId,
+        key,
+        error,
+      });
+    }
+  }
+  return artifacts;
+}
+
 /**
  * Default maximum concurrent active (PENDING/CLAIMED/RUNNING) loops per user.
  * Prevents resource exhaustion via rapid loop creation.
@@ -629,7 +718,8 @@ export const loopsService = {
    */
   async findById(
     id: string,
-    organizationId: string
+    organizationId: string,
+    options: FindLoopByIdOptions = {}
   ): Promise<LoopDetail | null> {
     const loop = await withDb((db) =>
       db.loop.findUnique({
@@ -665,11 +755,15 @@ export const loopsService = {
     }
     const additionalRepos = _enrichAdditionalReposWithPr(result, pullRequests);
     const primaryPullRequest = _findPrimaryRepoPr(result, pullRequests);
+    const supportArtifacts = options.includeSupportArtifacts
+      ? await resolveSupportArtifacts(id, organizationId)
+      : [];
 
     return {
       ...result,
       additionalRepos,
       primaryPullRequest,
+      supportArtifacts,
     };
   },
 
@@ -1159,10 +1253,7 @@ export const loopsService = {
     // and the insert below, allowing a late non-terminal event through.
     // Acceptable for V1 — the unique constraint prevents duplicates and the
     // frontend displays state from loop.status, not event order.
-    if (
-      TERMINAL_STATUSES.has(loop.status as LoopStatus) &&
-      !["completed", "error", "cancelled"].includes(event.type)
-    ) {
+    if (shouldIgnoreEventForTerminalLoop(loop.status, event.type)) {
       return false;
     }
 

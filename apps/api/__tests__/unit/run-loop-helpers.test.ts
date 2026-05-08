@@ -1,8 +1,12 @@
 /**
  * Unit tests for resolveLoopContext in run-loop-helpers.ts.
  *
- * Covers the targetRepo and targetBranch fallback chains added in this session:
- *   body.repo → artifact → source → projectSettings.defaultRepository
+ * Covers the targetRepo and targetBranch fallback chains:
+ *   targetRepo:   body.repo → artifact → source → resolver (override / single-team
+ *                 inheritance / legacy fallback)
+ *   targetBranch: body.repo → artifact → source → "main" (Q-002 of PLN-237 — the
+ *                 GitHub default branch is the canonical choice and is supplied
+ *                 by the caller; project-stored branches are ignored)
  *
  * Also verifies contextRefs construction, workstream resolution, and
  * parentLoopId lookup gating on handler.requiresParent.
@@ -40,6 +44,13 @@ vi.mock("@/app/loops/service", () => ({
   loopsService: {
     findLatestCompletedForArtifact: vi.fn(),
     findLatestStateBearingDesktopForArtifact: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/teams/service", () => ({
+  teamsService: {
+    getRepositoriesByProject: vi.fn().mockResolvedValue([]),
+    countTeamsForProject: vi.fn().mockResolvedValue(0),
   },
 }));
 
@@ -178,7 +189,9 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
     expect(result.targetRepo).toBe("source/repo");
   });
 
-  it("falls back to projectSettings.defaultRepository.repoFullName when source and artifact have no targetRepo", async () => {
+  it("falls back to legacy projectSettings.defaultRepository.repoFullName when team pool is empty", async () => {
+    // Pre-migration project: team pool empty so the resolver picks up the
+    // legacy `defaultRepository` for primary fullName.
     const artifact = buildArtifact({ targetRepo: null });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
       workstream: buildWorkstream({
@@ -273,7 +286,10 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
     expect(result.targetBranch).toBe("source-branch");
   });
 
-  it("falls back to projectSettings.defaultRepository.branch when source and artifact have no targetBranch", async () => {
+  it("ignores any branch stored on projectSettings.defaultRepository (Q-002)", async () => {
+    // The pre-migration `defaultRepository.branch` is no longer honored — the
+    // resolver only consumes the repo identity. The fallback chain skips the
+    // project-level branch entirely and lands on the "main" last-resort guard.
     const artifact = buildArtifact({ targetBranch: null });
     mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
       workstream: buildWorkstream({
@@ -295,7 +311,7 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
       "artifact-1"
     );
 
-    expect(result.targetBranch).toBe("develop");
+    expect(result.targetBranch).toBe("main");
   });
 
   it("defaults to 'main' when all fallbacks are exhausted", async () => {

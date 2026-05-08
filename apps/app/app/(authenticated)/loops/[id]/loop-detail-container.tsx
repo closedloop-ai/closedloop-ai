@@ -4,6 +4,7 @@ import { useFeatureFlag } from "@repo/analytics/client";
 import type {
   AdditionalRepoRefWithPr,
   LoopEventError,
+  LoopSupportArtifact,
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import { LoopStatus } from "@repo/api/src/types/loop";
@@ -28,7 +29,9 @@ import {
   ClockIcon,
   CloudIcon,
   CoinsIcon,
+  DownloadIcon,
   ExternalLinkIcon,
+  FileTextIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   Loader2Icon,
@@ -41,6 +44,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { EmptyState } from "@/components/empty-state";
 import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
@@ -386,6 +390,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
   const isActive = CANCELLABLE_LOOP_STATUSES.has(loop.status);
   const defaultTab = isActive ? "live" : "audit-log";
+  const supportArtifacts = loop.supportArtifacts ?? [];
   const diagnosticsLogTail = ghostLoopUx
     ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
     : undefined;
@@ -518,7 +523,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         </details>
       )}
 
-      {/* Tabs: Live / Audit Log */}
+      {/* Tabs: Live / Audit Log / Artifacts */}
       <Tabs defaultValue={defaultTab}>
         <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
           <TabsTrigger
@@ -536,6 +541,12 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
           >
             Audit Log
           </TabsTrigger>
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="artifacts"
+          >
+            Artifacts
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent className="mt-4" value="live">
@@ -546,6 +557,10 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
         <TabsContent className="mt-4" value="audit-log">
           <LoopAuditLog loopId={id} />
+        </TabsContent>
+
+        <TabsContent className="mt-4" value="artifacts">
+          <SupportArtifacts artifacts={supportArtifacts} />
         </TabsContent>
       </Tabs>
 
@@ -612,5 +627,40 @@ function ArtifactLink({ documentId }: { documentId: string }) {
       <Badge variant="outline">Artifact</Badge>
       {renderLabel()}
     </div>
+  );
+}
+
+function SupportArtifacts({ artifacts }: { artifacts: LoopSupportArtifact[] }) {
+  if (artifacts.length === 0) {
+    return (
+      <EmptyState
+        className="rounded-md border border-dashed"
+        description="This loop did not produce support artifacts."
+        icon={FileTextIcon}
+        title="No support artifacts uploaded"
+      />
+    );
+  }
+
+  return (
+    <section className="space-y-2">
+      <h2 className="font-medium text-sm">Support Artifacts</h2>
+      <div className="flex flex-wrap gap-2">
+        {artifacts.map((artifact) => (
+          <a
+            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+            download={artifact.name}
+            href={artifact.downloadUrl}
+            key={artifact.key}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <FileTextIcon className="h-4 w-4 text-muted-foreground" />
+            <span>{artifact.name}</span>
+            <DownloadIcon className="h-3.5 w-3.5 text-muted-foreground" />
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }

@@ -31,6 +31,7 @@ export const TelemetryCategory = {
   CommandCancelled: "command.cancelled",
   CommandGatewayError: "command.gateway_error",
   DesktopOutboundNetworkDecision: "desktop.outbound_network_decision",
+  DesktopSupportUpload: "desktop.support_upload",
   PreflightBinaryNotFound: "preflight.binary_not_found",
   PreflightScriptNotFound: "preflight.script_not_found",
   PreflightSpawnFailed: "preflight.spawn_failed",
@@ -66,6 +67,7 @@ export type TelemetrySeverity =
 export const OutboundNetworkSurface = {
   Unknown: "unknown",
   LoopAttachmentDownload: "loop_attachment_download",
+  LoopSupportUpload: "loop_support_upload",
   DeployHealthCheck: "deploy_health_check",
 } as const;
 
@@ -114,6 +116,25 @@ export const OutboundNetworkDecisionReason = {
 
 export type OutboundNetworkDecisionReason =
   (typeof OutboundNetworkDecisionReason)[keyof typeof OutboundNetworkDecisionReason];
+
+export const SupportUploadReason = {
+  Unknown: "unknown",
+  AlreadyUploaded: "already_uploaded",
+  MissingS3StateKey: "missing_s3_state_key",
+  NoUploadableFiles: "no_uploadable_files",
+  UploadUrlHttpError: "upload_url_http_error",
+  UploadUrlMalformedResponse: "upload_url_malformed_response",
+  UploadUrlSuccessFalse: "upload_url_success_false",
+  UploadUrlMissingUrl: "upload_url_missing_url",
+  UploadUrlRequestFailed: "upload_url_request_failed",
+  PutUrlDenied: "put_url_denied",
+  PutHttpError: "put_http_error",
+  PutRequestFailed: "put_request_failed",
+  EventPostFailed: "event_post_failed",
+} as const;
+
+export type SupportUploadReason =
+  (typeof SupportUploadReason)[keyof typeof SupportUploadReason];
 
 function objectValues<T extends Record<string, string>>(values: T) {
   return new Set(Object.values(values));
@@ -235,6 +256,17 @@ const outboundNetworkDiagnosticsSchema = z.object({
   statusCode: z.number().int().nonnegative().optional(),
 });
 
+const supportUploadDiagnosticsSchema = z.object({
+  outcome: z.enum(["started", "skipped", "succeeded", "failed"]),
+  loopId: z.string().optional(),
+  s3StateKeySuffix: z.string().optional(),
+  attemptedLogicalNames: z.array(z.string()).max(4).optional(),
+  attemptedUploadedNames: z.array(z.string()).max(4).optional(),
+  reason: tolerantOutboundValue(SupportUploadReason).optional(),
+  uploadedCount: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+});
+
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
   exitCode: z.number().optional(),
@@ -274,6 +306,7 @@ const desktopTelemetryDiagnosticsSchema = z.object({
   decisionTableVerification:
     decisionTableVerificationDiagnosticsSchema.optional(),
   outboundNetwork: outboundNetworkDiagnosticsSchema.optional(),
+  supportUpload: supportUploadDiagnosticsSchema.optional(),
   spawnMeta: z
     .object({
       command: z.string(),

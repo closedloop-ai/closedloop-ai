@@ -23,12 +23,13 @@ import {
   launchLoopOnDesktop,
   stopDesktopLoop,
 } from "./loop-desktop";
+import { getStateKeyPrefix } from "./loop-state";
 
 export class DesktopComputeProvider implements ComputeProvider {
-  prepareContext(_ctx: LaunchContext): Promise<PreparedContext> {
-    // Desktop loops don't upload context to S3 — context travels inline.
+  prepareContext(ctx: LaunchContext): Promise<PreparedContext> {
+    // Desktop loops don't upload context to S3; this prefix scopes support artifacts.
     return Promise.resolve({
-      s3StateKey: null,
+      s3StateKey: getStateKeyPrefix(ctx.organizationId, ctx.loopId),
       s3ContextKey: null,
       s3ContextUrl: null,
     });
@@ -36,7 +37,7 @@ export class DesktopComputeProvider implements ComputeProvider {
 
   async dispatch(
     ctx: LaunchContext,
-    _prepared: PreparedContext
+    prepared: PreparedContext
   ): Promise<LaunchResult> {
     const commandId = await launchLoopOnDesktop({
       loopId: ctx.loopId,
@@ -54,9 +55,10 @@ export class DesktopComputeProvider implements ComputeProvider {
       localRepoPath: ctx.localRepoPath,
       additionalRepos: ctx.additionalRepos,
       documentId: ctx.documentId ?? undefined,
+      s3StateKey: prepared.s3StateKey ?? undefined,
     });
 
-    return { containerId: commandId, s3StateKey: null };
+    return { containerId: commandId, s3StateKey: prepared.s3StateKey };
   }
 
   async abort(

@@ -1,4 +1,8 @@
-import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  LoopEventType,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
 import {
   afterEach,
   beforeEach,
@@ -39,10 +43,22 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () => ({
 
 vi.mock("@/lib/db-utils", () => dbUtilsModuleMock());
 
+vi.mock("@/lib/loops/loop-state", () => ({
+  generateDownloadUrl: vi.fn((key: string) =>
+    Promise.resolve(`https://download.example/${encodeURIComponent(key)}`)
+  ),
+  validateKeyBelongsToLoop: vi.fn(
+    (key: string, organizationId: string, loopId: string) =>
+      !(key.includes("..") || key.includes("./")) &&
+      key.startsWith(`${organizationId}/loops/${loopId}/`)
+  ),
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
+import { generateDownloadUrl } from "@/lib/loops/loop-state";
 import {
   BranchNotFoundError,
   isLoopAlreadyActiveError,
@@ -707,6 +723,7 @@ describe("loopsService.findById (org-scoped)", () => {
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
       const mockDb = {
         loop: { findUnique: mockFindUnique },
+        loopEvent: { findMany: vi.fn().mockResolvedValue([]) },
       };
       return callback(mockDb);
     });
@@ -940,7 +957,10 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
 
     (mockWithDb as Mock).mockImplementation(
       (callback: (db: unknown) => unknown) => {
-        return callback({ loop: { findUnique: mockFindUnique } });
+        return callback({
+          loop: { findUnique: mockFindUnique },
+          loopEvent: { findMany: vi.fn().mockResolvedValue([]) },
+        });
       }
     );
 
@@ -963,7 +983,10 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
 
     (mockWithDb as Mock).mockImplementation(
       (callback: (db: unknown) => unknown) => {
-        return callback({ loop: { findUnique: mockFindUnique } });
+        return callback({
+          loop: { findUnique: mockFindUnique },
+          loopEvent: { findMany: vi.fn().mockResolvedValue([]) },
+        });
       }
     );
 
@@ -1004,7 +1027,10 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
 
     (mockWithDb as Mock).mockImplementation(
       (callback: (db: unknown) => unknown) => {
-        return callback({ loop: { findUnique: mockFindUnique } });
+        return callback({
+          loop: { findUnique: mockFindUnique },
+          loopEvent: { findMany: vi.fn().mockResolvedValue([]) },
+        });
       }
     );
 
@@ -1031,5 +1057,153 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
     expect(
       repos.find((r) => r.fullName === "acme/backend")?.pullRequest
     ).toBeNull();
+  });
+
+  it("returns support artifacts from the latest valid support bundle event", async () => {
+    const dbRow = makeLoopDbRow({ id: "loop-support-1" });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+    const mockFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "event-support-1",
+        data: {
+          keys: [
+            "org-enrich/loops/loop-support-1/run-1/support/claude-output.jsonl",
+            "org-enrich/loops/loop-support-1/run-1/support/perf.jsonl",
+          ],
+          files: [
+            {
+              name: "claude-output.jsonl",
+              key: "org-enrich/loops/loop-support-1/run-1/support/claude-output.jsonl",
+              sizeBytes: 10,
+            },
+            {
+              name: "perf.jsonl",
+              key: "org-enrich/loops/loop-support-1/run-1/support/perf.jsonl",
+              sizeBytes: 20,
+            },
+          ],
+        },
+      },
+    ]);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) =>
+        callback({
+          loop: { findUnique: mockFindUnique },
+          loopEvent: { findMany: mockFindMany },
+        })
+    );
+
+    const result = await loopsService.findById("loop-support-1", "org-enrich", {
+      includeSupportArtifacts: true,
+    });
+
+    expect(result?.supportArtifacts).toEqual([
+      {
+        name: "claude-output.jsonl",
+        key: "org-enrich/loops/loop-support-1/run-1/support/claude-output.jsonl",
+        downloadUrl:
+          "https://download.example/org-enrich%2Floops%2Floop-support-1%2Frun-1%2Fsupport%2Fclaude-output.jsonl",
+        sizeBytes: 10,
+      },
+      {
+        name: "perf.jsonl",
+        key: "org-enrich/loops/loop-support-1/run-1/support/perf.jsonl",
+        downloadUrl:
+          "https://download.example/org-enrich%2Floops%2Floop-support-1%2Frun-1%2Fsupport%2Fperf.jsonl",
+        sizeBytes: 20,
+      },
+    ]);
+    expect(mockFindMany).toHaveBeenCalledWith({
+      where: {
+        loopId: "loop-support-1",
+        type: LoopEventType.SupportBundleUploaded,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1,
+    });
+  });
+
+  it("omits invalid support artifact keys", async () => {
+    const dbRow = makeLoopDbRow({ id: "loop-support-2" });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+    const validKey =
+      "org-enrich/loops/loop-support-2/run-1/support/claude-output.jsonl";
+    const mockFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "event-support-2",
+        data: {
+          keys: [
+            validKey,
+            "org-enrich/loops/other-loop/run-1/support/perf.jsonl",
+          ],
+        },
+      },
+    ]);
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) =>
+        callback({
+          loop: { findUnique: mockFindUnique },
+          loopEvent: { findMany: mockFindMany },
+        })
+    );
+
+    const result = await loopsService.findById("loop-support-2", "org-enrich", {
+      includeSupportArtifacts: true,
+    });
+
+    expect(result?.supportArtifacts).toEqual([
+      {
+        name: "claude-output.jsonl",
+        key: validKey,
+        downloadUrl:
+          "https://download.example/org-enrich%2Floops%2Floop-support-2%2Frun-1%2Fsupport%2Fclaude-output.jsonl",
+      },
+    ]);
+  });
+
+  it("omits support artifact keys whose download URL generation fails", async () => {
+    const dbRow = makeLoopDbRow({ id: "loop-support-3" });
+    const mockFindUnique = vi.fn().mockResolvedValue(dbRow);
+    const validKey =
+      "org-enrich/loops/loop-support-3/run-1/support/claude-output.jsonl";
+    const failingKey =
+      "org-enrich/loops/loop-support-3/run-1/support/perf.jsonl";
+    const mockFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "event-support-3",
+        data: { keys: [validKey, failingKey] },
+      },
+    ]);
+    vi.mocked(generateDownloadUrl).mockImplementation((key: string) => {
+      if (key === failingKey) {
+        return Promise.reject(new Error("presign failed"));
+      }
+      return Promise.resolve(
+        `https://download.example/${encodeURIComponent(key)}`
+      );
+    });
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) =>
+        callback({
+          loop: { findUnique: mockFindUnique },
+          loopEvent: { findMany: mockFindMany },
+        })
+    );
+
+    const result = await loopsService.findById("loop-support-3", "org-enrich", {
+      includeSupportArtifacts: true,
+    });
+
+    expect(result?.supportArtifacts).toEqual([
+      {
+        name: "claude-output.jsonl",
+        key: validKey,
+        downloadUrl:
+          "https://download.example/org-enrich%2Floops%2Floop-support-3%2Frun-1%2Fsupport%2Fclaude-output.jsonl",
+      },
+    ]);
   });
 });

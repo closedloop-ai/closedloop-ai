@@ -43,6 +43,7 @@ vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
     healthCheckOptions: () => ({
       queryKey: ["health-check"],
       queryFn: mockQueryFn,
+      staleTime: 30_000,
     }),
   };
 });
@@ -119,13 +120,16 @@ beforeEach(() => {
   };
 });
 
-function createWrapper() {
-  const queryClient = new QueryClient({
+function createTestQueryClient() {
+  return new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
       mutations: { retry: false },
     },
   });
+}
+
+function createWrapper(queryClient = createTestQueryClient()) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -508,6 +512,26 @@ describe("Show-once behavior", () => {
     });
 
     expect(mockQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("does not refetch on mount when a fresh passing result is already cached", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(["health-check"], passingData);
+    const Wrapper = createWrapper(queryClient);
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(mockQueryFn).not.toHaveBeenCalled();
+    expect(screen.queryByText("System Check")).toBeNull();
   });
 
   it("StrictMode throwaway mount does not consume the one-shot flag, and stable mount does commit it", async () => {

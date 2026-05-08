@@ -36,7 +36,7 @@ export const Header = ({
   >
     <div className="flex min-w-0 flex-1 items-center gap-2">
       <SidebarTrigger className="-ml-1 shrink-0" />
-      <Breadcrumb className="min-w-0 flex-1">
+      <Breadcrumb className="min-w-0">
         <BreadcrumbList className="flex-nowrap">
           {breadcrumbs.map((entry, index) => {
             const isLast = index === breadcrumbs.length - 1;

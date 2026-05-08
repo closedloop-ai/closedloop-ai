@@ -436,7 +436,21 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
     await launchLoop("loop-1", "org-1");
 
-    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledTimes(1);
+    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledOnce();
+    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        s3StateKey: "org/loops/loop-1/run-1",
+      })
+    );
+    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      LoopStatus.Claimed,
+      expect.objectContaining({
+        containerId: "cmd-desktop-1",
+        s3StateKey: "org/loops/loop-1/run-1",
+      })
+    );
     expect(mockLoopsService.updateStatus).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),

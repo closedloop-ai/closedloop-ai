@@ -13,6 +13,8 @@ export type LoopBody = {
   command: string;
   closedLoopAuthToken: string;
   apiBaseUrl: string;
+  /** Loop-scoped S3 prefix used by Desktop for failure support artifacts. */
+  s3StateKey?: string;
   artifacts: Array<{
     id: string;
     type: string;

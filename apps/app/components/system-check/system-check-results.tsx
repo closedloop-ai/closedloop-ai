@@ -274,16 +274,14 @@ function SystemCheckValue({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
-          aria-label={value}
+        <span
           className={cn(
-            "min-w-0 max-w-[45%] cursor-help truncate rounded-sm border-0 bg-transparent p-0 text-right text-muted-foreground text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "block min-w-0 max-w-[45%] cursor-help truncate text-right text-muted-foreground text-xs",
             mono && "font-mono"
           )}
-          type="button"
         >
           {value}
-        </button>
+        </span>
       </TooltipTrigger>
       <TooltipContent
         align="end"

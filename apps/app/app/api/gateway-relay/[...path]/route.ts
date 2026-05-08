@@ -5,13 +5,19 @@ import {
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
 import type { ApiResult } from "@repo/api/src/types/common";
+import type {
+  HealthCheckResponse,
+  UpsertComputeTargetHealthCheckSnapshotInput,
+} from "@repo/api/src/types/compute-target";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
-import { type NextRequest, NextResponse } from "next/server";
+import { after, type NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { env } from "@/env";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import {
   COMPUTE_TARGET_HEADER,
+  GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_PATH_PREFIX,
   GATEWAY_RELAY_PATH_PREFIX,
 } from "@/lib/engineer/constants";
@@ -94,9 +100,21 @@ async function encodeBody(request: NextRequest): Promise<RelayEncodedBody> {
   };
 }
 
-function toRelayHttpResponse(value: unknown): Response {
+type ParsedRelayHttpResponse = {
+  status: number;
+  headers: Headers;
+  body: unknown;
+};
+
+function parseRelayHttpResponse(
+  value: unknown
+): ParsedRelayHttpResponse | null {
   if (typeof value !== "object" || value === null) {
-    return NextResponse.json(value);
+    return {
+      status: 200,
+      headers: new Headers(),
+      body: value,
+    };
   }
 
   const record = value as Record<string, unknown>;
@@ -118,29 +136,152 @@ function toRelayHttpResponse(value: unknown): Response {
   }
 
   if (status !== undefined && body !== undefined) {
-    const headers = new Headers(
-      typeof record.headers === "object" && record.headers !== null
-        ? (record.headers as Record<string, string>)
-        : undefined
-    );
-
-    const contentType = headers.get("content-type") ?? "";
-    if (typeof body === "string" && !contentType.includes("application/json")) {
-      return new Response(body, { status, headers });
-    }
-
-    return NextResponse.json(body, { status, headers });
+    return {
+      status,
+      headers: new Headers(
+        typeof record.headers === "object" && record.headers !== null
+          ? (record.headers as Record<string, string>)
+          : undefined
+      ),
+      body,
+    };
   }
 
-  // Fallthrough: relay value lacks a proper response envelope (e.g. a bare
-  // "done" event whose result event was lost in transit). Return 502 so the
-  // client treats this as a transient error instead of empty success data.
-  log.warn("Relay response missing envelope", {
-    keys: Object.keys(record).join(","),
-  });
+  return null;
+}
+
+function toRelayHttpResponse(value: unknown): Response {
+  const parsed = parseRelayHttpResponse(value);
+  if (parsed) {
+    const contentType = parsed.headers.get("content-type") ?? "";
+    if (
+      typeof parsed.body === "string" &&
+      !contentType.includes("application/json")
+    ) {
+      return new Response(parsed.body, {
+        status: parsed.status,
+        headers: parsed.headers,
+      });
+    }
+
+    return NextResponse.json(parsed.body, {
+      status: parsed.status,
+      headers: parsed.headers,
+    });
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    // Fallthrough: relay value lacks a proper response envelope (e.g. a bare
+    // "done" event whose result event was lost in transit). Return 502 so the
+    // client treats this as a transient error instead of empty success data.
+    log.warn("Relay response missing envelope", {
+      keys: Object.keys(record).join(","),
+    });
+  }
   return NextResponse.json(
     { error: "Relay response missing expected envelope" },
     { status: 502 }
+  );
+}
+
+function isHealthCheckPath(path: string): boolean {
+  return new URL(path, "http://local").pathname === GATEWAY_HEALTH_CHECK_PATH;
+}
+
+const healthCheckResponseSchema = z
+  .object({
+    checks: z.array(z.unknown()),
+    allRequiredPassed: z.boolean(),
+  })
+  .passthrough();
+
+async function persistHealthCheckSnapshot({
+  apiOrigin,
+  authToken,
+  targetId,
+  request,
+  result,
+}: {
+  apiOrigin: string;
+  authToken: string;
+  targetId: string;
+  request: NextRequest;
+  result: HealthCheckResponse;
+}): Promise<void> {
+  const payload: UpsertComputeTargetHealthCheckSnapshotInput = {
+    expectedMcpUrl: request.nextUrl.searchParams.get("expectedMcpUrl"),
+    latestVersion: request.nextUrl.searchParams.get("latestVersion"),
+    result,
+  };
+  const response = await fetch(
+    `${apiOrigin}/compute-targets/${targetId}/health-check`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    const errorPayload = (await response
+      .json()
+      .catch(() => null)) as ApiResult<unknown> | null;
+    log.warn("Failed to persist relay health check snapshot", {
+      computeTargetId: targetId,
+      status: response.status,
+      error:
+        errorPayload && !errorPayload.success ? errorPayload.error : undefined,
+    });
+  }
+}
+
+function scheduleHealthCheckPersistence({
+  apiOrigin,
+  authToken,
+  targetId,
+  request,
+  path,
+  value,
+}: {
+  apiOrigin: string;
+  authToken: string;
+  targetId: string;
+  request: NextRequest;
+  path: string;
+  value: unknown;
+}): void {
+  if (!isHealthCheckPath(path)) {
+    return;
+  }
+
+  const parsed = parseRelayHttpResponse(value);
+  if (
+    !parsed ||
+    parsed.status < 200 ||
+    parsed.status >= 300 ||
+    !healthCheckResponseSchema.safeParse(parsed.body).success
+  ) {
+    return;
+  }
+  const result = parsed.body as HealthCheckResponse;
+
+  after(() =>
+    persistHealthCheckSnapshot({
+      apiOrigin,
+      authToken,
+      targetId,
+      request,
+      result,
+    }).catch((error) => {
+      log.warn("Failed to persist relay health check snapshot", {
+        computeTargetId: targetId,
+        error,
+      });
+    })
   );
 }
 
@@ -213,8 +354,9 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   const apiOrigin = resolveApiOrigin(request);
   const target = await ensureTargetOwnedAndOnline(apiOrigin, token, targetId);
 
+  const gatewayPath = toGatewayPath(request);
   const path = rewriteDesktopApiPath(
-    toGatewayPath(request),
+    gatewayPath,
     getDesktopApiNamespaceFromCapabilities(target.capabilities) ??
       CURRENT_DESKTOP_API_NAMESPACE
   );
@@ -268,6 +410,14 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   }
 
   const { value } = await relayClient.executeOperation(targetId, relayRequest);
+  scheduleHealthCheckPersistence({
+    apiOrigin,
+    authToken: token,
+    targetId,
+    request,
+    path: gatewayPath,
+    value,
+  });
   return toRelayHttpResponse(value);
 }
 

@@ -221,6 +221,24 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     expect(body).not.toHaveProperty("attachments");
     expect(body).not.toHaveProperty("userContext");
     expect(body).not.toHaveProperty("additionalRepos");
+    expect(body).not.toHaveProperty("s3StateKey");
+  });
+
+  it("passes s3StateKey to relay payload body when provided", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+
+    await launchLoopOnDesktop({
+      ...VALID_LAUNCH_OPTS,
+      s3StateKey: "org-1/loops/loop-1/run-1",
+    });
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    expect(toRelayOperationMock).toHaveBeenCalledOnce();
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    const body = (dispatchedInput as { body: Record<string, unknown> }).body;
+    expect(body.s3StateKey).toBe("org-1/loops/loop-1/run-1");
   });
 
   it("passes empty array to relay payload body when contextPack.attachments is []", async () => {

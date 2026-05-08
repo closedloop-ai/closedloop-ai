@@ -8,8 +8,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { computeTargetKeys } from "@/hooks/queries/use-compute-targets";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
-import { PreLoopCommand } from "../pre-loop-health-check";
+import { getPreLoopTargetKey, PreLoopCommand } from "../pre-loop-health-check";
 import {
   PreLoopSystemCheckProvider,
   usePreLoopSystemCheckGate,
@@ -20,6 +21,7 @@ const mockWarning = vi.hoisted(() => vi.fn());
 const mockUseComputePreference = vi.hoisted(() => vi.fn());
 const mockUseComputeTargets = vi.hoisted(() => vi.fn());
 const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
+const mockApiGet = vi.hoisted(() => vi.fn());
 const mockHealthCheckDialogRender = vi.hoisted(() => vi.fn());
 const mockUseUser = vi.hoisted(() => vi.fn());
 const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
@@ -53,26 +55,49 @@ vi.mock("@/hooks/queries/use-compute-preference", () => ({
     mockUseComputePreference(...args),
 }));
 
-vi.mock("@/hooks/queries/use-compute-targets", () => ({
-  useComputeTargets: (...args: unknown[]) => mockUseComputeTargets(...args),
-}));
+vi.mock("@/hooks/queries/use-compute-targets", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/hooks/queries/use-compute-targets")
+    >();
+  return {
+    ...actual,
+    useComputeTargets: (...args: unknown[]) => mockUseComputeTargets(...args),
+  };
+});
 
 vi.mock("@/hooks/queries/use-electron-release", () => ({
   useLatestElectronRelease: (...args: unknown[]) =>
     mockUseLatestElectronRelease(...args),
 }));
 
+vi.mock("@/hooks/use-api-client", () => ({
+  useApiClient: () => ({
+    get: mockApiGet,
+  }),
+}));
+
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   HealthCheckDialog: ({
+    initialData,
+    latestVersionOverride,
     onCancel,
     onRecheckUnavailable,
     onResolvedAfterRecheck,
+    targetKey,
   }: {
+    initialData?: unknown;
+    latestVersionOverride?: string | null;
     onCancel: () => void;
     onRecheckUnavailable: (reason: string) => void;
     onResolvedAfterRecheck: () => void;
+    targetKey?: string;
   }) => {
-    mockHealthCheckDialogRender();
+    mockHealthCheckDialogRender({
+      initialData,
+      latestVersionOverride,
+      targetKey,
+    });
     return (
       <div data-testid="blocking-dialog">
         <button onClick={onCancel} type="button">
@@ -103,7 +128,7 @@ let preference = {
   preferredComputeMode: ComputePreference.Local,
   computeTargetId: "target-1",
 };
-let targets = [
+const defaultTargets = [
   {
     id: "target-1",
     machineName: "Laptop",
@@ -123,8 +148,15 @@ let targets = [
     updatedAt: new Date("2026-05-04T15:00:00Z"),
   },
 ];
+let targets = defaultTargets.map((target) => ({ ...target }));
 
-function GateHarness({ execute }: { execute: () => void }) {
+function GateHarness({
+  execute,
+  computeTargetId,
+}: {
+  execute: () => void;
+  computeTargetId?: string;
+}) {
   const gate = usePreLoopSystemCheckGate();
   let stateLabel = "idle";
   if (gate.isChecking) {
@@ -145,6 +177,7 @@ function GateHarness({ execute }: { execute: () => void }) {
                 documentId: "plan-1",
                 documentType: "implementation_plan",
                 ownerKey: "owner-1",
+                computeTargetId,
               },
               execute
             )
@@ -170,14 +203,16 @@ function GateHarness({ execute }: { execute: () => void }) {
 function renderGate({
   queryClient,
   execute,
+  computeTargetId,
 }: {
   queryClient: QueryClient;
   execute: () => void;
+  computeTargetId?: string;
 }) {
   return render(
     <QueryClientProvider client={queryClient}>
       <PreLoopSystemCheckProvider>
-        <GateHarness execute={execute} />
+        <GateHarness computeTargetId={computeTargetId} execute={execute} />
       </PreLoopSystemCheckProvider>
     </QueryClientProvider>
   );
@@ -200,7 +235,7 @@ describe("PreLoopSystemCheckProvider", () => {
       preferredComputeMode: ComputePreference.Local,
       computeTargetId: "target-1",
     };
-    targets = targets.map((target) => ({ ...target }));
+    targets = defaultTargets.map((target) => ({ ...target }));
     mockUseComputePreference.mockImplementation(() => ({
       data: preference,
       refetch: vi.fn().mockResolvedValue({ data: preference, error: null }),
@@ -216,6 +251,7 @@ describe("PreLoopSystemCheckProvider", () => {
         error: null,
       }),
     });
+    mockApiGet.mockResolvedValue(null);
     vi.stubGlobal("fetch", vi.fn());
   });
 
@@ -223,14 +259,14 @@ describe("PreLoopSystemCheckProvider", () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
       healthyResult
     );
 
-    renderGate({ queryClient, execute });
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
     await waitFor(() => {
@@ -245,51 +281,152 @@ describe("PreLoopSystemCheckProvider", () => {
     );
   });
 
-  it("waits for latest release without opening the dialog when the selected target has a fresh passing cache", async () => {
+  it("uses a fresh passing cache without re-running health check when latest release is cached", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
-    let resolveLatest:
-      | ((result: { data: { version: string }; error: null }) => void)
-      | undefined;
-    const refetchLatest = vi.fn(
-      () =>
-        new Promise<{ data: { version: string }; error: null }>((resolve) => {
-          resolveLatest = resolve;
-        })
-    );
+    const refetchLatest = vi.fn();
     mockUseLatestElectronRelease.mockReturnValue({
-      data: undefined,
+      data: { version: "1.0.0" },
       refetch: refetchLatest,
     });
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
       healthyResult
     );
 
-    renderGate({ queryClient, execute });
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await waitFor(() => {
-      expect(refetchLatest).toHaveBeenCalledOnce();
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
-    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
-
-    resolveLatest?.({ data: { version: "1.0.0" }, error: null });
 
     await waitFor(() => {
       expect(execute).toHaveBeenCalledOnce();
     });
     expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
     expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
+    expect(refetchLatest).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("cancels a fresh-cache attempt while latest release resolution is pending", async () => {
+  it("opens the blocking dialog from a fresh failing cache without re-running health check", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    const refetchLatest = vi.fn();
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: { version: "1.0.0" },
+      refetch: refetchLatest,
+    });
+    queryClient.setQueryData(
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      failingResult
+    );
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await screen.findByTestId("blocking-dialog");
+    expect(execute).not.toHaveBeenCalled();
+    expect(refetchLatest).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockHealthCheckDialogRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialData: failingResult,
+        latestVersionOverride: "1.0.0",
+        targetKey: getPreLoopTargetKey("target-1"),
+      })
+    );
+  });
+
+  it("uses a fresh persisted passing snapshot without re-running health check", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    mockApiGet.mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt: new Date().toISOString(),
+      expectedMcpUrl: EXPECTED_MCP_URL,
+      latestVersion: "1.0.0",
+      result: healthyResult,
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(mockApiGet).toHaveBeenCalledWith(
+      "/compute-targets/target-1/health-check"
+    );
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not refetch a persisted snapshot when a null snapshot is cached", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    queryClient.setQueryData(computeTargetKeys.healthCheck("target-1"), null);
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(mockApiGet).not.toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not allow an offline target to pass from a persisted snapshot", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    targets = targets.map((target) =>
+      target.id === "target-1" ? { ...target, isOnline: false } : target
+    );
+    mockUseComputeTargets.mockImplementation(() => ({
+      data: targets,
+      refetch: vi.fn().mockResolvedValue({ data: targets, error: null }),
+    }));
+    mockApiGet.mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt: new Date().toISOString(),
+      expectedMcpUrl: EXPECTED_MCP_URL,
+      latestVersion: "1.0.0",
+      result: healthyResult,
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(mockWarning).toHaveBeenCalledWith(
+        "System check unavailable",
+        expect.any(Object)
+      );
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(mockApiGet).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("cancels an uncached attempt while latest release resolution is pending", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     let resolveLatest:
@@ -305,13 +442,7 @@ describe("PreLoopSystemCheckProvider", () => {
       data: undefined,
       refetch: refetchLatest,
     });
-    queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
-        relayTargetId: "target-1",
-        latestVersion: "1.0.0",
-      }).queryKey,
-      healthyResult
-    );
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
 
     renderGate({ queryClient, execute });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
@@ -381,18 +512,27 @@ describe("PreLoopSystemCheckProvider", () => {
   it("does not use a fresh passing cache from a different compute target", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
+    let resolveLatest:
+      | ((result: { data: { version: string }; error: null }) => void)
+      | undefined;
     const refetchLatest = vi.fn(
       () =>
-        new Promise<{ data: { version: string }; error: null }>(() => {
-          // Keep latest release pending so this test only observes the selected-target cache preflight.
+        new Promise<{ data: { version: string }; error: null }>((resolve) => {
+          resolveLatest = resolve;
         })
+    );
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
     );
     mockUseLatestElectronRelease.mockReturnValue({
       data: undefined,
       refetch: refetchLatest,
     });
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-2", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-2"), EXPECTED_MCP_URL, {
         relayTargetId: "target-2",
         latestVersion: "1.0.0",
       }).queryKey,
@@ -402,35 +542,28 @@ describe("PreLoopSystemCheckProvider", () => {
     renderGate({ queryClient, execute });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
-    await screen.findByTestId("blocking-dialog");
-    expect(refetchLatest).toHaveBeenCalledOnce();
-    expect(execute).not.toHaveBeenCalled();
-  });
+    await waitFor(() => {
+      expect(refetchLatest).toHaveBeenCalledOnce();
+    });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
 
-  it("opens the blocking dialog while the health check request is still running", async () => {
-    const queryClient = createQueryClient();
-    const execute = vi.fn();
-    let resolveFetch: ((response: Response) => void) | undefined;
-    vi.mocked(globalThis.fetch).mockReturnValue(
-      new Promise((resolve) => {
-        resolveFetch = resolve;
-      })
-    );
+    act(() => {
+      resolveLatest?.({ data: { version: "1.0.0" }, error: null });
+    });
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+    });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
 
-    renderGate({ queryClient, execute });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await screen.findByTestId("blocking-dialog");
-    expect(screen.getByTestId("state")).toHaveTextContent("checking");
-    expect(execute).not.toHaveBeenCalled();
-
-    resolveFetch?.(Response.json(healthyResult));
+    act(() => {
+      resolveFetch?.(Response.json(healthyResult));
+    });
     await waitFor(() => {
       expect(execute).toHaveBeenCalledOnce();
     });
   });
 
-  it("cancels an in-flight dialog immediately and does not execute after the health check resolves", async () => {
+  it("keeps the blocking dialog hidden while an uncached health check passes", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     let resolveFetch: ((response: Response) => void) | undefined;
@@ -443,14 +576,83 @@ describe("PreLoopSystemCheckProvider", () => {
     renderGate({ queryClient, execute });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
-    await screen.findByTestId("blocking-dialog");
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+    });
     expect(screen.getByTestId("state")).toHaveTextContent("checking");
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    act(() => {
+      resolveFetch?.(Response.json(healthyResult));
+    });
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens the blocking dialog after an uncached health check returns required failures", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+    });
+    expect(screen.getByTestId("state")).toHaveTextContent("checking");
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+
+    act(() => {
+      resolveFetch?.(Response.json(failingResult));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("state")).toHaveTextContent("dialog");
+    });
+    expect(screen.getByTestId("blocking-dialog")).toBeInTheDocument();
+    expect(execute).not.toHaveBeenCalled();
+    expect(mockHealthCheckDialogRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialData: failingResult,
+        targetKey: getPreLoopTargetKey("target-1"),
+      })
+    );
+  });
+
+  it("cancels an in-flight silent check and does not execute after the health check resolves", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+    });
+    expect(screen.getByTestId("state")).toHaveTextContent("checking");
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Owner" }));
     await waitFor(() => {
       expect(screen.getByTestId("is-checking")).toHaveTextContent("false");
     });
-    expect(screen.getByTestId("is-dialog-open")).toHaveTextContent("true");
+    expect(screen.getByTestId("is-dialog-open")).toHaveTextContent("false");
     expect(execute).not.toHaveBeenCalled();
 
     act(() => {
@@ -459,7 +661,54 @@ describe("PreLoopSystemCheckProvider", () => {
     await act(async () => {});
 
     expect(execute).not.toHaveBeenCalled();
-    expect(screen.getByTestId("blocking-dialog")).toBeInTheDocument();
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+  });
+
+  it("cancels an in-flight silent check when the selected target changes", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    const { rerender } = renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+    });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+
+    preference = {
+      preferredComputeMode: ComputePreference.Local,
+      computeTargetId: "target-2",
+    };
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <PreLoopSystemCheckProvider>
+          <GateHarness execute={execute} />
+        </PreLoopSystemCheckProvider>
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => {
+      expect(mockCapture).toHaveBeenCalledWith(
+        "pre_loop_system_check_cancelled",
+        expect.objectContaining({ reason: "target_changed" })
+      );
+    });
+    expect(screen.getByTestId("is-checking")).toHaveTextContent("false");
+
+    act(() => {
+      resolveFetch?.(Response.json(healthyResult));
+    });
+    await act(async () => {});
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
   });
 
   it("does not let a cancelled in-flight result clear checking for a newer attempt", async () => {
@@ -476,18 +725,16 @@ describe("PreLoopSystemCheckProvider", () => {
     const { rerender } = renderGate({ queryClient, execute });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
-    await screen.findByTestId("blocking-dialog");
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Owner" }));
     await waitFor(() => {
       expect(screen.getByTestId("is-checking")).toHaveTextContent("false");
     });
-    await waitFor(() => {
-      expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
-    });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
 
     preference = {
       preferredComputeMode: ComputePreference.Local,
@@ -502,10 +749,10 @@ describe("PreLoopSystemCheckProvider", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
-    await screen.findByTestId("blocking-dialog");
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
     });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
     expect(screen.getByTestId("is-checking")).toHaveTextContent("true");
 
     act(() => {
@@ -524,7 +771,7 @@ describe("PreLoopSystemCheckProvider", () => {
     });
   });
 
-  it("does not execute when the provider unmounts before a cached attempt completes", async () => {
+  it("does not execute when the provider unmounts before an uncached attempt completes", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     let resolveLatest:
@@ -540,13 +787,7 @@ describe("PreLoopSystemCheckProvider", () => {
       data: undefined,
       refetch: refetchLatest,
     });
-    queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
-        relayTargetId: "target-1",
-        latestVersion: "1.0.0",
-      }).queryKey,
-      healthyResult
-    );
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
 
     const { unmount } = renderGate({ queryClient, execute });
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
@@ -589,7 +830,7 @@ describe("PreLoopSystemCheckProvider", () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
@@ -618,7 +859,7 @@ describe("PreLoopSystemCheckProvider", () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
@@ -644,7 +885,7 @@ describe("PreLoopSystemCheckProvider", () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
@@ -670,7 +911,7 @@ describe("PreLoopSystemCheckProvider", () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
@@ -723,13 +964,21 @@ describe("PreLoopSystemCheckProvider", () => {
       "pre_loop_system_check_unavailable",
       expect.objectContaining({ reason: expect.stringContaining("offline") })
     );
+    expect(screen.getByTestId("blocking-dialog")).toBeInTheDocument();
+    expect(mockHealthCheckDialogRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialData: expect.objectContaining({ allRequiredPassed: false }),
+        latestVersionOverride: "1.0.0",
+        targetKey: getPreLoopTargetKey("target-1"),
+      })
+    );
   });
 
   it("cancels a pending dialog when the selected target changes", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
     queryClient.setQueryData(
-      healthCheckOptions("compute-target:target-1", EXPECTED_MCP_URL, {
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
         relayTargetId: "target-1",
         latestVersion: "1.0.0",
       }).queryKey,
