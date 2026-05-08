@@ -11,7 +11,7 @@
     "@repo/design-system": "workspace:*",
     "@tiptap/core": "~3.22.3",
     "@tiptap/extension-list": "~3.22.3",
-    "@tiptap/extension-table": "~3.22.3",
+    "@tiptap/extension-table": "~3.23.1",
     "@tiptap/extension-table-cell": "~3.22.3",
     "@tiptap/extension-table-header": "~3.22.3",
     "@tiptap/extension-table-row": "~3.22.3",
