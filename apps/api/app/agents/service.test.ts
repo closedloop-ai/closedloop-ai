@@ -306,8 +306,11 @@ describe("agentsService", () => {
           }),
         })
       );
-      expect(result.slug).toBe("frontend-architect");
-      expect(result.createdBy).toEqual(TEST_USER_SUMMARY);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.slug).toBe("frontend-architect");
+        expect(result.value.createdBy).toEqual(TEST_USER_SUMMARY);
+      }
     });
 
     it("generates a unique slug with suffix when base slug is taken", async () => {
@@ -340,7 +343,10 @@ describe("agentsService", () => {
           data: expect.objectContaining({ slug: "frontend-architect-2" }),
         })
       );
-      expect(result.slug).toBe("frontend-architect-2");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.slug).toBe("frontend-architect-2");
+      }
     });
 
     it("slugifies special characters in role to hyphens and trims leading/trailing hyphens", async () => {

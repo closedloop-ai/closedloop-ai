@@ -48,19 +48,20 @@ export const POST = withAnyAuth<AgentDetail, "/agents">(
         return parseError;
       }
 
-      const agent = await agentsService.create(
+      const result = await agentsService.create(
         user.organizationId,
         user.id,
         body
       );
 
-      return successResponse(agent);
-    } catch (error) {
-      if ((error as { code?: string }).code === "P2002") {
+      if (!result.ok) {
         return conflictResponse(
           "An agent with this role already exists in this scope"
         );
       }
+
+      return successResponse(result.value);
+    } catch (error) {
       return errorResponse("Failed to create agent", error);
     }
   }
