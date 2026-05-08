@@ -24,7 +24,10 @@ import { LoaderIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useCreateAgent } from "@/hooks/queries/use-agents";
-import { useGitHubRepositories } from "@/hooks/queries/use-github-integration";
+import {
+  useGitHubIntegrationStatus,
+  useGitHubRepositories,
+} from "@/hooks/queries/use-github-integration";
 import { sortRepositoriesByActivity } from "@/lib/sort-utils";
 
 type CreateAgentDialogProps = {
@@ -43,7 +46,10 @@ export function CreateAgentDialog({
   const [description, setDescription] = useState("");
   const [prompt, setPrompt] = useState("");
   const [sourceRepo, setSourceRepo] = useState("");
-  const { data: repositories } = useGitHubRepositories({ enabled: open });
+  const { data: githubStatus } = useGitHubIntegrationStatus({ enabled: open });
+  const { data: repositories } = useGitHubRepositories({
+    enabled: open && githubStatus?.connected === true,
+  });
   const sortedRepos = useMemo(
     () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
