@@ -1,0 +1,35 @@
+{
+  "name": "@repo/database",
+  "version": "0.0.0",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "scripts": {
+    "analyze": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "prebuild": "tsx scripts/migrate.ts",
+    "build": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "seed": "tsx scripts/seed.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1003.0",
+    "@prisma/adapter-pg": "~7.5.0",
+    "@prisma/client": "~7.5.0",
+    "@prisma/client-runtime-utils": "~7.5.0",
+    "@t3-oss/env-nextjs": "^0.13.10",
+    "@vercel/functions": "^3.4.3",
+    "pg": "^8.20.0",
+    "server-only": "^0.0.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.3.5",
+    "@types/pg": "8.11.11",
+    "bufferutil": "^4.1.0",
+    "dotenv": "^17.3.1",
+    "prisma": "~7.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

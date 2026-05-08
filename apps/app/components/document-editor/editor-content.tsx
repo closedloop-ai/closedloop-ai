@@ -1,0 +1,187 @@
+"use client";
+
+import { useRoom } from "@liveblocks/react";
+import { useFeatureFlag } from "@repo/analytics/client";
+import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
+import { cn } from "@repo/design-system/lib/utils";
+import type { TiptapEditor } from "@repo/rich-text";
+import { RichTextEditor } from "@repo/rich-text";
+import { useEffect, useRef } from "react";
+
+type EditorContentProps = {
+  /**
+   * Current content value (markdown string)
+   */
+  value: string;
+  /**
+   * Change handler for content updates
+   */
+  onChange: (value: string) => void;
+  /**
+   * Optional Liveblocks room ID for collaborative editing
+   */
+  liveblocksRoomId?: string | null;
+  /**
+   * Callback to get the editor instance (for comments/collaboration features).
+   * The callback is only called when liveblocks is enabled (liveblocksRoomId is not null).
+   */
+  onEditorReady?: (editor: TiptapEditor | null) => void;
+  /**
+   * Fired when the editor content is fully loaded and ready to display.
+   * For Liveblocks: fires after Y.Doc sync completes.
+   * For non-Liveblocks: fires immediately on editor creation.
+   */
+  onContentReady?: () => void;
+  /**
+   * Placeholder text when editor is empty
+   */
+  placeholder?: string;
+  /**
+   * Whether the editor is read-only
+   */
+  readOnly?: boolean;
+  /**
+   * Optional className for custom styling
+   */
+  className?: string;
+  /**
+   * Where scrolling is handled for the editor content.
+   * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
+   */
+  scrollMode?: "inner" | "outer";
+  /**
+   * When true, the formatting toolbar is not rendered inline.
+   */
+  externalToolbar?: boolean;
+};
+
+export function EditorContent({
+  value,
+  onChange,
+  liveblocksRoomId,
+  onEditorReady,
+  onContentReady,
+  placeholder,
+  readOnly,
+  className,
+  scrollMode = "inner",
+  externalToolbar,
+}: Readonly<EditorContentProps>) {
+  const shouldUseLiveblocks = !!liveblocksRoomId;
+  const mermaidEnhancementsFlag = useFeatureFlag("mermaid-enhancements");
+  const mermaidEnhancementsEnabled = mermaidEnhancementsFlag?.enabled === true;
+
+  // If no roomId, render without Liveblocks
+  if (!shouldUseLiveblocks) {
+    return (
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          scrollMode !== "outer" && "overflow-hidden",
+          className
+        )}
+      >
+        <RichTextEditor
+          externalToolbar={externalToolbar}
+          mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
+          onChange={onChange}
+          onEditorReady={onEditorReady}
+          placeholder={placeholder}
+          readOnly={readOnly}
+          scrollMode={scrollMode}
+          value={value}
+        />
+      </div>
+    );
+  }
+
+  // Has roomId, render with Liveblocks
+  return (
+    <EditorContentWithLiveblocks
+      className={className}
+      externalToolbar={externalToolbar}
+      mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
+      onChange={onChange}
+      onContentReady={onContentReady}
+      onEditorReady={onEditorReady}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      scrollMode={scrollMode}
+      value={value}
+    />
+  );
+}
+
+/**
+ * Internal component that uses Liveblocks hooks.
+ * Only rendered when roomId exists and we're inside RoomProvider.
+ */
+type EditorContentWithLiveblocksProps = Omit<
+  EditorContentProps,
+  "liveblocksRoomId" | "enableLiveblocks"
+> & {
+  mermaidEnhancementsEnabled: boolean;
+};
+
+function EditorContentWithLiveblocks({
+  value,
+  onChange,
+  onEditorReady,
+  onContentReady,
+  placeholder,
+  readOnly,
+  className,
+  scrollMode = "inner",
+  externalToolbar,
+  mermaidEnhancementsEnabled,
+}: Readonly<EditorContentWithLiveblocksProps>) {
+  const liveblocksExtension = useLiveblocksExtension();
+  const isEditorReady = useIsEditorReady();
+  const room = useRoom();
+
+  // Liveblocks TipTap exposes Y.Doc sync via useIsEditorReady (not a suspending hook), so we
+  // notify the parent with onContentReady instead of relying on Suspense for this stage.
+  const hasSignalledReady = useRef(false);
+  useEffect(() => {
+    if (isEditorReady && !hasSignalledReady.current) {
+      hasSignalledReady.current = true;
+      onContentReady?.();
+    }
+  }, [isEditorReady, onContentReady]);
+
+  // We need a key we can use with the rich text editor below, to force a remount when
+  // the room changes. I am not really sure why this is necessary, but without it, the
+  // liveblocks state will not be restored correctly when opening the editor for a second
+  // time. The contents will be empty in that case.
+  const prevRoomRef = useRef(room);
+  const editorKeyRef = useRef(0);
+  if (prevRoomRef.current !== room) {
+    prevRoomRef.current = room;
+    editorKeyRef.current += 1;
+    hasSignalledReady.current = false;
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 flex-col",
+        scrollMode !== "outer" && "overflow-hidden",
+        className
+      )}
+    >
+      <RichTextEditor
+        externalToolbar={externalToolbar}
+        key={editorKeyRef.current}
+        liveblocksExtension={liveblocksExtension}
+        liveblocksIsReady={isEditorReady}
+        mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
+        onChange={onChange}
+        onEditorReady={onEditorReady}
+        placeholder={placeholder}
+        readOnly={readOnly}
+        scrollMode={scrollMode}
+        value={value}
+      />
+    </div>
+  );
+}

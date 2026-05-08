@@ -1,0 +1,8 @@
+---
+title: Orchestrator
+description: The read-only top-level agent that drives the phased workflow by delegating to subagents and skills.
+---
+
+The orchestrator is the top-level Claude Code agent that drives the `code` plugin loop. It is read-only — it never touches project files. It uses `Bash` (for directory listing), `Task` (for subagents), `TodoWrite`, `AskUserQuestion`, and `SendMessage`. All file operations are delegated.
+
+The orchestrator prompt lives at `plugins/code/prompts/prompt.md`. The runner that relaunches it per iteration is `plugins/code/scripts/run-loop.sh`.

@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["figma/**/*.figma.tsx"],
+  "exclude": ["node_modules"]
+}

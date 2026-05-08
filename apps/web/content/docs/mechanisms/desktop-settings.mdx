@@ -1,0 +1,108 @@
+---
+title: Settings Reference
+description: Every setting the desktop runtime stores, what it controls, and where it lives on disk.
+---
+
+The desktop app persists its configuration across five stores, managed through **Settings** in the UI. This page is the full reference.
+
+## Settings tabs
+
+### Relay / Gateway
+
+- **Relay Origin** – Socket.IO relay for cloud control plane traffic. Default `https://relay.closedloop.ai`.
+- **API Origin** – REST origin for auth verification and artifact uploads. Default `https://api.closedloop.ai`.
+- **Web App Origin** – allowed browser origin for gateway CORS. Default `https://app.closedloop.ai`.
+- **Cloud API Key** – `sk_live_…` key; encrypted via Electron `safeStorage`.
+- **Saved Configs** – named `{relayOrigin, apiOrigin, webAppOrigin}` bundles. Create, rename, delete, and apply with a single click. Useful for switching between production, staging, and self-hosted setups.
+- **Debug Auth Token** (dev only) – mint a 10-minute token for local debugging. Visible only when `CL_LOCAL_GATEWAY_DEBUG_AUTH=1`.
+
+### Security
+
+- **Sandbox Base Directory** – the single root under which all filesystem operations are allowed. Use a folder picker to choose it; the UI warns if you pick a broad path like `/` or `~`.
+- Sensitive paths (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`) are always denied, including via canonicalized symlinks.
+
+### Policies
+
+- **Default Approval Tier** – `high` / `medium` / `low` / `none`.
+- **Risk Tier Overrides** – raise or lower per operation.
+- **Always-Allow rules** – view and remove 7-day TTL bypasses.
+
+### CLI Tools
+
+- Per-tool cards for `claude`, `gh`, `codex`, `python3`, `git`.
+- Each card shows a detection badge ("Checking" / "OK" / "Not found") and accepts an absolute path override.
+- Resolution order: override → `which` on process PATH → `bash -lc 'which <tool>'` (login shell fallback).
+
+## Environment variables
+
+The runtime honors these environment variables.
+
+### Credentials
+
+- `CLOSEDLOOP_API_KEY` – takes precedence over the encrypted store.
+- `SYMPHONY_API_KEY` – legacy fallback.
+- `CLAUDE_BIN` – absolute path to `claude`; consumed by `run-loop.sh` and `debate-loop.sh`.
+
+### Origin overrides
+
+- `CL_RELAY_ORIGIN`
+- `CL_WEB_APP_ORIGIN`
+- `CL_AUTH_API_ORIGIN`
+- `CL_POSTHOG_HOST`
+
+### Dev-only gateway auth (packaged builds ignore these)
+
+- `CL_LOCAL_GATEWAY_DEBUG_AUTH=1`
+- `CL_LOCAL_GATEWAY_NO_AUTH=1`
+- `CL_LOCAL_GATEWAY_PROD_ORIGINS_ONLY=1`
+
+### Symphony and worktree
+
+- `SYMPHONY_GATEWAY_FALLBACK_ORIGIN`
+- `SYMPHONY_WORKTREE_PARENT_DIR`
+- `CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE=1`
+
+### Tailer tuning
+
+- `CLOSEDLOOP_TAILER_POLL_MS`
+- `CLOSEDLOOP_TAILER_THROTTLE_MS`
+- `CLOSEDLOOP_WATCHER_POLL_MS` (default `3000`)
+
+### Passed to child processes
+
+- `CLOSEDLOOP_WORKDIR`
+- `CL_PLUGIN_VERSION` (sandbox override for the reported plugin version)
+
+## On-disk locations
+
+| File | Contents |
+| --- | --- |
+| `~/.closedloop-ai/electron-port` | Active gateway port |
+| `~/.closedloop-ai/config/repos.json` | User-configured repositories |
+| `~/.symphony/sessions.json` | Symphony session store |
+| `~/.symphony/<ticket>/` | Per-ticket loop artifacts (`claude-output.jsonl`, `state.json`, `pid`, `plan.json`, etc.) |
+| `~/Library/Application Support/ClosedLoop/desktop-settings.json` | General settings |
+| `…/desktop-secrets.json` | API keys (encrypted) |
+| `…/desktop-approvals.json` | Pending and resolved approvals |
+| `…/desktop-job-store.json` | Active and terminal jobs |
+| `…/desktop-activity-log.json` | Gateway request log and security events |
+
+On Linux the Application Support path is `~/.config/ClosedLoop/`.
+
+## Saved configs
+
+A **Saved Config** is a named triple of origins. Create one per environment (`production`, `staging`, `dogfood`) and switch with one click. When you apply a config, all gateway routes re-handshake under the new origins; in-flight loops are unaffected.
+
+## Related reading
+
+<Cards>
+  <Card title="Approvals" href="./approvals-and-sandbox">
+    How policy settings translate to run-time behavior.
+  </Card>
+  <Card title="Desktop gateway" href="./desktop-gateway">
+    Where the origin and API key settings take effect.
+  </Card>
+  <Card title="Troubleshooting" href="../resources/troubleshooting">
+    Common failures and how to recover.
+  </Card>
+</Cards>

@@ -1,0 +1,37 @@
+---
+title: Control plane
+description: The place where work is defined, reviewed, coordinated, and governed across humans and agents.
+---
+
+The control plane is where coordination happens. In ClosedLoop.ai, the browser-based web app is the control plane, the desktop client is the execution surface, and the Claude Code plugins supply the orchestration.
+
+## Responsibilities
+
+- **Define work** — create PRDs, implementation plans, and feature artifacts.
+- **Structure artifacts** — attach context, acceptance criteria, and ownership.
+- **Launch execution** — route commands to compute targets over the cloud relay.
+- **Review outputs** — surface diffs, judge reports, and activity for human approval.
+- **Preserve decision history** — maintain the audit trail of who approved what, when.
+- **Govern access** — manage team membership, repo connections, and compute target registration.
+
+## Why ClosedLoop.ai centers this concept
+
+Without a control plane, agent output floats free from the process that decides what should be built.
+
+That increases local speed while increasing organizational ambiguity. Work gets done faster but scope drift, duplicated effort, inconsistent review standards, and environmental fragility all get worse.
+
+The control plane makes the following things observable and governable:
+
+- Which artifact launched which run.
+- Which compute target executed it.
+- Who approved high-risk operations.
+- What the judges scored.
+- Whether the PR that resulted from it was merged, and when.
+
+## How it talks to execution
+
+The control plane does not touch your machine directly. It sends structured `desktop.command` envelopes over a Socket.IO relay to a specific compute target. The desktop client dispatches each command into its localhost HTTP gateway, which enforces sandbox policy, runs the operation, and streams results back. See [Desktop gateway](../mechanisms/desktop-gateway) and [Cloud relay](../mechanisms/cloud-relay).
+
+## What control means
+
+A working control plane lets you treat agentic execution like you treat any other governed system: with audit trails, approvals, and rollback. That is the difference between a demo and a delivery model.

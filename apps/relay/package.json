@@ -1,0 +1,23 @@
+{
+  "name": "relay",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch --env-file=.env.local src/index.ts",
+    "build": "tsc",
+    "start": "node dist/apps/relay/src/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@repo/api": "workspace:*",
+    "@repo/observability": "workspace:*",
+    "socket.io": "^4.8.1",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

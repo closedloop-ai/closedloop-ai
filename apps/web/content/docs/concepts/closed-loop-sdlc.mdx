@@ -1,0 +1,76 @@
+---
+title: "The Closed Loop"
+description: "How phased, artifact-bound gates replace ad-hoc chat workflows and produce repeatably correct output."
+---
+
+A closed loop is an execution cycle that starts at an artifact, moves through gated phases, and returns a reviewable output that is scored against the original artifact.
+
+The loop is called "closed" because every output is tied back to its input. Nothing floats free.
+
+## The canonical loop
+
+The `code` plugin implements the canonical closed loop:
+
+1. **Pre-exploration** — build a `code-map.json` and extract requirements from the PRD.
+2. **Plan draft** — generate a structured `plan.json` and a human-readable `plan.md`.
+3. **Plan review checkpoint** — hard stop for human review of scope and tasks.
+4. **Critic validation** — parallel critics score the plan against best practices, organization, and codebase grounding.
+5. **Plan refinement** — reconcile critic feedback into an updated plan.
+6. **Plan finalization** — enrich tasks with acceptance criteria.
+7. **Implementation** — per-task verification then implementation, with self-verification gates.
+8. **Build validation** — deterministic lint, typecheck, build, and test runs with automatic retry budget.
+9. **Visual QA** — Playwright-driven end-to-end checks of any visual requirements.
+10. **Logging and completion** — structured run log and final gate.
+
+After completion, the `judges` plugin grades both the plan and the code with 27 judges across three evaluation types, and `self-learning` captures patterns for future runs.
+
+## Why phased gates matter
+
+Each phase is a **promise** plus a **validation**. An agent exits a phase by emitting a promise token (for example, `<promise>PLAN_VALIDATED</promise>`) which is verified by a deterministic script. If validation fails, the agent is forced to retry up to a per-phase budget.
+
+This gives the loop two useful properties:
+
+- **Deterministic pass conditions** — phase exits are not subjective.
+- **Bounded retries** — loops cannot spiral; each phase has a max iteration count.
+
+## Why artifact binding matters
+
+Every artifact produced during a loop is written to the session work directory (`$CLOSEDLOOP_WORKDIR`, usually `.closedloop-ai/work/`):
+
+- `prd.md` — the input specification
+- `plan.json` and `plan.md` — the plan
+- `reviews/*.review.json` — critic outputs
+- `code-judges.json`, `plan-judges.json` — judge reports
+- `state.json` — phase-by-phase execution state polled by UIs
+- `log.md` — the run changelog
+- `.learnings/` — pending and processed learnings
+
+That directory is the durable record of what the loop did and why.
+
+## The self-learning feedback loop
+
+After every iteration, a post-run pipeline:
+
+1. Computes relevance scores for captured learnings using changed-files context.
+2. Evaluates the run against the active goal (`reduce-failures`, `swe-bench`, etc.).
+3. Verifies citations in learnings are real and point to existing code.
+4. Updates `outcomes.log` with build, goal, and relevance signals.
+5. Classifies pending learnings with the LLM.
+6. Atomically writes the organization pattern store (`org-patterns.toon`).
+7. Recomputes success rates per pattern and flags underperformers.
+
+This is the **outer loop** — the loop around the loop. It is what turns individual runs into organizational knowledge.
+
+## Human-in-the-loop checkpoints
+
+Humans are still required at specific points:
+
+- Plan review (Phase 1.1) before code is written.
+- Approvals for medium and high risk operations (deploy, git push, filesystem writes outside common paths).
+- Final merge decisions on PRs.
+
+Everywhere else, the loop runs autonomously and returns structured outputs.
+
+## The result
+
+A closed loop turns an artifact into a reviewable change with every intermediate step archived and scored. Run it once and it is a demo. Run it a hundred times and it is an operating model.

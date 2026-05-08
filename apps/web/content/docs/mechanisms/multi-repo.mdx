@@ -1,0 +1,99 @@
+---
+title: Multi-Repo Development
+description: Run a single loop across multiple sibling repositories and produce artifacts that cross repo boundaries.
+---
+
+Many teams ship features that span more than one repository: a backend API and a frontend app, a shared library and its consumers, a platform service and an SDK. ClosedLoop.ai's multi-repo mode lets a single loop reference, plan, and (where applicable) modify peer repositories alongside the primary target — without context-switching.
+
+## How it works
+
+`additionalRepos` is a property of the loop request body. When a loop is created, the control plane validates and persists the peer set on the `Loop` record alongside the primary `repo`; the orchestrator then forwards the peer set to whichever runtime the loop is dispatched to (ECS or desktop). Every runtime mounts each peer at a local directory and injects `--add-dir` flags into the Claude Code spawn so the agent has direct filesystem access to peers as well as the primary.
+
+Validation, persistence, and dispatch are command-agnostic. Whether a particular command actually receives peers at runtime is determined by a single per-command policy table — adding multi-repo support to a new command is a one-line entry in `MULTI_REPO_POLICY` rather than per-runtime plumbing.
+
+## Per-command status
+
+| Command | Peers supported | Peer write mode | Notes |
+|---|:---:|---|---|
+| `PLAN` | ✅ | read-only | Peer worktrees on `symphony/loop-<slug>-<peer>-<disambig>` branches; always-fresh per run. |
+| `EXECUTE` | ✅ | read-write | Peer worktrees reused across retries to preserve in-progress agent state; per-peer PRs created at finalize. |
+| `GENERATE_PRD` | ✅ | read-only | Always-fresh peer worktrees on `symphony/generate-prd-<slug>-<peer>-<disambig>` branches. |
+| `REQUEST_PRD_CHANGES` | ✅ | read-only | Inherits the parent `GENERATE_PRD` loop's peer set verbatim (see below). |
+| `REQUEST_CHANGES` | — | n/a | Single-repo only. |
+| `DECOMPOSE`, `EVALUATE_*`, `CHAT`, `EXPLORE`, `BOOTSTRAP` | — | n/a | Peers in the request body are silently ignored at the runtime gate. |
+
+The table mirrors `MULTI_REPO_POLICY` in `@closedloop-ai/loops-api/multi-repo-policy`.
+
+## Read-only vs read-write peers
+
+The peer-write contract is enforced at the commit/push/PR layer, not the filesystem layer:
+
+- **Read-only commands** (`PLAN`, `GENERATE_PRD`, `REQUEST_PRD_CHANGES`) provision peer worktrees but never invoke the commit-and-push pipeline against them. Anything the agent writes inside a peer worktree is scratch and is discarded when the worktree is torn down.
+- **Read-write commands** (`EXECUTE`) run the full per-repo finalization pipeline — LLM-assisted commit, push, and PR creation — for every peer that has changes. Clean peers are skipped (no empty PRs).
+
+Agents are told to treat peers as read-only on read-only commands via the prompt itself; the runtime guarantees nothing escapes regardless. There is no special "freeze" step — absence of finalization is the protection.
+
+## REQUEST_PRD_CHANGES strict inheritance
+
+`REQUEST_PRD_CHANGES` does not accept a fresh `additionalRepos` from the request body. The control plane resolves the parent `GENERATE_PRD` loop's `additionalRepos` and copies the peer set verbatim onto the revision loop. This guarantees a PRD revision is grounded in the same cross-repo context as the original generation — drift between "PRD generated with peers A, B" and "PRD revised against peer C" is impossible.
+
+If the parent loop had no peers, the revision loop has no peers either; the orchestrator does not synthesize peers.
+
+## What the agent sees
+
+For peer-enabled commands the runtime produces three artifacts before spawning Claude:
+
+1. **`--add-dir` flags** — one per peer worktree, granting the agent filesystem access.
+2. **`peer-repos.json`** — a structured manifest at `.closedloop-ai/context/peer-repos.json` enumerating each peer's `fullName`, `branch`, and `localPath`.
+3. **A "## Mounted paths" footer** appended to the prompt, listing the same peers with their actual local paths.
+
+Together these mean the agent can be told (in the API-supplied prompt) which peers exist by `fullName` + `branch`, and discover the actual mount paths from the runtime-appended footer or the manifest file. Both runtimes (ECS and desktop) emit identical shapes.
+
+## Authorization at loop create
+
+`additionalRepos` is authorized and verified the moment a loop is created — not only when a `PLAN` runs. The control plane validates each peer against the calling org's GitHub installation and confirms the requested branch exists. Failures surface as structured errors:
+
+| Error | Status | Meaning |
+|---|---|---|
+| `UnauthorizedRepoError` | `403` | The peer repo is not installed for this org. Install or re-authorize it in the GitHub app. |
+| `BranchNotFoundError` | `400` | The base branch does not exist on the peer. Push the branch or correct the name. |
+| Duplicate-repo validation error | `400` | The same repo appears more than once in `additionalRepos`. |
+
+`POST /loops/{id}/github-token` also accepts an optional `additionalRepos` body so a runtime can scope the token request to the actual peer set. When the body is omitted (or invalid), the route falls back to the loop record on file.
+
+## Multi-repo execution results (v2)
+
+When a multi-repo `EXECUTE` loop completes, the runtime publishes a v2 completion event whose `results[]` field is a discriminated union per peer:
+
+```json
+{
+  "schemaVersion": 2,
+  "results": [
+    { "status": "success", "repo": "primary", "branch": "feat/payments", "prUrl": "https://github.com/acme/primary/pull/142" },
+    { "status": "skipped", "repo": "peer-mobile", "reason": "no changes required" },
+    { "status": "failed", "repo": "peer-backend", "error": "build-validator failed" }
+  ]
+}
+```
+
+Single-repo loops continue to publish the v1 event shape. The platform normalizes both into a unified result so judges, the activity feed, and downstream automation see one consistent structure.
+
+Read-only commands (`PLAN`, `GENERATE_PRD`, `REQUEST_PRD_CHANGES`) do not emit per-peer entries — the only persisted artifact is the primary's (the plan, the PRD).
+
+## Running from the desktop app
+
+The desktop app auto-clones repositories that are referenced in a cloud command but missing locally (via `gh repo clone`, 120-second timeout). For multi-repo loops, ensure every peer repo either exists in your sandbox or is accessible via `gh` before dispatch. You can pre-populate `~/.closedloop-ai/config/repos.json` with the set you expect to use frequently.
+
+## Related reading
+
+<Cards>
+  <Card title="Artifacts" href="./artifacts">
+    How plan and PRD artifacts and per-peer manifests live on disk.
+  </Card>
+  <Card title="Orchestrator and subagents" href="./orchestrator">
+    Which agents participate in cross-repo planning.
+  </Card>
+  <Card title="Loops" href="./loops">
+    How worktree lock keys let peers run in parallel safely.
+  </Card>
+</Cards>

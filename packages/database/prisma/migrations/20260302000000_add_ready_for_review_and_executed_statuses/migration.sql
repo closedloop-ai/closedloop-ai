@@ -1,0 +1,3 @@
+-- AlterEnum: add READY_FOR_REVIEW and EXECUTED variants to ArtifactStatus
+ALTER TYPE "ArtifactStatus" ADD VALUE 'READY_FOR_REVIEW' AFTER 'OBSOLETE';
+ALTER TYPE "ArtifactStatus" ADD VALUE 'EXECUTED' AFTER 'READY_FOR_REVIEW';

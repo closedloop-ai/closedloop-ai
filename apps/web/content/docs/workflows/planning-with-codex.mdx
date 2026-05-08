@@ -1,0 +1,62 @@
+---
+title: Planning with Codex
+description: Run a multi-round plan debate between Claude and Codex to produce a sharper implementation plan.
+---
+
+For high-stakes features it is sometimes worth having two planning models argue with each other before you commit. ClosedLoop provides this via `/code:plan-with-codex`, which runs a bounded debate between Claude's `plan-agent` and Codex (default `gpt-5.3-codex`).
+
+## The command
+
+```
+/code:plan-with-codex [--max-rounds N] [--plan-file PATH]
+                      [--codex-model MODEL] <prompt>
+```
+
+Debate rounds are capped by `--max-rounds` (default 15). The output is `debate-plan.md`.
+
+## How the debate runs
+
+1. `plan-agent` (Opus) drafts an initial plan from the prompt.
+2. Codex reviews the draft, raises objections, and proposes changes.
+3. `plan-agent` either accepts, counters, or rewrites.
+4. The debate continues until convergence, a clear disagreement is reached, or `--max-rounds` is hit.
+
+Each round's state is persisted in three sidecar files so the debate can be resumed:
+
+- `{stem}.state`
+- `{stem}.prompt`
+- `{stem}.exclusions`
+
+## Prerequisites
+
+- `codex` must be on your PATH or configured under **Settings → CLI Tools**.
+- The `code:codex-review` skill must be installed (it is, if you ran the one-line plugin installer).
+
+## When to use it
+
+- Architecturally consequential features where you want an adversarial review before implementation.
+- Plans that have failed judge evaluation repeatedly.
+- Migrations and refactors where a second model's take can catch a whole-system risk.
+
+## When to skip it
+
+- Small, well-scoped features. The debate adds real token cost; use it where it pays off.
+- Any case where your PRD is still vague. Fix the PRD first.
+
+## Integration with the main workflow
+
+The resulting `debate-plan.md` is a standalone artifact. To bring it into the main loop, promote it to `plan.md` (or run `/code:code` with `--plan <debate-plan.md>`). From there, the standard 18-phase flow takes over.
+
+## Related reading
+
+<Cards>
+  <Card title="Amending a plan" href="./amending-a-plan">
+    How to revise a plan after the debate completes.
+  </Card>
+  <Card title="Judges" href="../mechanisms/judges">
+    How plans are scored after a debate.
+  </Card>
+  <Card title="Plugins" href="../mechanisms/plugins">
+    The `code` plugin features that power the debate.
+  </Card>
+</Cards>
