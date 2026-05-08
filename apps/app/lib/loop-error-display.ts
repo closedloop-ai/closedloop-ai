@@ -1,11 +1,7 @@
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error";
 import type { LoopError } from "@repo/api/src/types/loop";
-import {
-  LoopErrorCode,
-  RunnerErrorSubcode,
-  RunnerErrorSubcodeSchema,
-} from "@repo/api/src/types/loop";
+import { LoopErrorCode } from "@repo/api/src/types/loop";
 import { z } from "zod";
-import { loopErrorCodeLabels } from "@/lib/loop-error-labels";
 
 type LoopErrorDisplayInput = {
   code: string;
@@ -13,28 +9,9 @@ type LoopErrorDisplayInput = {
   result?: LoopError["result"] | null;
 };
 
-const runnerFailureReasonLabels = {
-  [RunnerErrorSubcode.BadPlanState]: "Plan state unavailable",
-  [RunnerErrorSubcode.ClaudeAuthChallenge]: "Claude authentication required",
-  [RunnerErrorSubcode.ClaudeContextLimit]: "Claude context limit",
-  [RunnerErrorSubcode.ClaudeRateLimit]: "Claude rate limit",
-  [RunnerErrorSubcode.PendingTasksAtCompletion]: "Tasks still pending",
-  [RunnerErrorSubcode.PendingTasksBlockedByQuestions]:
-    "Blocked by unanswered questions",
-} satisfies Record<RunnerErrorSubcode, string>;
-
 const loopErrorResultSubcodeSchema = z.object({
   subcode: z.string().min(1),
 });
-
-function humanizeSubcode(subcode: string): string {
-  return subcode
-    .toLowerCase()
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
 
 export function getLoopErrorSubcode(
   error: LoopErrorDisplayInput
@@ -51,25 +28,26 @@ export function getLoopErrorReason(
   if (!subcode) {
     return null;
   }
-  const knownSubcode = RunnerErrorSubcodeSchema.safeParse(subcode);
-  return knownSubcode.success
-    ? runnerFailureReasonLabels[knownSubcode.data]
-    : humanizeSubcode(subcode);
+  return resolveFriendlyError({
+    code: error.code,
+    message: error.message,
+    result: error.result ?? undefined,
+  }).title;
 }
 
 export function getLoopErrorTitle(
   error: LoopErrorDisplayInput,
   options?: { useFriendlyCodeLabels?: boolean }
 ): string {
-  if (error.code === LoopErrorCode.RunnerError) {
-    return (
-      getLoopErrorReason(error) ??
-      loopErrorCodeLabels[LoopErrorCode.RunnerError] ??
-      error.code
-    );
+  const runnerReason =
+    error.code === LoopErrorCode.RunnerError ? getLoopErrorReason(error) : null;
+  if (runnerReason) {
+    return runnerReason;
   }
-  if (options?.useFriendlyCodeLabels) {
-    return loopErrorCodeLabels[error.code as LoopErrorCode] ?? error.code;
-  }
-  return error.code;
+  const friendly = resolveFriendlyError({
+    code: error.code,
+    message: error.message,
+    result: error.result ?? undefined,
+  });
+  return options?.useFriendlyCodeLabels === false ? error.code : friendly.title;
 }

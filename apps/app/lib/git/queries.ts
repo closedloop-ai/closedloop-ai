@@ -1,4 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
+import { throwApiErrorFromResponse } from "@/lib/api-error-response";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 
 /* ---------- Response types ---------- */
@@ -43,7 +44,7 @@ export function gitStatusOptions(repoPath: string) {
         body: JSON.stringify({ action: "status", repoPath }),
       });
       if (!response.ok) {
-        throw new Error("Failed to fetch git status");
+        await throwApiErrorFromResponse(response, "Failed to fetch git status");
       }
       const data = await response.json();
       return (
@@ -63,7 +64,10 @@ export function gitBranchDiffOptions(repoPath: string) {
         body: JSON.stringify({ action: "branch-diff", repoPath }),
       });
       if (!response.ok) {
-        throw new Error("Failed to fetch branch diff");
+        await throwApiErrorFromResponse(
+          response,
+          "Failed to fetch branch diff"
+        );
       }
       return response.json();
     },
@@ -89,7 +93,7 @@ export function gitDiffOptions(
         }),
       });
       if (!response.ok) {
-        throw new Error("Failed to fetch diff");
+        await throwApiErrorFromResponse(response, "Failed to fetch diff");
       }
       return response.json();
     },

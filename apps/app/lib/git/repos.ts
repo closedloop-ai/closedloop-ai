@@ -1,4 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
+import { throwApiErrorFromResponse } from "@/lib/api-error-response";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import type { ConfiguredRepo, RepoSettings } from "@/types/repos";
 
@@ -18,9 +19,9 @@ export function reposOptions() {
     queryFn: async () => {
       const response = await fetch("/api/gateway/repos");
       if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(
-          data?.error || `Failed to fetch repos: ${response.status}`
+        await throwApiErrorFromResponse(
+          response,
+          `Failed to fetch repos: ${response.status}`
         );
       }
       return response.json();

@@ -37,7 +37,7 @@ const DIAG_VERSION_ANY_REGEX = /Diagnostics version:/;
 const LOG_TAIL_BUTTON_REGEX = /log tail/i;
 const LINE_ONE_REGEX = /line 1/;
 const TOKEN_IN_REGEX = /\d+(\.\d+)?[kM]? in/;
-const RUNNER_RATE_LIMIT_TITLE = /Error: Claude rate limit/;
+const RUNNER_RATE_LIMIT_TITLE = /Claude rate limit reached/;
 
 type MockPolling = {
   events: LoopEvent[];
@@ -114,7 +114,7 @@ describe("ErrorEvent in LoopProgressPanel — tokenUsage", () => {
 
     // "Tokens:" should not appear in the error event area for events without tokenUsage
     // (The footer always shows tokens, but this checks the event area)
-    const errorDiv = screen.getByText("Error: SOME_ERROR").closest("div");
+    const errorDiv = screen.getByText("Operation failed").closest("div");
     expect(errorDiv?.textContent).not.toMatch(TOKEN_IN_REGEX);
   });
 
@@ -122,8 +122,12 @@ describe("ErrorEvent in LoopProgressPanel — tokenUsage", () => {
     setupMocks([RUNNER_RATE_LIMIT_EVENT]);
     render(<LoopProgressPanel loopId="loop-1" />);
 
-    expect(screen.getByText(RUNNER_RATE_LIMIT_TITLE)).toBeInTheDocument();
-    expect(screen.getByText("Claude rate limit reached.")).toBeInTheDocument();
+    expect(screen.getAllByText(RUNNER_RATE_LIMIT_TITLE).length).toBeGreaterThan(
+      0
+    );
+    expect(
+      screen.getByText("Claude was rate limited before the runner completed.")
+    ).toBeInTheDocument();
   });
 });
 

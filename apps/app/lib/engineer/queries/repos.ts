@@ -1,3 +1,8 @@
+import { ApiError } from "@/lib/api-error";
+import {
+  extractRawErrorMessage,
+  parseRawErrorBody,
+} from "@/lib/api-error-response";
 import {
   type ReposResponse as ReposResponseBase,
   reposOptions as reposOptionsBase,
@@ -16,7 +21,7 @@ export async function addRepo(path: string) {
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "Failed to add repository");
+    throwApiErrorFromBody(response.status, data, "Failed to add repository");
   }
   return data;
 }
@@ -30,7 +35,7 @@ export async function removeRepo(path: string) {
   );
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "Failed to remove repository");
+    throwApiErrorFromBody(response.status, data, "Failed to remove repository");
   }
   return data;
 }
@@ -46,7 +51,21 @@ export async function updateRepoSettings(settings: {
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "Failed to update settings");
+    throwApiErrorFromBody(response.status, data, "Failed to update settings");
   }
   return data;
+}
+
+function throwApiErrorFromBody(
+  status: number,
+  body: unknown,
+  fallback: string
+): never {
+  const parsed = parseRawErrorBody(body);
+  throw new ApiError(extractRawErrorMessage(body, fallback), status, {
+    code: parsed?.code,
+    data: body,
+    details: parsed?.details,
+    timestamp: parsed?.timestamp,
+  });
 }

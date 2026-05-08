@@ -3,6 +3,7 @@
 import { useFeatureFlag } from "@repo/analytics/client";
 import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus } from "@repo/api/src/types/document";
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error";
 import {
   LoopCommand,
   LoopErrorCode,
@@ -14,7 +15,6 @@ import type {
 } from "@repo/api/src/types/workstream";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { cn } from "@repo/design-system/lib/utils";
-import { loopErrorCodeLabels } from "@/lib/loop-error-labels";
 
 type StatusBadgeProps = {
   status: string;
@@ -271,17 +271,16 @@ export function LoopStatusBadge({
   const ghostLoopUx = ghostLoopFlag?.enabled;
 
   const showErrorCode =
-    ghostLoopUx &&
-    status === LoopStatus.Failed &&
-    errorCode !== undefined &&
-    loopErrorCodeLabels[errorCode] !== undefined;
+    ghostLoopUx && status === LoopStatus.Failed && errorCode !== undefined;
+  const friendlyErrorCode = showErrorCode ? errorCode : undefined;
 
-  const displayStatus = showErrorCode
-    ? loopErrorCodeLabels[errorCode!]
+  const displayStatus = friendlyErrorCode
+    ? resolveFriendlyError({ code: friendlyErrorCode }).title
     : (loopStatusLabels[status] ?? status);
 
-  const colorClass = showErrorCode
-    ? loopErrorCodeColors[errorCode!]
+  const colorClass = friendlyErrorCode
+    ? (loopErrorCodeColors[friendlyErrorCode] ??
+      loopStatusColors[LoopStatus.Failed])
     : (loopStatusColors[status] ?? loopStatusColors[LoopStatus.Pending]);
 
   return (

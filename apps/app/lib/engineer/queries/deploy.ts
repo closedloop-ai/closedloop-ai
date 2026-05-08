@@ -1,4 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
+import { throwApiErrorFromResponse } from "@/lib/api-error-response";
 import type { DeploymentConfig } from "@/types/repos";
 import { queryKeys } from "./keys";
 
@@ -41,7 +42,10 @@ export function deployStatusOptions(
         `/api/gateway/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
       );
       if (!response.ok) {
-        throw new Error("Failed to fetch deploy status");
+        await throwApiErrorFromResponse(
+          response,
+          "Failed to fetch deploy status"
+        );
       }
       return response.json();
     },
@@ -59,7 +63,7 @@ export function deployHealthOptions(ticketId: string, url: string | undefined) {
         body: JSON.stringify({ url }),
       });
       if (!response.ok) {
-        throw new Error("Failed to health check");
+        await throwApiErrorFromResponse(response, "Failed to health check");
       }
       return response.json();
     },
@@ -80,7 +84,7 @@ export async function triggerDeployDetect(
     body: JSON.stringify({ repoPath }),
   });
   if (!response.ok) {
-    throw new Error("Detection failed");
+    await throwApiErrorFromResponse(response, "Detection failed");
   }
   return response.json();
 }

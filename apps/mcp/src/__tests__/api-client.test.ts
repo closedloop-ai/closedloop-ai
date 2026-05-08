@@ -92,6 +92,51 @@ describe.sequential("ApiClient", () => {
     );
   });
 
+  it("preserves structured ApiResult failure metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              code: "PROCESS_FAILED",
+              details: {
+                action: "commit",
+                category: "pre_commit_hook",
+                stderrExcerpt: "lint failed",
+              },
+              error: "Pre-commit hook failed",
+              success: false,
+              timestamp: "2026-05-08T12:00:00.000Z",
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }
+          )
+      )
+    );
+
+    const { createApiClient } = await import("../api-client.js");
+    const { McpApiError } = await import("../api-error.js");
+    const client = createApiClient(
+      { userId: "u1", organizationId: "o1", scopes: ["read"] },
+      "sk_live_test"
+    );
+
+    await expect(client.get("/artifacts")).rejects.toMatchObject({
+      code: "PROCESS_FAILED",
+      details: {
+        action: "commit",
+        category: "pre_commit_hook",
+        stderrExcerpt: "lint failed",
+      },
+      message: "Pre-commit hook failed",
+      timestamp: "2026-05-08T12:00:00.000Z",
+    });
+    await expect(client.get("/artifacts")).rejects.toBeInstanceOf(McpApiError);
+  });
+
   it("surfaces structured ApiResult errors", async () => {
     vi.stubGlobal(
       "fetch",

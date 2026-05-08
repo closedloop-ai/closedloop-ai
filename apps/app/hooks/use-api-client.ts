@@ -3,18 +3,14 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useMemo } from "react";
-import { z } from "zod";
 import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
 import { ApiError } from "@/lib/api-error";
+import {
+  extractRawErrorMessage as getRawErrorMessage,
+  parseRawErrorBody,
+} from "@/lib/api-error-response";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import { reviveWithDates } from "@/lib/revive-with-dates";
-
-const rawErrorBodySchema = z
-  .object({
-    code: z.string().optional(),
-    error: z.string().optional(),
-  })
-  .passthrough();
 
 /**
  * This hook provides an HTTP client for interacting with the REST API.
@@ -98,7 +94,12 @@ async function apiFetch<T>(
     );
 
     if (!result.success) {
-      throw new ApiError(result.error, response.status, undefined, result);
+      throw new ApiError(result.error, response.status, {
+        code: result.code,
+        data: result,
+        details: result.details,
+        timestamp: result.timestamp,
+      });
     }
     if (!response.ok) {
       throw new ApiError(
@@ -132,7 +133,7 @@ async function apiFetchRaw<T>(
     const body = await response.json().catch(() => null);
 
     if (!response.ok) {
-      throw new ApiError(extractRawErrorMessage(body), response.status);
+      throwApiErrorFromResponseWithBody(response, body);
     }
 
     return body as T;
@@ -148,15 +149,17 @@ async function apiFetchRaw<T>(
   }
 }
 
-function extractRawErrorMessage(body: unknown): string {
-  const parsed = rawErrorBodySchema.safeParse(body);
-  const message = parsed.success
-    ? (parsed.data.code ?? parsed.data.error)
-    : null;
-  if (message) {
-    return message;
-  }
-  return "API request failed";
+function throwApiErrorFromResponseWithBody(
+  response: Response,
+  body: unknown
+): never {
+  const parsed = parseRawErrorBody(body);
+  throw new ApiError(getRawErrorMessage(body), response.status, {
+    code: parsed?.code,
+    data: body,
+    details: parsed?.details,
+    timestamp: parsed?.timestamp,
+  });
 }
 
 function apiRequest(

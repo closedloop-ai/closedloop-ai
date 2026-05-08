@@ -39,13 +39,13 @@ import {
   TextIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FriendlyErrorAlert } from "@/components/errors/friendly-error-alert";
 import { useLoopPolling } from "@/hooks/queries/use-loop-polling";
 import {
   type StreamStatus,
   useLoopStream,
 } from "@/hooks/queries/use-loop-stream";
 import { formatTokenCount } from "@/lib/format-utils";
-import { getLoopErrorTitle } from "@/lib/loop-error-display";
 
 type LoopProgressPanelProps = {
   loopId: string;
@@ -221,7 +221,7 @@ function StartedEvent({ timestamp }: { timestamp: string }) {
 function OutputEvent({ event }: { event: LoopEventOutput }) {
   const [isOpen, setIsOpen] = useState(false);
   const chunk = event.chunk ?? "";
-  const preview = chunk.length > 120 ? `${chunk.substring(0, 120)}...` : chunk;
+  const preview = chunk.length > 120 ? `${chunk.slice(0, 120)}...` : chunk;
 
   return (
     <div className="flex items-start gap-3">
@@ -375,12 +375,15 @@ function ErrorEvent({ event }: { event: LoopEventError }) {
         <AlertCircleIcon className="size-3 text-red-600 dark:text-red-400" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-red-700 text-sm dark:text-red-400">
-          Error: {getLoopErrorTitle(event)}
-        </div>
-        <div className="mt-1 text-red-600 text-xs dark:text-red-300">
-          {event.message}
-        </div>
+        <FriendlyErrorAlert
+          className="border-none bg-transparent p-0 shadow-none"
+          error={{
+            code: event.code,
+            message: event.message,
+            result: event.result ?? undefined,
+            timestamp: event.timestamp,
+          }}
+        />
         {event.tokenUsage && (
           <div className="mt-1 text-muted-foreground text-xs">
             Tokens: {formatTokenCount(event.tokenUsage.inputTokens)} in /{" "}
@@ -467,6 +470,32 @@ function EventItem({ event }: { event: LoopEvent }) {
       return <CancelledEvent reason={event.reason} />;
     default:
       return null;
+  }
+}
+
+function getLoopEventKey(event: LoopEvent): string {
+  const base = `${event.type}-${event.timestamp ?? "untimed"}`;
+  switch (event.type) {
+    case "started":
+      return `${base}-${event.loopId}`;
+    case "output":
+      return `${base}-${event.chunk.slice(0, 80)}`;
+    case "progress":
+      return `${base}-${event.stage}-${event.percent}`;
+    case "tool_call":
+      return `${base}-${event.tool}-${event.status}`;
+    case "artifact_created":
+      return `${base}-${event.artifactId}`;
+    case "support_bundle_uploaded":
+      return `${base}-${event.keys.join(",")}`;
+    case "completed":
+      return `${base}-${event.loopId ?? "loop"}-${event.tokensUsed.input}-${event.tokensUsed.output}`;
+    case "error":
+      return `${base}-${event.code}-${event.message.slice(0, 80)}`;
+    case "cancelled":
+      return `${base}-${event.reason ?? "cancelled"}`;
+    default:
+      return base;
   }
 }
 
@@ -586,8 +615,8 @@ export function LoopProgressPanel({
                 </p>
               </div>
             )}
-            {events.map((event, idx) => (
-              <EventItem event={event} key={`${event.type}-${idx}`} />
+            {events.map((event) => (
+              <EventItem event={event} key={getLoopEventKey(event)} />
             ))}
             <div ref={scrollEndRef} />
           </div>

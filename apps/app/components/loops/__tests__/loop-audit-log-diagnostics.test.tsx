@@ -36,8 +36,9 @@ import { RUNNER_RATE_LIMIT_EVENT } from "../../../__tests__/fixtures/loops";
 import { LoopAuditLog } from "../loop-audit-log";
 
 // Top-level regex constants (Biome useTopLevelRegex)
-const SOME_ERROR_REGEX = /SOME_ERROR/;
-const CONTEXT_LIMIT_REGEX = /CONTEXT_LIMIT_EXCEEDED/;
+const SOME_ERROR_REGEX = /Operation failed/;
+const CONTEXT_LIMIT_REGEX = /Context limit exceeded/;
+const TECHNICAL_DETAILS_REGEX = /Technical details:/;
 const TOKENS_100_REGEX = /Tokens: 100 in \/ 50 out/;
 const TOKENS_1200_REGEX = /Tokens: 1200 in \/ 600 out/;
 const TOKENS_50_REGEX = /Tokens: 50 in \/ 25 out/;
@@ -47,7 +48,7 @@ const LINE_A_REGEX = /line A/;
 const DIAG_VERSION_200_REGEX = /Diagnostics version: 2\.0\.0/;
 const DIAG_VERSION_300_REGEX = /Diagnostics version: 3\.0\.0/;
 const RUNNER_RATE_LIMIT_SUMMARY_REGEX =
-  /Claude rate limit: Claude rate limit reached\./;
+  /Claude rate limit reached: Claude was rate limited/;
 
 function makeResponse(events: LoopEvent[]): {
   data: LoopEventsPaginatedResponse;
@@ -87,7 +88,7 @@ describe("LoopAuditLog EventRow — error expandability", () => {
     vi.clearAllMocks();
   });
 
-  it("error row without diagnostics is NOT expandable (click does not reveal content)", () => {
+  it("error row without diagnostics is expandable for technical details", () => {
     vi.mocked(useLoopEventsPaginated).mockReturnValue(
       makeResponse([BASE_ERROR_EVENT]) as any
     );
@@ -96,10 +97,10 @@ describe("LoopAuditLog EventRow — error expandability", () => {
 
     expect(screen.getByText(SOME_ERROR_REGEX)).toBeInTheDocument();
 
-    // Clicking the row should not reveal token or log content for a plain error event
     fireEvent.click(
       screen.getByText(SOME_ERROR_REGEX).closest("tr") as Element
     );
+    expect(screen.getByText(TECHNICAL_DETAILS_REGEX)).toBeInTheDocument();
     expect(screen.queryByText(LOG_TAIL_REGEX)).not.toBeInTheDocument();
   });
 
