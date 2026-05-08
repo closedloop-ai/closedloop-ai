@@ -16,7 +16,7 @@
     "@tiptap/extension-table-header": "~3.22.3",
     "@tiptap/extension-table-row": "~3.22.3",
     "@tiptap/extension-placeholder": "~3.22.3",
-    "@tiptap/markdown": "~3.22.3",
+    "@tiptap/markdown": "~3.23.1",
     "@tiptap/pm": "~3.22.3",
     "@tiptap/react": "~3.22.3",
     "@tiptap/starter-kit": "~3.22.3",
