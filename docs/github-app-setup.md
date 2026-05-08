@@ -287,7 +287,7 @@ GITHUB_APP_PRIVATE_KEY=<base64-encoded-or-escaped-pem>
 GITHUB_APP_WEBHOOK_SECRET=<webhook-secret>
 GITHUB_APP_CLIENT_SECRET=<client-secret>
 GITHUB_APP_CLIENT_ID=<staging-client-id>
-GITHUB_APP_DISPATCH_REPO=closedloop-ai/symphony-alpha
+GITHUB_APP_DISPATCH_REPO=closedloop-ai/claude-plugins
 NEXT_PUBLIC_GITHUB_APP_SLUG=closedloop-ai-stage
 
 # Production
@@ -296,7 +296,7 @@ GITHUB_APP_PRIVATE_KEY=<base64-encoded-or-escaped-pem>
 GITHUB_APP_WEBHOOK_SECRET=<webhook-secret>
 GITHUB_APP_CLIENT_SECRET=<client-secret>
 GITHUB_APP_CLIENT_ID=<prod-client-id>
-GITHUB_APP_DISPATCH_REPO=closedloop-ai/symphony-alpha
+GITHUB_APP_DISPATCH_REPO=closedloop-ai/claude-plugins
 NEXT_PUBLIC_GITHUB_APP_SLUG=closedloop-ai
 ```
 
