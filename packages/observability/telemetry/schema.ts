@@ -46,6 +46,18 @@ export const TelemetryCategory = {
   OnboardingPopupDismissedSession: "onboarding.popup_dismissed_session",
   OnboardingPopupDismissedPermanent: "onboarding.popup_dismissed_permanent",
   OnboardingPopupSuppressedAuto: "onboarding.popup_suppressed_auto",
+  // PRD-254 — loop.perf.* telemetry categories (one outer category per
+  // perf.jsonl event type plus a parse-failure warning channel).
+  LoopPerfRun: "loop.perf.run",
+  LoopPerfPhase: "loop.perf.phase",
+  LoopPerfIteration: "loop.perf.iteration",
+  LoopPerfPipelineStep: "loop.perf.pipeline_step",
+  LoopPerfAgent: "loop.perf.agent",
+  LoopPerfTool: "loop.perf.tool",
+  LoopPerfSkill: "loop.perf.skill",
+  LoopPerfSpawn: "loop.perf.spawn",
+  LoopPerfParseFailure: "loop.perf.parse_failure",
+  LoopPerfUnknownEventVariant: "loop.perf.unknown_event_variant",
 } as const;
 
 export type TelemetryCategory =
@@ -267,6 +279,52 @@ const supportUploadDiagnosticsSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
 });
 
+// ---------------------------------------------------------------------------
+// LoopPerfEventDiagnostics — permissive passthrough for loop.perf.* categories
+// ---------------------------------------------------------------------------
+// The relay forwards `loopPerf` payloads to Datadog opaquely so version skew
+// between desktop producers and the relay never drops observability data
+// (PRD-254 §FR-6 fail-open, producer-additivity rollout property). Field-level
+// validation is owned by the producer schema in closedloop-electron.
+//
+// Drift detection: the handler emits a `loop.perf.unknown_event_variant`
+// warning when the inner `event` value falls outside `KNOWN_LOOP_PERF_EVENTS`
+// (or is missing entirely), while still forwarding the payload — this is how
+// desktop-version skew becomes observable rather than silent or breaking
+// (e.g. legacy `post_loop_review` / `post_loop_fix` arrivals, or a future
+// desktop build that renames the discriminator).
+//
+// `event` is `.optional()` so missing-discriminator payloads also fail open
+// rather than tripping envelope-level validation; the handler's drift check
+// catches the absent case and emits the same warning channel.
+//
+// Producer-side wire-format invariants (informational; not enforced here):
+// - Optional fields are absent (omitted), not `null`. Exception: `tool` events
+//   may carry `endedAt`/`durationS`/`ok` as `null` as the in-flight sentinel
+//   for orphan-tool reconciliation at end-of-loop.
+// - `pipeline_step.step` is a number, not an integer (producer emits 8.5 for
+//   the synthetic `write_merged_patterns` step).
+
+export const KNOWN_LOOP_PERF_EVENTS: ReadonlySet<string> = new Set([
+  "run",
+  "phase",
+  "iteration",
+  "pipeline_step",
+  "agent",
+  "tool",
+  "skill",
+  "spawn",
+  "parse_failure",
+]);
+
+export const loopPerfEventDiagnosticsSchema = z
+  .object({ event: z.string().optional() })
+  .passthrough();
+
+export type LoopPerfEventDiagnostics = z.infer<
+  typeof loopPerfEventDiagnosticsSchema
+>;
+
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
   exitCode: z.number().optional(),
@@ -307,6 +365,7 @@ const desktopTelemetryDiagnosticsSchema = z.object({
     decisionTableVerificationDiagnosticsSchema.optional(),
   outboundNetwork: outboundNetworkDiagnosticsSchema.optional(),
   supportUpload: supportUploadDiagnosticsSchema.optional(),
+  loopPerf: loopPerfEventDiagnosticsSchema.optional(),
   spawnMeta: z
     .object({
       command: z.string(),
