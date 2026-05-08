@@ -1,5 +1,6 @@
 import { Priority } from "@repo/api/src/types/common";
 import {
+  defaultRepositoryValidator,
   ProjectStatus,
   repositoryOverridesValidator,
 } from "@repo/api/src/types/project";
@@ -14,6 +15,7 @@ const projectStatusEnum = z.enum(ProjectStatus);
 // to their declared shapes. Unknown keys pass through untouched.
 const projectSettingsBodyValidator = z
   .object({
+    defaultRepository: defaultRepositoryValidator.optional(),
     repositoryOverrides: repositoryOverridesValidator.optional(),
   })
   .catchall(jsonValueValidator);

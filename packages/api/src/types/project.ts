@@ -132,7 +132,7 @@ export type ProjectSettings = {
   repositoryOverrides?: RepositoryOverrides;
 };
 
-const defaultRepositoryValidator = z.object({
+export const defaultRepositoryValidator = z.object({
   repoId: z.string().min(1),
   repoFullName: z.string().min(1),
   branch: z.string().min(1),
