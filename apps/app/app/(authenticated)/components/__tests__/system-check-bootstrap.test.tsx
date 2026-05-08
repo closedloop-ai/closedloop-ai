@@ -1,22 +1,63 @@
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockUseSystemCheckEligibility = vi.fn();
 const mockUseEngineerRoutingSelection = vi.fn();
 const mockUseComputeTargets = vi.fn();
+const mockUseComputeTargetHealthCheckSnapshot = vi.fn();
 const mockHealthCheckDialog = vi.hoisted(() => vi.fn());
+const mockHealthCheckQueryFn = vi.hoisted(() => vi.fn());
+const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
+const mockHealthCheckOptions = vi.hoisted(() =>
+  vi.fn((_routing?: unknown, _expectedMcpUrl?: unknown, _config?: unknown) => ({
+    queryKey: ["health-check"],
+    queryFn: mockHealthCheckQueryFn,
+    staleTime: 30_000,
+  }))
+);
+const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
+
+vi.mock("@/env", () => ({
+  env: {
+    NEXT_PUBLIC_MCP_SERVER_URL: EXPECTED_MCP_URL,
+  },
+}));
 
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
-  HealthCheckDialog: (props: { targetKey?: string }) => {
+  HealthCheckDialog: (props: {
+    latestVersionOverride?: string | null;
+    relayTargetId?: string | null;
+    targetKey?: string;
+  }) => {
     mockHealthCheckDialog(props);
     return (
-      <div data-target-key={props.targetKey} data-testid="health-check-dialog">
+      <div
+        data-latest-version={props.latestVersionOverride ?? ""}
+        data-relay-target-id={props.relayTargetId ?? ""}
+        data-target-key={props.targetKey}
+        data-testid="health-check-dialog"
+      >
         Health Check Dialog
       </div>
     );
   },
 }));
+
+vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/engineer/queries/health-check")
+    >();
+  return {
+    ...actual,
+    healthCheckOptions: (
+      ...args: Parameters<typeof actual.healthCheckOptions>
+    ) => mockHealthCheckOptions(...args),
+  };
+});
 
 vi.mock("@/lib/engineer/routing-store", () => ({
   useEngineerRoutingSelection: () => mockUseEngineerRoutingSelection(),
@@ -28,6 +69,15 @@ vi.mock("@/lib/system-check/use-system-check-eligibility", () => ({
 
 vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: () => mockUseComputeTargets(),
+  useComputeTargetHealthCheckSnapshot: (
+    targetId: string | null | undefined,
+    options: unknown
+  ) => mockUseComputeTargetHealthCheckSnapshot(targetId, options),
+}));
+
+vi.mock("@/hooks/queries/use-electron-release", () => ({
+  useLatestElectronRelease: (options: unknown) =>
+    mockUseLatestElectronRelease(options),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -37,9 +87,48 @@ vi.mock("next/navigation", () => ({
 
 import { SystemCheckBootstrap } from "../system-check-bootstrap";
 
+function createBootstrapQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function renderBootstrap(queryClient = createBootstrapQueryClient()) {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <SystemCheckBootstrap />
+    </QueryClientProvider>
+  );
+}
+
+function rerenderBootstrap(rerender: (ui: ReactNode) => void) {
+  const queryClient = createBootstrapQueryClient();
+
+  rerender(
+    <QueryClientProvider client={queryClient}>
+      <SystemCheckBootstrap />
+    </QueryClientProvider>
+  );
+}
+
 describe("SystemCheckBootstrap", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHealthCheckQueryFn.mockResolvedValue({
+      checks: [],
+      allRequiredPassed: true,
+    });
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: {
+        downloadUrl: "https://example.com/closedloop.dmg",
+        releaseNotes: "",
+        version: "1.0.0",
+      },
+      isLoading: false,
+    });
     mockUseEngineerRoutingSelection.mockReturnValue({
       mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: null,
@@ -47,6 +136,10 @@ describe("SystemCheckBootstrap", () => {
       updatedAt: Date.now(),
     });
     mockUseComputeTargets.mockReturnValue({ data: [] });
+    mockUseComputeTargetHealthCheckSnapshot.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
   });
 
   it("does not render the dialog while eligibility is loading", () => {
@@ -55,7 +148,7 @@ describe("SystemCheckBootstrap", () => {
       isLoading: true,
     });
 
-    render(<SystemCheckBootstrap />);
+    renderBootstrap();
 
     expect(screen.queryByTestId("health-check-dialog")).toBeNull();
   });
@@ -66,7 +159,7 @@ describe("SystemCheckBootstrap", () => {
       isLoading: false,
     });
 
-    render(<SystemCheckBootstrap />);
+    renderBootstrap();
 
     expect(screen.queryByTestId("health-check-dialog")).toBeNull();
   });
@@ -77,7 +170,7 @@ describe("SystemCheckBootstrap", () => {
       isLoading: false,
     });
 
-    render(<SystemCheckBootstrap />);
+    renderBootstrap();
 
     expect(screen.getByTestId("health-check-dialog")).toBeInTheDocument();
   });
@@ -94,7 +187,7 @@ describe("SystemCheckBootstrap", () => {
       updatedAt: Date.now(),
     });
 
-    const { rerender } = render(<SystemCheckBootstrap />);
+    const { rerender } = renderBootstrap();
 
     expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
       "data-target-key",
@@ -108,11 +201,162 @@ describe("SystemCheckBootstrap", () => {
       updatedAt: Date.now(),
     });
 
-    rerender(<SystemCheckBootstrap />);
+    rerenderBootstrap(rerender);
 
     expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
       "data-target-key",
       "local-gateway"
     );
+  });
+
+  it("prefetches and renders with the shared cloud-relay target key", async () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    renderBootstrap();
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-target-key",
+      "cloud-relay:target-1"
+    );
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-relay-target-id",
+      "target-1"
+    );
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-latest-version",
+      "1.0.0"
+    );
+
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          latestVersion: "1.0.0",
+          relayTargetId: "target-1",
+        })
+      );
+    });
+  });
+
+  it("hydrates from a fresh persisted cloud-relay snapshot without live prefetching", async () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargetHealthCheckSnapshot.mockReturnValue({
+      data: {
+        id: "snapshot-1",
+        organizationId: "org-1",
+        computeTargetId: "target-1",
+        checkedAt: new Date(),
+        expectedMcpUrl: EXPECTED_MCP_URL,
+        latestVersion: "1.0.0",
+        result: {
+          checks: [{ id: "git", label: "Git", required: true, passed: true }],
+          allRequiredPassed: true,
+        },
+        allRequiredPassed: true,
+        requiredFailureIds: [],
+        schemaVersion: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      isLoading: false,
+    });
+
+    renderBootstrap();
+
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          latestVersion: "1.0.0",
+          relayTargetId: "target-1",
+        })
+      );
+    });
+    expect(mockHealthCheckQueryFn).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite a newer live health-check cache with an older persisted snapshot", async () => {
+    const queryClient = createBootstrapQueryClient();
+    const persistedCheckedAt = new Date("2026-05-08T16:00:00.000Z");
+    const liveResult = {
+      checks: [{ id: "live-git", label: "Git", required: true, passed: true }],
+      allRequiredPassed: true,
+    };
+
+    queryClient.setQueryData(["health-check"], liveResult, {
+      updatedAt: persistedCheckedAt.getTime() + 1000,
+    });
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargetHealthCheckSnapshot.mockReturnValue({
+      data: {
+        id: "snapshot-1",
+        organizationId: "org-1",
+        computeTargetId: "target-1",
+        checkedAt: persistedCheckedAt,
+        expectedMcpUrl: EXPECTED_MCP_URL,
+        latestVersion: "1.0.0",
+        result: {
+          checks: [
+            {
+              id: "persisted-git",
+              label: "Git",
+              required: true,
+              passed: true,
+            },
+          ],
+          allRequiredPassed: true,
+        },
+        allRequiredPassed: true,
+        requiredFailureIds: [],
+        schemaVersion: 1,
+        createdAt: persistedCheckedAt,
+        updatedAt: persistedCheckedAt,
+      },
+      isLoading: false,
+    });
+
+    renderBootstrap(queryClient);
+
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          latestVersion: "1.0.0",
+          relayTargetId: "target-1",
+        })
+      );
+    });
+    expect(queryClient.getQueryData(["health-check"])).toBe(liveResult);
+    expect(mockHealthCheckQueryFn).not.toHaveBeenCalled();
   });
 });

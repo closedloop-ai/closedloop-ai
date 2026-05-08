@@ -1,13 +1,19 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import type {
   CheckResult,
   HealthCheckResponse,
 } from "@/lib/engineer/queries/health-check";
-import { getRenderableHealthChecks } from "@/lib/engineer/queries/health-check";
+import {
+  getHealthCheckTargetKey,
+  getRenderableHealthChecks,
+} from "@/lib/engineer/queries/health-check";
+import {
+  type HealthCheckCacheEntry,
+  isHealthCheckCacheEntryFresh,
+} from "./health-check-freshness";
 
-/** Maximum age for a cached selected-target health check before pre-loop code refetches. */
-export const PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS = 30_000;
 /** Maximum time a pre-loop health-check fetch may block a command before fail-open. */
 export const PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS = 5000;
 
@@ -36,6 +42,7 @@ export type PreLoopTarget = {
   targetKey: string;
   computeTargetId: string;
   label: string;
+  isOnline: boolean;
   mode: "local_compute_target";
 };
 
@@ -77,18 +84,31 @@ export function createPreLoopAttemptId(): string {
 }
 
 export function getPreLoopTargetKey(computeTargetId: string): string {
-  return `compute-target:${computeTargetId}`;
+  return getHealthCheckTargetKey({
+    mode: EngineerRoutingMode.CloudRelay,
+    computeTargetId,
+  });
 }
 
 /** Returns whether a cached health-check result is fresh enough for pre-loop use. */
 export function isPreLoopHealthCheckFresh({
-  dataUpdatedAt,
+  entry,
+  expectedMcpUrl,
+  latestVersion = null,
   now = Date.now(),
 }: {
-  dataUpdatedAt: number;
+  entry: HealthCheckCacheEntry;
+  expectedMcpUrl: string | null;
+  latestVersion?: string | null;
   now?: number;
 }): boolean {
-  return now - dataUpdatedAt <= PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS;
+  return isHealthCheckCacheEntryFresh({
+    entry,
+    expectedMcpUrl,
+    latestVersion,
+    now,
+    requiredOnly: true,
+  });
 }
 
 /** Extracts required renderable checks that currently fail. */

@@ -91,6 +91,16 @@ describe("SystemCheckResults — required/optional partition", () => {
     expect(optionalSection.textContent).not.toContain("python3");
   });
 
+  test("applies presentation row animation classes", () => {
+    render(<SystemCheckResults checks={[requiredPassed]} />);
+
+    const row = screen.getByText("Git").closest("div")?.parentElement;
+
+    expect(row).not.toBeNull();
+    expect(row).toHaveClass("animate-in");
+    expect(row).toHaveClass("slide-in-from-left-3");
+  });
+
   test("optional check does not appear under Required heading", () => {
     render(<SystemCheckResults checks={[requiredPassed, optionalFailed]} />);
 
@@ -222,9 +232,10 @@ describe("SystemCheckResults — required/optional partition", () => {
       />
     );
 
-    const value = screen.getByLabelText(worktreePath);
+    const value = screen.getByText(worktreePath);
 
-    expect(value).toHaveAttribute("type", "button");
+    expect(value).not.toHaveAttribute("type", "button");
+    expect(value).not.toHaveAttribute("tabindex");
     expect(value).toHaveTextContent(worktreePath);
     expect(value).toHaveClass("truncate");
   });

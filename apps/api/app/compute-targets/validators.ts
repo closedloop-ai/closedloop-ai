@@ -54,6 +54,66 @@ export const setSharingValidator = z.object({
   isSharedWithOrg: z.boolean(),
 });
 
+const healthCheckDebugValidator = z
+  .object({
+    errorCode: z.string().optional(),
+    stderr: z.string().optional(),
+    resolvedPath: z.string().optional(),
+    shell: z.string().optional(),
+    platform: z.string().optional(),
+    foundAt: z.array(z.string()).optional(),
+    overrideUsed: z.string().optional(),
+  })
+  .passthrough();
+
+const healthCheckResultValidator = z.object({
+  id: z.string().trim().min(1),
+  label: z.string().trim().min(1),
+  required: z.boolean(),
+  passed: z.boolean(),
+  version: z.string().optional(),
+  error: z.string().optional(),
+  remediation: z.string().optional(),
+  debug: healthCheckDebugValidator.optional(),
+});
+
+const mcpProviderAvailabilityValidator = z.union([
+  z
+    .object({
+      available: z.boolean(),
+      serverName: z.string().nullable(),
+      matchedUrl: z.string().nullable(),
+      checkedAt: z.string(),
+      error: z.string().nullable().optional(),
+    })
+    .passthrough(),
+  z
+    .object({
+      closedloopAvailable: z.boolean(),
+      checkedAt: z.string(),
+    })
+    .passthrough(),
+]);
+
+const mcpServersValidator = z
+  .object({
+    claude: mcpProviderAvailabilityValidator,
+    codex: mcpProviderAvailabilityValidator,
+  })
+  .partial();
+
+export const healthCheckSnapshotValidator = z.object({
+  expectedMcpUrl: z.string().trim().min(1).nullable().optional(),
+  latestVersion: z.string().trim().min(1).max(120).nullable().optional(),
+  result: z
+    .object({
+      checks: z.array(healthCheckResultValidator),
+      allRequiredPassed: z.boolean(),
+      mcpServers: mcpServersValidator.optional(),
+    })
+    .passthrough(),
+});
+
 export const createDesktopCommandValidator = z.object({
   operationId: z.string().trim().min(1),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),

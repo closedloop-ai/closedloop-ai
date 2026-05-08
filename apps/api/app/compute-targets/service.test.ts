@@ -51,11 +51,18 @@ function buildTarget(overrides: Record<string, unknown> = {}) {
 }
 
 function installDb(db: unknown) {
+  const dbWithDefaults =
+    typeof db === "object" && db !== null
+      ? {
+          computeTargetHealthCheck: { deleteMany: vi.fn() },
+          ...db,
+        }
+      : db;
   mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
-    callback(db)
+    callback(dbWithDefaults)
   );
   mocks.withDb.tx.mockImplementation((callback: (db: unknown) => unknown) =>
-    callback(db)
+    callback(dbWithDefaults)
   );
 }
 
@@ -637,5 +644,208 @@ describe("computeTargetsService gateway reconciliation", () => {
         supportedOperations: [],
       })
     ).rejects.toThrow("connection refused");
+  });
+});
+
+describe("computeTargetsService health-check snapshots", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
+  });
+
+  it("upserts the latest health-check snapshot for an accessible target", async () => {
+    const checkedAt = new Date("2026-05-08T16:00:00.000Z");
+    const upsert = vi.fn().mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt,
+      expectedMcpUrl: "https://mcp.example.com",
+      latestVersion: "1.2.3",
+      result: {
+        checks: [
+          { id: "git", label: "Git", required: true, passed: true },
+          {
+            id: "github-auth",
+            label: "GitHub Auth",
+            required: true,
+            passed: false,
+          },
+        ],
+        allRequiredPassed: false,
+      },
+      allRequiredPassed: false,
+      requiredFailureIds: ["github-auth"],
+      schemaVersion: 1,
+      createdAt: checkedAt,
+      updatedAt: checkedAt,
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(buildTarget()),
+      },
+      computeTargetHealthCheck: {
+        upsert,
+      },
+    });
+
+    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
+      "org-1",
+      "user-1",
+      "target-1",
+      {
+        expectedMcpUrl: "https://mcp.example.com",
+        latestVersion: "1.2.3",
+        result: {
+          checks: [
+            { id: "git", label: "Git", required: true, passed: true },
+            {
+              id: "github-auth",
+              label: "GitHub Auth",
+              required: true,
+              passed: false,
+            },
+          ],
+          allRequiredPassed: true,
+        },
+      }
+    );
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { computeTargetId: "target-1" },
+        create: expect.objectContaining({
+          allRequiredPassed: false,
+          requiredFailureIds: ["github-auth"],
+        }),
+        update: expect.objectContaining({
+          allRequiredPassed: false,
+          requiredFailureIds: ["github-auth"],
+        }),
+      })
+    );
+    expect(snapshot?.requiredFailureIds).toEqual(["github-auth"]);
+  });
+
+  it("returns null when upserting a snapshot for an inaccessible target", async () => {
+    const upsert = vi.fn();
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+      computeTargetHealthCheck: {
+        upsert,
+      },
+    });
+
+    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
+      "org-1",
+      "user-1",
+      "target-2",
+      {
+        result: {
+          checks: [],
+          allRequiredPassed: true,
+        },
+      }
+    );
+
+    expect(snapshot).toBeNull();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("clears a snapshot when owned target metadata changes", async () => {
+    const deleteMany = vi.fn();
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(buildTarget()),
+        update: vi.fn().mockResolvedValue(
+          buildTarget({
+            platform: "linux",
+          })
+        ),
+      },
+      computeTargetHealthCheck: {
+        deleteMany,
+      },
+      apiKey: {
+        findMany: vi.fn(),
+      },
+    });
+
+    await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      { platform: "linux" },
+      null
+    );
+
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { computeTargetId: "target-1" },
+    });
+  });
+
+  it("does not clear a snapshot when JSON metadata only changes key order", async () => {
+    const deleteMany = vi.fn();
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(
+          buildTarget({
+            capabilities: {
+              config: { beta: true, alpha: "enabled" },
+              tools: ["git", { version: "2.54.0", name: "cli" }],
+            },
+          })
+        ),
+        update: vi.fn().mockResolvedValue(
+          buildTarget({
+            capabilities: {
+              tools: ["git", { name: "cli", version: "2.54.0" }],
+              config: { alpha: "enabled", beta: true },
+            },
+          })
+        ),
+      },
+      computeTargetHealthCheck: {
+        deleteMany,
+      },
+      apiKey: {
+        findMany: vi.fn(),
+      },
+    });
+
+    await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      {
+        capabilities: {
+          tools: ["git", { name: "cli", version: "2.54.0" }],
+          config: { alpha: "enabled", beta: true },
+        },
+      },
+      null
+    );
+
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("does not clear a snapshot for heartbeat-only updates", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const deleteMany = vi.fn();
+    installDb({
+      computeTarget: {
+        updateMany,
+      },
+      computeTargetHealthCheck: {
+        deleteMany,
+      },
+    });
+
+    await computeTargetsService.heartbeat("target-1", "org-1", "user-1");
+
+    expect(updateMany).toHaveBeenCalledOnce();
+    expect(deleteMany).not.toHaveBeenCalled();
   });
 });

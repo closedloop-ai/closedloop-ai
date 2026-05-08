@@ -5,6 +5,7 @@ import {
   ComputePreference,
   type ComputePreferenceResponse,
   type ComputeTarget,
+  type ComputeTargetHealthCheckSnapshot,
 } from "@repo/api/src/types/compute-target";
 import { useUser } from "@repo/auth/client";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -22,11 +23,16 @@ import {
 import { HealthCheckDialog } from "@/components/engineer/HealthCheckDialog";
 import { env } from "@/env";
 import { useComputePreference } from "@/hooks/queries/use-compute-preference";
-import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import {
+  computeTargetHealthCheckSnapshotQueryOptions,
+  useComputeTargets,
+} from "@/hooks/queries/use-compute-targets";
 import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
+import { useApiClient } from "@/hooks/use-api-client";
 import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import { getHealthCheckCacheAgeMs } from "./health-check-freshness";
 import {
   buildPreLoopAnalyticsProperties,
   createPreLoopAttemptId,
@@ -70,6 +76,7 @@ type ActivePreLoopAttemptRef = {
 type HealthCheckFetchResult = {
   data: HealthCheckResponse;
   healthCheckCacheAgeMs: number | null;
+  latestVersion: string | null;
   usedCachedHealthCheck: boolean;
 };
 
@@ -99,9 +106,23 @@ type CachedHealthCheckFetchResult = HealthCheckFetchResult & {
   dataUpdatedAt: number;
 };
 
+function getLatestVersionFromHealthCheckQueryKey(
+  queryKey: readonly unknown[]
+): string | null {
+  const latestVersion = queryKey[3];
+  return typeof latestVersion === "string" && latestVersion.length > 0
+    ? latestVersion
+    : null;
+}
+
 type PreLoopHealthEvaluation =
   | { status: "skip_no_local_target" }
-  | { status: "unavailable"; reason: string; target?: PreLoopTarget | null }
+  | {
+      status: "unavailable";
+      reason: string;
+      target?: PreLoopTarget | null;
+      latestVersion?: string | null;
+    }
   | {
       status: "available";
       target: PreLoopTarget;
@@ -229,6 +250,7 @@ export function PreLoopSystemCheckProvider({
 }: Readonly<{ children: ReactNode }>) {
   const analytics = useAnalytics();
   const queryClient = useQueryClient();
+  const apiClient = useApiClient();
   const { user } = useUser();
   const userId = user?.id ?? "";
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
@@ -239,14 +261,16 @@ export function PreLoopSystemCheckProvider({
     null
   );
   const [isChecking, setIsChecking] = useState(false);
+  const [activeAttemptTarget, setActiveAttemptTarget] =
+    useState<PreLoopTarget | null>(null);
   const [pendingAttempt, setPendingAttempt] =
     useState<PendingPreLoopAttempt | null>(null);
 
   const computePreferenceQuery = useComputePreference(userId, {
-    enabled: Boolean(pendingAttempt && userId),
+    enabled: Boolean((pendingAttempt || activeAttemptTarget) && userId),
   });
   const computeTargetsQuery = useComputeTargets({
-    enabled: Boolean(pendingAttempt),
+    enabled: Boolean(pendingAttempt || activeAttemptTarget),
   });
   const latestReleaseQuery = useLatestElectronRelease({
     enabled: false,
@@ -282,6 +306,25 @@ export function PreLoopSystemCheckProvider({
     [clearChecking]
   );
 
+  const recordActiveAttemptTarget = useCallback(
+    (attemptId: string, target: PreLoopTarget) => {
+      const activeAttempt = activeAttemptRef.current;
+      if (
+        !activeAttempt ||
+        activeAttempt.attemptId !== attemptId ||
+        activeAttempt.cancelled
+      ) {
+        return;
+      }
+      activeAttemptRef.current = {
+        ...activeAttempt,
+        target,
+      };
+      setActiveAttemptTarget(target);
+    },
+    []
+  );
+
   const clearPendingAttemptState = useCallback((delayMs = 0) => {
     if (pendingRemovalTimerRef.current) {
       clearTimeout(pendingRemovalTimerRef.current);
@@ -302,6 +345,7 @@ export function PreLoopSystemCheckProvider({
   const executeAttempt = useCallback(
     (attempt: PendingPreLoopAttempt) => {
       clearActivePreLoopAttempt(activeAttemptRef, attempt.attemptId);
+      setActiveAttemptTarget(null);
       pendingAttemptRef.current = null;
       clearPendingAttemptState();
       attempt.execute();
@@ -374,6 +418,7 @@ export function PreLoopSystemCheckProvider({
           targetKey: getPreLoopTargetKey(requestedComputeTargetId),
           computeTargetId: requestedComputeTargetId,
           label: getTargetLabel(requestedTarget),
+          isOnline: requestedTarget.isOnline,
           mode: "local_compute_target",
         };
       }
@@ -409,6 +454,7 @@ export function PreLoopSystemCheckProvider({
         targetKey: getPreLoopTargetKey(selection.effectiveTargetId),
         computeTargetId: selection.effectiveTargetId,
         label: getTargetLabel(selection.effectiveTarget),
+        isOnline: selection.effectiveTarget.isOnline,
         mode: "local_compute_target",
       };
     },
@@ -441,21 +487,38 @@ export function PreLoopSystemCheckProvider({
       latestVersion?: string | null;
     }): HealthCheckFetchResult | null => {
       const now = Date.now();
-      const toCachedResult = (
-        data: unknown,
-        dataUpdatedAt: number
-      ): CachedHealthCheckFetchResult | null => {
+      const toCachedResult = ({
+        data,
+        dataUpdatedAt,
+        latestVersion,
+      }: {
+        data: unknown;
+        dataUpdatedAt: number;
+        latestVersion: string | null;
+      }): CachedHealthCheckFetchResult | null => {
+        const healthCheckData = data as HealthCheckResponse | undefined;
         if (
-          data === undefined ||
-          !isPreLoopHealthCheckFresh({ dataUpdatedAt, now })
+          healthCheckData === undefined ||
+          !isPreLoopHealthCheckFresh({
+            entry: {
+              data: healthCheckData,
+              checkedAt: dataUpdatedAt,
+              expectedMcpUrl,
+              latestVersion,
+            },
+            expectedMcpUrl,
+            latestVersion,
+            now,
+          })
         ) {
           return null;
         }
 
         return {
-          data: data as HealthCheckResponse,
+          data: healthCheckData,
           dataUpdatedAt,
           healthCheckCacheAgeMs: now - dataUpdatedAt,
+          latestVersion,
           usedCachedHealthCheck: true,
         };
       };
@@ -468,10 +531,11 @@ export function PreLoopSystemCheckProvider({
         const queryState = queryClient.getQueryState<HealthCheckResponse>(
           options.queryKey
         );
-        const cachedResult = toCachedResult(
-          queryState?.data,
-          queryState?.dataUpdatedAt ?? 0
-        );
+        const cachedResult = toCachedResult({
+          data: queryState?.data,
+          dataUpdatedAt: queryState?.dataUpdatedAt ?? 0,
+          latestVersion,
+        });
         if (!cachedResult) {
           return null;
         }
@@ -491,7 +555,13 @@ export function PreLoopSystemCheckProvider({
         .getQueryCache()
         .findAll({ queryKey: queryKeyPrefix })
         .map((query) =>
-          toCachedResult(query.state.data, query.state.dataUpdatedAt)
+          toCachedResult({
+            data: query.state.data,
+            dataUpdatedAt: query.state.dataUpdatedAt,
+            latestVersion: getLatestVersionFromHealthCheckQueryKey(
+              query.queryKey
+            ),
+          })
         )
         .filter((result): result is CachedHealthCheckFetchResult =>
           Boolean(result)
@@ -507,6 +577,72 @@ export function PreLoopSystemCheckProvider({
       return result;
     },
     [expectedMcpUrl, queryClient]
+  );
+
+  const getFreshPersistedHealthCheck = useCallback(
+    async ({
+      target,
+      latestVersion,
+    }: {
+      target: PreLoopTarget;
+      latestVersion: string | null;
+    }): Promise<HealthCheckFetchResult | null> => {
+      if (!target.isOnline) {
+        return null;
+      }
+
+      const snapshotOptions = computeTargetHealthCheckSnapshotQueryOptions(
+        apiClient,
+        target.computeTargetId
+      );
+      const cachedSnapshot =
+        queryClient.getQueryData<ComputeTargetHealthCheckSnapshot | null>(
+          snapshotOptions.queryKey
+        );
+      const snapshot =
+        cachedSnapshot === undefined
+          ? await queryClient.fetchQuery<ComputeTargetHealthCheckSnapshot | null>(
+              snapshotOptions
+            )
+          : cachedSnapshot;
+      if (!snapshot) {
+        return null;
+      }
+
+      const entry = {
+        data: snapshot.result,
+        checkedAt: snapshot.checkedAt,
+        expectedMcpUrl: snapshot.expectedMcpUrl,
+        latestVersion: snapshot.latestVersion,
+      };
+      if (
+        !isPreLoopHealthCheckFresh({
+          entry,
+          expectedMcpUrl,
+          latestVersion,
+        })
+      ) {
+        return null;
+      }
+
+      const queryLatestVersion = snapshot.latestVersion ?? latestVersion;
+      queryClient.setQueryData(
+        healthCheckOptions(target.targetKey, expectedMcpUrl, {
+          relayTargetId: target.computeTargetId,
+          latestVersion: queryLatestVersion,
+        }).queryKey,
+        snapshot.result,
+        { updatedAt: snapshot.checkedAt.getTime() }
+      );
+
+      return {
+        data: snapshot.result,
+        healthCheckCacheAgeMs: getHealthCheckCacheAgeMs(entry),
+        latestVersion: queryLatestVersion,
+        usedCachedHealthCheck: true,
+      };
+    },
+    [apiClient, expectedMcpUrl, queryClient]
   );
 
   const fetchHealthCheck = useCallback(
@@ -525,6 +661,14 @@ export function PreLoopSystemCheckProvider({
         return cachedResult;
       }
 
+      const persistedResult = await getFreshPersistedHealthCheck({
+        target,
+        latestVersion,
+      });
+      if (persistedResult) {
+        return persistedResult;
+      }
+
       const options = healthCheckOptions(target.targetKey, expectedMcpUrl, {
         relayTargetId: target.computeTargetId,
         latestVersion,
@@ -536,35 +680,16 @@ export function PreLoopSystemCheckProvider({
       return {
         data,
         healthCheckCacheAgeMs: null,
+        latestVersion,
         usedCachedHealthCheck: false,
       };
     },
-    [expectedMcpUrl, getFreshCachedHealthCheck, queryClient]
-  );
-
-  const getFreshPassingCachedHealthCheck = useCallback(
-    (
-      target: PreLoopTarget,
-      latestVersion?: string | null
-    ): HealthCheckFetchResult | null => {
-      const cachedResult = getFreshCachedHealthCheck({
-        target,
-        latestVersion,
-      });
-      if (!cachedResult) {
-        return null;
-      }
-
-      if (
-        getRequiredFailureSummary(cachedResult.data, expectedMcpUrl).checkIds
-          .length > 0
-      ) {
-        return null;
-      }
-
-      return cachedResult;
-    },
-    [expectedMcpUrl, getFreshCachedHealthCheck]
+    [
+      expectedMcpUrl,
+      getFreshCachedHealthCheck,
+      getFreshPersistedHealthCheck,
+      queryClient,
+    ]
   );
 
   const updateActivePendingAttempt = useCallback(
@@ -611,6 +736,7 @@ export function PreLoopSystemCheckProvider({
         recheckAttempts: nextAttempt.recheckAttempts,
         cancelled: false,
       };
+      setActiveAttemptTarget(target);
       pendingAttemptRef.current = nextAttempt;
       setPendingAttempt(nextAttempt);
       return true;
@@ -646,7 +772,6 @@ export function PreLoopSystemCheckProvider({
       attemptId,
       metadata,
       evaluation,
-      latestVersion,
       wasCancelled,
       clearActiveAttempt,
       updatePendingAttempt,
@@ -654,7 +779,6 @@ export function PreLoopSystemCheckProvider({
       attemptId: string;
       metadata: PreLoopMetadata;
       evaluation: Extract<PreLoopHealthEvaluation, { status: "unavailable" }>;
-      latestVersion: string | null;
       updatePendingAttempt: (input: UpdatePendingAttemptInput) => void;
     }): PreLoopHealthCheckOutcome => {
       clearCheckingForAttempt(attemptId);
@@ -667,7 +791,7 @@ export function PreLoopSystemCheckProvider({
       if (evaluation.target) {
         updatePendingAttempt({
           target: evaluation.target,
-          latestVersion,
+          latestVersion: evaluation.latestVersion ?? null,
           healthCheckData: buildUnavailableHealthCheck(evaluation.reason),
         });
         openedUnavailableDialog = true;
@@ -690,10 +814,7 @@ export function PreLoopSystemCheckProvider({
   const evaluatePreLoopTargetHealth = useCallback(
     async (
       metadata: PreLoopMetadata,
-      onTargetReady?: (
-        target: PreLoopTarget,
-        latestVersion: string | null
-      ) => void
+      attemptId: string
     ): Promise<PreLoopHealthEvaluation> => {
       let target: PreLoopTarget | null = null;
       try {
@@ -708,12 +829,14 @@ export function PreLoopSystemCheckProvider({
       if (!target) {
         return { status: "skip_no_local_target" };
       }
+      recordActiveAttemptTarget(attemptId, target);
 
-      const hasPassingCacheForSelectedTarget = Boolean(
-        getFreshPassingCachedHealthCheck(target)
-      );
-      if (!hasPassingCacheForSelectedTarget) {
-        onTargetReady?.(target, null);
+      if (!target.isOnline) {
+        return {
+          status: "unavailable",
+          target,
+          reason: "target_offline",
+        };
       }
 
       let latestVersion: string | null = null;
@@ -727,20 +850,18 @@ export function PreLoopSystemCheckProvider({
         };
       }
 
-      const exactCachedResult = getFreshPassingCachedHealthCheck(
+      const cachedResult = getFreshCachedHealthCheck({
         target,
-        latestVersion
-      );
-      if (exactCachedResult) {
+        latestVersion,
+      });
+      if (cachedResult) {
         return {
           status: "available",
           target,
           latestVersion,
-          healthResult: exactCachedResult,
+          healthResult: cachedResult,
         };
       }
-
-      onTargetReady?.(target, latestVersion);
 
       try {
         return {
@@ -753,14 +874,16 @@ export function PreLoopSystemCheckProvider({
         return {
           status: "unavailable",
           target,
+          latestVersion,
           reason: formatUnavailableReason("health_check", error),
         };
       }
     },
     [
       fetchHealthCheck,
-      getFreshPassingCachedHealthCheck,
+      getFreshCachedHealthCheck,
       getLatestVersion,
+      recordActiveAttemptTarget,
       resolveTarget,
     ]
   );
@@ -796,13 +919,14 @@ export function PreLoopSystemCheckProvider({
         recheckAttempts: 0,
         cancelled: false,
       };
+      setActiveAttemptTarget(null);
       isCheckingRef.current = true;
       setIsChecking(true);
 
       let openedDialog = false;
-      let latestVersionForAttempt: string | null = null;
       const clearActiveAttempt = () => {
         clearActivePreLoopAttempt(activeAttemptRef, attemptId);
+        setActiveAttemptTarget(null);
       };
       const updatePendingAttempt = ({
         target,
@@ -822,10 +946,7 @@ export function PreLoopSystemCheckProvider({
           execute,
           openedDialog,
         });
-        if (updated) {
-          latestVersionForAttempt = latestVersion;
-          openedDialog = true;
-        }
+        openedDialog = updated || openedDialog;
       };
       const wasDialogCancelled = () =>
         hasPreLoopAttemptBeenCancelled({
@@ -835,12 +956,7 @@ export function PreLoopSystemCheckProvider({
           openedDialog,
         });
 
-      const evaluation = await evaluatePreLoopTargetHealth(
-        metadata,
-        (target, latestVersion) => {
-          updatePendingAttempt({ target, latestVersion });
-        }
-      );
+      const evaluation = await evaluatePreLoopTargetHealth(metadata, attemptId);
       if (evaluation.status === "skip_no_local_target") {
         return finishSkippedNoLocalTarget({
           attemptId,
@@ -854,7 +970,6 @@ export function PreLoopSystemCheckProvider({
           attemptId,
           metadata,
           evaluation,
-          latestVersion: latestVersionForAttempt,
           wasCancelled: wasDialogCancelled,
           clearActiveAttempt,
           updatePendingAttempt,
@@ -955,6 +1070,7 @@ export function PreLoopSystemCheckProvider({
           cancelled: true,
         };
       }
+      setActiveAttemptTarget(null);
       pendingAttemptRef.current = null;
       clearPendingAttemptState(
         pendingAttempt ? BLOCKING_DIALOG_CANCEL_DISMISS_MS : 0
@@ -1054,10 +1170,13 @@ export function PreLoopSystemCheckProvider({
   useEffect(() => {
     const latestPreference = computePreferenceQuery.data;
     const latestTargets = computeTargetsQuery.data;
-    if (!pendingAttempt) {
+    const attemptMetadata =
+      pendingAttempt?.metadata ?? activeAttemptRef.current?.metadata;
+    const attemptTarget = pendingAttempt?.target ?? activeAttemptTarget;
+    if (!(attemptMetadata && attemptTarget)) {
       return;
     }
-    if (pendingAttempt.metadata.computeTargetId !== undefined) {
+    if (attemptMetadata.computeTargetId !== undefined) {
       return;
     }
     if (!latestPreference) {
@@ -1073,11 +1192,12 @@ export function PreLoopSystemCheckProvider({
     });
     if (
       selection.currentPreference !== ComputePreference.Local ||
-      selection.effectiveTargetId !== pendingAttempt.target.computeTargetId
+      selection.effectiveTargetId !== attemptTarget.computeTargetId
     ) {
       cancelPendingAttempt("target_changed");
     }
   }, [
+    activeAttemptTarget,
     cancelPendingAttempt,
     computePreferenceQuery.data,
     computeTargetsQuery.data,
@@ -1096,16 +1216,26 @@ export function PreLoopSystemCheckProvider({
     };
   }, []);
 
+  const activeAttempt = activeAttemptRef.current;
+  const activeOwnerKey =
+    pendingAttempt?.metadata.ownerKey ??
+    (isChecking ? (activeAttempt?.metadata.ownerKey ?? null) : null);
+  const activeCommand =
+    pendingAttempt?.metadata.command ??
+    (isChecking ? (activeAttempt?.metadata.command ?? null) : null);
+
   const contextValue = useMemo<PreLoopSystemCheckContextValue>(
     () => ({
       runWithPreLoopSystemCheck,
       cancelPendingPreLoopAttempt,
       isChecking,
       isDialogOpen: pendingAttempt !== null,
-      pendingOwnerKey: pendingAttempt?.metadata.ownerKey ?? null,
-      pendingCommand: pendingAttempt?.metadata.command ?? null,
+      pendingOwnerKey: activeOwnerKey,
+      pendingCommand: activeCommand,
     }),
     [
+      activeCommand,
+      activeOwnerKey,
       cancelPendingPreLoopAttempt,
       isChecking,
       pendingAttempt,

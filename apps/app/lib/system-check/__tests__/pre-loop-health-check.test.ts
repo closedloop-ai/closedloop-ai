@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
+import { HEALTH_CHECK_DEFAULT_FRESHNESS_MS } from "../health-check-freshness";
 import {
   buildPreLoopAnalyticsProperties,
   getFailingRequiredCheckIds,
@@ -7,7 +8,6 @@ import {
   getPreLoopTargetKey,
   getRequiredFailureSummary,
   isPreLoopHealthCheckFresh,
-  PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS,
   PreLoopAnalyticsEvent,
   PreLoopCommand,
 } from "../pre-loop-health-check";
@@ -24,21 +24,30 @@ const failingHealthCheck: HealthCheckResponse = {
 
 describe("pre-loop health-check helpers", () => {
   it("builds registered compute target keys", () => {
-    expect(getPreLoopTargetKey("target-123")).toBe("compute-target:target-123");
+    expect(getPreLoopTargetKey("target-123")).toBe("cloud-relay:target-123");
   });
 
-  it("treats the 30 second cache boundary as fresh", () => {
+  it("treats the one day required non-CLI cache boundary as fresh", () => {
     const now = new Date("2026-05-04T15:00:30.000Z").getTime();
+    const entry = {
+      data: failingHealthCheck,
+      checkedAt: now - HEALTH_CHECK_DEFAULT_FRESHNESS_MS,
+    };
 
     expect(
       isPreLoopHealthCheckFresh({
-        dataUpdatedAt: now - PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS,
+        entry,
+        expectedMcpUrl: null,
         now,
       })
     ).toBe(true);
     expect(
       isPreLoopHealthCheckFresh({
-        dataUpdatedAt: now - PRE_LOOP_HEALTH_CHECK_FRESHNESS_MS - 1,
+        entry: {
+          ...entry,
+          checkedAt: now - HEALTH_CHECK_DEFAULT_FRESHNESS_MS - 1,
+        },
+        expectedMcpUrl: null,
         now,
       })
     ).toBe(false);
@@ -68,9 +77,10 @@ describe("pre-loop health-check helpers", () => {
         ownerKey: "owner-1",
       },
       target: {
-        targetKey: "compute-target:target-1",
+        targetKey: "cloud-relay:target-1",
         computeTargetId: "target-1",
         label: "Laptop",
+        isOnline: true,
         mode: "local_compute_target",
       },
       failingChecks: getRequiredFailureSummary(failingHealthCheck, null).checks,

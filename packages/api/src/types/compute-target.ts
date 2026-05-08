@@ -19,6 +19,74 @@ export type ComputeTarget = {
   updatedAt: Date;
 };
 
+export type CheckResultDebug = {
+  errorCode?: string;
+  stderr?: string;
+  resolvedPath?: string;
+  shell?: string;
+  platform?: string;
+  foundAt?: string[];
+  overrideUsed?: string;
+};
+
+export type CheckResult = {
+  id: string;
+  label: string;
+  required: boolean;
+  passed: boolean;
+  version?: string;
+  error?: string;
+  remediation?: string;
+  debug?: CheckResultDebug;
+};
+
+export type NeutralMcpProviderAvailability = {
+  available: boolean;
+  serverName: string | null;
+  matchedUrl: string | null;
+  checkedAt: string;
+  error?: string | null;
+};
+
+export type LegacyMcpProviderAvailability = {
+  closedloopAvailable: boolean;
+  checkedAt: string;
+};
+
+export type McpProviderAvailability =
+  | NeutralMcpProviderAvailability
+  | LegacyMcpProviderAvailability;
+
+export type HealthCheckResponse = {
+  checks: CheckResult[];
+  allRequiredPassed: boolean;
+  mcpServers?: {
+    claude: McpProviderAvailability;
+    codex: McpProviderAvailability;
+  };
+};
+
+export type ComputeTargetHealthCheckSnapshot = {
+  id: string;
+  organizationId: string;
+  computeTargetId: string;
+  checkedAt: Date;
+  expectedMcpUrl: string | null;
+  latestVersion: string | null;
+  result: HealthCheckResponse;
+  allRequiredPassed: boolean;
+  requiredFailureIds: string[];
+  schemaVersion: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type UpsertComputeTargetHealthCheckSnapshotInput = {
+  expectedMcpUrl?: string | null;
+  latestVersion?: string | null;
+  result: HealthCheckResponse;
+};
+
 export const DesktopSecurityStatus = {
   Protected: "protected",
   UpgradeAvailable: "upgrade_available",

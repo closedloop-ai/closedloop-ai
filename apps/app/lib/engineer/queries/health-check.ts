@@ -1,3 +1,9 @@
+import type {
+  CheckResult,
+  HealthCheckResponse,
+  McpProviderAvailability,
+  NeutralMcpProviderAvailability,
+} from "@repo/api/src/types/compute-target";
 import { queryOptions } from "@tanstack/react-query";
 import { env } from "@/env";
 import {
@@ -12,53 +18,16 @@ const APP_VERSION_CHECK_ID = "app-version";
 const APP_VERSION_CHECK_LABEL = "Gateway Version";
 const PLUGIN_VERSIONS_CHECK_ID = "plugin-versions";
 const PLUGIN_VERSIONS_CHECK_LABEL = "Plugin Updates";
+export const HEALTH_CHECK_QUERY_STALE_TIME_MS = 24 * 60 * 60 * 1000;
 
-export type CheckResultDebug = {
-  errorCode?: string;
-  stderr?: string;
-  resolvedPath?: string;
-  shell?: string;
-  platform?: string;
-  foundAt?: string[];
-  overrideUsed?: string;
-};
-
-export type CheckResult = {
-  id: string;
-  label: string;
-  required: boolean;
-  passed: boolean;
-  version?: string;
-  error?: string;
-  remediation?: string;
-  debug?: CheckResultDebug;
-};
-
-export type NeutralMcpProviderAvailability = {
-  available: boolean;
-  serverName: string | null;
-  matchedUrl: string | null;
-  checkedAt: string;
-  error?: string | null;
-};
-
-export type LegacyMcpProviderAvailability = {
-  closedloopAvailable: boolean;
-  checkedAt: string;
-};
-
-export type McpProviderAvailability =
-  | NeutralMcpProviderAvailability
-  | LegacyMcpProviderAvailability;
-
-export type HealthCheckResponse = {
-  checks: CheckResult[];
-  allRequiredPassed: boolean;
-  mcpServers?: {
-    claude: McpProviderAvailability;
-    codex: McpProviderAvailability;
-  };
-};
+export type {
+  CheckResult,
+  CheckResultDebug,
+  HealthCheckResponse,
+  LegacyMcpProviderAvailability,
+  McpProviderAvailability,
+  NeutralMcpProviderAvailability,
+} from "@repo/api/src/types/compute-target";
 
 type HealthCheckTargetScope =
   | Pick<EngineerRoutingSelection, "mode" | "computeTargetId">
@@ -297,6 +266,6 @@ export function healthCheckOptions(
       const res = await fetch(request.url, request.init);
       return res.json();
     },
-    staleTime: 0,
+    staleTime: HEALTH_CHECK_QUERY_STALE_TIME_MS,
   });
 }
