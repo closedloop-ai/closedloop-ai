@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
-    "@next/third-parties": "16.0.7",
+    "@next/third-parties": "16.2.6",
     "@repo/auth": "workspace:*",
     "@posthog/next": "^0.1.0",
     "@t3-oss/env-nextjs": "^0.13.10",
