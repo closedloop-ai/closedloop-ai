@@ -1,0 +1,95 @@
+---
+title: Orchestrator and Subagents
+description: The system prompt and agents that drive every loop iteration.
+---
+
+The **orchestrator** is the system prompt loaded at the start of each loop iteration. It is not a long-lived process; every iteration is a fresh `claude -p` invocation with a clean 200K-token context. All state between iterations lives on disk.
+
+## The orchestrator's job
+
+The orchestrator coordinates. It does not read files directly. Its rules:
+
+- First action on every iteration is a `TodoWrite` that enumerates all 18 phases.
+- Its only allowed tools are `Bash` (for shell scripts and `ls`/`mkdir`/`echo`), `Task` (to launch subagents), `TodoWrite`, `AskUserQuestion`, and `SendMessage` (to continue a running subagent without re-launching it).
+- It may **not** use `Read`, `Grep`, `Glob`, `Edit`, or `Write`. All I/O goes through subagents.
+- It must write `$CLOSEDLOOP_WORKDIR/state.json` at every phase transition so external UIs can observe progress.
+- It must emit `<promise>COMPLETE</promise>` only after `plan.json` has zero `pendingTasks` and final validation has passed.
+
+## Subagents
+
+Subagents are specialized Claude instances launched via `Task`. Each has a tightly scoped system prompt, a declared tool allowlist, a promise they must emit, and (for loop agents) a validation script.
+
+### Planning subagents
+
+| Agent | Model | Role |
+| --- | --- | --- |
+| `plan-draft-writer` | Opus | Draft a new `plan.json` and `plan.md` from the PRD and pre-exploration. Loop agent; max 10 iterations; emits `PLAN_VALIDATED`. |
+| `plan-writer` | Sonnet | Merge critic feedback and finalize task descriptions. Modes: MERGE, FINALIZE, GAP. Loop agent; max 5 iterations; emits `PLAN_WRITER_COMPLETE`. |
+| `plan-validator` | Sonnet | Semantic-only validation of the current plan. Loop agent; emits `PLAN_VALIDATION_COMPLETE`. |
+| `plan-evaluator` | Sonnet | Simple-mode 6-signal gate that short-circuits expensive validation for trivial plans. |
+| `plan-importer` | Sonnet | Convert a staged `imported-plan.md` into a canonical `plan.json`. |
+| `answered-questions-subagent` | Haiku | Incorporate `answeredQuestions` from the plan. |
+| `plan-agent` | Opus | Used by `plan-with-codex` for the Claude side of a Codex debate. |
+
+### Implementation subagents
+
+| Agent | Model | Role |
+| --- | --- | --- |
+| `pre-explorer` | Haiku | Produce `requirements-extract.json`, `code-map.json`, and `investigation-log.md`. |
+| `verification-subagent` | Sonnet | For each task, return `VERIFIED` if already implemented or `NOT_IMPLEMENTED` otherwise. |
+| `implementation-subagent` | Sonnet | Apply the task with a 4-gate self-verification loop (max 4 iterations). Appends visual QA steps to `visual-requirements.md` on UI changes. |
+| `build-validator` | Haiku | Auto-discover test/lint/typecheck/build commands across Node, Python, Rust, Go, Android, and Make; loop until `VALIDATION_PASSED`. |
+| `code-reviewer` | Sonnet | Post-implementation review. Loop agent; max 5 iterations; exits when no Critical or High findings remain. |
+
+### Cross-repo subagents
+
+| Agent | Model | Role |
+| --- | --- | --- |
+| `cross-repo-coordinator` | Haiku | Decide which peer repositories are needed and emit a `CAPABILITIES_LIST`. |
+| `generic-discovery` | Haiku | Discover per-peer capabilities; cache to `.discovery-cache/`. |
+| `repo-coordinator` | Haiku | Reconcile task ownership across repos. |
+| `cross-repo-prd-writer` | Sonnet | Produce `cross-repo-prd-{peer-name}.md`; tag plan tasks with `[CROSS-REPO: {peer}]`. |
+| `api-spec-writer` | Sonnet | Produce `api-requirements.md` for inter-repo contracts. |
+
+### Support subagents
+
+| Agent | Role |
+| --- | --- |
+| `visual-qa-subagent` | Playwright-driven visual QA. Returns `SUCCESS`, `FAILURE`, `AUTH_REQUIRED`, `BLOCKED`, or `INCOMPLETE_DOCS`. |
+| `dev-environment` | Produce `.dev-environment.json` describing how to boot the app locally. |
+| `learning-capture` | Extract learnings from the iteration. |
+| `amend-extractor` | Classify a freeform amendment request into a directive, question, or confirmation. |
+| `code-review-worker` | Worker spawned by `/code-review:start` for each file partition. |
+| `code-review-guidelines` | Style and severity rules for reviewer workers. |
+
+## Loop agents and their promises
+
+A **loop agent** is a subagent that runs a validation loop until it emits a completion promise or hits its max-iteration cap. Registered in `scripts/loop-agents.json`:
+
+| Agent | Promise | Max iterations | Validator |
+| --- | --- | --- | --- |
+| `plan-draft-writer` | `PLAN_VALIDATED` | 10 | `validate-plan.sh` |
+| `plan-writer` | `PLAN_WRITER_COMPLETE` | 5 | `validate-plan.sh` |
+| `code-reviewer` | `CODE_REVIEW_PASSED` | 5 | — |
+| `plan-validator` | `PLAN_VALIDATION_COMPLETE` | 5 | — |
+| `implementation-subagent` | `IMPLEMENTATION_VERIFIED` | 4 | — |
+
+The `loop-stop-hook.sh` reads the subagent's state, checks for the promise, runs the validator, and either allows exit on PASS or increments the iteration and blocks with feedback.
+
+## Subagent continuation with SendMessage
+
+For long-running subagents that need to continue with additional context (for example, visual QA after `INCOMPLETE_DOCS`), the orchestrator stores the agent's `agent_id` from its initial `Task` spawn and continues via `SendMessage(to=<agent_id>)`. This preserves full agent context instead of re-launching a new Task. `SendMessage` returns immediately with a queued acknowledgment; the orchestrator waits for a `<task-notification>` before proceeding.
+
+## Related reading
+
+<Cards>
+  <Card title="Loops" href="./loops">
+    The 18-phase flow the orchestrator drives.
+  </Card>
+  <Card title="Hooks and runtime" href="./hooks">
+    How hooks inject context and enforce completion.
+  </Card>
+  <Card title="Judges" href="./judges">
+    The evaluators invoked at phases 1.3, 2.5, and 5.
+  </Card>
+</Cards>

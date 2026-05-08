@@ -1,0 +1,10 @@
+---
+title: Pattern
+description: A learned rule, convention, or pitfall captured from runs and stored in TOON format.
+---
+
+A pattern is a row in `org-patterns.toon` with an ID, a category (`pattern`, `convention`, `mistake`, `insight`), a summary, confidence, seen count, success rate, flags, applicability, context tags, and a repo scope.
+
+Patterns are captured by agents, classified by `/self-learning:process-learnings`, scored by Python tooling, and injected into future agent contexts by `subagent-start-hook.sh` and `pretooluse-hook.sh`.
+
+See [Self-learning (mechanisms)](../mechanisms/self-learning) and [Push and pull learnings (workflow)](../workflows/push-pull-learnings).

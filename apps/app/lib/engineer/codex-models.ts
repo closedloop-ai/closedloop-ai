@@ -1,0 +1,4 @@
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+
+export const MODEL_ERROR_REGEX =
+  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;

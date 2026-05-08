@@ -1,0 +1,10 @@
+---
+title: Sandbox
+description: The allowlist of filesystem paths the desktop gateway will permit an operation to touch.
+---
+
+The sandbox is derived from `sandboxBaseDirectory` in desktop settings. Paths outside the sandbox return `HTTP 403 directory not allowed`. Certain paths are hard-denied even inside the sandbox: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/Library/Keychains`, `/etc`, `/bin`, `/sbin`.
+
+Paths are canonicalized with `fs.realpathSync.native` to prevent symlink escapes.
+
+See [Approvals and sandbox (mechanisms)](../mechanisms/approvals-and-sandbox).

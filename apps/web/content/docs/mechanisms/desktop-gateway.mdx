@@ -1,0 +1,123 @@
+---
+title: Desktop gateway
+description: The signed localhost HTTP API that brokers every operation from the control plane into your machine.
+---
+
+The desktop gateway is a localhost HTTP server that handles every operation the control plane needs to perform on your machine. It runs inside the desktop client and binds to `127.0.0.1:19432` by default.
+
+## Bind and discovery
+
+- Preferred port: `19432`
+- Fallback probe order: `19432 → 19433 → 19434 → 19435`
+- Bind host: `127.0.0.1` (loopback only)
+- Discovery file: `~/.closedloop-ai/electron-port` (plaintext active port)
+
+Constants live in `src/shared/contracts.ts`:
+
+```ts
+DEFAULT_GATEWAY_PORT = 19432
+FALLBACK_GATEWAY_PORTS = [19433, 19434, 19435]
+GATEWAY_PROTOCOL_VERSION = "0.1.0"
+```
+
+## Unauthenticated endpoint
+
+`GET /health` is the only unauthenticated route and is used for liveness and capability detection.
+
+```json
+{
+  "status": "ok",
+  "machineName": "string",
+  "capabilities": { "tools": { "...": true }, "versions": { "...": "..." } },
+  "version": "string",
+  "port": 19432
+}
+```
+
+The response carries the CORS headers mandated by contract DG-001.
+
+## Authenticated endpoints
+
+All `/api/gateway/*` routes require authentication. The gateway accepts two mechanisms:
+
+### Internal gateway token
+
+A `X-Desktop-Gateway-Token` header carrying a process-local random 24-byte hex token generated at boot (`randomBytes(24).toString("hex")` in `app.ts`). This is used by the cloud command executor.
+
+### Browser session token
+
+A `X-Desktop-Session-Token` header paired with a bound `Origin` header. Sessions are issued after the challenge-exchange flow.
+
+The `Origin` header alone is not sufficient. Sessions are in-memory only (`LocalSessionStore`) — 32-byte hex tokens, sha256-digested for comparison, default TTL 10 minutes, max 8 concurrent.
+
+## CORS
+
+Allowed headers:
+
+```
+Content-Type, Authorization, X-Desktop-Gateway-Token, X-Desktop-Session-Token,
+X-Desktop-Source, X-Desktop-Force-Approval, X-Desktop-Approval-Reason
+```
+
+Private-network preflight is supported — `Access-Control-Request-Private-Network: true` is answered with `Access-Control-Allow-Private-Network: true` for allowed origins.
+
+## Fallback proxy
+
+If `SYMPHONY_GATEWAY_FALLBACK_ORIGIN` is set and a route is not implemented locally, the router proxies the request upstream.
+
+## Activity logging
+
+Every request (and every security event) is captured to `ActivityLogStore`, persisted in `desktop-activity-log` as a 200-entry ring buffer with 8 KiB body truncation. The UI surfaces these entries in the Activity Log tab.
+
+## Operations the gateway exposes
+
+The operation dispatcher supports `:param` and `*splat` path patterns. The full set of supported operation IDs is defined in `src/main/approval-operations.ts` (28 IDs):
+
+```
+symphony_launch, symphony_loop, symphony_loop_kill, symphony_plan_loop,
+symphony_status, symphony_kill, symphony_chat, symphony_comment_chat,
+symphony_commit_message, symphony_sessions, symphony_plan, symphony_judges,
+symphony_logs, symphony_chat_history, terminal_chat, ticket_chat,
+run_viewer_chat, codex_review, codex_argue, git_action, git_pr,
+git_branch_worktree, health_check, repos_config, deploy, learnings,
+filesystem, binary_paths_settings
+```
+
+See the [gateway endpoints reference](../resources/gateway-endpoints-reference) for the full route table.
+
+## Contracts
+
+| Contract | Purpose |
+|---|---|
+| DG-001 | Health probe response shape and CORS. |
+| DG-002 | Port selection and discovery file. |
+| DG-003 | Registration and 30-second heartbeat with 1–30 second backoff. |
+| DG-004 | Operation parity matrix — one source of truth for route, methods, and status per operation. |
+
+Contracts are documented in `docs/artifacts/desktop-gateway-contracts.md` in the desktop repo.
+
+## Cloud-to-gateway request signing
+
+When the cloud executor calls the gateway, it adds:
+
+- `x-desktop-gateway-token` — the internal token
+- `x-desktop-source: cloud-socket`
+- `x-desktop-command-id: <UUID>`
+- `x-desktop-operation-id: <id>`
+- `x-desktop-force-approval: 1` and `x-desktop-approval-reason` (when required)
+
+## Debug modes (dev only)
+
+Guarded by `!app.isPackaged`:
+
+- `CL_LOCAL_GATEWAY_DEBUG_AUTH=1` — enables a UI button to mint short-lived tokens for local curl testing.
+- `CL_LOCAL_GATEWAY_NO_AUTH=1` — disables gateway auth. Dangerous. Dev only.
+- `CL_LOCAL_GATEWAY_PROD_ORIGINS_ONLY=1` — stricter origin whitelist when dev is pointed at a production relay.
+
+Invoke via `just desktop-debug-auth`, `just desktop-no-auth`, or `just desktop-prod-origins`.
+
+## Fail-closed behavior
+
+- With no API key configured: `/health` still works; `POST /gateway-auth/exchange` returns 503; every `/api/gateway/*` route returns 401.
+- On port conflicts: auto-falls back within the configured range. Full failure moves the tray to `error`.
+- On sandbox violations: `HTTP 403 {"error":"directory not allowed"}` plus a `sandbox_blocked_operation` telemetry event plus a `SECURITY` entry in the activity log.

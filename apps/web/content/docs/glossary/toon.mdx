@@ -1,0 +1,15 @@
+---
+title: TOON
+description: Tabular object-oriented notation — the compact format for the organizational pattern store.
+---
+
+TOON is the format used by `org-patterns.toon`. It reduces tokens by ~40% versus JSON by using tabular arrays.
+
+Example row:
+
+```
+patterns[N]{id,category,summary,confidence,seen_count,success_rate,flags,applies_to,context,repo}:
+  P-001,pattern,"Always check token expiry...",high,5,0.85,,implementation-subagent,auth|API,*
+```
+
+See the `self-learning:toon-format` skill for the syntax spec, and [Self-learning (mechanisms)](../mechanisms/self-learning) for the mechanism.

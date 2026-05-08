@@ -1,0 +1,76 @@
+---
+title: Push and pull learnings
+description: Sync organizational patterns across projects and teammates.
+---
+
+The `self-learning` plugin stores captured patterns in `~/.closedloop-ai/learnings/org-patterns.toon`. Two commands keep these patterns synchronized across a team.
+
+## Prerequisites
+
+- `self-learning` plugin installed.
+- `CLAUDE_ORG_ID` exported in the environment.
+- Access to the shared team repo that stores the organization's learnings.
+
+## Push
+
+```bash
+claude /self-learning:push-learnings
+```
+
+Exports your local patterns to the shared team repo. Echo prevention means patterns you originated in a project do not loop back into that project when you later pull.
+
+## Pull
+
+```bash
+claude /self-learning:pull-learnings
+```
+
+Imports the organization's patterns. New patterns merge into your local `org-patterns.toon`; existing patterns are updated if the organization copy is newer.
+
+## Process before pushing
+
+If you have pending learnings from recent runs, process them first:
+
+```bash
+claude /self-learning:process-learnings
+```
+
+This classifies, validates, deduplicates, and merges pending learnings into `org-patterns.toon`, with low-performing patterns pruned per `retention.yaml`.
+
+## Inspect patterns
+
+- `~/.closedloop-ai/learnings/org-patterns.toon` — user-level pattern store.
+- `~/.closedloop-ai/learnings/closedloop-learnings.json` — ClosedLoop-specific learnings.
+
+Patterns carry flags that tell you their status:
+
+- `[REVIEW]` — success rate below 40%
+- `[STALE]` — not applied in the last 10 iterations
+- `[UNTESTED]` — no applications yet
+- `[PRUNE]` — more than 20 applications with success rate below 40%
+
+## Goal stats
+
+```bash
+claude /self-learning:goal-stats
+```
+
+Shows pass rate, top patterns, and trends. Requires at least 5 runs.
+
+## When to push
+
+- After a successful sprint where you captured valuable conventions.
+- When a recurring pitfall deserves organizational attention.
+- Periodically (weekly or biweekly) to keep the shared store current.
+
+## When to pull
+
+- Before starting a new project.
+- After joining a new team.
+- When you notice your agents missing obvious conventions — a fresh pull may have what you need.
+
+## Why sharing patterns compounds
+
+Pattern stores are the organization's institutional memory. Without them, each engineer repeats the same mistakes. With them, the second engineer to encounter a pitfall finds it already rejected by a pattern.
+
+See [Self-learning](../mechanisms/self-learning) for the full mechanism.

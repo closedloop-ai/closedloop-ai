@@ -1,0 +1,10 @@
+---
+title: Approval
+description: A human or rule-based decision that gates a specific gateway operation before it runs.
+---
+
+Approvals are governed by per-operation risk tiers (`low`, `medium`, `high`), a user-configured `defaultApprovalTier` (default `high`), and scoped `alwaysAllowRules[]` with default 7-day TTL. The cloud can force an approval with `x-desktop-force-approval: 1`.
+
+Decisions resolve to `approved | denied | always_allow | expired`.
+
+See [Approvals and sandbox (mechanisms)](../mechanisms/approvals-and-sandbox).

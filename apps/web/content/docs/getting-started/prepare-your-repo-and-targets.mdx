@@ -1,0 +1,53 @@
+---
+title: Prepare your repo and targets
+description: Make local execution predictable before you scale up docs or code generation.
+---
+
+Before you run your first loop, take a few minutes to make sure three layers are ready: your repository, your compute target, and the artifact you will execute against. Each layer reduces an entire class of failures.
+
+## Repository checklist
+
+- the default branch is stable and protected
+- contributor permissions are clear
+- there is a clean branch strategy for loop output (the `code` plugin will usually create worktrees and feature branches)
+- the repository builds cleanly with a single command
+- tests, linters, typecheckers, and the build run without manual steps
+- a `CLAUDE.md` or `AGENTS.md` exists at the repo root with conventions, commands, and guardrails (optional but strongly recommended — bootstrap uses it)
+
+## Compute target checklist
+
+- the desktop client is installed, healthy, and shows `ready` in the tray
+- your sandbox base directory is set to the parent directory that holds your repositories (nothing outside this path is writable by the gateway)
+- `claude`, `git`, `gh`, `python3`, and optionally `codex` are on `PATH` in your login shell
+- if a specific binary lives outside the default `PATH`, override it at **Settings → Binary paths**
+- the `PATH` your login shell exports is discoverable (the gateway invokes `$SHELL -ilc` with sentinels to capture it)
+
+### Sandbox hard-denies
+
+Certain paths are always denied, even inside your sandbox:
+
+- `~/.ssh`
+- `~/.gnupg`
+- `~/.aws`
+- `~/Library/Keychains`
+- `/etc`, `/bin`, `/sbin`
+
+Any attempt to read or write these paths returns `HTTP 403 {"error":"directory not allowed"}` and emits a `sandbox_blocked_operation` event.
+
+## Artifact checklist
+
+- the artifact has a clear title
+- the goal is concrete and phrased as an outcome, not as a step
+- success criteria are reviewable by a judge
+- any necessary PRD, design, or context is attached
+- the scope is small enough for one loop — resist the urge to point at a whole feature on the first try
+
+See [PRD template](../resources/prd-template) and [Implementation plan template](../resources/implementation-plan-template) for starting shapes.
+
+## Register the repository
+
+In the web app, connect the repository you plan to work in. This writes a repo entry used by the desktop gateway's `/api/gateway/repos` endpoint.
+
+You can also manage repos from the tray app's Settings tab. Each repo entry stores its path, default branch, and worktree parent so loops know where to operate.
+
+When these three layers are ready, loops are much less likely to fail for environmental reasons and you can focus review on whether the output actually matches the intent.

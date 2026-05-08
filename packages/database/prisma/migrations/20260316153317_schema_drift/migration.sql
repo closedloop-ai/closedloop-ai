@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "comment_threads_organization_id_entity_id_entity_type_status_id" RENAME TO "comment_threads_organization_id_entity_id_entity_type_statu_idx";

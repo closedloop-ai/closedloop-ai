@@ -1,0 +1,102 @@
+---
+title: Code Review
+description: Multi-agent code review for diffs, with optional GitHub inline comments and automatic post-loop review cycles.
+---
+
+ClosedLoop's code review is a parallel multi-agent system that partitions the diff, runs deterministic hygiene checks, spawns specialized reviewer subagents, validates their findings, caches by prompt hash plus diff tip, and either prints results or writes file-based handoffs for a GitHub CI workflow.
+
+## The command
+
+```
+/code-review:start [scope] [--github] [--hygiene-only] [--base <ref>]
+                   [--since-last-review] [--full-review]
+```
+
+**Scope** can be:
+
+- _(none)_ – branch vs `main`
+- `staged` – only the git index
+- `file1 file2` – specific files
+- `123` – PR #123 diff (local)
+
+**Modes:**
+
+- `--github` – CI mode. Auto-detects the PR from the branch; writes findings files instead of printing.
+- `--hygiene-only` – fast, zero-LLM sweep for CI artifacts, `.env`/`.pem` leakage, and path leakage.
+- `--since-last-review` – only new changes since the last review (branch scope only).
+- `--full-review` – force full review (mutually exclusive with `--since-last-review`).
+
+## The fast path
+
+For diffs of ≤ 200 lines of code, a single fast-path agent runs three scoped passes (Bug Hunter, Unified Auditor, Premise) plus a domain-critic pass in one invocation. This makes tight iterations cheap.
+
+## The full path
+
+For larger diffs, the system spawns a fleet:
+
+1. **Partition** files by risk (LOC, file type, intent).
+2. **Route** each partition to a specialized reviewer:
+   - Bug Hunter A (Opus for implementation, Sonnet for tests)
+   - Unified Auditor
+   - Premise Reviewer (Opus for fix/refactor, Sonnet for features)
+   - Domain critics per `critic-gates.json`
+3. **Validate** findings: severity normalization, Jaccard-similarity dedup, line-number validation against the diff, self-discard rule, confidence floor 0.5.
+4. **Classify intent** via `fetch-intent` and `classify-intent` subcommands.
+5. **Cache** by prompt hash and diff tip so repeated runs are cheap.
+
+Reviewer sub-agents may only report findings for their assigned files and only on added or modified diff lines. They may not run `Bash`. They must cite concrete evidence.
+
+## Severities
+
+- **BLOCKING** (P0) – security, crash, data-loss
+- **HIGH** (P1) – production errors, race conditions
+- **MEDIUM** (P2/P3) – code quality, suggestions
+
+Findings below 0.5 confidence are discarded during validation.
+
+## GitHub CI handoff
+
+When run with `--github`, the review writes three files (never mutates GitHub directly):
+
+- `.closedloop-ai/code-review-findings.json` – for CI to post as inline comments
+- `.closedloop-ai/code-review-threads.json` – stale thread IDs for CI to resolve
+- `.closedloop-ai/code-review-summary.md` – for CI to post as a PR summary comment
+
+Summary labels:
+
+- **Changes Requested** – there is a BLOCKING finding
+- **Needs Attention** – no BLOCKING but at least one HIGH
+- **Approved** – MEDIUM or below only
+
+## The helper CLI
+
+`tools/python/code_review_helpers.py` is a multi-subcommand Python tool driving the review: `setup`, `parse-diff`, `hygiene`, `partition`, `route`, `validate`, `compute-hashes`, `cache-check`, `cache-update`, `auto-incremental`, `finalize-cache`, `review-state-read`, `review-state-write`, `post-comments`, `resolve-threads`, `session-tokens`, `footer`, `resolve-scope`, `fetch-intent`, `classify-intent`, `collect-findings`, `verdict`, `prep-assets`, `extract-patches`.
+
+## Per-review working directory
+
+Each run creates `.closedloop-ai/code-review/cr-<RANDOM>/` with:
+
+- `setup.json`, `scope.json`, `diff_data.json`
+- `intent.json`, `intent_context.json`
+- `cache_result.json`, `hygiene.json`, `validate_output.json`
+- `verdict.json` – final verdict (`approve` / `needs_attention` / `decline`)
+- `shared_prompt.txt`, `bha_suffix.txt`
+- `patches_all.txt` and per-partition patches
+
+## Automatic post-loop review
+
+When a loop completes, `run-loop.sh` automatically runs `/code-review:start --base <start_sha>` against the diff. If the verdict is not `approve`, an optional fix cycle runs to resolve non-approving findings. Cycles default to 2 and are capped by the `POST_LOOP_REVIEW_CYCLES` environment variable. The cycle aborts early after two consecutive fix failures.
+
+## Related reading
+
+<Cards>
+  <Card title="Loops" href="./loops">
+    Where post-loop code review fits in the execution flow.
+  </Card>
+  <Card title="Judges" href="./judges">
+    Structured judgment vs. review-style findings.
+  </Card>
+  <Card title="Plugins" href="./plugins">
+    The `code-review` plugin at a higher level.
+  </Card>
+</Cards>

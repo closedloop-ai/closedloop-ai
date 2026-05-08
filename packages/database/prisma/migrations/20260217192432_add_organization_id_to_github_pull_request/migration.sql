@@ -1,0 +1,5 @@
+-- This is an empty migration.
+-- Originally dropped the FK added in 192411, but that FK was never needed
+-- (relationMode = "prisma" — no DB-level FKs). Migration 192411 was updated
+-- to not add the FK in the first place; this migration is retained as a
+-- no-op to avoid drift on environments that have already applied it.

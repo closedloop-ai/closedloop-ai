@@ -1,0 +1,110 @@
+{
+  "name": "@closedloop-ai/loops-api",
+  "version": "0.2.10",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/closedloop-ai/closedloop-ai.git",
+    "directory": "packages/loops-api"
+  },
+  "exports": {
+    "./artifacts": {
+      "types": "./src/artifacts.ts",
+      "import": "./dist/artifacts.js",
+      "require": "./dist/artifacts.cjs",
+      "default": "./dist/artifacts.js"
+    },
+    "./bootstrap-result": {
+      "types": "./src/bootstrap-result.ts",
+      "import": "./dist/bootstrap-result.js",
+      "require": "./dist/bootstrap-result.cjs",
+      "default": "./dist/bootstrap-result.js"
+    },
+    "./bundles": {
+      "types": "./src/bundles.ts",
+      "import": "./dist/bundles.js",
+      "require": "./dist/bundles.cjs",
+      "default": "./dist/bundles.js"
+    },
+    "./commands": {
+      "types": "./src/commands.ts",
+      "import": "./dist/commands.js",
+      "require": "./dist/commands.cjs",
+      "default": "./dist/commands.js"
+    },
+    "./common": {
+      "types": "./src/common.ts",
+      "import": "./dist/common.js",
+      "require": "./dist/common.cjs",
+      "default": "./dist/common.js"
+    },
+    "./context-pack": {
+      "types": "./src/context-pack.ts",
+      "import": "./dist/context-pack.js",
+      "require": "./dist/context-pack.cjs",
+      "default": "./dist/context-pack.js"
+    },
+    "./desktop-request": {
+      "types": "./src/desktop-request.ts",
+      "import": "./dist/desktop-request.js",
+      "require": "./dist/desktop-request.cjs",
+      "default": "./dist/desktop-request.js"
+    },
+    "./env-vars": {
+      "types": "./src/env-vars.ts",
+      "import": "./dist/env-vars.js",
+      "require": "./dist/env-vars.cjs",
+      "default": "./dist/env-vars.js"
+    },
+    "./error-codes": {
+      "types": "./src/error-codes.ts",
+      "import": "./dist/error-codes.js",
+      "require": "./dist/error-codes.cjs",
+      "default": "./dist/error-codes.js"
+    },
+    "./events": {
+      "types": "./src/events.ts",
+      "import": "./dist/events.js",
+      "require": "./dist/events.cjs",
+      "default": "./dist/events.js"
+    },
+    "./execution-result": {
+      "types": "./src/execution-result.ts",
+      "import": "./dist/execution-result.js",
+      "require": "./dist/execution-result.cjs",
+      "default": "./dist/execution-result.js"
+    },
+    "./multi-repo-policy": {
+      "types": "./src/multi-repo-policy.ts",
+      "import": "./dist/multi-repo-policy.js",
+      "require": "./dist/multi-repo-policy.cjs",
+      "default": "./dist/multi-repo-policy.js"
+    },
+    "./tokens": {
+      "types": "./src/tokens.ts",
+      "import": "./dist/tokens.js",
+      "require": "./dist/tokens.cjs",
+      "default": "./dist/tokens.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.3.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
+  }
+}

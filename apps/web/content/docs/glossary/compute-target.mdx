@@ -1,0 +1,8 @@
+---
+title: Compute target
+description: A registered execution surface (usually a developer's machine running the desktop client) that the control plane sends commands to.
+---
+
+A compute target is a specific machine with the desktop client installed and a registered identity. The web control plane sends `desktop.command` envelopes to compute targets via the cloud relay; each command dispatches into the target's localhost gateway.
+
+See [Runtime (mechanisms)](../mechanisms/runtime) and [Cloud relay (mechanisms)](../mechanisms/cloud-relay).

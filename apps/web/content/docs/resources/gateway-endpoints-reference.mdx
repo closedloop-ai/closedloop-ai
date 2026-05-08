@@ -1,0 +1,142 @@
+---
+title: Gateway endpoints reference
+description: Every HTTP endpoint the desktop gateway exposes, grouped by operation family.
+---
+
+The desktop gateway binds to `127.0.0.1:19432` (or the first fallback in `19433–19435`). All `/api/gateway/*` routes require auth.
+
+## Metadata
+
+| Route | Methods | Notes |
+|---|---|---|
+| `/health` | GET | Unauthenticated liveness and capability probe. |
+| `/api/gateway/health-check` | GET | Authenticated health check. |
+| `/api/gateway/version` | GET | Current desktop version. |
+| `/api/gateway/repos` | GET, POST, DELETE, PATCH | Managed repositories. |
+| `/api/gateway/settings/binary-paths` | GET, PATCH | Override claude/gh/codex/python3/git paths. |
+| `/api/gateway/mcp-auth` | GET | MCP auth metadata parity route. |
+| `/gateway-auth/exchange` | POST | Loopback-only; trades challenge token for session token. |
+
+## Git
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/git` | POST (status/branch/commit/push/pull/branch-diff/sync-status dispatch) |
+| `/api/gateway/git/branches` | GET |
+| `/api/gateway/git/diff` | POST |
+| `/api/gateway/git/worktree` | POST, DELETE |
+| `/api/gateway/git/branch-worktree` | GET |
+| `/api/gateway/git/repo-path` | GET |
+| `/api/gateway/git/pr` | POST |
+| `/api/gateway/git/pr/list` | GET |
+| `/api/gateway/git/pr/comments` | GET |
+| `/api/gateway/git/pr/reviews` | GET |
+| `/api/gateway/git/pr/reply` | POST |
+| `/api/gateway/git/pr/files` | GET |
+| `/api/gateway/git/pr/head-sha` | GET |
+| `/api/gateway/git/pr/inline-comment` | POST |
+| `/api/gateway/git/user` | GET |
+
+## Filesystem
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/directories` | GET |
+| `/api/gateway/files/search` | GET |
+| `/api/gateway/run-viewer-extract` | GET, POST, DELETE |
+| `/api/gateway/work-directory/:ticketId` | GET |
+| `/api/gateway/symphony/attachments/*attachmentPath` | GET |
+| `/api/gateway/symphony/upload/:ticketId` | POST (multipart via busboy) |
+
+## Symphony (AI coding loop)
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/symphony/launch` | POST |
+| `/api/gateway/symphony/loop` | POST |
+| `/api/gateway/symphony/loop/kill` | POST |
+| `/api/gateway/symphony/plan-loop/*` | POST |
+| `/api/gateway/symphony/status`, `/:ticketId` | GET |
+| `/api/gateway/symphony/kill` | POST |
+| `/api/gateway/symphony/logs/:ticketId` | GET |
+| `/api/gateway/symphony/plan/:ticketId` | GET |
+| `/api/gateway/symphony/judges/:ticketId` | GET |
+| `/api/gateway/symphony/sessions` | GET, POST, DELETE |
+| `/api/gateway/symphony/sessions/unread-count` | GET |
+| `/api/gateway/symphony/chat/:ticketId` | POST (NDJSON) |
+| `/api/gateway/symphony/comment-chat/:commentId` | GET, POST, PATCH, DELETE |
+| `/api/gateway/symphony/commit-message/:ticketId` | GET |
+| `/api/gateway/symphony/chat-history/:ticketId` | GET, POST, DELETE |
+
+## Codex (review and argue)
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/codex/available` | GET |
+| `/api/gateway/codex/review/:ticketId` | POST |
+| `/api/gateway/codex/status/:ticketId` | GET, DELETE |
+| `/api/gateway/codex/stop/:ticketId` | POST, DELETE |
+| `/api/gateway/codex/review-findings/:ticketId` | GET, POST |
+| `/api/gateway/codex/review-dedup/:ticketId` | POST |
+| `/api/gateway/codex/review-extract/:ticketId` | POST |
+| `/api/gateway/codex/review-verdict/:ticketId` | POST |
+| `/api/gateway/codex/argue/:ticketId` | POST |
+| `/api/gateway/codex/chat/:ticketId` | POST |
+| `/api/gateway/codex/finding-chat/:findingId` | GET, POST, PATCH, DELETE |
+
+## Chat sessions
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/terminal-chat` | GET, POST, DELETE |
+| `/api/gateway/ticket-chat` | GET, POST, DELETE |
+| `/api/gateway/run-viewer-chat` | GET, POST, DELETE |
+
+Chat session routes use `ProviderRegistry` with `ClaudeProvider` and `CodexProvider`.
+
+## Deploy
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/deploy` | POST |
+| `/api/gateway/deploy/health` | POST |
+| `/api/gateway/deploy/kill` | POST |
+| `/api/gateway/deploy/teardown` | POST |
+| `/api/gateway/deploy/status/:ticketId` | GET |
+| `/api/gateway/deploy/check-existing` | POST |
+| `/api/gateway/deploy/detect` | POST |
+| `/api/gateway/deploy/redetect` | POST |
+| `/api/gateway/deploy/extract-info` | POST |
+
+## Learnings
+
+| Route | Methods |
+|---|---|
+| `/api/gateway/learnings` | GET |
+| `/api/gateway/symphony/extract-learnings` | POST |
+| `/api/gateway/symphony/process-learnings` | GET, POST |
+| `/api/gateway/symphony/process-all-learnings` | GET, POST |
+| `/api/gateway/symphony/pending-learnings` | GET |
+| `/api/gateway/symphony/learnings-status/:ticketId` | GET |
+| `/api/gateway/symphony/record-learning-use` | POST |
+
+## Operation IDs
+
+The 28 supported operation IDs drive approval policy and telemetry tagging:
+
+```
+symphony_launch, symphony_loop, symphony_loop_kill, symphony_plan_loop,
+symphony_status, symphony_kill, symphony_chat, symphony_comment_chat,
+symphony_commit_message, symphony_sessions, symphony_plan, symphony_judges,
+symphony_logs, symphony_chat_history, terminal_chat, ticket_chat,
+run_viewer_chat, codex_review, codex_argue, git_action, git_pr,
+git_branch_worktree, health_check, repos_config, deploy, learnings,
+filesystem, binary_paths_settings
+```
+
+## Required headers for authenticated calls
+
+- `X-Desktop-Gateway-Token` (internal cloud executor) **or** `X-Desktop-Session-Token` + `Origin` (browser)
+- `Content-Type: application/json` (where a body is sent)
+
+See [Desktop gateway](../mechanisms/desktop-gateway) for the full auth model.

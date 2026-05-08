@@ -1,0 +1,258 @@
+{
+  "web": {
+    "global": {
+      "primaryCta": "预约电话",
+      "secondaryCta": "注册"
+    },
+    "header": {
+      "home": "首页",
+      "blog": "博客",
+      "docs": "文档",
+      "contact": "联系",
+      "signIn": "登录",
+      "signUp": "开始使用",
+      "developers": "开发者"
+    },
+    "home": {
+      "meta": {
+        "title": "今天就改变您的业务运营",
+        "description": "在当今快节奏的世界中，您的企业值得拥有比过时交易系统更好的选择。我们的创新平台简化了运营，减少了复杂性，帮助小企业在现代经济中蓬勃发展。"
+      },
+      "hero": {
+        "announcement": "阅读我们的最新文章"
+      },
+      "features": {
+        "title": "现代商业的强大工具",
+        "description": "发现我们的尖端功能如何彻底改变您的日常运营。",
+        "items": [
+          {
+            "title": "简化的运营",
+            "description": "我们的平台简化了运营，减少了复杂性，帮助小企业在现代经济中蓬勃发展。"
+          },
+          {
+            "title": "实时分析",
+            "description": "通过全面的分析和报告工具，获取对您业务表现的即时洞察。"
+          },
+          {
+            "title": "自动化工作流程",
+            "description": "通过智能自动化节省时间并减少错误，处理重复任务。"
+          },
+          {
+            "title": "安全交易",
+            "description": "放心，您的业务运营受到企业级安全和加密的保护。"
+          }
+        ]
+      },
+      "faq": {
+        "title": "常见问题，专家解答",
+        "description": "快速获取关于我们平台的最紧迫问题的答案。我们汇总了您需要了解的关于转变业务运营和开始使用现代交易解决方案的所有信息。",
+        "cta": "有任何问题？请联系",
+        "items": [
+          {
+            "question": "平台是什么？",
+            "answer": "该平台是一个交易平台，允许您自信地进行交易。"
+          },
+          {
+            "question": "平台的安全性如何？",
+            "answer": "我们的平台采用企业级安全措施，包括端到端加密和多因素认证，以确保您的交易活动完全安全。"
+          },
+          {
+            "question": "提供哪些交易功能？",
+            "answer": "该平台提供全面的交易工具，包括实时市场数据、先进的图表、自动交易策略和详细分析，以支持明智的决策。"
+          },
+          {
+            "question": "定价是如何运作的？",
+            "answer": "我们提供灵活的定价层，旨在与您的业务需求相匹配，从个人交易者的入门计划到大型组织的企业解决方案。"
+          },
+          {
+            "question": "您提供什么样的支持？",
+            "answer": "我们的专属支持团队通过多种渠道提供24/7服务，包括在线聊天、电子邮件和电话。我们还提供广泛的文档和培训资源。"
+          }
+        ]
+      },
+      "cta": {
+        "title": "开始您的业务转型",
+        "description": "加入成千上万已经现代化运营的前瞻性企业。我们的平台提供您在当今竞争市场中成功所需的工具、支持和效率。几分钟内即可开始。"
+      }
+    },
+    "blog": {
+      "meta": {
+        "title": "博客",
+        "description": "想法、观点和意见。"
+      }
+    },
+    "developers": {
+      "meta": {
+        "title": "AI驱动的软件交付 | Claude Code插件",
+        "description": "开箱即用的最佳实践编排代理。完全可扩展——自动构建针对您代码库量身定制的开发代理工作台。"
+      },
+      "hero": {
+        "badge": "Claude Code Plugin",
+        "title": "Multi-Agent SDLC",
+        "titleHighlight": "Grounded in Your Codebase.",
+        "description": "Best-practice orchestration agents out of the box. Fully extensible — automatically builds a dev agent bench tailored to your codebase.",
+        "installButton": "Install in 30 Seconds",
+        "githubButton": "View on GitHub"
+      },
+      "features": {
+        "label": "Features",
+        "title": "Bootstrap, Plan, Ship",
+        "description": "Your SDLC, orchestrated dynamically at scale — including visual QA inspection.",
+        "items": [
+          {
+            "title": "Dynamic Agent Bench",
+            "description": "Automatically generates a bench of domain-expert agents tailored to your codebase. Detects languages, frameworks, and architecture patterns — your AI team understands your project from day one."
+          },
+          {
+            "title": "MECE Task Decomposition",
+            "description": "Work is atomically broken down into mutually exclusive, collectively exhaustive items. Each task is independent, fully scoped, and ready for parallel execution with no overlaps or gaps."
+          },
+          {
+            "title": "Battery of AI Code Review",
+            "description": "Every implementation is reviewed by 13 quality judges covering SOLID principles, DRY, KISS, readability, test quality, code organization, and technical accuracy. Excellent code, every time."
+          },
+          {
+            "title": "Shared Learnings",
+            "description": "Captures patterns from every run, validates them for quality, and shares them across your org. Teams build on each other's experience — the system gets smarter with every project."
+          },
+          {
+            "title": "Caching & Token Optimization",
+            "description": "Build validation, critic evaluations, cross-repo discovery, and agent results are all cached. Minimize token usage and skip redundant work — subsequent runs execute faster and cheaper."
+          },
+          {
+            "title": "Cross-Repo Orchestration",
+            "description": "Automatically discovers peer repositories and identifies cross-repo dependencies. Generates cross-repo PRDs for missing capabilities and coordinates changes across your entire stack."
+          }
+        ]
+      },
+      "commands": {
+        "label": "Slash Commands",
+        "title": "Powerful Workflows at Your Fingertips",
+        "description": "Simple commands orchestrate complex multi-agent workflows.",
+        "items": [
+          {
+            "name": "/bootstrap",
+            "description": "Analyze your repo and generate custom domain-expert agents"
+          },
+          {
+            "name": "/code",
+            "description": "Begin a coding session with full ClosedLoop orchestration"
+          },
+          {
+            "name": "/code-review",
+            "description": "Run comprehensive code review with multi-agent validation"
+          },
+          {
+            "name": "/amend-plan",
+            "description": "Discuss and apply amendments to implementation plans"
+          },
+          {
+            "name": "/process-learnings",
+            "description": "Process pending learnings from a run into org patterns"
+          },
+          {
+            "name": "/goal-stats",
+            "description": "Analyze goal performance and improvement trends across runs"
+          }
+        ]
+      },
+      "agents": {
+        "label": "Specialized Agents",
+        "title": "Purpose-Built AI Teammates",
+        "description": "Pre-built agents for orchestration, plus custom agents generated from your codebase.",
+        "items": [
+          {
+            "name": "agent-prompt-generator",
+            "description": "Generates custom domain-expert agents tailored to your project"
+          },
+          {
+            "name": "plan-draft-writer",
+            "description": "Creates high-level implementation plan drafts from PRDs"
+          },
+          {
+            "name": "plan-writer",
+            "description": "Refines plans by merging critic feedback and implementation details"
+          },
+          {
+            "name": "code-reviewer",
+            "description": "Reviews code for quality, security, and best practices"
+          },
+          {
+            "name": "pre-explorer",
+            "description": "Pre-explores codebase to produce code maps and investigation logs"
+          },
+          {
+            "name": "implementation-subagent",
+            "description": "Implements requirements with self-verification gates"
+          },
+          {
+            "name": "build-validator",
+            "description": "Discovers and runs project validation commands"
+          },
+          {
+            "name": "visual-qa-subagent",
+            "description": "Performs visual QA inspection via Playwright automation"
+          }
+        ]
+      },
+      "installation": {
+        "label": "Get Started",
+        "title": "Install in 30 Seconds",
+        "description": "One plugin. Zero dependencies. Install via the plugin marketplace.",
+        "steps": [
+          {
+            "title": "Add the Plugin Marketplace",
+            "description": "Register the ClosedLoop marketplace with Claude Code:",
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
+          },
+          {
+            "title": "Install ClosedLoop Core",
+            "description": "Install the plugin from the marketplace:",
+            "code": "/plugin install closedloop-core"
+          },
+          {
+            "title": "Bootstrap & Code",
+            "description": "Generate agents for your project, then start coding:",
+            "code": "/bootstrap && /code \"Path to your PRD\""
+          }
+        ]
+      },
+      "cta": {
+        "title": "CodeGen that Ships",
+        "description": "Generate code you can actually merge.",
+        "primaryButton": "Get Started Free",
+        "secondaryButton": "Read the Docs"
+      }
+    },
+    "contact": {
+      "meta": {
+        "title": "让我们谈谈您的业务",
+        "description": "与我们的团队安排咨询，讨论我们如何帮助简化您的运营并推动业务增长。"
+      },
+      "hero": {
+        "benefits": [
+          {
+            "title": "个性化咨询",
+            "description": "获得针对您业务需求的量身定制解决方案和专家建议。"
+          },
+          {
+            "title": "无缝集成",
+            "description": "我们与您现有的系统无缝集成，以确保平稳过渡和最小干扰。"
+          },
+          {
+            "title": "专家指导",
+            "description": "我们的专家团队将指导您完成整个过程，确保您充分利用我们的平台。"
+          }
+        ],
+        "form": {
+          "title": "预约会议",
+          "date": "日期",
+          "firstName": "名",
+          "lastName": "姓",
+          "resume": "上传简历",
+          "cta": "预约会议"
+        }
+      }
+    }
+  }
+}

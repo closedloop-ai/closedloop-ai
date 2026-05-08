@@ -1,0 +1,98 @@
+---
+title: Install the Claude Code plugins
+description: Install the six ClosedLoop.ai Claude Code plugins and keep them auto-updated.
+---
+
+The ClosedLoop plugins are the agent and orchestration layer that runs inside Claude Code. They are installed globally per-user and cached under `~/.claude/plugins/cache/closedloop-ai/`.
+
+## Prerequisites
+
+- **Claude Code CLI** (`claude --version` must work).
+- **Python 3.11+**.
+- **`jq`** on your PATH.
+- **Bash 3.2+**.
+
+## Interactive install (recommended)
+
+Install from within Claude Code:
+
+```bash
+claude /plugin marketplace install closedloop
+```
+
+This gives you per-plugin prompts instead of installing all six at once.
+
+## What gets installed
+
+| Plugin | Purpose |
+|---|---|
+| `bootstrap` | Meta-orchestrator that analyzes a codebase and generates a project-specific suite of expert agents and a `critic-gates.json` config. |
+| `code` | The hub plugin. Implements the full ClosedLoop autonomous SDLC: PRD → plan → critics → implementation → tests → visual QA → validation. |
+| `code-review` | Multi-agent partitioned code review with deterministic hygiene checks, risk-based routing, caching, and GitHub PR inline comments. |
+| `judges` | LLM-as-judge framework — 21 judge agents that grade plans, code, and PRDs with structured `CaseScore` reports. |
+| `platform` | Claude Code expert guide, prompt engineering, mermaid diagrams, artifact upload, and skill scaffolding. |
+| `self-learning` | Pattern capture and organizational knowledge sharing. Stores patterns in TOON format and tracks deterministic success rates. |
+
+## Install Python runtime dependencies
+
+Several plugins use Python tooling. Install the runtime dependencies once per machine:
+
+```bash
+# Run from the claude-plugins repo root if you cloned it,
+# or after the installer places scripts under ~/.claude/plugins/cache/closedloop-ai/
+bash ~/.claude/plugins/cache/closedloop-ai/code/*/scripts/install-dependencies.sh
+```
+
+The script detects your OS, verifies Python 3.11+, installs `jq` and `awk` if missing, and installs Python dependencies. On systems with PEP 668 ("externally managed") Python, it falls back to a local venv at `./.venv`.
+
+Pass `--yes` or `-y` to skip confirmation prompts.
+
+## Development install (for contributors)
+
+```bash
+git clone git@github.com:closedloop-ai/claude-plugins.git
+cd claude-plugins
+git config core.hooksPath .githooks
+```
+
+The `core.hooksPath` line enables the repo's pre-push hook, which enforces `CHANGELOG.md` updates whenever you change a plugin.
+
+## Verify the install
+
+```bash
+claude plugin list
+```
+
+You should see all six ClosedLoop plugins listed with their versions.
+
+## What the plugins add to your tooling
+
+After install you have new slash commands and skills available in every Claude Code session:
+
+- `/code:code` – start a planning/execution loop against a workdir.
+- `/code:amend-plan` – conversationally amend an existing plan.
+- `/code:plan-with-codex` – run a multi-round plan debate between Claude and Codex.
+- `/code:cancel-code` – clear the current loop state for a workdir.
+- `/code-review:start` – run multi-agent code review on the current diff.
+- `/agent-bootstrap` – generate project-specific expert agents from your codebase.
+- `/process-learnings`, `/export-closedloop-learnings`, `/push-learnings`, `/pull-learnings`, `/prune-learnings`, `/goal-stats` – self-learning pipeline.
+
+Skills are discovered automatically by Claude Code from context and do not need to be invoked by name.
+
+## How the desktop app uses the plugins
+
+The desktop app resolves the `claude` binary (honoring a `CLAUDE_BIN` override), spawns it with a plan or execute command, and tails the NDJSON stream to produce live progress in the web app. If the plugins are missing you will see a `preflight.script_not_found` telemetry event and the loop will refuse to start. Install or update the plugins and restart the desktop app to recover.
+
+## Update path
+
+Plugin versions live under `plugins/<name>/.claude-plugin/plugin.json` in the repository. Auto-update is on by default. To force a refresh:
+
+```bash
+claude /plugin marketplace update closedloop-ai
+```
+
+Then `/exit` and restart your Claude Code session.
+
+## Next step
+
+Once the plugins are installed, continue to [Install the desktop client](./install-desktop).
