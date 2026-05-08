@@ -1,11 +1,22 @@
 import { Priority } from "@repo/api/src/types/common";
-import { ProjectStatus } from "@repo/api/src/types/project";
+import {
+  ProjectStatus,
+  repositoryOverridesValidator,
+} from "@repo/api/src/types/project";
 import { z } from "zod";
 import { transformIsoDateTime } from "@/lib/validators/date-time";
-import { jsonObjectValidator } from "@/lib/validators/json";
+import { jsonValueValidator } from "@/lib/validators/json";
 
 const priorityEnum = z.enum(Priority);
 const projectStatusEnum = z.enum(ProjectStatus);
+
+// Settings is a free-form JSON column, but the keys we know about must conform
+// to their declared shapes. Unknown keys pass through untouched.
+const projectSettingsBodyValidator = z
+  .object({
+    repositoryOverrides: repositoryOverridesValidator.optional(),
+  })
+  .catchall(jsonValueValidator);
 
 export const createProjectValidator = z.object({
   name: z.string().min(1, "Name is required"),
@@ -38,7 +49,7 @@ export const updateProjectValidator = z.object({
     .optional()
     .transform(transformIsoDateTime),
   teamIds: z.array(z.uuid()).optional(),
-  settings: jsonObjectValidator.optional(),
+  settings: projectSettingsBodyValidator.optional(),
   codebaseSummary: z.string().nullable().optional(),
   lastIndexedAt: z.iso
     .datetime()
