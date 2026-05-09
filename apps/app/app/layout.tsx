@@ -38,7 +38,7 @@ const RootLayout = async ({ children }: RootLayoutProperties) => {
       lang="en"
       suppressHydrationWarning
     >
-      <body className="overflow-hidden">
+      <body className="overflow-hidden" suppressHydrationWarning>
         <QueryProvider>
           <AnalyticsProvider bootstrapFeatureFlags nonce={nonce} trackPageViews>
             <DesignSystemProvider
