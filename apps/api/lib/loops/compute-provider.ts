@@ -7,6 +7,7 @@
  */
 
 import type { DesktopApiNamespace } from "@repo/api/src/desktop-api-namespace";
+import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   AdditionalRepoRefWithToken,
   Loop,
@@ -23,6 +24,7 @@ import type { ContextPack } from "./loop-state";
 export type LaunchContext = {
   loopId: string;
   organizationId: string;
+  userId: string;
   command: LoopCommand;
   contextPack: ContextPack;
   closedLoopAuthToken: string;
@@ -41,6 +43,15 @@ export type LaunchContext = {
   computeTargetId: string | null;
   additionalRepos?: AdditionalRepoRefWithToken[];
   desktopApiNamespace: DesktopApiNamespace | undefined;
+  desktopUserIntentSignature?: DesktopUserIntentSignature;
+};
+
+export type DesktopUserIntentSignature = {
+  commandId: string;
+  signature: string;
+  signaturePayload: string;
+  publicKeyFingerprint: string;
+  body: JsonValue;
 };
 
 // ---------------------------------------------------------------------------

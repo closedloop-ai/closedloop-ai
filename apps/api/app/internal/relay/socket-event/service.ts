@@ -19,6 +19,8 @@ import {
   computeTargetsService,
   isComputeTargetGatewayConflictResult,
 } from "@/app/compute-targets/service";
+import { isComputeTargetSigningSupportedForUser } from "@/lib/command-signing-feature";
+import { acknowledgeDesktopCommand } from "@/lib/desktop-command-ack-handler";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   PROTOCOL_VERSION,
@@ -41,11 +43,17 @@ import { isRecord } from "@/lib/type-guards";
 export type SocketEventInput = {
   event: string;
   payload: unknown;
-  auth: { organizationId: string; userId: string } | null;
+  auth: RelayAuthContext | null;
   targetId: string | undefined;
   correlation: Partial<CorrelationContext>;
   pluginVersion: string | undefined;
   requestArrivedAt: number;
+};
+
+type RelayAuthContext = {
+  organizationId: string;
+  userId: string;
+  clerkUserId?: string | null;
 };
 
 export async function dispatchSocketEvent(
@@ -235,7 +243,7 @@ function parseRelayHelloInput(payload: unknown): RelayHelloInput | null {
 
 async function resolveRelayHelloTarget(
   input: RelayHelloInput,
-  auth: { organizationId: string; userId: string }
+  auth: RelayAuthContext
 ): Promise<{ targetId: string; targetCreated: boolean }> {
   if (input.computeTargetId) {
     const updated = await computeTargetsService.updateOwned(
@@ -286,7 +294,7 @@ async function resolveRelayHelloTarget(
 
 async function handleHello(
   payload: unknown,
-  auth: { organizationId: string; userId: string }
+  auth: RelayAuthContext
 ): Promise<SocketEventResponse> {
   const input = parseRelayHelloInput(payload);
   if (!input) {
@@ -303,17 +311,22 @@ async function handleHello(
   }
   const { targetId, targetCreated } = resolvedTarget;
 
-  const [pendingCommands] = await Promise.all([
-    desktopCommandStore.listNonTerminalDispatchCommands(targetId),
-    targetCreated
-      ? Promise.resolve(true)
-      : computeTargetsService.setOnlineState(
-          targetId,
-          auth.organizationId,
-          auth.userId,
-          true
-        ),
-  ]);
+  const [pendingCommands, _onlineStateUpdated, commandSigningSupported] =
+    await Promise.all([
+      desktopCommandStore.listNonTerminalDispatchCommands(targetId),
+      targetCreated
+        ? Promise.resolve(true)
+        : computeTargetsService.setOnlineState(
+            targetId,
+            auth.organizationId,
+            auth.userId,
+            true
+          ),
+      isComputeTargetSigningSupportedForUser({
+        userId: auth.userId,
+        clerkUserId: auth.clerkUserId,
+      }),
+    ]);
 
   // Clear stale in-process backlog so new dispatches go through clean
   relayEventBus.clearOperationBacklog(targetId);
@@ -342,6 +355,9 @@ async function handleHello(
         computeTargetId: targetId,
         sessionId,
         serverTime: new Date().toISOString(),
+        ...(commandSigningSupported
+          ? { serverCapabilities: { computeTargetSigning: true } }
+          : {}),
         ...(Object.keys(resumeFromSequence).length > 0
           ? { resumeFromSequence }
           : {}),
@@ -516,13 +532,13 @@ async function handleCommandAck(
     requestId: ctx.requestId,
   });
 
-  const acknowledged = await desktopCommandStore.acknowledgeCommand(
+  const acknowledged = await acknowledgeDesktopCommand({
     commandId,
     accepted,
     reason,
     targetId,
-    ctx
-  );
+    context: ctx,
+  });
 
   if (acknowledged) {
     const latencyMs = Date.now() - new Date(acknowledged.createdAt).getTime();
@@ -533,38 +549,6 @@ async function handleCommandAck(
       computeTargetId: targetId,
       gatewaySessionId: ctx.gatewaySessionId,
     });
-  }
-
-  // When Electron rejects a command (accepted=false), synthesize a terminal
-  // error event so SSE subscribers (Chrome) stop waiting and see the failure.
-  if (!accepted) {
-    log.warn("Command rejected by desktop", {
-      commandId,
-      reason,
-      computeTargetId: ctx.computeTargetId,
-      gatewaySessionId: ctx.gatewaySessionId,
-      requestId: ctx.requestId,
-      errorClass: ErrorClass.Execution,
-    });
-    const errorData: JsonValue = {
-      terminal: true,
-      error: reason || "Command rejected by desktop",
-      code: "rejected",
-    } as unknown as JsonValue;
-    const result = await desktopCommandStore.ingestCommandEvent({
-      commandId,
-      eventType: "error",
-      data: errorData,
-      computeTargetId: targetId,
-    });
-    if (result.accepted && !result.duplicate) {
-      await publishLegacyRelayEvent(commandId, {
-        commandId,
-        eventType: "error",
-        data: errorData,
-        sequence: result.sequence,
-      });
-    }
   }
 
   return { emit: [] };
@@ -650,7 +634,7 @@ function handleRelayTelemetry(
   targetId: string,
   correlation: Partial<CorrelationContext>,
   pluginVersion: string | undefined,
-  auth: { organizationId: string; userId: string } | null
+  auth: RelayAuthContext | null
 ): SocketEventResponse {
   const result = handleTelemetryEvent(payload, {
     authenticatedTargetId: targetId,

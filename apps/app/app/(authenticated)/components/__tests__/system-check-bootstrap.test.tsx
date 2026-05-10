@@ -297,7 +297,7 @@ describe("SystemCheckBootstrap", () => {
 
   it("does not overwrite a newer live health-check cache with an older persisted snapshot", async () => {
     const queryClient = createBootstrapQueryClient();
-    const persistedCheckedAt = new Date("2026-05-08T16:00:00.000Z");
+    const persistedCheckedAt = new Date(Date.now() - 60_000);
     const liveResult = {
       checks: [{ id: "live-git", label: "Git", required: true, passed: true }],
       allRequiredPassed: true,

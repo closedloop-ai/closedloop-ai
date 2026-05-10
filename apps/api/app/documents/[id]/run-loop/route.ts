@@ -3,7 +3,7 @@ import {
   type DesktopApiNamespace,
   LEGACY_DESKTOP_API_NAMESPACE,
 } from "@repo/api/src/desktop-api-namespace";
-import { success } from "@repo/api/src/types/common";
+import { type JsonValue, success } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
   ComputeTargetConflictBody,
@@ -37,6 +37,7 @@ import {
   resolveLoopContext,
   resolveRunLoopComputeTarget,
 } from "./run-loop-helpers";
+import { resolveEffectiveSignedRunLoopIntent } from "./signing";
 import { runLoopSchema } from "./validators";
 
 function getLoopMetadata(
@@ -94,6 +95,18 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         return ctRouteResult.errorResponse;
       }
       const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
+      const signedIntentResult = await resolveEffectiveSignedRunLoopIntent({
+        computeTargetId: resolvedComputeTargetId,
+        requesterUserId: user.id,
+        requesterOrganizationId: user.organizationId,
+        requesterClerkUserId: user.clerkId,
+        documentId,
+        body,
+      });
+      if (!signedIntentResult.ok) {
+        return signedIntentResult.response;
+      }
+      const effectiveSignedUserIntent = signedIntentResult.userIntentSignature;
 
       // Guard: prevent launching a loop for artifacts originally planned via
       // GH Actions. State cannot migrate between backends, so the earliest
@@ -195,7 +208,19 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
 
       const launchPromise = launchLoop(
         loopResponse.loopId,
-        user.organizationId
+        user.organizationId,
+        effectiveSignedUserIntent
+          ? {
+              desktopUserIntentSignature: {
+                commandId: effectiveSignedUserIntent.commandId,
+                signature: effectiveSignedUserIntent.signature,
+                signaturePayload: effectiveSignedUserIntent.signaturePayload,
+                publicKeyFingerprint:
+                  effectiveSignedUserIntent.publicKeyFingerprint,
+                body: effectiveSignedUserIntent.body as JsonValue,
+              },
+            }
+          : undefined
       ).catch((error) => {
         log.error("[run-loop] Failed to launch loop", {
           loopId: loopResponse.loopId,

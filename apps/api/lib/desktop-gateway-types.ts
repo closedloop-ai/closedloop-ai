@@ -1,5 +1,8 @@
 import type { JsonValue } from "@repo/api/src/types/common";
-import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
+import type {
+  ComputeTargetServerCapabilities,
+  DesktopCommandEventType,
+} from "@repo/api/src/types/compute-target";
 import type { Server } from "socket.io";
 
 export const PROTOCOL_VERSION = "1";
@@ -7,6 +10,7 @@ export const PROTOCOL_VERSION = "1";
 export type DesktopAuthContext = {
   organizationId: string;
   userId: string;
+  clerkUserId?: string | null;
 };
 
 export type DesktopHelloPayload = {
@@ -47,6 +51,17 @@ export type WireCommandPayload = {
   requiresApproval?: boolean;
   approvalReason?: string;
   streaming?: boolean;
+  signature?: string;
+  signaturePayload?: string;
+  publicKeyFingerprint?: string;
+};
+
+export type DesktopHelloAckPayload = {
+  computeTargetId: string;
+  sessionId: string;
+  serverTime: string;
+  resumeFromSequence?: Record<string, number>;
+  serverCapabilities?: ComputeTargetServerCapabilities;
 };
 
 export type Envelope<T> = T & {

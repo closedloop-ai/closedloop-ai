@@ -10,12 +10,18 @@ import {
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
+import type {
+  BrowserSignedCommandId,
+  CreateDesktopCommandInput,
+} from "@repo/api/src/types/compute-target";
 import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type { LoopBody } from "@repo/api/src/types/loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
+import { isComputeTargetSigningSupportedForUser } from "@/lib/command-signing-feature";
 import { shortContentHash } from "@/lib/content-hash";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
@@ -23,7 +29,19 @@ import {
   toWireCommandFromRelayOperation,
 } from "@/lib/desktop-gateway-wire";
 import { relayEventBus } from "@/lib/relay-event-bus";
+import type { DesktopUserIntentSignature } from "./compute-provider";
 import type { ContextPack } from "./loop-state";
+
+type RelayOperation = ReturnType<typeof toRelayOperation>;
+type RelayDispatchContext = {
+  label: string;
+  loopId: string;
+  commandId: string;
+};
+type RelayApiDispatchConfig = {
+  relayApiUrl: string;
+  internalSecret: string;
+};
 
 /**
  * Throws if the relay reported delivered: false (target offline/disconnected).
@@ -101,80 +119,158 @@ function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
  * Dispatch a relay operation to a desktop compute target.
  * Shared by launch and kill paths.
  */
-async function dispatchRelayOperation(
-  computeTargetId: string,
-  relayOperation: ReturnType<typeof toRelayOperation>,
-  context: { label: string; loopId: string; commandId: string },
-  throwOnFailure = false
-): Promise<void> {
+function getRelayApiDispatchConfig(): RelayApiDispatchConfig | null {
   const relayApiUrl = process.env.RELAY_API_URL;
   const internalSecret = process.env.INTERNAL_API_SECRET;
-  if (relayApiUrl && internalSecret) {
-    try {
-      // Wrap in wire envelope format expected by relay server
-      const wireCommand = toWireCommandFromRelayOperation(relayOperation);
-      if (!wireCommand) {
-        const err = new Error(
-          "Failed to convert relay operation to wire command"
-        );
-        log.error(`[loop-desktop] ${context.label} wire conversion failed`, {
-          loopId: context.loopId,
-          commandId: context.commandId,
-          computeTargetId,
-        });
-        if (throwOnFailure) {
-          throw err;
-        }
-        return;
-      }
-      const envelopedCommand = toEnvelope(wireCommand);
+  return relayApiUrl && internalSecret ? { relayApiUrl, internalSecret } : null;
+}
 
-      const response = await fetch(`${relayApiUrl}/dispatch`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-secret": internalSecret,
-        },
-        body: JSON.stringify({
-          targetId: computeTargetId,
-          operation: envelopedCommand,
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        log.error(`[loop-desktop] ${context.label} relay dispatch failed`, {
-          loopId: context.loopId,
-          commandId: context.commandId,
-          computeTargetId,
-          status: response.status,
-          body,
-        });
-        if (throwOnFailure) {
-          throw new Error(
-            `Relay dispatch failed with status ${response.status}`
-          );
-        }
-      } else if (throwOnFailure) {
-        // Check the delivered flag -- a 200 with delivered: false means the
-        // target was offline or disconnected. Fail loudly so the caller
-        // does not report success for a loop that never reached the desktop.
-        await assertDelivered(response, { ...context, computeTargetId });
-      }
-    } catch (dispatchError) {
-      log.error(`[loop-desktop] ${context.label} failed to dispatch to relay`, {
-        loopId: context.loopId,
-        commandId: context.commandId,
-        computeTargetId,
-        error: dispatchError,
-      });
-      if (throwOnFailure) {
-        throw dispatchError;
-      }
-    }
-  } else {
-    relayEventBus.publishOperation(computeTargetId, relayOperation);
+function buildRelayApiEnvelope(
+  computeTargetId: string,
+  relayOperation: RelayOperation,
+  context: RelayDispatchContext,
+  throwOnFailure: boolean
+): ReturnType<typeof toEnvelope> | null {
+  const wireCommand = toWireCommandFromRelayOperation(relayOperation);
+  if (wireCommand) {
+    return toEnvelope(wireCommand);
   }
+  const err = new Error("Failed to convert relay operation to wire command");
+  log.error(`[loop-desktop] ${context.label} wire conversion failed`, {
+    loopId: context.loopId,
+    commandId: context.commandId,
+    computeTargetId,
+  });
+  if (throwOnFailure) {
+    throw err;
+  }
+  return null;
+}
+
+async function handleRelayApiResponse(
+  response: Response,
+  computeTargetId: string,
+  context: RelayDispatchContext,
+  throwOnFailure: boolean
+): Promise<void> {
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    log.error(`[loop-desktop] ${context.label} relay dispatch failed`, {
+      loopId: context.loopId,
+      commandId: context.commandId,
+      computeTargetId,
+      status: response.status,
+      body,
+    });
+    if (throwOnFailure) {
+      throw new Error(`Relay dispatch failed with status ${response.status}`);
+    }
+    return;
+  }
+  if (throwOnFailure) {
+    // Check the delivered flag -- a 200 with delivered: false means the target
+    // was offline or disconnected. Fail loudly so the caller does not report
+    // success for a loop that never reached the desktop.
+    await assertDelivered(response, { ...context, computeTargetId });
+  }
+}
+
+async function dispatchRelayApiOperation(input: {
+  computeTargetId: string;
+  relayOperation: RelayOperation;
+  context: RelayDispatchContext;
+  throwOnFailure: boolean;
+  config: RelayApiDispatchConfig;
+}): Promise<void> {
+  try {
+    const operation = buildRelayApiEnvelope(
+      input.computeTargetId,
+      input.relayOperation,
+      input.context,
+      input.throwOnFailure
+    );
+    if (!operation) {
+      return;
+    }
+    const response = await fetch(`${input.config.relayApiUrl}/dispatch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": input.config.internalSecret,
+      },
+      body: JSON.stringify({
+        targetId: input.computeTargetId,
+        operation,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    await handleRelayApiResponse(
+      response,
+      input.computeTargetId,
+      input.context,
+      input.throwOnFailure
+    );
+  } catch (dispatchError) {
+    log.error(
+      `[loop-desktop] ${input.context.label} failed to dispatch to relay`,
+      {
+        loopId: input.context.loopId,
+        commandId: input.context.commandId,
+        computeTargetId: input.computeTargetId,
+        error: dispatchError,
+      }
+    );
+    if (input.throwOnFailure) {
+      throw dispatchError;
+    }
+  }
+}
+
+function dispatchLocalRelayOperation(
+  computeTargetId: string,
+  relayOperation: RelayOperation,
+  context: RelayDispatchContext,
+  throwOnFailure: boolean
+): void {
+  const result = relayEventBus.publishOperation(
+    computeTargetId,
+    relayOperation
+  );
+  if (!throwOnFailure || result.deliveredToSubscriber) {
+    return;
+  }
+  log.error(`[loop-desktop] ${context.label} relay dispatch not delivered`, {
+    loopId: context.loopId,
+    commandId: context.commandId,
+    computeTargetId,
+    reason: "target_offline",
+  });
+  throw new RelayDispatchNotDeliveredError("target_offline");
+}
+
+async function dispatchRelayOperation(
+  computeTargetId: string,
+  relayOperation: RelayOperation,
+  context: RelayDispatchContext,
+  throwOnFailure = false
+): Promise<void> {
+  const config = getRelayApiDispatchConfig();
+  if (config) {
+    await dispatchRelayApiOperation({
+      computeTargetId,
+      relayOperation,
+      context,
+      throwOnFailure,
+      config,
+    });
+    return;
+  }
+  dispatchLocalRelayOperation(
+    computeTargetId,
+    relayOperation,
+    context,
+    throwOnFailure
+  );
 }
 
 export class DispatchError extends Error {
@@ -201,9 +297,10 @@ class RelayDispatchNotDeliveredError extends Error {
   }
 }
 
-type LaunchDesktopOpts = {
+export type LaunchDesktopOpts = {
   loopId: string;
   organizationId: string;
+  userId?: string;
   command: LoopCommand;
   computeTargetId: string;
   desktopApiNamespace?: DesktopApiNamespace;
@@ -218,7 +315,60 @@ type LaunchDesktopOpts = {
   localRepoPath?: string;
   additionalRepos?: AdditionalRepoRef[];
   documentId?: string;
+  desktopUserIntentSignature?: DesktopUserIntentSignature;
 };
+
+async function isDesktopCommandSigningRequired(
+  computeTargetId: string
+): Promise<boolean> {
+  const target = await computeTargetsService.findById(computeTargetId);
+  const capabilities = target?.capabilities as Record<string, unknown> | null;
+  if (!hasDesktopCommandSigningEnforcement(capabilities)) {
+    return false;
+  }
+  return target?.userId
+    ? isComputeTargetSigningSupportedForUser({
+        userId: target.userId,
+        clerkUserId: target.user?.clerkId,
+      })
+    : false;
+}
+
+export function buildDesktopLoopExecutionBody(
+  opts: Omit<LaunchDesktopOpts, "desktopUserIntentSignature">
+): JsonValue {
+  return {
+    loopId: opts.loopId,
+    command: opts.command,
+    closedLoopAuthToken: opts.closedLoopAuthToken,
+    apiBaseUrl: opts.apiBaseUrl,
+    ...(opts.s3StateKey ? { s3StateKey: opts.s3StateKey } : {}),
+    artifacts: opts.contextPack.artifacts,
+    prompt: opts.contextPack.prompt ?? null,
+    repo: opts.contextPack.repoInfo ?? null,
+    committer: opts.contextPack.committer ?? null,
+    artifactSlug: opts.documentSlug ?? null,
+    parentLoopId: opts.parentLoopId ?? null,
+    parentBranchName: opts.parentBranchName ?? null,
+    parentSessionId: opts.parentSessionId ?? null,
+    localRepoPath: opts.localRepoPath ?? null,
+    ...(opts.contextPack.userContext === undefined
+      ? {}
+      : { userContext: opts.contextPack.userContext }),
+    ...(opts.contextPack.attachments === undefined
+      ? {}
+      : { attachments: opts.contextPack.attachments }),
+    ...(opts.additionalRepos === undefined
+      ? {}
+      : {
+          additionalRepos: opts.additionalRepos.map((repo) => ({
+            fullName: repo.fullName,
+            branch: repo.branch,
+          })),
+        }),
+    ...(opts.documentId ? { primaryArtifactId: opts.documentId } : {}),
+  } satisfies LoopBody as JsonValue;
+}
 
 async function resolveDesktopApiNamespace(
   computeTargetId: string,
@@ -251,59 +401,41 @@ export async function launchLoopOnDesktop(
     command,
     computeTargetId,
     desktopApiNamespace,
-    closedLoopAuthToken,
-    apiBaseUrl,
     contextPack,
-    documentSlug,
-    parentLoopId,
-    parentBranchName,
-    parentSessionId,
-    localRepoPath,
-    additionalRepos,
-    documentId,
-    s3StateKey,
+    desktopUserIntentSignature,
   } = opts;
   const namespace = await resolveDesktopApiNamespace(
     computeTargetId,
     desktopApiNamespace
   );
 
-  const input = {
-    operationId: "symphony_loop",
-    method: "POST" as const,
-    path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
-    body: {
-      loopId,
-      command,
-      closedLoopAuthToken,
-      apiBaseUrl,
-      ...(s3StateKey ? { s3StateKey } : {}),
-      artifacts: contextPack.artifacts,
-      prompt: contextPack.prompt ?? null,
-      repo: contextPack.repoInfo ?? null,
-      committer: contextPack.committer ?? null,
-      artifactSlug: documentSlug ?? null,
-      parentLoopId: parentLoopId ?? null,
-      parentBranchName: parentBranchName ?? null,
-      parentSessionId: parentSessionId ?? null,
-      localRepoPath: localRepoPath ?? null,
-      ...(contextPack.userContext === undefined
-        ? {}
-        : { userContext: contextPack.userContext }),
-      ...(contextPack.attachments === undefined
-        ? {}
-        : { attachments: contextPack.attachments }),
-      ...(additionalRepos === undefined
-        ? {}
-        : {
-            additionalRepos: additionalRepos.map((r) => ({
-              fullName: r.fullName,
-              branch: r.branch,
-            })),
-          }),
-      ...(documentId ? { primaryArtifactId: documentId } : {}),
-    } satisfies LoopBody as JsonValue,
-  };
+  const signingRequired =
+    await isDesktopCommandSigningRequired(computeTargetId);
+  if (signingRequired && !desktopUserIntentSignature) {
+    throw new Error("Command signing is required for this compute target");
+  }
+
+  const input = desktopUserIntentSignature
+    ? {
+        commandId:
+          desktopUserIntentSignature.commandId as BrowserSignedCommandId,
+        operationId: "symphony_loop",
+        method: "POST" as const,
+        path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
+        body: {
+          loopId,
+          userIntent: desktopUserIntentSignature.body,
+        } satisfies JsonValue,
+        signature: desktopUserIntentSignature.signature,
+        signaturePayload: desktopUserIntentSignature.signaturePayload,
+        publicKeyFingerprint: desktopUserIntentSignature.publicKeyFingerprint,
+      }
+    : {
+        operationId: "symphony_loop",
+        method: "POST" as const,
+        path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
+        body: buildDesktopLoopExecutionBody(opts),
+      };
 
   const createResult = await desktopCommandStore.createCommand(
     computeTargetId,
@@ -311,7 +443,17 @@ export async function launchLoopOnDesktop(
   );
   const commandId = createResult.command.commandId;
 
-  const relayOperation = toRelayOperation(commandId, input);
+  const relayOperation = toRelayOperation(
+    commandId,
+    input,
+    desktopUserIntentSignature
+      ? {
+          signature: desktopUserIntentSignature.signature,
+          signaturePayload: desktopUserIntentSignature.signaturePayload,
+          publicKeyFingerprint: desktopUserIntentSignature.publicKeyFingerprint,
+        }
+      : undefined
+  );
 
   try {
     await dispatchRelayOperation(
@@ -323,6 +465,17 @@ export async function launchLoopOnDesktop(
   } catch (err) {
     const dispatchReason =
       err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined;
+    if (desktopUserIntentSignature) {
+      await desktopCommandStore.markCommandExpired(
+        commandId,
+        `signed_command_delivery_failed:${dispatchReason ?? "unknown"}`,
+        {
+          commandId,
+          operationId: input.operationId,
+          computeTargetId,
+        }
+      );
+    }
     throw new DispatchError(
       err instanceof Error ? err.message : String(err),
       commandId,
@@ -348,27 +501,91 @@ export async function launchLoopOnDesktop(
  */
 export async function stopDesktopLoop(
   loopId: string,
-  computeTargetId: string
+  computeTargetId: string,
+  desktopUserIntentSignature?: DesktopUserIntentSignature
 ): Promise<void> {
   const namespace = await resolveDesktopApiNamespace(computeTargetId);
-  const killInput = {
-    operationId: "symphony_loop_kill",
-    method: "POST" as const,
-    path: rewriteDesktopApiPath("/api/gateway/symphony/loop/kill", namespace),
-    body: { loopId },
-  };
+  const signingRequired =
+    await isDesktopCommandSigningRequired(computeTargetId);
+  if (signingRequired && !desktopUserIntentSignature) {
+    throw new Error("Command signing is required for this compute target");
+  }
+
+  const killInput: CreateDesktopCommandInput = desktopUserIntentSignature
+    ? {
+        commandId:
+          desktopUserIntentSignature.commandId as BrowserSignedCommandId,
+        operationId: "symphony_loop_kill",
+        method: "POST" as const,
+        path: rewriteDesktopApiPath(
+          "/api/gateway/symphony/loop/kill",
+          namespace
+        ),
+        body: {
+          loopId,
+          userIntent: desktopUserIntentSignature.body,
+        } satisfies JsonValue,
+        signature: desktopUserIntentSignature.signature,
+        signaturePayload: desktopUserIntentSignature.signaturePayload,
+        publicKeyFingerprint: desktopUserIntentSignature.publicKeyFingerprint,
+      }
+    : {
+        operationId: "symphony_loop_kill",
+        method: "POST" as const,
+        path: rewriteDesktopApiPath(
+          "/api/gateway/symphony/loop/kill",
+          namespace
+        ),
+        body: { loopId },
+      };
   const createResult = await desktopCommandStore.createCommand(
     computeTargetId,
     killInput
   );
   const commandId = createResult.command.commandId;
-  const relayOp = toRelayOperation(commandId, killInput);
-
-  await dispatchRelayOperation(computeTargetId, relayOp, {
-    label: "Kill",
-    loopId,
+  const relayOp = toRelayOperation(
     commandId,
-  });
+    killInput,
+    desktopUserIntentSignature
+      ? {
+          signature: desktopUserIntentSignature.signature,
+          signaturePayload: desktopUserIntentSignature.signaturePayload,
+          publicKeyFingerprint: desktopUserIntentSignature.publicKeyFingerprint,
+        }
+      : undefined
+  );
+
+  try {
+    await dispatchRelayOperation(
+      computeTargetId,
+      relayOp,
+      {
+        label: "Kill",
+        loopId,
+        commandId,
+      },
+      Boolean(desktopUserIntentSignature)
+    );
+  } catch (err) {
+    const dispatchReason =
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined;
+    if (desktopUserIntentSignature) {
+      await desktopCommandStore.markCommandExpired(
+        commandId,
+        `signed_command_delivery_failed:${dispatchReason ?? "unknown"}`,
+        {
+          commandId,
+          operationId: killInput.operationId,
+          computeTargetId,
+        }
+      );
+    }
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId,
+      dispatchReason
+    );
+  }
 
   log.info("[loop-desktop] Desktop kill command dispatched", {
     loopId,

@@ -26,7 +26,11 @@ export async function POST(request: Request): Promise<Response> {
   const event = body.event;
   const payload = body.payload;
   const auth = isRecord(body.auth)
-    ? (body.auth as { organizationId: string; userId: string })
+    ? (body.auth as {
+        organizationId: string;
+        userId: string;
+        clerkUserId?: string | null;
+      })
     : null;
   const targetId =
     typeof body.targetId === "string" ? body.targetId : undefined;

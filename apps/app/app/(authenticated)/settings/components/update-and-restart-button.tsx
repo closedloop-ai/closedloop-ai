@@ -158,7 +158,7 @@ function UpdateAndRestartButtonInner({
   const { data: releaseInfo } = useLatestElectronRelease();
   const [commandId, setCommandId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const dispatch = useDispatchDesktopCommand(target.id);
+  const dispatch = useDispatchDesktopCommand(target);
   const { data: commandStatus, isError: statusError } = useDesktopCommandStatus(
     target.id,
     commandId

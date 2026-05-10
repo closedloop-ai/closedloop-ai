@@ -25,6 +25,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Info,
+  KeyRound,
   Laptop,
   Loader2,
   RefreshCw,
@@ -33,7 +34,7 @@ import {
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import { type MouseEvent, useCallback, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
 import {
@@ -42,6 +43,12 @@ import {
   useToggleComputeTargetSharing,
 } from "@/hooks/queries/use-compute-targets";
 import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
+import {
+  useRegisterBrowserCommandKey,
+  useUnregisterBrowserCommandKey,
+} from "@/hooks/queries/use-public-keys";
+import { hasEffectiveCommandSigningSupport } from "@/lib/crypto/command-signer";
+import { getStoredBrowserSigningKeyMetadata } from "@/lib/crypto/key-store";
 import {
   COMPUTE_TARGETS_QUERY_OPTIONS,
   DESKTOP_SETUP_URL,
@@ -328,6 +335,92 @@ function ComputeTargetSystemCheck({
   );
 }
 
+function BrowserCommandSigningPanel() {
+  const registerBrowserKey = useRegisterBrowserCommandKey();
+  const unregisterBrowserKey = useUnregisterBrowserCommandKey();
+  const [registeredFingerprint, setRegisteredFingerprint] = useState<
+    string | null
+  >(null);
+  const isMutating =
+    registerBrowserKey.isPending || unregisterBrowserKey.isPending;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getStoredBrowserSigningKeyMetadata().then((key) => {
+      if (!cancelled && key.ok) {
+        setRegisteredFingerprint(key.fingerprint);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleRegisterBrowserKey = () => {
+    if (registeredFingerprint) {
+      return;
+    }
+
+    registerBrowserKey.mutate(undefined, {
+      onSuccess: (key) => {
+        setRegisteredFingerprint(key.fingerprint);
+        toast.success("Browser signing key registered");
+      },
+    });
+  };
+
+  const handleUnregisterBrowserKey = () => {
+    if (!registeredFingerprint) {
+      return;
+    }
+
+    unregisterBrowserKey.mutate(registeredFingerprint, {
+      onSuccess: () => {
+        setRegisteredFingerprint(null);
+        toast.success("Browser signing key unregistered");
+      },
+    });
+  };
+
+  let buttonIcon = <KeyRound className="size-4" />;
+  if (isMutating) {
+    buttonIcon = <Loader2 className="size-4 animate-spin" />;
+  } else if (registeredFingerprint) {
+    buttonIcon = <Trash2 className="size-4" />;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 p-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <KeyRound className="size-4 text-muted-foreground" />
+          <p className="font-medium text-sm">Browser Command Signing</p>
+        </div>
+        <p className="text-muted-foreground text-xs">
+          {registeredFingerprint
+            ? `Registered key ${registeredFingerprint}`
+            : "Register this browser before authorizing it in Desktop."}
+        </p>
+      </div>
+      <Button
+        disabled={isMutating}
+        onClick={
+          registeredFingerprint
+            ? handleUnregisterBrowserKey
+            : handleRegisterBrowserKey
+        }
+        size="sm"
+        variant="outline"
+      >
+        {buttonIcon}
+        {registeredFingerprint ? "Unregister" : "Register Browser"}
+      </Button>
+    </div>
+  );
+}
+
 export function LocalComputeTargetsCard() {
   const { user } = useUser();
   const userId = user?.id ?? "";
@@ -427,8 +520,10 @@ export function LocalComputeTargetsCard() {
   } else {
     // Only show the user's own targets in settings (not shared targets from others)
     const ownTargets = targets.filter((t) => !t.ownerName);
+    const signingSupported = ownTargets.some(hasEffectiveCommandSigningSupport);
     content = (
       <div className="space-y-3">
+        {signingSupported ? <BrowserCommandSigningPanel /> : null}
         {ownTargets.map((target) => {
           const isUpdating = updatingTargets.has(target.id);
           const security = getTargetSecurity(target);

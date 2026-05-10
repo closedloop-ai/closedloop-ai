@@ -421,7 +421,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     } as ReturnType<typeof useLoop>);
   });
 
-  it("calls mutate with the loop id after confirming the stop dialog", async () => {
+  it("calls mutate with the loop identity after confirming the stop dialog", async () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
@@ -433,7 +433,10 @@ describe("LoopDetailContainer — cancel button interaction", () => {
 
     await waitFor(() => {
       expect(mockCancelMutate).toHaveBeenCalledWith(
-        "loop-001",
+        {
+          id: "loop-001",
+          computeTargetId: null,
+        },
         expect.any(Object)
       );
     });

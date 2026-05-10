@@ -2,6 +2,10 @@ import { failure } from "@repo/api/src/types/common";
 import type { RelayOperationDispatchRequest } from "@repo/api/src/types/compute-target";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  browserKeyRevocationReservedResponse,
+  isReservedBrowserKeyRevocationRelayOperation,
+} from "@/lib/browser-key-revocation-command";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
@@ -32,6 +36,11 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
+    const operation = body as RelayOperationDispatchRequest;
+    if (isReservedBrowserKeyRevocationRelayOperation(operation)) {
+      return browserKeyRevocationReservedResponse();
+    }
+
     await computeTargetsService.markStaleTargetsOffline({
       organizationId: user.organizationId,
       userId: user.id,
@@ -48,7 +57,6 @@ export const POST = withAnyAuth<
       });
     }
 
-    const operation = body as RelayOperationDispatchRequest;
     const createResult = await desktopCommandStore.createFromRelayOperation(
       target.id,
       operation

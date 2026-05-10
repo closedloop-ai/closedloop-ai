@@ -4,6 +4,8 @@ import {
 } from "@repo/api/src/desktop-api-namespace";
 import type { ApiResult, JsonValue } from "@repo/api/src/types/common";
 import type {
+  BrowserSignedCommandId,
+  CommandSignatureFields,
   CreateDesktopCommandInput,
   CreateDesktopCommandResponse,
   DesktopCommandEvent,
@@ -25,6 +27,10 @@ export type RelayHttpRequestPayload = {
   path: string;
   headers: Record<string, string>;
   body: RelayEncodedBody;
+};
+
+export type RelayCommandSigningInput = CommandSignatureFields & {
+  commandId: BrowserSignedCommandId;
 };
 
 type RelayResponseEnvelope = {
@@ -317,7 +323,8 @@ function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
 function toDesktopCommandInput(
   operationId: string,
   request: RelayHttpRequestPayload,
-  streaming: boolean
+  streaming: boolean,
+  signing?: RelayCommandSigningInput
 ): CreateDesktopCommandInput {
   const { path, query } = splitPathAndQuery(request.path);
   if (!isDesktopApiPath(path)) {
@@ -327,6 +334,7 @@ function toDesktopCommandInput(
   }
 
   return {
+    ...(signing ? { commandId: signing.commandId } : {}),
     operationId,
     method: normalizeMethod(request.method),
     path,
@@ -334,6 +342,13 @@ function toDesktopCommandInput(
     query,
     body: unwrapRelayBody(request.body),
     streaming,
+    ...(signing
+      ? {
+          signature: signing.signature,
+          signaturePayload: signing.signaturePayload,
+          publicKeyFingerprint: signing.publicKeyFingerprint,
+        }
+      : {}),
   };
 }
 
@@ -450,10 +465,16 @@ export class RelayClient {
 
   async executeOperation(
     targetId: string,
-    request: RelayHttpRequestPayload
+    request: RelayHttpRequestPayload,
+    signing?: RelayCommandSigningInput
   ): Promise<{ envelope: RelayResponseEnvelope | null; value: unknown }> {
     const operationId = crypto.randomUUID();
-    const commandInput = toDesktopCommandInput(operationId, request, false);
+    const commandInput = toDesktopCommandInput(
+      operationId,
+      request,
+      false,
+      signing
+    );
     const { commandId } = await this.createCommand(targetId, commandInput);
 
     const abortController = new AbortController();
@@ -760,10 +781,16 @@ export class RelayClient {
 
   async streamOperation(
     targetId: string,
-    request: RelayHttpRequestPayload
+    request: RelayHttpRequestPayload,
+    signing?: RelayCommandSigningInput
   ): Promise<{ stream: ReadableStream<Uint8Array>; commandId: string }> {
     const operationId = crypto.randomUUID();
-    const commandInput = toDesktopCommandInput(operationId, request, true);
+    const commandInput = toDesktopCommandInput(
+      operationId,
+      request,
+      true,
+      signing
+    );
     const { commandId } = await this.createCommand(targetId, commandInput);
     const stream = this._createPollingStream(targetId, commandId, 0);
     return { stream, commandId };

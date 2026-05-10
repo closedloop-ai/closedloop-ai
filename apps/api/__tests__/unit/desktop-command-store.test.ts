@@ -15,6 +15,7 @@ const {
   mockEmitQueueMetric,
   mockEmitProtocolMetric,
   desktopCommandCountSpy,
+  desktopCommandCreateSpy,
   desktopCommandUpdateManySpy,
 } = vi.hoisted(() => ({
   mockWithDb: vi.fn(),
@@ -22,6 +23,7 @@ const {
   mockEmitQueueMetric: vi.fn(),
   mockEmitProtocolMetric: vi.fn(),
   desktopCommandCountSpy: vi.fn(),
+  desktopCommandCreateSpy: vi.fn(),
   desktopCommandUpdateManySpy: vi.fn(),
 }));
 
@@ -48,7 +50,10 @@ vi.mock("@repo/database", () => ({
 
 // --- Imports (after mocks) ---
 
-import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
+import {
+  type BrowserSignedCommandId,
+  DesktopCommandStatus,
+} from "@repo/api/src/types/compute-target";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 
@@ -60,10 +65,106 @@ beforeEach(() => {
     fn({
       desktopCommand: {
         count: desktopCommandCountSpy,
+        create: desktopCommandCreateSpy,
         updateMany: desktopCommandUpdateManySpy,
       },
     })
   );
+});
+
+function installCreateCommandMock(): void {
+  desktopCommandCreateSpy.mockImplementation(
+    ({ data }: { data: Record<string, unknown> }) => ({
+      id: data.id ?? "server-command-id",
+      computeTargetId: data.computeTargetId,
+      operationId: data.operationId,
+      status: data.status,
+      requestPayload: data.requestPayload,
+      error: null,
+      createdAt: new Date("2026-05-08T12:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+      lastSequenceAcked: data.lastSequenceAcked,
+      idempotencyKey: data.idempotencyKey,
+      requestFingerprint: data.requestFingerprint,
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// command signing persistence
+// ---------------------------------------------------------------------------
+
+describe("desktopCommandStore.createCommand command signing fields", () => {
+  beforeEach(() => {
+    desktopCommandStore.__resetForTests();
+    installCreateCommandMock();
+  });
+
+  it("uses a browser-supplied command id without persisting signature material", async () => {
+    const commandId =
+      "0196b1bb-7a00-7000-8000-000000000001" as BrowserSignedCommandId;
+
+    await desktopCommandStore.createCommand("target-1", {
+      commandId,
+      operationId: "git_action",
+      method: "POST",
+      path: "/api/gateway/git",
+      body: { action: "status" },
+      signature: "signature-base64",
+      signaturePayload: '{"signed":true}',
+      publicKeyFingerprint: "cl:testfingerprint",
+    });
+
+    const createData = desktopCommandCreateSpy.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(createData.id).toBe(commandId);
+    expect(createData.requestPayload).toEqual({
+      operationId: "git_action",
+      method: "POST",
+      path: "/api/gateway/git",
+      body: { action: "status" },
+    });
+  });
+
+  it("keeps request fingerprints stable across browser re-signing", async () => {
+    const baseCommand = {
+      operationId: "git_action",
+      method: "POST" as const,
+      path: "/api/gateway/git",
+      body: { action: "status", repoPath: "/repo" },
+    };
+
+    await desktopCommandStore.createCommand("target-1", {
+      ...baseCommand,
+      commandId:
+        "0196b1bb-7a00-7000-8000-000000000002" as BrowserSignedCommandId,
+      signature: "first-signature",
+      signaturePayload: '{"nonce":"first"}',
+      publicKeyFingerprint: "cl:first",
+    });
+    await desktopCommandStore.createCommand("target-1", {
+      ...baseCommand,
+      commandId:
+        "0196b1bb-7a00-7000-8000-000000000003" as BrowserSignedCommandId,
+      signature: "second-signature",
+      signaturePayload: '{"nonce":"second"}',
+      publicKeyFingerprint: "cl:second",
+    });
+
+    const firstData = desktopCommandCreateSpy.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    const secondData = desktopCommandCreateSpy.mock.calls[1][0].data as Record<
+      string,
+      unknown
+    >;
+
+    expect(firstData.requestFingerprint).toBe(secondData.requestFingerprint);
+  });
 });
 
 // ---------------------------------------------------------------------------

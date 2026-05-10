@@ -56,6 +56,10 @@ vi.mock("@/lib/desktop-command-store", () => ({
   },
 }));
 
+vi.mock("@/lib/loops/rejected-command-loop-failure", () => ({
+  failLoopFromRejectedCommand: vi.fn().mockResolvedValue({ failed: false }),
+}));
+
 // --- Imports (after mocks) ---
 
 import { beforeEach, describe, expect, it } from "vitest";

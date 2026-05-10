@@ -22,6 +22,11 @@ import {
 } from "@tanstack/react-query";
 import { computePreferenceKeys } from "@/hooks/queries/use-compute-preference";
 import { useApiClient } from "@/hooks/use-api-client";
+import {
+  hasEffectiveCommandSigningSupport,
+  signDesktopCommand,
+} from "@/lib/crypto/command-signer";
+import { cacheComputeTargetsForSigning } from "@/lib/engineer/compute-target-signing-cache";
 
 type ApiClient = ReturnType<typeof useApiClient>;
 
@@ -85,7 +90,9 @@ export function useComputeTargets(
     queryFn: async () => {
       const targets =
         await apiClient.get<ComputeTargetWire[]>("/compute-targets");
-      return targets.map(toComputeTarget);
+      const parsedTargets = targets.map(toComputeTarget);
+      cacheComputeTargetsForSigning(parsedTargets);
+      return parsedTargets;
     },
     ...options,
   });
@@ -199,7 +206,7 @@ export function useDesktopCommandStatus(
 }
 
 export function useDispatchDesktopCommand(
-  targetId: string
+  target: ComputeTarget
 ): UseMutationResult<
   CreateDesktopCommandResponse,
   Error,
@@ -209,15 +216,33 @@ export function useDispatchDesktopCommand(
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: ({ idempotencyKey }: { idempotencyKey: string }) => {
+    mutationFn: async ({ idempotencyKey }: { idempotencyKey: string }) => {
       const payload: UpdateAndRestartCommandInput = {
         operationId: UPDATE_AND_RESTART_OPERATION_ID,
         idempotencyKey,
         path: "/api/gateway/update-and-restart",
         method: "POST",
       };
+      if (hasEffectiveCommandSigningSupport(target)) {
+        const signed = await signDesktopCommand(
+          {
+            method: payload.method,
+            pathWithQuery: payload.path,
+            body: undefined,
+          },
+          target
+        );
+        Object.assign(payload, {
+          commandId: signed.commandId,
+          path: signed.path,
+          ...(signed.query ? { query: signed.query } : {}),
+          signature: signed.signature,
+          signaturePayload: signed.signaturePayload,
+          publicKeyFingerprint: signed.publicKeyFingerprint,
+        });
+      }
       return apiClient.post<CreateDesktopCommandResponse>(
-        `/compute-targets/${targetId}/commands`,
+        `/compute-targets/${target.id}/commands`,
         payload
       );
     },

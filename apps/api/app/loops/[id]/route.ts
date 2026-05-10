@@ -2,7 +2,6 @@ import type { Loop, LoopDetail, LoopEvent } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { stopDesktopLoop } from "@/lib/loops/loop-desktop";
 import { stopLoopTask } from "@/lib/loops/loop-ecs";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import {
@@ -12,6 +11,7 @@ import {
   scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
+import { stopDesktopLoopBestEffort } from "../desktop-cancel";
 import { loopsService } from "../service";
 import { loopMetadataUpdateValidator } from "../validators";
 
@@ -47,14 +47,10 @@ export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
 
       if (loop.computeTargetId) {
         // Desktop path: dispatch kill command to electron
-        try {
-          await stopDesktopLoop(id, loop.computeTargetId);
-        } catch (killError) {
-          log.warn("Failed to dispatch desktop kill command", {
-            loopId: id,
-            killError,
-          });
-        }
+        await stopDesktopLoopBestEffort({
+          loopId: id,
+          computeTargetId: loop.computeTargetId,
+        });
       } else if (loop.containerId) {
         // ECS path: stop the container task
         try {

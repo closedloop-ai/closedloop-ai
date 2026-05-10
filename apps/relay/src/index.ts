@@ -59,6 +59,7 @@ type WorkerContext = {
   targetId: string;
   organizationId: string;
   userId: string;
+  clerkUserId?: string;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   degradedTimer: ReturnType<typeof setTimeout> | null;
   wasDegraded: boolean;
@@ -202,7 +203,7 @@ async function validateApiKeyViaApi(
   desktopPopHeaders?: DesktopPopHeaders
 ): Promise<{
   ok: boolean;
-  context?: { organizationId: string; userId: string };
+  context?: { organizationId: string; userId: string; clerkUserId?: string };
 }> {
   log.info("validateApiKeyViaApi: calling API", {
     hasApiKey: Boolean(apiKey),
@@ -283,12 +284,18 @@ async function validateApiKeyViaApi(
       .organizationId as string,
   });
 
+  const clerkUserId =
+    typeof (payload as Record<string, unknown>).clerkUserId === "string"
+      ? ((payload as Record<string, unknown>).clerkUserId as string)
+      : undefined;
+
   return {
     ok: true,
     context: {
       organizationId: (payload as Record<string, unknown>)
         .organizationId as string,
       userId: (payload as Record<string, unknown>).userId as string,
+      ...(clerkUserId ? { clerkUserId } : {}),
     },
   };
 }
@@ -296,7 +303,7 @@ async function validateApiKeyViaApi(
 async function forwardSocketEvent(
   event: string,
   payload: unknown,
-  auth?: { organizationId: string; userId: string },
+  auth?: { organizationId: string; userId: string; clerkUserId?: string },
   targetId?: string,
   gatewaySessionId?: string
 ): Promise<{
@@ -679,7 +686,7 @@ function cleanupExistingWorker(
 function registerWorker(
   socket: Socket,
   targetId: string,
-  auth: { organizationId: string; userId: string },
+  auth: { organizationId: string; userId: string; clerkUserId?: string },
   gatewaySessionId?: string,
   pluginVersion?: string
 ): void {
@@ -820,6 +827,7 @@ namespace.on("connection", (socket) => {
   const auth = socket.data.auth as {
     organizationId: string;
     userId: string;
+    clerkUserId?: string;
   };
 
   connectCount += 1;

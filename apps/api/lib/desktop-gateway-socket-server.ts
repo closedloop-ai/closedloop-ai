@@ -10,6 +10,8 @@ import {
 } from "../app/compute-targets/service";
 import { usersService } from "../app/users/service";
 import { getDesktopManagedPopRequestFailure } from "./auth/desktop-managed-pop";
+import { isComputeTargetSigningSupportedForUser } from "./command-signing-feature";
+import { acknowledgeDesktopCommand } from "./desktop-command-ack-handler";
 import { desktopCommandStore } from "./desktop-command-store";
 import {
   type DesktopAuthContext,
@@ -141,6 +143,7 @@ async function resolveDesktopAuthContext(
   return {
     organizationId: keyContext.organizationId,
     userId: keyContext.userId,
+    clerkUserId: user.clerkId,
   };
 }
 
@@ -321,10 +324,15 @@ async function handleSocketHello(
         authContext.userId,
         true
       );
-  const [pendingCommands, onlineUpdated] = await Promise.all([
-    pendingCommandsPromise,
-    onlineUpdatePromise,
-  ]);
+  const [pendingCommands, onlineUpdated, commandSigningSupported] =
+    await Promise.all([
+      pendingCommandsPromise,
+      onlineUpdatePromise,
+      isComputeTargetSigningSupportedForUser({
+        userId: authContext.userId,
+        clerkUserId: authContext.clerkUserId,
+      }),
+    ]);
 
   // Guard: if the socket disconnected during the async work above,
   // compensate by marking the target offline and cleaning up resources.
@@ -384,6 +392,9 @@ async function handleSocketHello(
       computeTargetId: targetId,
       sessionId,
       serverTime: new Date().toISOString(),
+      ...(commandSigningSupported
+        ? { serverCapabilities: { computeTargetSigning: true } }
+        : {}),
       ...(Object.keys(resumeFromSequence).length > 0
         ? { resumeFromSequence }
         : {}),
@@ -519,22 +530,20 @@ function handleSocketConnection(socket: Socket): void {
       computeTargetId: context.targetId,
     });
 
-    desktopCommandStore
-      .acknowledgeCommand(
-        payload.commandId,
-        payload.accepted,
-        payload.reason,
-        context.targetId,
-        ackCtx
-      )
-      .catch((error) => {
-        log.error("Failed handling desktop.command.ack", {
-          socketId: socket.id,
-          commandId: payload.commandId,
-          computeTargetId: context.targetId,
-          error,
-        });
+    acknowledgeDesktopCommand({
+      commandId: payload.commandId,
+      accepted: payload.accepted,
+      reason: payload.reason,
+      targetId: context.targetId,
+      context: ackCtx,
+    }).catch((error) => {
+      log.error("Failed handling desktop.command.ack", {
+        socketId: socket.id,
+        commandId: payload.commandId,
+        computeTargetId: context.targetId,
+        error,
       });
+    });
   });
 
   socket.on("desktop.command.event", (rawPayload: unknown) => {

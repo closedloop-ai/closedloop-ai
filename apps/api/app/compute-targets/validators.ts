@@ -3,6 +3,22 @@ import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
 export const uuidValidator = z.uuid();
+export const uuidV7Validator = z
+  .string()
+  .trim()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    "Must be a UUID v7"
+  );
+const signatureBase64Validator = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/, "Must be a base64 signature");
+/** Validates command-signing public-key fingerprints produced by SHA-256 base64url truncation. */
+export const commandPublicKeyFingerprintValidator = z
+  .string()
+  .trim()
+  .regex(/^cl:[A-Za-z0-9_-]{22}$/, "Must be a command public-key fingerprint");
 
 export const registerComputeTargetValidator = z.object({
   machineName: z.string().trim().min(1).max(120),
@@ -114,25 +130,46 @@ export const healthCheckSnapshotValidator = z.object({
     .passthrough(),
 });
 
-export const createDesktopCommandValidator = z.object({
-  operationId: z.string().trim().min(1),
-  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-  path: z
-    .string()
-    .trim()
-    .min(1)
-    .refine((value) => isDesktopApiPath(value), {
-      message: "Path must target /api/gateway/* or /api/engineer/*",
-    }),
-  headers: z.record(z.string(), z.string()).optional(),
-  query: z
-    .record(z.string(), z.union([z.string(), z.array(z.string())]))
-    .optional(),
-  body: z.unknown().optional(),
-  timeoutMs: z.number().int().positive().optional(),
-  lockKey: z.string().trim().min(1).optional(),
-  requiresApproval: z.boolean().optional(),
-  approvalReason: z.string().trim().min(1).optional(),
-  idempotencyKey: z.string().trim().min(1).max(200).optional(),
-  streaming: z.boolean().optional(),
-});
+export const createDesktopCommandValidator = z
+  .object({
+    commandId: uuidV7Validator.optional(),
+    operationId: z.string().trim().min(1),
+    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+    path: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => isDesktopApiPath(value), {
+        message: "Path must target /api/gateway/* or /api/engineer/*",
+      }),
+    headers: z.record(z.string(), z.string()).optional(),
+    query: z
+      .record(z.string(), z.union([z.string(), z.array(z.string())]))
+      .optional(),
+    body: z.unknown().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    lockKey: z.string().trim().min(1).optional(),
+    requiresApproval: z.boolean().optional(),
+    approvalReason: z.string().trim().min(1).optional(),
+    idempotencyKey: z.string().trim().min(1).max(200).optional(),
+    streaming: z.boolean().optional(),
+    signature: signatureBase64Validator.optional(),
+    signaturePayload: z.string().trim().min(1).optional(),
+    publicKeyFingerprint: commandPublicKeyFingerprintValidator.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const signatureFieldCount = [
+      value.signature,
+      value.signaturePayload,
+      value.publicKeyFingerprint,
+    ].filter((entry) => entry !== undefined).length;
+    if (signatureFieldCount === 0 || signatureFieldCount === 3) {
+      return;
+    }
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "signature, signaturePayload, and publicKeyFingerprint must be provided together",
+      path: ["signature"],
+    });
+  });

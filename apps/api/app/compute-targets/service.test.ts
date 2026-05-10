@@ -2,11 +2,17 @@ import {
   DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
   LEGACY_DESKTOP_API_NAMESPACE,
 } from "@repo/api/src/desktop-api-namespace";
-import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
+import {
+  COMMAND_SIGNING_CAPABILITY_KEY,
+  COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
+  DesktopSecurityStatus,
+} from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
 
 const mocks = vi.hoisted(() => ({
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
+  isComputeTargetSigningSupportedForUser: vi.fn(),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
@@ -21,6 +27,11 @@ vi.mock("@repo/database", () => ({
 vi.mock("@/lib/auth/desktop-managed-pop", () => ({
   isDesktopManagedPopEnforcementEnabled:
     mocks.isDesktopManagedPopEnforcementEnabled,
+}));
+
+vi.mock("@/lib/command-signing-feature", () => ({
+  isComputeTargetSigningSupportedForUser:
+    mocks.isComputeTargetSigningSupportedForUser,
 }));
 
 import {
@@ -70,6 +81,7 @@ describe("computeTargetsService security status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(true);
+    mocks.isComputeTargetSigningSupportedForUser.mockResolvedValue(false);
   });
 
   it("computes the full owned/shared Desktop security status matrix", async () => {
@@ -217,6 +229,57 @@ describe("computeTargetsService security status", () => {
     });
   });
 
+  it("computes target response signing support from each target owner", async () => {
+    const targets = [
+      buildTarget({
+        id: "viewer-target",
+        userId: "user-1",
+        user: { clerkId: "clerk-user-1", firstName: "Viewer", lastName: null },
+      }),
+      buildTarget({
+        id: "shared-target",
+        userId: "owner-2",
+        isSharedWithOrg: true,
+        user: {
+          clerkId: "clerk-owner-2",
+          firstName: "Owner",
+          lastName: "Two",
+        },
+      }),
+    ];
+    mocks.isComputeTargetSigningSupportedForUser.mockImplementation(
+      async (identity) => identity.userId === "owner-2"
+    );
+    installDb({
+      computeTarget: {
+        findMany: vi.fn().mockResolvedValue(targets),
+      },
+      apiKey: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    const result = await computeTargetsService.listAvailableForOrg(
+      "org-1",
+      "user-1",
+      "clerk-user-1"
+    );
+    const byId = new Map(result.map((target) => [target.id, target]));
+
+    expect(byId.get("viewer-target")?.serverCapabilities).toBeUndefined();
+    expect(byId.get("shared-target")?.serverCapabilities).toEqual({
+      computeTargetSigning: true,
+    });
+    expect(mocks.isComputeTargetSigningSupportedForUser).toHaveBeenCalledWith({
+      userId: "user-1",
+      clerkUserId: "clerk-user-1",
+    });
+    expect(mocks.isComputeTargetSigningSupportedForUser).toHaveBeenCalledWith({
+      userId: "owner-2",
+      clerkUserId: "clerk-owner-2",
+    });
+  });
+
   it("merges protocol-only updates into the existing capabilities blob", async () => {
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
     const update = vi.fn().mockResolvedValue(
@@ -315,6 +378,53 @@ describe("computeTargetsService security status", () => {
         }),
       })
     );
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
+    expect(mocks.withDb).not.toHaveBeenCalled();
+  });
+
+  it("clears stale command signing enforcement opt-in when current capability payload omits it", async () => {
+    mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
+    const update = vi.fn().mockResolvedValue(
+      buildTarget({
+        capabilities: {
+          [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        },
+      })
+    );
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({
+          capabilities: {
+            [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+            [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: true,
+            pluginVersion: "1.11.3",
+          },
+        }),
+        update,
+      },
+      apiKey: {
+        findMany: vi.fn(),
+      },
+    });
+
+    await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      {
+        capabilities: {
+          [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        },
+      },
+      "clerk-user-1"
+    );
+
+    const capabilities = update.mock.calls[0][0].data.capabilities;
+    expect(capabilities).toEqual({
+      [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+      pluginVersion: "1.11.3",
+    });
+    expect(hasDesktopCommandSigningEnforcement(capabilities)).toBe(false);
     expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
     expect(mocks.withDb).not.toHaveBeenCalled();
   });

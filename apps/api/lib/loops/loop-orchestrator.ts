@@ -31,6 +31,7 @@ import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { documentWhere } from "@/lib/artifact-adapters";
 import type {
+  DesktopUserIntentSignature,
   LaunchContext,
   LaunchResult,
   PreparedContext,
@@ -39,7 +40,8 @@ import type {
 import { resolveProvider } from "./compute-provider-registry";
 import { getCommandHandler } from "./loop-commands";
 import { buildContextPackInMemory } from "./loop-context-pack";
-import { scrubContextPackSecrets } from "./loop-state";
+import { buildDesktopLoopExecutionBody } from "./loop-desktop";
+import { getStateKeyPrefix, scrubContextPackSecrets } from "./loop-state";
 
 type RunnerReplayContext = {
   tokenJti: string;
@@ -392,7 +394,8 @@ async function recordScrubFailureWarning(
 async function resolveLoopLaunchContext(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string,
-  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>
+  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>,
+  options?: LaunchLoopOptions
 ): Promise<LaunchContext> {
   const isDesktop = !!loop.computeTargetId;
 
@@ -468,6 +471,7 @@ async function resolveLoopLaunchContext(
   return {
     loopId: loop.id,
     organizationId,
+    userId: loop.userId,
     command: loop.command,
     contextPack,
     closedLoopAuthToken,
@@ -495,6 +499,9 @@ async function resolveLoopLaunchContext(
     computeTargetId: loop.computeTargetId,
     additionalRepos: resolvedAdditionalRepos,
     desktopApiNamespace,
+    ...(options?.desktopUserIntentSignature
+      ? { desktopUserIntentSignature: options.desktopUserIntentSignature }
+      : {}),
   };
 }
 
@@ -508,9 +515,14 @@ async function resolveLoopLaunchContext(
  *
  * @returns The ECS task ARN or desktop command ID
  */
+export type LaunchLoopOptions = {
+  desktopUserIntentSignature?: DesktopUserIntentSignature;
+};
+
 export async function launchLoop(
   loopId: string,
-  organizationId: string
+  organizationId: string,
+  options?: LaunchLoopOptions
 ): Promise<string> {
   const loop = await getPendingLoopOrThrow(loopId, organizationId);
 
@@ -557,7 +569,8 @@ export async function launchLoop(
     const launchCtx = await resolveLoopLaunchContext(
       loop,
       organizationId,
-      parentInfo
+      parentInfo,
+      options
     );
     prepared = await provider.prepareContext(launchCtx);
     result = await provider.dispatch(launchCtx, prepared);
@@ -592,6 +605,60 @@ export async function launchLoop(
 
     throw error;
   }
+}
+
+/**
+ * Builds the one-shot Desktop execution body after a signed browser intent has
+ * reached Desktop. Desktop must fetch this with its API key and existing PoP;
+ * the browser never receives the loop runner JWT or inline context payload.
+ */
+export async function buildDesktopLoopExecutionCredentials(input: {
+  loopId: string;
+  organizationId: string;
+  action?: "loop.launch" | "loop.kill";
+}): Promise<JsonObject> {
+  const loop = await loopsService.findById(input.loopId, input.organizationId);
+  if (!loop) {
+    throw new Error(`Loop not found: ${input.loopId}`);
+  }
+  if (!loop.computeTargetId) {
+    throw new Error("Loop is not assigned to a Desktop compute target");
+  }
+  if (input.action === "loop.kill") {
+    return { loopId: input.loopId };
+  }
+  const parentInfo = await resolveParentLoopInfo(
+    loop.parentLoopId,
+    input.organizationId
+  );
+  const launchCtx = await resolveLoopLaunchContext(
+    loop,
+    input.organizationId,
+    parentInfo
+  );
+  const body = buildDesktopLoopExecutionBody({
+    loopId: launchCtx.loopId,
+    organizationId: launchCtx.organizationId,
+    userId: launchCtx.userId,
+    command: launchCtx.command,
+    computeTargetId: loop.computeTargetId,
+    desktopApiNamespace: launchCtx.desktopApiNamespace,
+    closedLoopAuthToken: launchCtx.closedLoopAuthToken,
+    apiBaseUrl: launchCtx.apiBaseUrl,
+    contextPack: launchCtx.contextPack,
+    documentSlug: launchCtx.documentSlug,
+    parentLoopId: launchCtx.parentLoopId ?? undefined,
+    parentBranchName: launchCtx.parentBranchName ?? undefined,
+    parentSessionId: launchCtx.parentSessionId ?? undefined,
+    localRepoPath: launchCtx.localRepoPath,
+    additionalRepos: launchCtx.additionalRepos,
+    documentId: launchCtx.documentId ?? undefined,
+    s3StateKey: getStateKeyPrefix(launchCtx.organizationId, launchCtx.loopId),
+  });
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error("Invalid Desktop loop execution body");
+  }
+  return body as JsonObject;
 }
 
 // ---------------------------------------------------------------------------

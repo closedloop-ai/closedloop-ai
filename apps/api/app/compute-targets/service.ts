@@ -4,12 +4,16 @@ import type {
   ComputeTarget,
   ComputeTargetHealthCheckSnapshot,
   ComputeTargetSecurity,
+  ComputeTargetServerCapabilities,
   HealthCheckResponse,
   RegisterComputeTargetInput,
   UpdateComputeTargetInput,
   UpsertComputeTargetHealthCheckSnapshotInput,
 } from "@repo/api/src/types/compute-target";
-import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
+import {
+  COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
+  DesktopSecurityStatus,
+} from "@repo/api/src/types/compute-target";
 import {
   type Result as DomainResult,
   Result,
@@ -21,6 +25,7 @@ import {
   withDb,
 } from "@repo/database";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
+import { isComputeTargetSigningSupportedForUser } from "@/lib/command-signing-feature";
 import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
 import { parseJsonObject } from "@/lib/json-schema";
 
@@ -56,7 +61,11 @@ type ComputeTargetRecord = {
   gatewayId?: string | null;
   createdAt: Date;
   updatedAt: Date;
-  user?: { firstName: string | null; lastName: string | null } | null;
+  user?: {
+    clerkId: string | null;
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
 };
 
 type ComputeTargetHealthCheckRecord = {
@@ -212,6 +221,12 @@ function buildCapabilitiesPayload(
   ) {
     delete capabilities[DESKTOP_API_NAMESPACE_CAPABILITY_KEY];
   }
+  if (
+    payload.capabilities !== undefined &&
+    !Object.hasOwn(payloadCapabilities, COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY)
+  ) {
+    delete capabilities[COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY];
+  }
 
   if ("allowedDirectories" in payload && payload.allowedDirectories) {
     capabilities.allowedDirectories = payload.allowedDirectories;
@@ -342,7 +357,8 @@ function toComputeTarget(
   target: ComputeTargetRecord | null,
   /** When set, ownerName is populated for targets not owned by this user. */
   viewerUserId?: string,
-  security?: ComputeTargetSecurity
+  security?: ComputeTargetSecurity,
+  serverCapabilities?: ComputeTargetServerCapabilities
 ): ComputeTarget | null {
   if (!target) {
     return null;
@@ -362,6 +378,7 @@ function toComputeTarget(
     lastSeenAt: target.lastSeenAt,
     isOnline: target.isOnline,
     isSharedWithOrg: target.isSharedWithOrg,
+    serverCapabilities,
     security:
       security ?? buildSecurity(target, viewerUserId, new Set(), false, false),
     ownerName: isOwnedByViewer ? undefined : formatOwnerName(target.user),
@@ -409,8 +426,32 @@ async function toComputeTargetList(
           viewerOwnedGateways
         )
       : { protectedGateways: new Set<string>(), lookupFailed: false };
+  const ownerSigningSupportEntries = await Promise.all(
+    Array.from(new Set(targets.map((target) => target.userId))).map(
+      async (ownerUserId) => {
+        const ownerTarget = targets.find(
+          (target) => target.userId === ownerUserId
+        );
+        const ownerClerkUserId =
+          ownerUserId === viewerUserId
+            ? viewerClerkUserId
+            : ownerTarget?.user?.clerkId;
+        return [
+          ownerUserId,
+          await isComputeTargetSigningSupportedForUser({
+            userId: ownerUserId,
+            clerkUserId: ownerClerkUserId,
+          }),
+        ] as const;
+      }
+    )
+  );
+  const commandSigningSupportedByOwner = new Map(ownerSigningSupportEntries);
 
   return targets.flatMap((target) => {
+    const serverCapabilities = commandSigningSupportedByOwner.get(target.userId)
+      ? { computeTargetSigning: true }
+      : undefined;
     const mapped = toComputeTarget(
       target,
       viewerUserId,
@@ -420,7 +461,8 @@ async function toComputeTargetList(
         protectedGateways,
         lookupFailed,
         desktopSecurityEnabled
-      )
+      ),
+      serverCapabilities
     );
     return mapped ? [mapped] : [];
   });
@@ -790,6 +832,11 @@ export const computeTargetsService = {
     return withDb((db) =>
       db.computeTarget.findUnique({
         where: { id },
+        include: {
+          user: {
+            select: { clerkId: true, firstName: true, lastName: true },
+          },
+        },
       })
     );
   },
@@ -1020,7 +1067,7 @@ export const computeTargetsService = {
           OR: [{ userId }, { isSharedWithOrg: true }],
         },
         include: {
-          user: { select: { firstName: true, lastName: true } },
+          user: { select: { clerkId: true, firstName: true, lastName: true } },
         },
         orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }],
       })

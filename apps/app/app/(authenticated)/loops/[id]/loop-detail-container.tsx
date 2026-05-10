@@ -407,9 +407,12 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   };
 
   const handleCancel = () => {
-    cancelLoop.mutate(loop.id, {
-      onSuccess: () => toast.success("Loop cancelled"),
-    });
+    cancelLoop.mutate(
+      { id: loop.id, computeTargetId: loop.computeTarget?.id ?? null },
+      {
+        onSuccess: () => toast.success("Loop cancelled"),
+      }
+    );
   };
 
   return (
