@@ -1320,13 +1320,21 @@ describe("syncPlanFromContextPack", () => {
     );
     assert.equal(fs.readFileSync(planSourcePath, "utf-8"), "new content");
 
-    // config.env must contain the CLOSEDLOOP_PLAN_FILE line pointing to plan-source.md
-    const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
-    assert.ok(fs.existsSync(configEnvPath), "config.env should be created");
+    // config.env must be written to runDir (which run-loop.sh exports as
+    // CLOSEDLOOP_WORKDIR) so Phase 0.9 hooks reading
+    // $CLOSEDLOOP_WORKDIR/.closedloop-ai/config.env observe CLOSEDLOOP_PLAN_FILE.
+    const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
+    assert.ok(fs.existsSync(configEnvPath), "config.env should be created in runDir");
     const configEnvContent = fs.readFileSync(configEnvPath, "utf-8");
     assert.ok(
       configEnvContent.includes(`CLOSEDLOOP_PLAN_FILE=${planSourcePath}`),
       `config.env should contain CLOSEDLOOP_PLAN_FILE=${planSourcePath}; got: ${configEnvContent}`
+    );
+
+    // Negative assertion: nothing should be written to workDir's config.env.
+    assert.ok(
+      !fs.existsSync(path.join(workDir, ".closedloop-ai", "config.env")),
+      "config.env must not be written to workDir"
     );
   });
 

@@ -1203,13 +1203,16 @@ function writePlanSourceFile(targetDir, contextPack) {
 }
 
 /**
- * Idempotently set KEY=value in <workDir>/.closedloop-ai/config.env. Reads the
- * existing file (if any), drops any prior occurrence of KEY=, appends the new
- * line, and writes atomically via tmpPath + renameSync — matching the
- * tmpPath+renameSync convention used by writeExecutionResultV2.
+ * Idempotently set KEY=value in <targetDir>/.closedloop-ai/config.env. Reads
+ * the existing file (if any), drops any prior occurrence of KEY=, appends the
+ * new line, and writes atomically via tmpPath + renameSync — matching the
+ * tmpPath+renameSync convention used by writeExecutionResultV2. Creates the
+ * `.closedloop-ai` subdirectory if it does not already exist.
  */
-function setConfigEnvKey(workDir, key, value) {
-  const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+function setConfigEnvKey(targetDir, key, value) {
+  const configEnvDir = path.join(targetDir, ".closedloop-ai");
+  fs.mkdirSync(configEnvDir, { recursive: true });
+  const configEnvPath = path.join(configEnvDir, "config.env");
   const prefix = `${key}=`;
   const existing = fs.existsSync(configEnvPath)
     ? fs.readFileSync(configEnvPath, "utf-8")
@@ -1280,7 +1283,7 @@ function syncPlanFromContextPack(runDir, contextPack, workDir) {
         const planSourcePath = writePlanSourceFile(runDir, contextPack);
         if (planSourcePath) {
           const configEnvPath = setConfigEnvKey(
-            workDir,
+            runDir,
             "CLOSEDLOOP_PLAN_FILE",
             planSourcePath
           );
