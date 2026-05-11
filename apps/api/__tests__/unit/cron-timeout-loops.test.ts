@@ -227,7 +227,7 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     expect(mockUpdateMany).not.toHaveBeenCalled();
   });
 
-  it("ECS RUNNING clause uses activity-based detection with computeTargetId: null", async () => {
+  it("ECS RUNNING clause uses activity-based detection and excludes manual loops", async () => {
     const now = new Date("2026-01-01T12:00:00.000Z");
     const activityCutoff = new Date(now.getTime() - 75 * 60 * 1000);
     const args = await captureWhereClause(now);
@@ -235,7 +235,23 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     expect(args.where.OR[0]).toEqual({
       status: LoopStatus.RUNNING,
       computeTargetId: null,
+      command: { not: LoopCommand.Manual },
       events: { none: { createdAt: { gte: activityCutoff } } },
+    });
+  });
+
+  it("manual RUNNING clause uses 7-day inactivity window", async () => {
+    const now = new Date("2026-01-01T12:00:00.000Z");
+    const manualRunningCutoff = new Date(
+      now.getTime() - 7 * 24 * 60 * 60 * 1000
+    );
+    const args = await captureWhereClause(now);
+
+    expect(args.where.OR[1]).toEqual({
+      status: LoopStatus.RUNNING,
+      command: LoopCommand.Manual,
+      createdAt: { lt: manualRunningCutoff },
+      events: { none: { createdAt: { gte: manualRunningCutoff } } },
     });
   });
 
@@ -244,7 +260,7 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     const desktopRunningCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const args = await captureWhereClause(now);
 
-    expect(args.where.OR[1]).toEqual({
+    expect(args.where.OR[2]).toEqual({
       status: LoopStatus.RUNNING,
       computeTargetId: { not: null },
       createdAt: { lt: desktopRunningCutoff },
@@ -256,7 +272,7 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     const claimedCutoff = new Date(now.getTime() - 90 * 60 * 1000);
     const args = await captureWhereClause(now);
 
-    expect(args.where.OR[2]).toEqual({
+    expect(args.where.OR[3]).toEqual({
       status: LoopStatus.CLAIMED,
       createdAt: { lt: claimedCutoff },
     });
@@ -267,7 +283,7 @@ describe("GET /api/cron/timeout-loops — WHERE clause structure", () => {
     const pendingCutoff = new Date(now.getTime() - 30 * 60 * 1000);
     const args = await captureWhereClause(now);
 
-    expect(args.where.OR[3]).toEqual({
+    expect(args.where.OR[4]).toEqual({
       status: LoopStatus.PENDING,
       createdAt: { lt: pendingCutoff },
     });
