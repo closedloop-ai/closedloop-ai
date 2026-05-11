@@ -45,6 +45,7 @@ import {
   registerSecret,
   reportFinalStatus,
   resetHarnessState,
+  setConfigEnvKey,
   snapshotTokens,
   syncPlanFromContextPack,
   validateConfig,
@@ -1464,6 +1465,58 @@ describe("syncPlanFromContextPack", () => {
     assert.ok(
       !fs.existsSync(configEnvPath),
       "config.env must not be created when only PRD/Feature artifacts are present"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setConfigEnvKey — idempotency + preservation contract
+// ---------------------------------------------------------------------------
+
+describe("setConfigEnvKey", () => {
+  test("replaces an existing key rather than duplicating it on repeat calls", () => {
+    const targetDir = makeTempDir();
+
+    setConfigEnvKey(targetDir, "CLOSEDLOOP_PLAN_FILE", "/first/path/plan.json");
+    setConfigEnvKey(targetDir, "CLOSEDLOOP_PLAN_FILE", "/second/path/plan.json");
+
+    const configEnvPath = path.join(targetDir, ".closedloop-ai", "config.env");
+    const contents = fs.readFileSync(configEnvPath, "utf-8");
+    const occurrences = contents.match(/^CLOSEDLOOP_PLAN_FILE=/gm) ?? [];
+    assert.equal(
+      occurrences.length,
+      1,
+      "CLOSEDLOOP_PLAN_FILE must appear exactly once after repeat calls"
+    );
+    assert.match(
+      contents,
+      /^CLOSEDLOOP_PLAN_FILE=\/second\/path\/plan\.json$/m,
+      "the latest value must win (last-write-wins)"
+    );
+    assert.doesNotMatch(
+      contents,
+      /\/first\/path\/plan\.json/,
+      "the earlier value must be removed, not retained"
+    );
+  });
+
+  test("preserves unrelated pre-existing keys when setting a new key", () => {
+    const targetDir = makeTempDir();
+    fs.mkdirSync(path.join(targetDir, ".closedloop-ai"), { recursive: true });
+    const configEnvPath = path.join(targetDir, ".closedloop-ai", "config.env");
+    fs.writeFileSync(
+      configEnvPath,
+      "OTHER_KEY=keep-me\nANOTHER=stay\n"
+    );
+
+    setConfigEnvKey(targetDir, "CLOSEDLOOP_PLAN_FILE", "/run/plan.json");
+
+    const contents = fs.readFileSync(configEnvPath, "utf-8");
+    assert.match(contents, /^OTHER_KEY=keep-me$/m);
+    assert.match(contents, /^ANOTHER=stay$/m);
+    assert.match(
+      contents,
+      /^CLOSEDLOOP_PLAN_FILE=\/run\/plan\.json$/m
     );
   });
 });
