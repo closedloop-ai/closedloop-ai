@@ -1,5 +1,6 @@
 "use client";
 
+import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import {
   DOCUMENT_STATUS_OPTIONS,
   type Document,
@@ -8,7 +9,6 @@ import {
   type DocumentWithWorkstream,
 } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -41,7 +41,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   type User,
@@ -55,8 +54,9 @@ import {
   SparklesIcon,
   UploadIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AdditionalReposPicker } from "@/app/(authenticated)/implementation-plans/components/additional-repos-picker";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import {
   HiddenFileInput,
   type HiddenFileInputHandle,
@@ -64,23 +64,27 @@ import {
 import {
   useCreateDocument,
   useDocumentsByProject,
+  useGeneratePrdLaunch,
 } from "@/hooks/queries/use-documents";
 import {
   useGitHubBranches,
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
-import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useProject, useProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { useMultiRepoPrdEnabled } from "@/hooks/use-multi-repo-prd-enabled";
-import { getErrorMessage } from "@/lib/api-error";
 import {
   DOCUMENT_STATUS_LABELS,
   DOCUMENT_TYPE_BADGE_LABELS,
   DOCUMENT_TYPE_ICONS,
   DOCUMENT_TYPE_LABELS,
 } from "@/lib/project-constants";
+import {
+  PreLoopCommand,
+  type PreLoopExecutionContext,
+} from "@/lib/system-check/pre-loop-health-check";
+import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 export type CreateDocumentModalProps = {
@@ -92,6 +96,12 @@ export type CreateDocumentModalProps = {
   onSuccess?: (artifact: Document) => void;
 };
 
+type GeneratePrdMultiTargetState = {
+  additionalRepos?: AdditionalRepoRef[];
+  artifact: Document;
+  availableTargets: ComputeTargetConflictBody["availableTargets"];
+};
+
 export function CreateDocumentModal({
   open,
   onOpenChange,
@@ -101,7 +111,11 @@ export function CreateDocumentModal({
   onSuccess,
 }: Readonly<CreateDocumentModalProps>) {
   const fileInputRef = useRef<HiddenFileInputHandle>(null);
+  const preLoopOwnerKey = `create-document:${useId()}`;
+  const preLoopGate = useOptionalPreLoopSystemCheckGate();
   const [error, setError] = useState<string | null>(null);
+  const [generatePrdMultiTargetState, setGeneratePrdMultiTargetState] =
+    useState<GeneratePrdMultiTargetState | null>(null);
 
   // Project selection (when projectId prop is not provided)
   const showProjectSelector = !projectId;
@@ -204,7 +218,7 @@ export function CreateDocumentModal({
 
   // Create artifact mutations
   const createDocument = useCreateDocument();
-  const runLoop = useRunLoop();
+  const generatePrdLaunch = useGeneratePrdLaunch();
 
   // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
@@ -289,6 +303,7 @@ export function CreateDocumentModal({
     setReverseSynthesisLink("");
     setAdditionalRepos([]);
     setIncompleteAdditionalRepos(false);
+    setGeneratePrdMultiTargetState(null);
     setError(null);
     fileInputRef.current?.reset();
     if (showProjectSelector) {
@@ -297,6 +312,7 @@ export function CreateDocumentModal({
   };
 
   const handleClose = () => {
+    preLoopGate?.cancelPendingPreLoopAttempt(preLoopOwnerKey);
     onOpenChange(false);
     resetForm();
   };
@@ -368,40 +384,98 @@ export function CreateDocumentModal({
       ? `${content.trim()}\n\nSource URL for reference: ${reverseSynthesisLink.trim()}`
       : content.trim();
 
-    createDocument.mutate(
-      {
-        projectId: selectedProjectId,
-        type: documentType,
-        title: title.trim(),
-        fileName: fileName.trim() || undefined,
-        content: artifactContent,
-        approverId: selectedApprover?.id ?? undefined,
-        status,
-        targetRepo: targetRepo.trim() || undefined,
-        targetBranch: targetBranch.trim() || undefined,
-      },
-      {
+    const createInput = {
+      projectId: selectedProjectId,
+      type: documentType,
+      title: title.trim(),
+      fileName: fileName.trim() || undefined,
+      content: artifactContent,
+      approverId: selectedApprover?.id ?? undefined,
+      status,
+      targetRepo: targetRepo.trim() || undefined,
+      targetBranch: targetBranch.trim() || undefined,
+    };
+    const submitAdditionalRepos =
+      showPicker && additionalRepos.length > 0 ? additionalRepos : undefined;
+    const executeGeneratePrd = (context: PreLoopExecutionContext) => {
+      createDocument.mutate(createInput, {
         onSuccess: (artifact) => {
-          runLoop.mutate(
+          generatePrdLaunch.mutate(
             {
-              documentId: artifact.id,
-              command: RunLoopCommand.GeneratePrd,
-              ...(additionalRepos.length > 0 && { additionalRepos }),
+              artifact,
+              additionalRepos: submitAdditionalRepos,
+              computeTargetId: context.computeTargetId,
             },
             {
-              onError: (error) => {
-                toast.error(getErrorMessage(error));
+              onSuccess: (result) => {
+                if (result.status === "pending_target_selection") {
+                  setGeneratePrdMultiTargetState({
+                    additionalRepos: result.additionalRepos,
+                    artifact: result.artifact,
+                    availableTargets: result.availableTargets,
+                  });
+                  return;
+                }
+                handleClose();
+                onSuccess?.(result.artifact);
               },
             }
           );
+        },
+      });
+    };
+
+    if (preLoopGate) {
+      preLoopGate
+        .runWithPreLoopSystemCheck(
+          {
+            command: PreLoopCommand.GeneratePrd,
+            documentType: "prd",
+            ownerKey: preLoopOwnerKey,
+          },
+          executeGeneratePrd
+        )
+        .catch(() => undefined);
+      return;
+    }
+
+    executeGeneratePrd({});
+  };
+
+  const handleGenerateTargetSelect = (computeTargetId: string) => {
+    if (!generatePrdMultiTargetState) {
+      return;
+    }
+    const pending = generatePrdMultiTargetState;
+    setGeneratePrdMultiTargetState(null);
+    generatePrdLaunch.mutate(
+      {
+        additionalRepos: pending.additionalRepos,
+        artifact: pending.artifact,
+        computeTargetId,
+      },
+      {
+        onSuccess: (result) => {
+          if (result.status === "pending_target_selection") {
+            setGeneratePrdMultiTargetState({
+              additionalRepos: result.additionalRepos,
+              artifact: result.artifact,
+              availableTargets: result.availableTargets,
+            });
+            return;
+          }
           handleClose();
-          onSuccess?.(artifact);
+          onSuccess?.(result.artifact);
         },
       }
     );
   };
 
-  const isSubmitting = createDocument.isPending;
+  const isSubmitting =
+    createDocument.isPending ||
+    generatePrdLaunch.isPending ||
+    Boolean(preLoopGate?.pendingOwnerKey === preLoopOwnerKey);
+  const isTargetSelectionPending = Boolean(generatePrdMultiTargetState);
   const canGenerate = computeCanGenerate(
     title,
     selectedProjectId,
@@ -429,6 +503,11 @@ export function CreateDocumentModal({
         </DialogHeader>
 
         <div className="space-y-4 py-6">
+          <GeneratePrdTargetSelector
+            onSelect={handleGenerateTargetSelect}
+            state={generatePrdMultiTargetState}
+          />
+
           {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
@@ -605,6 +684,7 @@ export function CreateDocumentModal({
           isPrd={isPrd}
           isSaving={createDocument.isPending}
           isSubmitting={isSubmitting}
+          isTargetSelectionPending={isTargetSelectionPending}
           onCancel={handleClose}
           onGenerate={handleGenerate}
           onSubmit={handleSubmit}
@@ -612,6 +692,30 @@ export function CreateDocumentModal({
         />
       </DialogContent>
     </Dialog>
+  );
+}
+
+function GeneratePrdTargetSelector({
+  onSelect,
+  state,
+}: Readonly<{
+  onSelect: (targetId: string) => void;
+  state: GeneratePrdMultiTargetState | null;
+}>) {
+  if (!state) {
+    return null;
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 p-3">
+      <p className="text-muted-foreground text-sm">
+        Select a compute target to start generation.
+      </p>
+      <LoopDispatchTargetSelector
+        availableTargets={state.availableTargets}
+        onSelect={onSelect}
+      />
+    </div>
   );
 }
 
@@ -820,6 +924,7 @@ function CreateDocumentFooter({
   isSubmitting,
   isSaving,
   isGenerating,
+  isTargetSelectionPending,
   canSubmit,
   canGenerate,
   typeLabel,
@@ -831,6 +936,7 @@ function CreateDocumentFooter({
   isSubmitting: boolean;
   isSaving: boolean;
   isGenerating: boolean;
+  isTargetSelectionPending: boolean;
   canSubmit: boolean;
   canGenerate: boolean;
   typeLabel: string;
@@ -859,7 +965,10 @@ function CreateDocumentFooter({
               "Save"
             )}
           </Button>
-          <Button disabled={isSubmitting || !canGenerate} onClick={onGenerate}>
+          <Button
+            disabled={isSubmitting || isTargetSelectionPending || !canGenerate}
+            onClick={onGenerate}
+          >
             {isGenerating ? (
               <>
                 <LoaderIcon className="h-4 w-4 animate-spin" />

@@ -15,6 +15,7 @@ const mockUseSidebar = vi.fn();
 const mockUseComputeTargets = vi.fn();
 const mockUseComputePreference = vi.fn();
 const mockUseSetComputePreference = vi.fn();
+const mockUseFeatureFlagEnabled = vi.fn();
 const mockMutate = vi.fn();
 const mockUseComputeTargetStatusStream = vi.fn();
 
@@ -22,6 +23,7 @@ const mockUseComputeTargetStatusStream = vi.fn();
 const SELECT_NEWER_MAC_PATTERN = /Select newer-mac compute target/i;
 const SELECT_OLDER_MAC_PATTERN = /Select older-mac compute target/i;
 const AVAILABLE_TARGETS_PATTERN = /Available compute targets/i;
+const LAUNCH_DESKTOP_APP_PATTERN = /Launch Desktop App/i;
 
 vi.mock("@repo/auth/client", () => ({
   useUser: () => mockUseUser(),
@@ -97,6 +99,11 @@ vi.mock("@/hooks/queries/use-compute-target-status-stream", () => ({
     mockUseComputeTargetStatusStream(...args),
 }));
 
+vi.mock("@/hooks/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (...args: unknown[]) =>
+    mockUseFeatureFlagEnabled(...args),
+}));
+
 import type React from "react";
 import { ComputeTargetPopover } from "../compute-target-popover";
 
@@ -143,6 +150,7 @@ describe("ComputeTargetPopover", () => {
       data: { preferredComputeMode: "CLOUD" },
       isLoading: false,
     });
+    mockUseFeatureFlagEnabled.mockReturnValue(false);
     mockMutate.mockReset();
     mockUseSetComputePreference.mockReturnValue({
       mutate: mockMutate,
@@ -297,8 +305,18 @@ describe("ComputeTargetPopover", () => {
 
       render(<ComputeTargetPopover />);
 
+      expect(screen.getByTestId("sidebar-menu-button")).toHaveAttribute(
+        "aria-label",
+        "Compute: Local offline"
+      );
       expect(screen.getByText(RE_DESKTOP_OFFLINE)).toBeInTheDocument();
       expect(screen.getByText(RE_NOT_REACHABLE)).toBeInTheDocument();
+      expect(screen.getByTestId("offline-remediation-actions")).toHaveClass(
+        "flex-col"
+      );
+      expect(
+        screen.getByRole("button", { name: LAUNCH_DESKTOP_APP_PATTERN })
+      ).toHaveClass("w-full");
 
       // Popover content still present
       expect(screen.getByTestId("popover-content")).toBeInTheDocument();
@@ -317,6 +335,28 @@ describe("ComputeTargetPopover", () => {
       render(<ComputeTargetPopover />);
 
       expect(screen.queryByText(RE_DESKTOP_OFFLINE)).toBeNull();
+    });
+
+    it("does not render inferred Cloud as selected when explicit selection is required", () => {
+      mockUseFeatureFlagEnabled.mockReturnValue(true);
+      mockUseComputeTargets.mockReturnValue({
+        data: [offlineTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: { preferredComputeMode: "CLOUD", isExplicit: false },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      expect(screen.getByTestId("sidebar-menu-button")).toHaveAttribute(
+        "aria-label",
+        "Select target"
+      );
+      expect(
+        screen.getByRole("button", { name: RE_SELECT_CLOUD })
+      ).toHaveAttribute("aria-pressed", "false");
     });
   });
 

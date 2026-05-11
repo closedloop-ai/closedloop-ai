@@ -108,6 +108,8 @@ const CANCEL_REGEX = /cancel/i;
 const PLAN_CREATED_WITH_REGEX = /plan will be created with:/i;
 const TARGET_REPO_REGEX = /target repo:/i;
 const TARGET_BRANCH_REGEX = /target branch:/i;
+const TARGET_SELECTION_PROMPT_REGEX =
+  /select a compute target to start generation/i;
 
 describe("NewPlanModal", () => {
   const mockPush = vi.fn();
@@ -123,6 +125,9 @@ describe("NewPlanModal", () => {
     mockUseCreateAndGenerateArtifact.mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
+      clearTargetSelection: vi.fn(),
+      multiTargetState: null,
+      selectTarget: vi.fn(),
     });
     mockUseArtifacts.mockReturnValue({
       data: [],
@@ -324,6 +329,9 @@ describe("NewPlanModal", () => {
       mockUseCreateAndGenerateArtifact.mockReturnValue({
         mutate: mockCreateAndGenerateMutate,
         isPending: false,
+        clearTargetSelection: vi.fn(),
+        multiTargetState: null,
+        selectTarget: vi.fn(),
       });
 
       const mockSource = createMockSource({
@@ -375,6 +383,9 @@ describe("NewPlanModal", () => {
       mockUseCreateAndGenerateArtifact.mockReturnValue({
         mutate: mockCreateAndGenerateMutate,
         isPending: false,
+        clearTargetSelection: vi.fn(),
+        multiTargetState: null,
+        selectTarget: vi.fn(),
       });
       mockUsePreLoopGate.mockReturnValue({
         runWithPreLoopSystemCheck: mockRunWithPreLoopSystemCheck,
@@ -408,7 +419,7 @@ describe("NewPlanModal", () => {
         ownerKey: expect.stringContaining("new-plan:"),
       });
 
-      execute();
+      execute({});
 
       expect(mockCreateAndGenerateMutate).toHaveBeenCalledOnce();
       expect(mockCreateAndGenerateMutate.mock.calls[0][0].input).toMatchObject({
@@ -470,6 +481,43 @@ describe("NewPlanModal", () => {
         name: GENERATE_PLAN_REGEX,
       });
       expect(submitButton).not.toBeDisabled();
+    });
+
+    it("disables Generate Plan while post-create target selection is pending", () => {
+      mockUseCreateAndGenerateArtifact.mockReturnValue({
+        mutate: vi.fn(),
+        isPending: false,
+        clearTargetSelection: vi.fn(),
+        multiTargetState: {
+          availableTargets: [
+            {
+              id: "target-1",
+              machineName: "Workstation",
+              status: "online",
+            },
+          ],
+        },
+        selectTarget: vi.fn(),
+      });
+
+      render(
+        <NewPlanModal
+          open={true}
+          source={createMockSource({
+            id: "prd-1",
+            title: "Dashboard PRD",
+            projectId: "project-1",
+            targetRepo: "org/repo",
+          })}
+        />
+      );
+
+      expect(
+        screen.getByText(TARGET_SELECTION_PROMPT_REGEX)
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: GENERATE_PLAN_REGEX })
+      ).toBeDisabled();
     });
   });
 
@@ -728,6 +776,33 @@ describe("NewPlanModal", () => {
       expect(
         screen.queryByRole("button", { name: NEW_PLAN_REGEX })
       ).not.toBeInTheDocument();
+    });
+
+    it("should clear pending target selection state when closed", () => {
+      const clearTargetSelection = vi.fn();
+      const onOpenChange = vi.fn();
+      mockUseCreateAndGenerateArtifact.mockReturnValue({
+        mutate: vi.fn(),
+        isPending: false,
+        clearTargetSelection,
+        multiTargetState: {
+          availableTargets: [
+            {
+              id: "target-1",
+              machineName: "Workstation",
+              status: "online",
+            },
+          ],
+        },
+        selectTarget: vi.fn(),
+      });
+
+      render(<NewPlanModal onOpenChange={onOpenChange} open={true} />);
+
+      fireEvent.click(screen.getByRole("button", { name: CANCEL_REGEX }));
+
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(clearTargetSelection).toHaveBeenCalledTimes(1);
     });
   });
 });

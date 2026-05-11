@@ -110,6 +110,8 @@ export type UpsertComputeTargetHealthCheckSnapshotInput = {
 
 export const COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY =
   "compute-target-signing" as const;
+export const EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY =
+  "explicit-compute-selection" as const;
 
 export const COMMAND_SIGNING_CAPABILITY_KEY = "commandSigning" as const;
 export const COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY =
@@ -352,11 +354,22 @@ export type ComputePreference =
 export type ComputePreferenceResponse = {
   preferredComputeMode: ComputePreference;
   computeTargetId?: string;
+  /** True only when the user has persisted an explicit Cloud or Local choice. */
+  isExplicit?: boolean;
 };
 
 export type SetComputePreferenceRequest = {
   mode: ComputePreference;
   computeTargetId?: string;
+};
+
+export const ComputePreferenceRequiredError =
+  "compute_preference_required" as const;
+export const ComputePreferenceRequiredMessage =
+  "Select Cloud or a local compute target before starting a loop." as const;
+export type ComputePreferenceRequiredBody = {
+  error: typeof ComputePreferenceRequiredError;
+  message: typeof ComputePreferenceRequiredMessage;
 };
 
 export type SetComputeTargetSharingRequest = {

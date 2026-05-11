@@ -47,6 +47,7 @@ export const GET = withAnyAuth<
     if (dbUser?.preferredComputeMode != null) {
       return successResponse({
         preferredComputeMode: toComputePreference(dbUser.preferredComputeMode),
+        isExplicit: true,
         ...(dbUser.preferredComputeTargetId != null && {
           computeTargetId: dbUser.preferredComputeTargetId,
         }),
@@ -59,6 +60,7 @@ export const GET = withAnyAuth<
     );
     return successResponse({
       preferredComputeMode: effectiveMode,
+      isExplicit: false,
     });
   } catch (error) {
     return errorResponse("Failed to fetch compute preference", error);
@@ -96,6 +98,7 @@ export const PUT = withAnyAuth<
 
     return successResponse({
       preferredComputeMode: toComputePreference(body.mode),
+      isExplicit: true,
       ...(body.computeTargetId !== undefined && {
         computeTargetId: body.computeTargetId,
       }),

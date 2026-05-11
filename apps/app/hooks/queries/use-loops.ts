@@ -1,9 +1,13 @@
 "use client";
 
-import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
+import {
+  ComputePreference,
+  type ComputePreferenceResponse,
+  type ComputeTarget,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+} from "@repo/api/src/types/compute-target";
 import type {
-  AdditionalRepoRef,
   CreateLoopRequest,
   CreateLoopResponse,
   InheritedAdditionalRepos,
@@ -23,6 +27,7 @@ import {
   LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
+import { useUser } from "@repo/auth/client";
 import {
   type UseQueryOptions,
   useMutation,
@@ -30,16 +35,21 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useMemo } from "react";
+import { useComputePreference } from "@/hooks/queries/use-compute-preference";
+import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { documentKeys } from "@/hooks/queries/use-documents";
 import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
+import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
 import {
   hasEffectiveCommandSigningSupport,
   signDesktopCommand,
 } from "@/lib/crypto/command-signer";
 import { getCachedComputeTargetForSigning } from "@/lib/engineer/compute-target-signing-cache";
-import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { buildSearchParams } from "@/lib/format-utils";
+import { postRunLoop, type RunLoopLaunchInput } from "@/lib/run-loop-launcher";
+import { ComputePreferenceRequiredClientError } from "@/lib/run-loop-response";
 
 // Query keys
 export const loopKeys = {
@@ -312,6 +322,7 @@ export function useResumeLoop() {
   const apiClient = useApiClient();
 
   return useMutation({
+    meta: { suppressDefaultErrorToast: true },
     mutationFn: ({ id, ...body }: ResumeLoopRequest & { id: string }) =>
       apiClient.post<CreateLoopResponse>(`/loops/${id}/resume`, body),
     onSuccess: (_, { id }) => {
@@ -329,72 +340,35 @@ export function useResumeLoop() {
 export function useRunLoop() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
+  const { user } = useUser();
+  const userId = user?.id ?? "";
+  const requireExplicitSelection = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
+  const computePreferenceQuery = useComputePreference(userId, {
+    enabled: false,
+  });
+  const computeTargetsQuery = useComputeTargets({ enabled: false });
 
   return useMutation({
     meta: { suppressDefaultErrorToast: true },
-    mutationFn: async ({
-      documentId,
-      command,
-      prompt,
-      computeTargetId,
-      backendOverride,
-      repo,
-      additionalRepos,
-    }: {
-      documentId: string;
-      command: RunLoopCommand;
-      prompt?: string;
-      computeTargetId?: string | null;
-      backendOverride?: boolean;
-      repo?: CreateLoopRequest["repo"];
-      additionalRepos?: AdditionalRepoRef[];
-    }) => {
-      const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
+    mutationFn: async (input: RunLoopLaunchInput) => {
+      const launchInput = requireExplicitSelection
+        ? await resolveExplicitComputeSelectionLaunchInput({
+            input,
+            fetchPreference: async () =>
+              requireQueryDataFromRefetch<ComputePreferenceResponse>(
+                await computePreferenceQuery.refetch()
+              ),
+            fetchTargets: async () =>
+              requireQueryDataFromRefetch<ComputeTarget[]>(
+                await computeTargetsQuery.refetch()
+              ),
+            userId,
+          })
+        : input;
 
-      const requestBody = {
-        command,
-        ...(prompt === undefined ? {} : { prompt }),
-        ...(computeTargetId === undefined ? {} : { computeTargetId }),
-        ...(backendOverride ? { backendOverride } : {}),
-        ...(repo ? { repo } : {}),
-        ...(additionalRepos ? { additionalRepos } : {}),
-        ...(desktopApiNamespace &&
-        desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
-          ? { desktopApiNamespace }
-          : {}),
-      };
-      const signingTarget =
-        typeof computeTargetId === "string"
-          ? getCachedComputeTargetForSigning(computeTargetId)
-          : null;
-      if (signingTarget && hasEffectiveCommandSigningSupport(signingTarget)) {
-        const userIntent = {
-          documentId,
-          ...requestBody,
-        } satisfies JsonValue;
-        const signed = await signDesktopCommand(
-          {
-            method: "POST",
-            pathWithQuery: "/api/gateway/symphony/loop",
-            body: userIntent,
-          },
-          signingTarget
-        );
-        Object.assign(requestBody, {
-          userIntentSignature: {
-            commandId: signed.commandId,
-            signature: signed.signature,
-            signaturePayload: signed.signaturePayload,
-            publicKeyFingerprint: signed.publicKeyFingerprint,
-            body: userIntent,
-          },
-        });
-      }
-
-      return apiClient.post<CreateLoopResponse>(
-        `/documents/${documentId}/run-loop`,
-        requestBody
-      );
+      return postRunLoop<CreateLoopResponse>(apiClient, launchInput);
     },
     onSuccess: (_, { documentId, command }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
@@ -453,6 +427,59 @@ function summariesHaveActiveLoop(response: LoopSummariesResponse): boolean {
     }
   }
   return false;
+}
+
+type ResolveExplicitComputeSelectionInput = {
+  input: RunLoopLaunchInput;
+  fetchPreference: () => Promise<ComputePreferenceResponse>;
+  fetchTargets: () => Promise<ComputeTarget[]>;
+  userId: string;
+};
+
+async function resolveExplicitComputeSelectionLaunchInput({
+  fetchPreference,
+  fetchTargets,
+  input,
+  userId,
+}: ResolveExplicitComputeSelectionInput): Promise<RunLoopLaunchInput> {
+  if (input.computeTargetId !== undefined || !userId) {
+    return input;
+  }
+
+  const preference = await fetchPreference();
+  if (preference.isExplicit !== true) {
+    throw new ComputePreferenceRequiredClientError();
+  }
+  if (preference.preferredComputeMode !== ComputePreference.Local) {
+    return input;
+  }
+
+  const targets = await fetchTargets();
+  const selection = resolveEffectiveComputeTargetSelection({
+    preference,
+    requireExplicitSelection: true,
+    targets,
+  });
+  if (selection.effectiveTarget?.isOnline && selection.effectiveTargetId) {
+    return { ...input, computeTargetId: selection.effectiveTargetId };
+  }
+  return input;
+}
+
+function requireQueryDataFromRefetch<T>({
+  data,
+  error,
+}: {
+  data: T | undefined;
+  error: Error | null;
+}): T {
+  if (error) {
+    throw error;
+  }
+  if (data === undefined) {
+    throw new Error("Required run-loop query returned no data");
+  }
+  return data;
 }
 
 export function useLoopSummaries(

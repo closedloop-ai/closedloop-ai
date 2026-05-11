@@ -22,6 +22,7 @@ export const PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS = 45_000;
 /** Launch commands currently protected by the pre-loop system-check gate. */
 export const PreLoopCommand = {
   GeneratePlan: "generate_plan",
+  GeneratePrd: "generate_prd",
   ExecutePlan: "execute_plan",
 } as const;
 export type PreLoopCommand =
@@ -35,6 +36,7 @@ export const PreLoopAnalyticsEvent = {
   SystemCheckResolved: "pre_loop_system_check_resolved",
   SystemCheckCancelled: "pre_loop_system_check_cancelled",
   SystemCheckUnavailable: "pre_loop_system_check_unavailable",
+  ComputeSelectionBlocked: "pre_loop_compute_selection_blocked",
 } as const;
 export type PreLoopAnalyticsEvent =
   (typeof PreLoopAnalyticsEvent)[keyof typeof PreLoopAnalyticsEvent];
@@ -53,10 +55,15 @@ export type PreLoopTarget = {
 export type PreLoopHealthCheckOutcome =
   | { status: "executed"; attemptId: string }
   | { status: "blocked"; attemptId: string }
+  | { status: "blocked_missing_compute_selection"; attemptId: string }
   | { status: "duplicate_ignored"; attemptId: null }
   | { status: "skipped_no_local_target"; attemptId: string }
   | { status: "blocked_unavailable"; attemptId: string }
   | { status: "cancelled"; attemptId: string };
+
+export type PreLoopExecutionContext = {
+  computeTargetId?: string | null;
+};
 
 /** Command metadata supplied by Generate Plan and Execute Plan callers. */
 export type PreLoopMetadata = {

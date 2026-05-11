@@ -65,6 +65,28 @@ describe("friendly error resolver", () => {
     );
   });
 
+  it("uses compute target categories for pre-run validation failures", () => {
+    const friendly = resolveFriendlyError({
+      code: LoopErrorCode.PreRunValidationFailed,
+      details: { category: "compute_target_offline" },
+      message: "Compute target is offline",
+    });
+
+    expect(friendly.title).toBe("Compute target is offline");
+  });
+
+  it("does not let git categories override pre-run validation failures", () => {
+    const friendly = resolveFriendlyError({
+      code: LoopErrorCode.PreRunValidationFailed,
+      details: { category: "pre_commit_hook" },
+      message: "pre-run validation failed",
+    });
+
+    expect(friendly.title).toBe(
+      resolveFriendlyError({ code: LoopErrorCode.PreRunValidationFailed }).title
+    );
+  });
+
   it("uses known git category details for unknown future codes", () => {
     const friendly = resolveFriendlyError({
       code: "FUTURE_GATEWAY_CODE",

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockMutateAsync = vi.fn();
 const mockCancelMutateAsync = vi.fn();
 const mockPush = vi.fn();
+const mockUseFeatureFlagEnabled = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -39,6 +40,10 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock("@/hooks/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
+}));
+
 import { LoopsTable } from "@/app/(authenticated)/loops/components/loops-table";
 // Import after mocks
 import {
@@ -51,6 +56,10 @@ import { createMockLoopWithUser } from "../fixtures/loops";
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  mockUseFeatureFlagEnabled.mockReturnValue(false);
+});
 
 describe("LoopsTable — restart button visibility", () => {
   beforeEach(() => {
@@ -184,6 +193,62 @@ describe("LoopsTable — restart button interaction", () => {
 
     await waitFor(() => {
       expect(mockMutateAsync).toHaveBeenCalledWith({ id: "loop-001" });
+    });
+  });
+
+  it("preserves legacy restart payload when explicit compute selection is disabled", async () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          id: "loop-001",
+          status: LoopStatus.Failed,
+          computeTarget: {
+            id: "target-1",
+            machineName: "danielochoa-MacBook-Pro",
+            isOnline: false,
+          } as never,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart loop" }));
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({ id: "loop-001" });
+    });
+  });
+
+  it("passes the displayed compute target id when restarting a targeted loop with explicit selection enabled", async () => {
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          id: "loop-001",
+          status: LoopStatus.Failed,
+          computeTarget: {
+            id: "target-1",
+            machineName: "danielochoa-MacBook-Pro",
+            isOnline: false,
+          } as never,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart loop" }));
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({
+        id: "loop-001",
+        computeTargetId: "target-1",
+      });
     });
   });
 

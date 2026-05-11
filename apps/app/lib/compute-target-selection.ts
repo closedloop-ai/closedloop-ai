@@ -6,7 +6,8 @@ import {
 import { sortByDateDesc } from "@/lib/table-utils";
 
 export type EffectiveComputeTargetSelection = {
-  currentPreference: ComputePreference;
+  currentPreference: ComputePreference | null;
+  needsSelection: boolean;
   onlineTargets: ComputeTarget[];
   effectiveTargetId: string | null;
   effectiveTarget: ComputeTarget | null;
@@ -21,14 +22,29 @@ export type EffectiveComputeTargetSelection = {
  */
 export function resolveEffectiveComputeTargetSelection({
   preference,
+  requireExplicitSelection = false,
   targets,
 }: {
   preference: ComputePreferenceResponse | undefined;
+  requireExplicitSelection?: boolean;
   targets: ComputeTarget[];
 }): EffectiveComputeTargetSelection {
+  const onlineTargets = targets.filter((target) => target.isOnline);
+  if (requireExplicitSelection && preference?.isExplicit !== true) {
+    return {
+      currentPreference: null,
+      needsSelection: true,
+      onlineTargets,
+      effectiveTargetId: null,
+      effectiveTarget: null,
+      notInstalled: targets.length === 0,
+      allOffline:
+        targets.length > 0 && targets.every((target) => !target.isOnline),
+    };
+  }
+
   const currentPreference =
     preference?.preferredComputeMode ?? ComputePreference.Cloud;
-  const onlineTargets = targets.filter((target) => target.isOnline);
   const persistedTargetId = preference?.computeTargetId;
   const persistedIsOnline =
     persistedTargetId !== undefined &&
@@ -43,6 +59,7 @@ export function resolveEffectiveComputeTargetSelection({
 
   return {
     currentPreference,
+    needsSelection: false,
     onlineTargets,
     effectiveTargetId,
     effectiveTarget,

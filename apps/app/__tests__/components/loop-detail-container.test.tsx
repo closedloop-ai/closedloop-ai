@@ -13,6 +13,7 @@ const mockCancelMutateAsync = vi.fn();
 const mockMutate = vi.fn();
 const mockCancelMutate = vi.fn();
 const mockPush = vi.fn();
+const mockUseFeatureFlagEnabled = vi.fn();
 
 const RESTART_BUTTON_NAME = /restart/i;
 const CANCEL_BUTTON_NAME = /cancel/i;
@@ -66,6 +67,10 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 vi.mock("@repo/analytics/client", () => ({ useFeatureFlag: vi.fn() }));
 
+vi.mock("@/hooks/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
+}));
+
 vi.mock("@/hooks/queries/use-documents", () => ({
   useDocument: vi.fn(() => ({ data: null })),
 }));
@@ -88,6 +93,7 @@ import {
   useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
+import { ApiError } from "@/lib/api-error";
 import {
   createMockLoopWithUser,
   RUNNER_RATE_LIMIT_LOOP_ERROR,
@@ -96,6 +102,10 @@ import {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  mockUseFeatureFlagEnabled.mockReturnValue(false);
+});
 
 describe("LoopDetailContainer — restart button visibility", () => {
   beforeEach(() => {
@@ -243,6 +253,81 @@ describe("LoopDetailContainer — restart button interaction", () => {
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith("/loops/new-loop-999");
     });
+  });
+
+  it("preserves legacy restart payload when explicit compute selection is disabled", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        id: "loop-001",
+        status: LoopStatus.Failed,
+        computeTarget: {
+          id: "target-1",
+          machineName: "danielochoa-MacBook-Pro",
+          isOnline: false,
+        } as never,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { id: "loop-001" },
+      expect.any(Object)
+    );
+  });
+
+  it("passes the displayed compute target id when restarting a targeted loop with explicit selection enabled", () => {
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        id: "loop-001",
+        status: LoopStatus.Failed,
+        computeTarget: {
+          id: "target-1",
+          machineName: "danielochoa-MacBook-Pro",
+          isOnline: false,
+        } as never,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { id: "loop-001", computeTargetId: "target-1" },
+      expect.any(Object)
+    );
+  });
+
+  it("shows a human-readable compute target restart failure", async () => {
+    mockMutate.mockImplementation((_input, opts) =>
+      opts?.onError?.(
+        new ApiError("Compute target is offline", 400, {
+          code: LoopErrorCode.PreRunValidationFailed,
+          details: { category: "compute_target_offline" },
+        })
+      )
+    );
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
+
+    expect(
+      await screen.findByText("Compute target is offline")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The loop was not restarted because the selected compute target is not online."
+      )
+    ).toBeInTheDocument();
   });
 
   it("does not navigate to the original loop id after restart", async () => {

@@ -20,6 +20,7 @@ import type { documentGenerationService } from "@/app/documents/generation-servi
 import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
 import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
+import type { UserComputePreferences } from "@/lib/loops/compute-target-resolver";
 import {
   type ComputeTargetRouteResult,
   resolveComputeTargetForRoute,
@@ -383,7 +384,8 @@ export async function checkBackendMismatch(
 export function resolveRunLoopComputeTarget(
   organizationId: string,
   userId: string,
-  computeTargetIdHint: string | null | undefined
+  computeTargetIdHint: string | null | undefined,
+  userComputePreferences?: UserComputePreferences
 ): Promise<ComputeTargetRouteResult> {
   if (computeTargetIdHint === null) {
     return Promise.resolve({ computeTargetId: undefined });
@@ -391,6 +393,7 @@ export function resolveRunLoopComputeTarget(
   return resolveComputeTargetForRoute(
     organizationId,
     userId,
-    computeTargetIdHint
+    computeTargetIdHint,
+    userComputePreferences
   );
 }

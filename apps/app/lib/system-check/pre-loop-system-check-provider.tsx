@@ -3,9 +3,11 @@
 import { useAnalytics, useFeatureFlag } from "@repo/analytics/client";
 import {
   ComputePreference,
+  ComputePreferenceRequiredMessage,
   type ComputePreferenceResponse,
   type ComputeTarget,
   type ComputeTargetHealthCheckSnapshot,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
 } from "@repo/api/src/types/compute-target";
 import { useUser } from "@repo/auth/client";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -29,6 +31,7 @@ import {
 } from "@/hooks/queries/use-compute-targets";
 import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
 import { useApiClient } from "@/hooks/use-api-client";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
 import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
@@ -43,12 +46,15 @@ import {
   getRequiredFailureSummary,
   isPreLoopHealthCheckFresh,
   PreLoopAnalyticsEvent,
+  type PreLoopExecutionContext,
   type PreLoopHealthCheckOutcome,
   type PreLoopMetadata,
   type PreLoopTarget,
 } from "./pre-loop-health-check";
 
-type ExecuteCallback = () => void;
+type ExecuteCallback = (
+  context: PreLoopExecutionContext
+) => void | Promise<void>;
 
 type PendingPreLoopAttempt = {
   attemptId: string;
@@ -247,6 +253,96 @@ async function requireQueryData<T>(
   return result.data;
 }
 
+type CapturePreLoopEvent = (
+  event: PreLoopAnalyticsEvent,
+  params: Parameters<typeof buildPreLoopAnalyticsProperties>[0]
+) => void;
+
+type WarnAndBlockUnavailable = (args: {
+  attemptId: string;
+  metadata: PreLoopMetadata;
+  target?: PreLoopTarget | null;
+  reason: string;
+  description?: string;
+}) => PreLoopHealthCheckOutcome;
+
+async function resolveExplicitPreLoopExecutionContext({
+  attemptId,
+  capture,
+  clearActiveAttempt,
+  clearCheckingForAttempt,
+  currentPreference,
+  metadata,
+  refetchPreference,
+  warnAndBlockUnavailable,
+}: {
+  attemptId: string;
+  capture: CapturePreLoopEvent;
+  clearActiveAttempt: () => void;
+  clearCheckingForAttempt: (attemptId: string) => void;
+  currentPreference: ComputePreferenceResponse | undefined;
+  metadata: PreLoopMetadata;
+  refetchPreference: () => Promise<{
+    data: ComputePreferenceResponse | undefined;
+    error: Error | null;
+  }>;
+  warnAndBlockUnavailable: WarnAndBlockUnavailable;
+}): Promise<{
+  executionContext: PreLoopExecutionContext;
+  outcome: PreLoopHealthCheckOutcome | null;
+}> {
+  if (metadata.computeTargetId !== undefined) {
+    return {
+      executionContext: { computeTargetId: metadata.computeTargetId },
+      outcome: null,
+    };
+  }
+
+  let preference: ComputePreferenceResponse;
+  try {
+    preference = await requireQueryData<ComputePreferenceResponse>(
+      currentPreference,
+      refetchPreference
+    );
+  } catch (error) {
+    clearCheckingForAttempt(attemptId);
+    clearActiveAttempt();
+    return {
+      executionContext: {},
+      outcome: warnAndBlockUnavailable({
+        attemptId,
+        metadata,
+        reason: formatUnavailableReason("compute_preference", error),
+        description:
+          "We could not verify your compute preference, so the command was not started. Try again after the page finishes loading.",
+      }),
+    };
+  }
+
+  if (preference.isExplicit !== true) {
+    capture(PreLoopAnalyticsEvent.ComputeSelectionBlocked, {
+      attemptId,
+      metadata,
+      reason: "missing_explicit_compute_selection",
+    });
+    toast.error(ComputePreferenceRequiredMessage);
+    clearCheckingForAttempt(attemptId);
+    clearActiveAttempt();
+    return {
+      executionContext: {},
+      outcome: { status: "blocked_missing_compute_selection", attemptId },
+    };
+  }
+
+  return {
+    executionContext:
+      preference.preferredComputeMode === ComputePreference.Cloud
+        ? { computeTargetId: null }
+        : {},
+    outcome: null,
+  };
+}
+
 /**
  * Owns the global Generate/Execute pre-loop gate, pending command callback,
  * selected or explicitly requested target health lookup, and modal bridge.
@@ -265,6 +361,9 @@ export function PreLoopSystemCheckProvider({
     pluginAutoUpdateFlag?.enabled === true;
   const { user } = useUser();
   const userId = user?.id ?? "";
+  const requireExplicitSelection = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
   const isCheckingRef = useRef(false);
   const activeAttemptRef = useRef<ActivePreLoopAttempt | null>(null);
@@ -360,7 +459,7 @@ export function PreLoopSystemCheckProvider({
       setActiveAttemptTarget(null);
       pendingAttemptRef.current = null;
       clearPendingAttemptState();
-      attempt.execute();
+      attempt.execute({ computeTargetId: attempt.target.computeTargetId });
     },
     [clearPendingAttemptState]
   );
@@ -786,11 +885,13 @@ export function PreLoopSystemCheckProvider({
     ({
       attemptId,
       execute,
+      executionContext,
       wasCancelled,
       clearActiveAttempt,
     }: AttemptBranchCallbacks & {
       attemptId: string;
       execute: ExecuteCallback;
+      executionContext: PreLoopExecutionContext;
     }): PreLoopHealthCheckOutcome => {
       clearCheckingForAttempt(attemptId);
       if (wasCancelled()) {
@@ -799,7 +900,7 @@ export function PreLoopSystemCheckProvider({
       }
 
       clearActiveAttempt();
-      execute();
+      execute(executionContext);
       return { status: "skipped_no_local_target", attemptId };
     },
     [clearCheckingForAttempt]
@@ -1012,11 +1113,36 @@ export function PreLoopSystemCheckProvider({
           openedDialog,
         });
 
+      let executionContext: PreLoopExecutionContext = {};
+      if (requireExplicitSelection) {
+        const explicitSelection = await resolveExplicitPreLoopExecutionContext({
+          attemptId,
+          capture,
+          clearActiveAttempt,
+          clearCheckingForAttempt,
+          currentPreference: computePreferenceQuery.data,
+          metadata,
+          refetchPreference: async () => {
+            const result = await computePreferenceQuery.refetch();
+            return {
+              data: result.data,
+              error: result.error instanceof Error ? result.error : null,
+            };
+          },
+          warnAndBlockUnavailable,
+        });
+        if (explicitSelection.outcome) {
+          return explicitSelection.outcome;
+        }
+        executionContext = explicitSelection.executionContext;
+      }
+
       const evaluation = await evaluatePreLoopTargetHealth(metadata, attemptId);
       if (evaluation.status === "skip_no_local_target") {
         return finishSkippedNoLocalTarget({
           attemptId,
           execute,
+          executionContext,
           wasCancelled: wasDialogCancelled,
           clearActiveAttempt,
         });
@@ -1059,7 +1185,7 @@ export function PreLoopSystemCheckProvider({
         pendingAttemptRef.current = null;
         clearPendingAttemptState();
         clearCheckingForAttempt(attemptId);
-        execute();
+        execute({ computeTargetId: target.computeTargetId });
         return { status: "executed", attemptId };
       }
 
@@ -1077,10 +1203,13 @@ export function PreLoopSystemCheckProvider({
       capture,
       clearCheckingForAttempt,
       clearPendingAttemptState,
+      computePreferenceQuery.data,
+      computePreferenceQuery.refetch,
       expectedMcpUrl,
       evaluatePreLoopTargetHealth,
       finishSkippedNoLocalTarget,
       finishUnavailablePreLoopEvaluation,
+      requireExplicitSelection,
       updateActivePendingAttempt,
       userId,
       warnAndBlockUnavailable,

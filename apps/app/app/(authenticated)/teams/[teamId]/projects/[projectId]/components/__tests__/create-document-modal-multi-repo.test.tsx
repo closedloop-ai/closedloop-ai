@@ -1,6 +1,5 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -93,14 +92,11 @@ vi.mock("@/hooks/queries/use-documents", async () => {
   return {
     ...actual,
     useCreateDocument: () => mockUseCreateDocument(),
+    useGeneratePrdLaunch: () => mockUseGeneratePrdLaunch(),
     useDocumentsByProject: (...args: unknown[]) =>
       mockUseDocumentsByProject(...args),
   };
 });
-
-vi.mock("@/hooks/queries/use-loops", () => ({
-  useRunLoop: () => mockUseRunLoop(),
-}));
 
 vi.mock("@/hooks/queries/use-projects", () => ({
   useProject: (...args: unknown[]) => mockUseProject(...args),
@@ -122,7 +118,7 @@ vi.mock("@repo/api/src/types/project", async () => {
 // ---- Mock function declarations (must be defined before vi.mock factory usage) ----
 
 const mockUseCreateDocument = vi.fn();
-const mockUseRunLoop = vi.fn();
+const mockUseGeneratePrdLaunch = vi.fn();
 const mockUseDocumentsByProject = vi.fn();
 const mockUseProject = vi.fn();
 const mockUseProjectsByTeam = vi.fn();
@@ -170,7 +166,7 @@ function renderModal(overrides: ModalOverrides = {}) {
 
 describe("CreateDocumentModal — multi-repo PRD picker", () => {
   const mockMutate = vi.fn();
-  const mockRunLoopMutate = vi.fn();
+  const mockGeneratePrdLaunchMutate = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -182,8 +178,11 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
       isPending: false,
     });
 
-    mockUseRunLoop.mockReturnValue({
-      mutate: mockRunLoopMutate,
+    mockGeneratePrdLaunchMutate.mockImplementation((input, options) => {
+      options?.onSuccess?.({ artifact: input.artifact, status: "launched" });
+    });
+    mockUseGeneratePrdLaunch.mockReturnValue({
+      mutate: mockGeneratePrdLaunchMutate,
       isPending: false,
     });
 
@@ -323,20 +322,17 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
     fireEvent.click(generateButton);
 
     await waitFor(() => {
-      expect(mockRunLoopMutate).toHaveBeenCalledWith(
+      expect(mockGeneratePrdLaunchMutate).toHaveBeenCalledWith(
         expect.objectContaining({
-          documentId: "new-prd-123",
-          command: RunLoopCommand.GeneratePrd,
+          artifact: expect.objectContaining({ id: "new-prd-123" }),
         }),
-        expect.objectContaining({
-          onError: expect.any(Function),
-        })
+        expect.objectContaining({ onSuccess: expect.any(Function) })
       );
-      const callArg = mockRunLoopMutate.mock.calls[0][0] as Record<
+      const callArg = mockGeneratePrdLaunchMutate.mock.calls[0][0] as Record<
         string,
         unknown
       >;
-      expect(callArg).not.toHaveProperty("additionalRepos");
+      expect(callArg.additionalRepos).toBeUndefined();
     });
   });
 
@@ -373,20 +369,17 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
     fireEvent.click(generateButton);
 
     await waitFor(() => {
-      expect(mockRunLoopMutate).toHaveBeenCalledWith(
+      expect(mockGeneratePrdLaunchMutate).toHaveBeenCalledWith(
         expect.objectContaining({
-          documentId: "new-prd-456",
-          command: RunLoopCommand.GeneratePrd,
+          artifact: expect.objectContaining({ id: "new-prd-456" }),
         }),
-        expect.objectContaining({
-          onError: expect.any(Function),
-        })
+        expect.objectContaining({ onSuccess: expect.any(Function) })
       );
-      const callArg = mockRunLoopMutate.mock.calls[0][0] as Record<
+      const callArg = mockGeneratePrdLaunchMutate.mock.calls[0][0] as Record<
         string,
         unknown
       >;
-      expect(callArg).not.toHaveProperty("additionalRepos");
+      expect(callArg.additionalRepos).toBeUndefined();
     });
   });
 
@@ -444,17 +437,14 @@ describe("CreateDocumentModal — multi-repo PRD picker", () => {
     fireEvent.click(generateButton);
 
     await waitFor(() => {
-      expect(mockRunLoopMutate).toHaveBeenCalledWith(
+      expect(mockGeneratePrdLaunchMutate).toHaveBeenCalledWith(
         expect.objectContaining({
-          documentId: "new-prd-789",
-          command: RunLoopCommand.GeneratePrd,
+          artifact: expect.objectContaining({ id: "new-prd-789" }),
           additionalRepos: [
             { fullName: "org/secondary-repo", branch: "feature" },
           ],
         }),
-        expect.objectContaining({
-          onError: expect.any(Function),
-        })
+        expect.objectContaining({ onSuccess: expect.any(Function) })
       );
     });
   });
