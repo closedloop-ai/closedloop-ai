@@ -123,7 +123,10 @@ describe("detectAuthChallengeFromJsonl", () => {
         }),
       ]);
       const result = detectAuthChallengeFromJsonl(workDir);
-      assert.ok(result?.includes(String(status)), `status ${status}: ${result}`);
+      assert.ok(
+        result?.includes(String(status)),
+        `status ${status}: ${result}`
+      );
     }
   });
 

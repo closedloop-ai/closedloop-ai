@@ -3593,7 +3593,9 @@ describe("reportFinalStatus auth-challenge wiring", () => {
 
   function getEventData(capturedCalls) {
     const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
-    assert.ok(eventCall !== undefined, "expected an event POST to /events");
+    if (eventCall === undefined) {
+      throw new Error("expected an event POST to /events");
+    }
     return JSON.parse(eventCall.options.body).data;
   }
 
