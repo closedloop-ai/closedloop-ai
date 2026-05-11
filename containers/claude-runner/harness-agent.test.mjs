@@ -1344,7 +1344,7 @@ describe("syncPlanFromContextPack", () => {
   test("does not write plan-source.md or modify config.env when plan.json already exists (AC-006)", () => {
     const runDir = makeTempDir();
     const workDir = makeTempDir();
-    fs.mkdirSync(path.join(workDir, ".closedloop-ai"), { recursive: true });
+    fs.mkdirSync(path.join(runDir, ".closedloop-ai"), { recursive: true });
 
     const planPath = path.join(runDir, "plan.json");
     fs.writeFileSync(
@@ -1356,8 +1356,9 @@ describe("syncPlanFromContextPack", () => {
       })
     );
 
-    // Pre-write a config.env so we can detect unwanted mutations
-    const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+    // Pre-write a config.env at the path setConfigEnvKey would target so
+    // we can detect unwanted mutations from a broken !fs.existsSync(plan.json) guard.
+    const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
     const originalConfigEnv = "SOME_EXISTING_VAR=value\n";
     fs.writeFileSync(configEnvPath, originalConfigEnv);
 
@@ -1431,9 +1432,10 @@ describe("syncPlanFromContextPack", () => {
   test("does not write plan-source.md or config.env when plan.json absent and only PRD/Feature artifacts present", () => {
     const runDir = makeTempDir();
     const workDir = makeTempDir();
-    fs.mkdirSync(path.join(workDir, ".closedloop-ai"), { recursive: true });
 
-    // No plan.json in runDir — intentionally not created
+    // No plan.json in runDir — intentionally not created.
+    // We do NOT pre-create runDir/.closedloop-ai so the negative assertion
+    // below catches both an unexpected file write and an unexpected dir creation.
 
     syncPlanFromContextPack(
       runDir,
@@ -1456,8 +1458,9 @@ describe("syncPlanFromContextPack", () => {
       "plan-source.md must not be written when only PRD/Feature artifacts are present"
     );
 
-    // config.env must NOT be created when no ImplementationPlan artifact is present
-    const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+    // config.env must NOT be created when no ImplementationPlan artifact is present.
+    // Check the path setConfigEnvKey would target so the assertion exercises the guard.
+    const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
     assert.ok(
       !fs.existsSync(configEnvPath),
       "config.env must not be created when only PRD/Feature artifacts are present"
