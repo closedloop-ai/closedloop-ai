@@ -772,6 +772,7 @@ describe("computeTargetsService health-check snapshots", () => {
       checkedAt,
       expectedMcpUrl: "https://mcp.example.com",
       latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: true,
       result: {
         checks: [
           { id: "git", label: "Git", required: true, passed: true },
@@ -806,6 +807,7 @@ describe("computeTargetsService health-check snapshots", () => {
       {
         expectedMcpUrl: "https://mcp.example.com",
         latestVersion: "1.2.3",
+        pluginAutoUpdateEnabled: true,
         result: {
           checks: [
             { id: "git", label: "Git", required: true, passed: true },
@@ -826,15 +828,79 @@ describe("computeTargetsService health-check snapshots", () => {
         where: { computeTargetId: "target-1" },
         create: expect.objectContaining({
           allRequiredPassed: false,
+          pluginAutoUpdateEnabled: true,
           requiredFailureIds: ["github-auth"],
         }),
         update: expect.objectContaining({
           allRequiredPassed: false,
+          pluginAutoUpdateEnabled: true,
           requiredFailureIds: ["github-auth"],
         }),
       })
     );
     expect(snapshot?.requiredFailureIds).toEqual(["github-auth"]);
+    expect(snapshot?.pluginAutoUpdateEnabled).toBe(true);
+  });
+
+  it("coerces enabled plugin auto-update snapshots from shared targets to disabled", async () => {
+    const checkedAt = new Date("2026-05-08T16:00:00.000Z");
+    const upsert = vi.fn().mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt,
+      expectedMcpUrl: "https://mcp.example.com",
+      latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: false,
+      result: {
+        checks: [{ id: "git", label: "Git", required: true, passed: true }],
+        allRequiredPassed: true,
+      },
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: 1,
+      createdAt: checkedAt,
+      updatedAt: checkedAt,
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(
+          buildTarget({
+            isSharedWithOrg: true,
+            userId: "owner-user",
+          })
+        ),
+      },
+      computeTargetHealthCheck: {
+        upsert,
+      },
+    });
+
+    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
+      "org-1",
+      "shared-user",
+      "target-1",
+      {
+        latestVersion: "1.2.3",
+        pluginAutoUpdateEnabled: true,
+        result: {
+          checks: [{ id: "git", label: "Git", required: true, passed: true }],
+          allRequiredPassed: true,
+        },
+      }
+    );
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          pluginAutoUpdateEnabled: false,
+        }),
+        update: expect.objectContaining({
+          pluginAutoUpdateEnabled: false,
+        }),
+      })
+    );
+    expect(snapshot?.pluginAutoUpdateEnabled).toBe(false);
   });
 
   it("returns null when upserting a snapshot for an inaccessible target", async () => {

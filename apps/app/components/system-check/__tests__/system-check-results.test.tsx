@@ -239,4 +239,76 @@ describe("SystemCheckResults — required/optional partition", () => {
     expect(value).toHaveTextContent(worktreePath);
     expect(value).toHaveClass("truncate");
   });
+
+  test("renders plugin update metadata and structured remediation links only when enabled", () => {
+    const pluginCheck: CheckResult = {
+      id: "plugin-code",
+      label: "Symphony Plugin",
+      required: true,
+      passed: false,
+      error: "Automatic update was attempted but did not succeed.",
+      remediation: "Run claude plugin update code@closedloop-ai --scope user",
+      remediationLinks: [
+        {
+          label: "Enable ClosedLoop plugin autoupdate",
+          url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+        },
+      ],
+      updateAttempted: true,
+      updateOutcome: "failed",
+      updatePluginIds: ["plugin-code"],
+    };
+
+    const { rerender } = render(
+      <SystemCheckResults
+        checks={[pluginCheck]}
+        pluginAutoUpdateEnabled={false}
+      />
+    );
+
+    expect(screen.queryByText("Update failed")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", {
+        name: "Enable ClosedLoop plugin autoupdate",
+      })
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <SystemCheckResults checks={[pluginCheck]} pluginAutoUpdateEnabled />
+    );
+
+    expect(screen.getByText("Update failed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Enable ClosedLoop plugin autoupdate",
+      })
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/closedloop-ai/claude-plugins#quick-start"
+    );
+  });
+
+  test("tokenizes legacy remediation https URLs into anchors", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: false,
+            error: "Update failed",
+            remediation:
+              "See https://github.com/closedloop-ai/claude-plugins#quick-start",
+          },
+        ]}
+      />
+    );
+
+    expect(
+      screen.getByRole("link", {
+        name: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+      })
+    ).toBeInTheDocument();
+  });
 });

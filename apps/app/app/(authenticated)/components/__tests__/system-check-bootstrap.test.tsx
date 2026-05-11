@@ -11,6 +11,7 @@ const mockUseComputeTargetHealthCheckSnapshot = vi.fn();
 const mockHealthCheckDialog = vi.hoisted(() => vi.fn());
 const mockHealthCheckQueryFn = vi.hoisted(() => vi.fn());
 const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
+const mockUseFeatureFlag = vi.hoisted(() => vi.fn());
 const mockHealthCheckOptions = vi.hoisted(() =>
   vi.fn((_routing?: unknown, _expectedMcpUrl?: unknown, _config?: unknown) => ({
     queryKey: ["health-check"],
@@ -23,12 +24,18 @@ const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_MCP_SERVER_URL: EXPECTED_MCP_URL,
+    NEXT_PUBLIC_POSTHOG_KEY: "test-posthog-key",
   },
+}));
+
+vi.mock("@repo/analytics/client", () => ({
+  useFeatureFlag: (key: string) => mockUseFeatureFlag(key),
 }));
 
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   HealthCheckDialog: (props: {
     latestVersionOverride?: string | null;
+    pluginAutoUpdateEnabled?: boolean;
     relayTargetId?: string | null;
     targetKey?: string;
   }) => {
@@ -36,6 +43,7 @@ vi.mock("@/components/engineer/HealthCheckDialog", () => ({
     return (
       <div
         data-latest-version={props.latestVersionOverride ?? ""}
+        data-plugin-auto-update={String(props.pluginAutoUpdateEnabled ?? false)}
         data-relay-target-id={props.relayTargetId ?? ""}
         data-target-key={props.targetKey}
         data-testid="health-check-dialog"
@@ -71,8 +79,14 @@ vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: () => mockUseComputeTargets(),
   useComputeTargetHealthCheckSnapshot: (
     targetId: string | null | undefined,
+    pluginAutoUpdateEnabledOrOptions: unknown,
     options: unknown
-  ) => mockUseComputeTargetHealthCheckSnapshot(targetId, options),
+  ) =>
+    mockUseComputeTargetHealthCheckSnapshot(
+      targetId,
+      pluginAutoUpdateEnabledOrOptions,
+      options
+    ),
 }));
 
 vi.mock("@/hooks/queries/use-electron-release", () => ({
@@ -85,6 +99,7 @@ vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
 }));
 
+import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "@/lib/system-check/plugin-auto-update";
 import { SystemCheckBootstrap } from "../system-check-bootstrap";
 
 function createBootstrapQueryClient() {
@@ -140,6 +155,7 @@ describe("SystemCheckBootstrap", () => {
       data: null,
       isLoading: false,
     });
+    mockUseFeatureFlag.mockReturnValue({ enabled: false });
   });
 
   it("does not render the dialog while eligibility is loading", () => {
@@ -242,6 +258,88 @@ describe("SystemCheckBootstrap", () => {
         EXPECTED_MCP_URL,
         expect.objectContaining({
           latestVersion: "1.0.0",
+          relayTargetId: "target-1",
+        })
+      );
+    });
+  });
+
+  it("treats a loading relay target as not owned before enabling plugin auto-update", async () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseFeatureFlag.mockReturnValue({ enabled: true });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargets.mockReturnValue({ data: undefined });
+
+    renderBootstrap();
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-plugin-auto-update",
+      "false"
+    );
+    expect(mockUseComputeTargetHealthCheckSnapshot).toHaveBeenCalledWith(
+      "target-1",
+      false,
+      expect.objectContaining({ enabled: true })
+    );
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          pluginAutoUpdateEnabled: false,
+          relayTargetId: "target-1",
+        })
+      );
+    });
+  });
+
+  it("enables plugin auto-update only for a loaded owned relay target", async () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseFeatureFlag.mockImplementation((key: string) => ({
+      enabled: key === PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY,
+    }));
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        {
+          id: "target-1",
+          machineName: "Owner relay",
+          ownerName: null,
+        },
+      ],
+    });
+
+    renderBootstrap();
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-plugin-auto-update",
+      "true"
+    );
+    expect(mockUseFeatureFlag).toHaveBeenCalledWith(
+      PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY
+    );
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          pluginAutoUpdateEnabled: true,
           relayTargetId: "target-1",
         })
       );

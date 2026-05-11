@@ -27,6 +27,10 @@ import {
   signDesktopCommand,
 } from "@/lib/crypto/command-signer";
 import { cacheComputeTargetsForSigning } from "@/lib/engineer/compute-target-signing-cache";
+import {
+  HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT,
+  HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT,
+} from "@/lib/engineer/queries/keys";
 
 type ApiClient = ReturnType<typeof useApiClient>;
 
@@ -65,6 +69,7 @@ function toHealthCheckSnapshot(
   }
   return {
     ...snapshot,
+    pluginAutoUpdateEnabled: snapshot.pluginAutoUpdateEnabled ?? false,
     checkedAt: new Date(snapshot.checkedAt),
     createdAt: new Date(snapshot.createdAt),
     updatedAt: new Date(snapshot.updatedAt),
@@ -76,6 +81,13 @@ export const computeTargetKeys = {
   list: () => [...computeTargetKeys.all, "list"] as const,
   healthCheck: (targetId: string) =>
     [...computeTargetKeys.all, targetId, "health-check"] as const,
+  healthCheckMode: (targetId: string, pluginAutoUpdateEnabled: boolean) =>
+    [
+      ...computeTargetKeys.healthCheck(targetId),
+      pluginAutoUpdateEnabled
+        ? HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT
+        : HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT,
+    ] as const,
   commandKeys: (targetId: string, commandId: string) =>
     [...computeTargetKeys.all, targetId, "commands", commandId] as const,
 };
@@ -100,10 +112,14 @@ export function useComputeTargets(
 
 export function computeTargetHealthCheckSnapshotQueryOptions(
   apiClient: ApiClient,
-  targetId: string | null | undefined
+  targetId: string | null | undefined,
+  pluginAutoUpdateEnabled = false
 ) {
   return {
-    queryKey: computeTargetKeys.healthCheck(targetId ?? ""),
+    queryKey: computeTargetKeys.healthCheckMode(
+      targetId ?? "",
+      pluginAutoUpdateEnabled
+    ),
     queryFn: async () => {
       if (!targetId) {
         return null;
@@ -120,16 +136,34 @@ export function computeTargetHealthCheckSnapshotQueryOptions(
 
 export function useComputeTargetHealthCheckSnapshot(
   targetId: string | null | undefined,
+  pluginAutoUpdateEnabledOrOptions?:
+    | boolean
+    | Omit<
+        UseQueryOptions<ComputeTargetHealthCheckSnapshot | null>,
+        "queryKey" | "queryFn"
+      >,
   options?: Omit<
     UseQueryOptions<ComputeTargetHealthCheckSnapshot | null>,
     "queryKey" | "queryFn"
   >
 ) {
   const apiClient = useApiClient();
+  const pluginAutoUpdateEnabled =
+    typeof pluginAutoUpdateEnabledOrOptions === "boolean"
+      ? pluginAutoUpdateEnabledOrOptions
+      : false;
+  const queryOptionsOverride =
+    typeof pluginAutoUpdateEnabledOrOptions === "boolean"
+      ? options
+      : pluginAutoUpdateEnabledOrOptions;
 
   return useQuery({
-    ...computeTargetHealthCheckSnapshotQueryOptions(apiClient, targetId),
-    ...options,
+    ...computeTargetHealthCheckSnapshotQueryOptions(
+      apiClient,
+      targetId,
+      pluginAutoUpdateEnabled
+    ),
+    ...queryOptionsOverride,
   });
 }
 

@@ -1,4 +1,5 @@
 import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
+import { PluginUpdateOutcome } from "@repo/api/src/types/compute-target";
 import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
@@ -82,6 +83,17 @@ const healthCheckDebugValidator = z
   })
   .passthrough();
 
+const remediationLinkUrlValidator = z.url().refine(
+  (value) => {
+    try {
+      return new URL(value).protocol === "https:";
+    } catch {
+      return false;
+    }
+  },
+  { message: "Remediation link URLs must use HTTPS" }
+);
+
 const healthCheckResultValidator = z.object({
   id: z.string().trim().min(1),
   label: z.string().trim().min(1),
@@ -91,6 +103,17 @@ const healthCheckResultValidator = z.object({
   error: z.string().optional(),
   remediation: z.string().optional(),
   debug: healthCheckDebugValidator.optional(),
+  updateAttempted: z.boolean().optional(),
+  updateOutcome: z.enum(PluginUpdateOutcome).optional(),
+  updatePluginIds: z.array(z.string().trim().min(1)).optional(),
+  remediationLinks: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1),
+        url: remediationLinkUrlValidator,
+      })
+    )
+    .optional(),
 });
 
 const mcpProviderAvailabilityValidator = z.union([
@@ -121,6 +144,7 @@ const mcpServersValidator = z
 export const healthCheckSnapshotValidator = z.object({
   expectedMcpUrl: z.string().trim().min(1).nullable().optional(),
   latestVersion: z.string().trim().min(1).max(120).nullable().optional(),
+  pluginAutoUpdateEnabled: z.boolean().optional(),
   result: z
     .object({
       checks: z.array(healthCheckResultValidator),

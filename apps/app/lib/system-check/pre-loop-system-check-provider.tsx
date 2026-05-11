@@ -1,6 +1,6 @@
 "use client";
 
-import { useAnalytics } from "@repo/analytics/client";
+import { useAnalytics, useFeatureFlag } from "@repo/analytics/client";
 import {
   ComputePreference,
   type ComputePreferenceResponse,
@@ -32,14 +32,16 @@ import { useApiClient } from "@/hooks/use-api-client";
 import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import { HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT } from "@/lib/engineer/queries/keys";
 import { getHealthCheckCacheAgeMs } from "./health-check-freshness";
+import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "./plugin-auto-update";
 import {
   buildPreLoopAnalyticsProperties,
   createPreLoopAttemptId,
+  getPreLoopHealthCheckTimeoutMs,
   getPreLoopTargetKey,
   getRequiredFailureSummary,
   isPreLoopHealthCheckFresh,
-  PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS,
   PreLoopAnalyticsEvent,
   type PreLoopHealthCheckOutcome,
   type PreLoopMetadata,
@@ -54,6 +56,7 @@ type PendingPreLoopAttempt = {
   target: PreLoopTarget;
   healthCheckData?: HealthCheckResponse;
   latestVersion: string | null;
+  pluginAutoUpdateEnabled: boolean;
   failingRequiredFingerprint?: string;
   failingCheckIds: string[];
   recheckAttempts: number;
@@ -85,6 +88,7 @@ type UpdateActivePendingAttemptInput = {
   metadata: PreLoopMetadata;
   target: PreLoopTarget;
   latestVersion: string | null;
+  pluginAutoUpdateEnabled: boolean;
   healthCheckData?: HealthCheckResponse;
   execute: ExecuteCallback;
   openedDialog: boolean;
@@ -93,7 +97,7 @@ type UpdateActivePendingAttemptInput = {
 type UpdatePendingAttemptInput = Pick<
   UpdateActivePendingAttemptInput,
   "target" | "latestVersion" | "healthCheckData"
->;
+> & { pluginAutoUpdateEnabled: boolean };
 
 type AttemptBranchCallbacks = {
   wasCancelled: () => boolean;
@@ -122,11 +126,13 @@ type PreLoopHealthEvaluation =
       reason: string;
       target?: PreLoopTarget | null;
       latestVersion?: string | null;
+      pluginAutoUpdateEnabled?: boolean;
     }
   | {
       status: "available";
       target: PreLoopTarget;
       latestVersion: string | null;
+      pluginAutoUpdateEnabled: boolean;
       healthResult: HealthCheckFetchResult;
     };
 
@@ -251,6 +257,12 @@ export function PreLoopSystemCheckProvider({
   const analytics = useAnalytics();
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
+  const pluginAutoUpdateFlag = useFeatureFlag(
+    PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY
+  );
+  const pluginAutoUpdateFlagEnabled =
+    Boolean(env.NEXT_PUBLIC_POSTHOG_KEY) &&
+    pluginAutoUpdateFlag?.enabled === true;
   const { user } = useUser();
   const userId = user?.id ?? "";
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
@@ -419,6 +431,7 @@ export function PreLoopSystemCheckProvider({
           computeTargetId: requestedComputeTargetId,
           label: getTargetLabel(requestedTarget),
           isOnline: requestedTarget.isOnline,
+          isOwnedByCurrentUser: !requestedTarget.ownerName,
           mode: "local_compute_target",
         };
       }
@@ -455,6 +468,7 @@ export function PreLoopSystemCheckProvider({
         computeTargetId: selection.effectiveTargetId,
         label: getTargetLabel(selection.effectiveTarget),
         isOnline: selection.effectiveTarget.isOnline,
+        isOwnedByCurrentUser: !selection.effectiveTarget.ownerName,
         mode: "local_compute_target",
       };
     },
@@ -482,19 +496,23 @@ export function PreLoopSystemCheckProvider({
     ({
       target,
       latestVersion,
+      pluginAutoUpdateEnabled,
     }: {
       target: PreLoopTarget;
       latestVersion?: string | null;
+      pluginAutoUpdateEnabled: boolean;
     }): HealthCheckFetchResult | null => {
       const now = Date.now();
       const toCachedResult = ({
         data,
         dataUpdatedAt,
         latestVersion,
+        entryPluginAutoUpdateEnabled,
       }: {
         data: unknown;
         dataUpdatedAt: number;
         latestVersion: string | null;
+        entryPluginAutoUpdateEnabled: boolean;
       }): CachedHealthCheckFetchResult | null => {
         const healthCheckData = data as HealthCheckResponse | undefined;
         if (
@@ -505,9 +523,11 @@ export function PreLoopSystemCheckProvider({
               checkedAt: dataUpdatedAt,
               expectedMcpUrl,
               latestVersion,
+              pluginAutoUpdateEnabled: entryPluginAutoUpdateEnabled,
             },
             expectedMcpUrl,
             latestVersion,
+            pluginAutoUpdateEnabled,
             now,
           })
         ) {
@@ -527,6 +547,7 @@ export function PreLoopSystemCheckProvider({
         const options = healthCheckOptions(target.targetKey, expectedMcpUrl, {
           relayTargetId: target.computeTargetId,
           latestVersion,
+          pluginAutoUpdateEnabled,
         });
         const queryState = queryClient.getQueryState<HealthCheckResponse>(
           options.queryKey
@@ -535,6 +556,7 @@ export function PreLoopSystemCheckProvider({
           data: queryState?.data,
           dataUpdatedAt: queryState?.dataUpdatedAt ?? 0,
           latestVersion,
+          entryPluginAutoUpdateEnabled: pluginAutoUpdateEnabled,
         });
         if (!cachedResult) {
           return null;
@@ -549,6 +571,7 @@ export function PreLoopSystemCheckProvider({
         expectedMcpUrl,
         {
           relayTargetId: target.computeTargetId,
+          pluginAutoUpdateEnabled,
         }
       ).queryKey.slice(0, 3);
       const cachedResults = queryClient
@@ -561,6 +584,8 @@ export function PreLoopSystemCheckProvider({
             latestVersion: getLatestVersionFromHealthCheckQueryKey(
               query.queryKey
             ),
+            entryPluginAutoUpdateEnabled:
+              query.queryKey[4] === HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT,
           })
         )
         .filter((result): result is CachedHealthCheckFetchResult =>
@@ -583,9 +608,11 @@ export function PreLoopSystemCheckProvider({
     async ({
       target,
       latestVersion,
+      pluginAutoUpdateEnabled,
     }: {
       target: PreLoopTarget;
       latestVersion: string | null;
+      pluginAutoUpdateEnabled: boolean;
     }): Promise<HealthCheckFetchResult | null> => {
       if (!target.isOnline) {
         return null;
@@ -593,7 +620,8 @@ export function PreLoopSystemCheckProvider({
 
       const snapshotOptions = computeTargetHealthCheckSnapshotQueryOptions(
         apiClient,
-        target.computeTargetId
+        target.computeTargetId,
+        pluginAutoUpdateEnabled
       );
       const cachedSnapshot =
         queryClient.getQueryData<ComputeTargetHealthCheckSnapshot | null>(
@@ -614,12 +642,14 @@ export function PreLoopSystemCheckProvider({
         checkedAt: snapshot.checkedAt,
         expectedMcpUrl: snapshot.expectedMcpUrl,
         latestVersion: snapshot.latestVersion,
+        pluginAutoUpdateEnabled: snapshot.pluginAutoUpdateEnabled,
       };
       if (
         !isPreLoopHealthCheckFresh({
           entry,
           expectedMcpUrl,
           latestVersion,
+          pluginAutoUpdateEnabled,
         })
       ) {
         return null;
@@ -630,6 +660,7 @@ export function PreLoopSystemCheckProvider({
         healthCheckOptions(target.targetKey, expectedMcpUrl, {
           relayTargetId: target.computeTargetId,
           latestVersion: queryLatestVersion,
+          pluginAutoUpdateEnabled,
         }).queryKey,
         snapshot.result,
         { updatedAt: snapshot.checkedAt.getTime() }
@@ -649,13 +680,16 @@ export function PreLoopSystemCheckProvider({
     async ({
       target,
       latestVersion,
+      pluginAutoUpdateEnabled,
     }: {
       target: PreLoopTarget;
       latestVersion: string | null;
+      pluginAutoUpdateEnabled: boolean;
     }): Promise<HealthCheckFetchResult> => {
       const cachedResult = getFreshCachedHealthCheck({
         target,
         latestVersion,
+        pluginAutoUpdateEnabled,
       });
       if (cachedResult) {
         return cachedResult;
@@ -664,6 +698,7 @@ export function PreLoopSystemCheckProvider({
       const persistedResult = await getFreshPersistedHealthCheck({
         target,
         latestVersion,
+        pluginAutoUpdateEnabled,
       });
       if (persistedResult) {
         return persistedResult;
@@ -672,10 +707,11 @@ export function PreLoopSystemCheckProvider({
       const options = healthCheckOptions(target.targetKey, expectedMcpUrl, {
         relayTargetId: target.computeTargetId,
         latestVersion,
+        pluginAutoUpdateEnabled,
       });
       const data = await withTimeout(
         queryClient.fetchQuery(options),
-        PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS
+        getPreLoopHealthCheckTimeoutMs(pluginAutoUpdateEnabled)
       );
       return {
         data,
@@ -698,6 +734,7 @@ export function PreLoopSystemCheckProvider({
       metadata,
       target,
       latestVersion,
+      pluginAutoUpdateEnabled,
       healthCheckData,
       execute,
       openedDialog,
@@ -722,6 +759,7 @@ export function PreLoopSystemCheckProvider({
         target,
         healthCheckData: healthCheckData ?? current?.healthCheckData,
         latestVersion,
+        pluginAutoUpdateEnabled,
         failingRequiredFingerprint:
           summary?.fingerprint ?? current?.failingRequiredFingerprint,
         failingCheckIds: summary?.checkIds ?? current?.failingCheckIds ?? [],
@@ -792,6 +830,7 @@ export function PreLoopSystemCheckProvider({
         updatePendingAttempt({
           target: evaluation.target,
           latestVersion: evaluation.latestVersion ?? null,
+          pluginAutoUpdateEnabled: evaluation.pluginAutoUpdateEnabled ?? false,
           healthCheckData: buildUnavailableHealthCheck(evaluation.reason),
         });
         openedUnavailableDialog = true;
@@ -836,8 +875,12 @@ export function PreLoopSystemCheckProvider({
           status: "unavailable",
           target,
           reason: "target_offline",
+          pluginAutoUpdateEnabled: false,
         };
       }
+
+      const pluginAutoUpdateEnabled =
+        pluginAutoUpdateFlagEnabled && target.isOwnedByCurrentUser;
 
       let latestVersion: string | null = null;
       try {
@@ -847,18 +890,21 @@ export function PreLoopSystemCheckProvider({
           status: "unavailable",
           target,
           reason: formatUnavailableReason("latest_release", error),
+          pluginAutoUpdateEnabled,
         };
       }
 
       const cachedResult = getFreshCachedHealthCheck({
         target,
         latestVersion,
+        pluginAutoUpdateEnabled,
       });
       if (cachedResult) {
         return {
           status: "available",
           target,
           latestVersion,
+          pluginAutoUpdateEnabled,
           healthResult: cachedResult,
         };
       }
@@ -868,7 +914,12 @@ export function PreLoopSystemCheckProvider({
           status: "available",
           target,
           latestVersion,
-          healthResult: await fetchHealthCheck({ target, latestVersion }),
+          pluginAutoUpdateEnabled,
+          healthResult: await fetchHealthCheck({
+            target,
+            latestVersion,
+            pluginAutoUpdateEnabled,
+          }),
         };
       } catch (error) {
         return {
@@ -876,6 +927,7 @@ export function PreLoopSystemCheckProvider({
           target,
           latestVersion,
           reason: formatUnavailableReason("health_check", error),
+          pluginAutoUpdateEnabled,
         };
       }
     },
@@ -883,6 +935,7 @@ export function PreLoopSystemCheckProvider({
       fetchHealthCheck,
       getFreshCachedHealthCheck,
       getLatestVersion,
+      pluginAutoUpdateFlagEnabled,
       recordActiveAttemptTarget,
       resolveTarget,
     ]
@@ -931,10 +984,12 @@ export function PreLoopSystemCheckProvider({
       const updatePendingAttempt = ({
         target,
         latestVersion,
+        pluginAutoUpdateEnabled,
         healthCheckData,
       }: {
         target: PreLoopTarget;
         latestVersion: string | null;
+        pluginAutoUpdateEnabled: boolean;
         healthCheckData?: HealthCheckResponse;
       }) => {
         const updated = updateActivePendingAttempt({
@@ -942,6 +997,7 @@ export function PreLoopSystemCheckProvider({
           metadata,
           target,
           latestVersion,
+          pluginAutoUpdateEnabled,
           healthCheckData,
           execute,
           openedDialog,
@@ -982,7 +1038,8 @@ export function PreLoopSystemCheckProvider({
         return { status: "cancelled", attemptId };
       }
 
-      const { healthResult, latestVersion, target } = evaluation;
+      const { healthResult, latestVersion, pluginAutoUpdateEnabled, target } =
+        evaluation;
       const summary = getRequiredFailureSummary(
         healthResult.data,
         expectedMcpUrl
@@ -1011,6 +1068,7 @@ export function PreLoopSystemCheckProvider({
         target,
         healthCheckData: healthResult.data,
         latestVersion,
+        pluginAutoUpdateEnabled,
       });
       capture(PreLoopAnalyticsEvent.SystemCheckBlocked, analyticsBase);
       return { status: "blocked", attemptId };
@@ -1249,6 +1307,7 @@ export function PreLoopSystemCheckProvider({
       {pendingAttempt ? (
         <HealthCheckDialog
           initialData={pendingAttempt.healthCheckData}
+          isOwnedTarget={pendingAttempt.target.isOwnedByCurrentUser}
           latestVersionOverride={pendingAttempt.latestVersion}
           mode="blocking-pre-loop"
           onCancel={() => cancelPendingAttempt("dialog_cancelled")}
@@ -1256,6 +1315,7 @@ export function PreLoopSystemCheckProvider({
           onRecheckResult={handleRecheckResult}
           onRecheckUnavailable={handleRecheckUnavailable}
           onResolvedAfterRecheck={handleResolvedAfterRecheck}
+          pluginAutoUpdateEnabled={pendingAttempt.pluginAutoUpdateEnabled}
           relayTargetId={pendingAttempt.target.computeTargetId}
           targetKey={pendingAttempt.target.targetKey}
           targetLabel={pendingAttempt.target.label}

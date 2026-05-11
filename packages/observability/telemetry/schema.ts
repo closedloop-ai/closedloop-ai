@@ -41,6 +41,9 @@ export const TelemetryCategory = {
   ElectronUpdateSucceeded: "electron_update.succeeded",
   // Q-001: ElectronUpdateFailed requires cross-repo coordination with closedloop-electron
   ElectronUpdateFailed: "electron_update.failed",
+  PluginUpdateAttempted: "plugin_update.attempted",
+  PluginUpdateSucceeded: "plugin_update.succeeded",
+  PluginUpdateFailed: "plugin_update.failed",
   // Desktop onboarding popup events (AC-001)
   OnboardingPopupShown: "onboarding.popup_shown",
   OnboardingPopupCtaClicked: "onboarding.popup_cta_clicked",
@@ -413,6 +416,33 @@ const desktopTelemetryDiagnosticsSchema = z.object({
     decisionTableVerificationDiagnosticsSchema.optional(),
   desktopUpdate: desktopUpdateDiagnosticsSchema.optional(),
   desktopShutdown: desktopShutdownDiagnosticsSchema.optional(),
+  pluginUpdate: z
+    .object({
+      pluginIds: z.array(z.string().max(80)).max(6),
+      versionsBefore: z.record(z.string().max(80), z.string().max(64)),
+      versionsAfter: z.record(z.string().max(80), z.string().max(64)),
+      outcomes: z.record(
+        z.string().max(80),
+        z.enum(["success", "failed", "timeout", "skipped"])
+      ),
+      durationMs: z.number().nonnegative(),
+      command: z.literal("claude plugin update"),
+      scope: z.literal("user"),
+      exitCode: z.number().optional(),
+      failureReason: z
+        .enum([
+          "command_failed",
+          "timeout",
+          "still_outdated",
+          "cli_unavailable",
+          "manifest_unavailable",
+          "unknown",
+        ])
+        .optional(),
+      stderrTail: z.string().max(512).optional(),
+    })
+    .strip()
+    .optional(),
   outboundNetwork: outboundNetworkDiagnosticsSchema.optional(),
   supportUpload: supportUploadDiagnosticsSchema.optional(),
   loopPerf: loopPerfEventDiagnosticsSchema.optional(),

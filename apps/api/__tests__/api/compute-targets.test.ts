@@ -228,6 +228,7 @@ describe("GET /compute-targets/:id/health-check", () => {
       checkedAt: new Date("2026-05-08T15:00:00.000Z"),
       expectedMcpUrl: "https://mcp.example.com",
       latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: true,
       result: {
         checks: [{ id: "git", label: "Git", required: true, passed: true }],
         allRequiredPassed: true,
@@ -268,6 +269,7 @@ describe("PUT /compute-targets/:id/health-check", () => {
       checkedAt: new Date("2026-05-08T15:00:00.000Z"),
       expectedMcpUrl: "https://mcp.example.com",
       latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: true,
       result: {
         checks: [{ id: "git", label: "Git", required: true, passed: true }],
         allRequiredPassed: true,
@@ -289,9 +291,26 @@ describe("PUT /compute-targets/:id/health-check", () => {
         body: {
           expectedMcpUrl: "https://mcp.example.com",
           latestVersion: "1.2.3",
+          pluginAutoUpdateEnabled: true,
           result: {
-            checks: [{ id: "git", label: "Git", required: true, passed: true }],
-            allRequiredPassed: true,
+            checks: [
+              {
+                id: "plugin-code",
+                label: "Symphony Plugin",
+                required: true,
+                passed: false,
+                updateAttempted: true,
+                updateOutcome: "failed",
+                updatePluginIds: ["plugin-code"],
+                remediationLinks: [
+                  {
+                    label: "Enable ClosedLoop plugin autoupdate",
+                    url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+                  },
+                ],
+              },
+            ],
+            allRequiredPassed: false,
           },
         },
       }),
@@ -308,6 +327,7 @@ describe("PUT /compute-targets/:id/health-check", () => {
       expect.objectContaining({
         expectedMcpUrl: "https://mcp.example.com",
         latestVersion: "1.2.3",
+        pluginAutoUpdateEnabled: true,
       })
     );
   });
@@ -332,5 +352,40 @@ describe("PUT /compute-targets/:id/health-check", () => {
     );
 
     expect(response.status).toBe(404);
+  });
+
+  it("rejects unsafe structured remediation link schemes", async () => {
+    const response = await healthCheckPUT(
+      createMockRequest({
+        method: "PUT",
+        url: "http://localhost:3002/compute-targets/target-1/health-check",
+        body: {
+          result: {
+            checks: [
+              {
+                id: "plugin-code",
+                label: "Symphony Plugin",
+                required: true,
+                passed: false,
+                remediation: "Open a safe help page",
+                remediationLinks: [
+                  {
+                    label: "Unsafe link",
+                    url: "javascript:alert(1)",
+                  },
+                ],
+              },
+            ],
+            allRequiredPassed: false,
+          },
+        },
+      }),
+      createMockRouteContext({ id: "target-1" })
+    );
+
+    expect(response.status).toBe(400);
+    expect(
+      computeTargetsService.upsertHealthCheckSnapshot
+    ).not.toHaveBeenCalled();
   });
 });

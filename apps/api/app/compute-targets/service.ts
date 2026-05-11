@@ -75,6 +75,7 @@ type ComputeTargetHealthCheckRecord = {
   checkedAt: Date;
   expectedMcpUrl: string | null;
   latestVersion: string | null;
+  pluginAutoUpdateEnabled: boolean;
   result: unknown;
   allRequiredPassed: boolean;
   requiredFailureIds: unknown;
@@ -107,6 +108,7 @@ function toHealthCheckSnapshot(
     checkedAt: record.checkedAt,
     expectedMcpUrl: record.expectedMcpUrl,
     latestVersion: record.latestVersion,
+    pluginAutoUpdateEnabled: record.pluginAutoUpdateEnabled ?? false,
     result: record.result as HealthCheckResponse,
     allRequiredPassed: record.allRequiredPassed,
     requiredFailureIds: toStringArray(record.requiredFailureIds),
@@ -1135,6 +1137,8 @@ export const computeTargetsService = {
       if (!target) {
         return null;
       }
+      const pluginAutoUpdateEnabled =
+        (payload.pluginAutoUpdateEnabled ?? false) && target.userId === userId;
 
       return tx.computeTargetHealthCheck.upsert({
         where: { computeTargetId: targetId },
@@ -1144,6 +1148,7 @@ export const computeTargetsService = {
           checkedAt,
           expectedMcpUrl: payload.expectedMcpUrl ?? null,
           latestVersion: payload.latestVersion ?? null,
+          pluginAutoUpdateEnabled,
           result: payload.result as unknown as Prisma.InputJsonValue,
           allRequiredPassed,
           requiredFailureIds:
@@ -1154,6 +1159,7 @@ export const computeTargetsService = {
           checkedAt,
           expectedMcpUrl: payload.expectedMcpUrl ?? null,
           latestVersion: payload.latestVersion ?? null,
+          pluginAutoUpdateEnabled,
           result: payload.result as unknown as Prisma.InputJsonValue,
           allRequiredPassed,
           requiredFailureIds:

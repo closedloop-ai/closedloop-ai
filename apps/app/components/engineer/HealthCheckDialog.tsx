@@ -65,8 +65,10 @@ type HealthCheckDialogProps = Readonly<{
   targetLabel?: string;
   mode?: HealthCheckDialogMode;
   initialData?: HealthCheckResponse;
+  isOwnedTarget?: boolean;
   relayTargetId?: string | null;
   latestVersionOverride?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
   onCancel?: () => void;
   onResolvedAfterRecheck?: () => void;
   onRecheckClick?: () => void;
@@ -114,8 +116,10 @@ export function HealthCheckDialog({
   targetLabel,
   mode = "ambient",
   initialData,
+  isOwnedTarget = true,
   relayTargetId = null,
   latestVersionOverride,
+  pluginAutoUpdateEnabled = false,
   onCancel,
   onResolvedAfterRecheck,
   onRecheckClick,
@@ -157,13 +161,24 @@ export function HealthCheckDialog({
     latestVersionOverride === undefined
       ? (latestRelease?.version ?? null)
       : latestVersionOverride;
+  let systemCheckTargetKind: "local" | "owned_relay" | "shared_relay" = "local";
+  if (relayTargetId) {
+    systemCheckTargetKind = isOwnedTarget ? "owned_relay" : "shared_relay";
+  }
   const healthCheckQueryOptions = useMemo(
     () =>
       healthCheckOptions(targetKey, expectedMcpUrl, {
         latestVersion,
         relayTargetId,
+        pluginAutoUpdateEnabled,
       }),
-    [expectedMcpUrl, latestVersion, relayTargetId, targetKey]
+    [
+      expectedMcpUrl,
+      latestVersion,
+      pluginAutoUpdateEnabled,
+      relayTargetId,
+      targetKey,
+    ]
   );
 
   // Client-only mount flag — avoids SSR/hydration mismatch
@@ -485,7 +500,9 @@ export function HealthCheckDialog({
                 })}
                 checks={renderableChecks}
                 isLoading={showLoadingChecks}
+                pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
                 revealedCount={revealedCount}
+                targetKind={systemCheckTargetKind}
               />
             </div>
 
