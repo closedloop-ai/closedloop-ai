@@ -1,6 +1,9 @@
 "use client";
 
-import { ComputePreference } from "@repo/api/src/types/compute-target";
+import {
+  ComputePreference,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+} from "@repo/api/src/types/compute-target";
 import { useUser } from "@repo/auth/client";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -26,6 +29,8 @@ import {
 } from "@/hooks/queries/use-compute-preference";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
+import { useIsMounted } from "@/hooks/use-is-mounted";
 import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
@@ -112,6 +117,7 @@ export function ComputeTargetPopover({
   const [open, setOpen] = useState(false);
   // T-4.4: show download prompt inline when user clicks Local with zero registered targets
   const [showDownloadPrompt, setShowDownloadPrompt] = useState(false);
+  const mounted = useIsMounted();
   const { user } = useUser();
   const userId = user?.id ?? "";
   // Keep SSE stream alive for real-time target status updates
@@ -121,6 +127,10 @@ export function ComputeTargetPopover({
   const { data: preferenceData, isLoading: preferenceLoading } =
     useComputePreference(userId, { enabled: !!userId });
   const setPreference = useSetComputePreference(userId);
+  const explicitSelectionFlagEnabled = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
+  const requireExplicitSelection = mounted && explicitSelectionFlagEnabled;
 
   const isDegraded = isStreamDegraded(streamReconnectAttempts);
   const ownTargets = targets.filter((t) => !t.ownerName);
@@ -130,9 +140,11 @@ export function ComputeTargetPopover({
     currentPreference,
     effectiveTarget,
     effectiveTargetId,
+    needsSelection,
     notInstalled,
   } = resolveEffectiveComputeTargetSelection({
     preference: preferenceData,
+    requireExplicitSelection,
     targets,
   });
   const isLocal = currentPreference === ComputePreference.Local;
@@ -142,9 +154,12 @@ export function ComputeTargetPopover({
   // T-4.5: targets registered but all offline
   const shouldShowAllOffline = !targetsLoading && allOffline;
 
-  const triggerLabel = isLocal
-    ? `Compute: ${effectiveTarget?.machineName ?? "Local"}`
-    : "Compute: Cloud";
+  const triggerLabel = getTriggerLabel({
+    effectiveTargetName: effectiveTarget?.machineName,
+    isLocalOffline: isLocal && shouldShowAllOffline,
+    isLocal,
+    needsSelection,
+  });
 
   function getTriggerIcon() {
     if (isDegraded) {
@@ -252,9 +267,12 @@ export function ComputeTargetPopover({
               Your local compute target is not reachable. Switch to Cloud or
               relaunch the desktop app.
             </p>
-            <div className="flex gap-2">
+            <div
+              className="flex flex-col gap-2"
+              data-testid="offline-remediation-actions"
+            >
               <Button
-                className="h-7 flex-1 text-xs"
+                className="h-7 w-full text-xs"
                 onClick={handleSelectCloud}
                 size="sm"
                 variant="outline"
@@ -265,7 +283,7 @@ export function ComputeTargetPopover({
               {/* Gate on having at least one registered ComputeTarget (user has previously installed the app) */}
               {targets.length > 0 && (
                 <Button
-                  className="h-7 flex-1 text-xs"
+                  className="h-7 w-full text-xs"
                   onClick={handleLaunchDesktopApp}
                   size="sm"
                   variant="outline"
@@ -413,4 +431,27 @@ export function ComputeTargetPopover({
       </PopoverContent>
     </Popover>
   );
+}
+
+function getTriggerLabel({
+  effectiveTargetName,
+  isLocalOffline,
+  isLocal,
+  needsSelection,
+}: {
+  effectiveTargetName?: string;
+  isLocalOffline: boolean;
+  isLocal: boolean;
+  needsSelection: boolean;
+}): string {
+  if (needsSelection) {
+    return "Select target";
+  }
+  if (isLocalOffline) {
+    return "Compute: Local offline";
+  }
+  if (isLocal) {
+    return `Compute: ${effectiveTargetName ?? "Local"}`;
+  }
+  return "Compute: Cloud";
 }

@@ -1,5 +1,4 @@
 import { DocumentType } from "@repo/api/src/types/document";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
 import {
   cleanup,
   fireEvent,
@@ -13,7 +12,7 @@ import { CreateDocumentModal } from "../create-document-modal";
 
 // Mock the hooks
 const mockUseCreateArtifact = vi.fn();
-const mockUseRunLoop = vi.fn();
+const mockUseGeneratePrdLaunch = vi.fn();
 const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
 const mockUseTeamMembers = vi.fn();
@@ -23,6 +22,7 @@ const mockUseGitHubBranches = vi.fn();
 const mockUseOrgTemplateByType = vi.fn();
 const mockUseProject = vi.fn();
 const mockUseProjectsByTeam = vi.fn();
+const mockUsePreLoopGate = vi.fn();
 
 vi.mock("@repo/api/src/types/project", async () => {
   const actual = await vi.importActual("@repo/api/src/types/project");
@@ -42,14 +42,15 @@ vi.mock("@/hooks/queries/use-documents", async () => {
   return {
     ...actual,
     useCreateDocument: () => mockUseCreateArtifact(),
+    useGeneratePrdLaunch: () => mockUseGeneratePrdLaunch(),
     useDocument: (...args: unknown[]) => mockUseArtifact(...args),
     useDocumentsByProject: (...args: unknown[]) =>
       mockUseArtifactsByProject(...args),
   };
 });
 
-vi.mock("@/hooks/queries/use-loops", () => ({
-  useRunLoop: () => mockUseRunLoop(),
+vi.mock("@/lib/system-check/pre-loop-system-check-provider", () => ({
+  useOptionalPreLoopSystemCheckGate: () => mockUsePreLoopGate(),
 }));
 
 vi.mock("@/hooks/queries/use-teams", () => ({
@@ -95,10 +96,12 @@ const CONNECT_GITHUB_REGEX = /connect github to select a repository/i;
 const CREATING_REGEX = /creating\.\.\./i;
 const NO_PRDS_REGEX = /no prds or features in this project/i;
 const LOADING_REGEX = /loading/i;
+const TARGET_SELECTION_PROMPT_REGEX =
+  /select a compute target to start generation/i;
 
 describe("CreateDocumentModal", () => {
   const mockMutate = vi.fn();
-  const mockRunLoopMutate = vi.fn();
+  const mockGeneratePrdLaunchMutate = vi.fn();
   const mockOnOpenChange = vi.fn();
   const mockOnSuccess = vi.fn();
 
@@ -111,9 +114,11 @@ describe("CreateDocumentModal", () => {
       mutate: mockMutate,
       isPending: false,
     });
-
-    mockUseRunLoop.mockReturnValue({
-      mutate: mockRunLoopMutate,
+    mockGeneratePrdLaunchMutate.mockImplementation((input, options) => {
+      options?.onSuccess?.({ artifact: input.artifact, status: "launched" });
+    });
+    mockUseGeneratePrdLaunch.mockReturnValue({
+      mutate: mockGeneratePrdLaunchMutate,
       isPending: false,
     });
 
@@ -161,6 +166,8 @@ describe("CreateDocumentModal", () => {
       data: [],
       isLoading: false,
     });
+
+    mockUsePreLoopGate.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -508,14 +515,193 @@ describe("CreateDocumentModal", () => {
       screen.getByRole("button", { name: GENERATE_PRD_REGEX }).click();
 
       await waitFor(() => {
-        expect(mockRunLoopMutate).toHaveBeenCalledWith(
+        expect(mockGeneratePrdLaunchMutate).toHaveBeenCalledWith(
           {
-            documentId: "new-prd-123",
-            command: RunLoopCommand.GeneratePrd,
+            artifact: expect.objectContaining({ id: "new-prd-123" }),
+            additionalRepos: undefined,
+            computeTargetId: undefined,
           },
-          expect.objectContaining({
-            onError: expect.any(Function),
-          })
+          expect.objectContaining({ onSuccess: expect.any(Function) })
+        );
+      });
+    });
+
+    it("disables Generate PRD while post-create target selection is pending", async () => {
+      mockUseGitHubIntegrationStatus.mockReturnValue({
+        data: { connected: true },
+        isLoading: false,
+      });
+      mockUseGitHubRepositories.mockReturnValue({
+        data: [{ id: "repo-1", name: "repo", fullName: "org/repo" }],
+        isLoading: false,
+      });
+      mockMutate.mockImplementation((_input, options) => {
+        options?.onSuccess?.({
+          id: "new-prd-pending",
+          title: "Pending PRD",
+          slug: "pending-prd",
+        });
+      });
+      mockGeneratePrdLaunchMutate.mockImplementation((input, options) => {
+        options?.onSuccess?.({
+          additionalRepos: input.additionalRepos,
+          artifact: input.artifact,
+          availableTargets: [
+            {
+              id: "target-1",
+              machineName: "Workstation",
+              status: "online",
+            },
+          ],
+          status: "pending_target_selection",
+        });
+      });
+
+      render(
+        <CreateDocumentModal
+          documentType={DocumentType.Prd}
+          onOpenChange={mockOnOpenChange}
+          open={true}
+          projectId="project-1"
+          teamId="team-1"
+        />
+      );
+
+      fireEvent.change(screen.getByLabelText(TITLE_REGEX), {
+        target: { value: "Pending PRD" },
+      });
+      screen.getByRole("combobox", { name: TARGET_REPOSITORY_REGEX }).click();
+      await waitFor(() => {
+        screen.getByText("org/repo").click();
+      });
+
+      screen.getByRole("button", { name: GENERATE_PRD_REGEX }).click();
+
+      await screen.findByText(TARGET_SELECTION_PROMPT_REGEX);
+      const generateButton = screen.getByRole("button", {
+        name: GENERATE_PRD_REGEX,
+      });
+      expect(generateButton).toBeDisabled();
+
+      fireEvent.click(generateButton);
+      expect(mockMutate).toHaveBeenCalledOnce();
+    });
+
+    it("does not create the PRD when the pre-loop gate blocks before executing the callback", async () => {
+      const mockRunWithPreLoopSystemCheck = vi
+        .fn()
+        .mockResolvedValue({ status: "blocked_missing_compute_selection" });
+      mockUsePreLoopGate.mockReturnValue({
+        runWithPreLoopSystemCheck: mockRunWithPreLoopSystemCheck,
+        cancelPendingPreLoopAttempt: vi.fn(),
+        isChecking: false,
+        isDialogOpen: false,
+        pendingOwnerKey: null,
+      });
+      mockUseGitHubIntegrationStatus.mockReturnValue({
+        data: { connected: true },
+        isLoading: false,
+      });
+      mockUseGitHubRepositories.mockReturnValue({
+        data: [{ id: "repo-1", name: "repo", fullName: "org/repo" }],
+        isLoading: false,
+      });
+
+      render(
+        <CreateDocumentModal
+          documentType={DocumentType.Prd}
+          onOpenChange={mockOnOpenChange}
+          open={true}
+          projectId="project-1"
+          teamId="team-1"
+        />
+      );
+
+      fireEvent.change(screen.getByLabelText(TITLE_REGEX), {
+        target: { value: "Blocked PRD" },
+      });
+      screen.getByRole("combobox", { name: TARGET_REPOSITORY_REGEX }).click();
+      await waitFor(() => {
+        screen.getByText("org/repo").click();
+      });
+
+      screen.getByRole("button", { name: GENERATE_PRD_REGEX }).click();
+
+      await waitFor(() => {
+        expect(mockRunWithPreLoopSystemCheck).toHaveBeenCalledOnce();
+      });
+      expect(mockRunWithPreLoopSystemCheck.mock.calls[0][0]).toMatchObject({
+        command: "generate_prd",
+        documentType: "prd",
+      });
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(mockGeneratePrdLaunchMutate).not.toHaveBeenCalled();
+    });
+
+    it("propagates an explicit Local target from the pre-loop gate into the post-create launch", async () => {
+      const mockRunWithPreLoopSystemCheck = vi.fn(
+        (
+          _metadata,
+          execute: (context: { computeTargetId: string }) => void
+        ) => {
+          execute({ computeTargetId: "target-local" });
+          return Promise.resolve({
+            status: "executed",
+            attemptId: "attempt-1",
+          });
+        }
+      );
+      mockUsePreLoopGate.mockReturnValue({
+        runWithPreLoopSystemCheck: mockRunWithPreLoopSystemCheck,
+        cancelPendingPreLoopAttempt: vi.fn(),
+        isChecking: false,
+        isDialogOpen: false,
+        pendingOwnerKey: null,
+      });
+      mockUseGitHubIntegrationStatus.mockReturnValue({
+        data: { connected: true },
+        isLoading: false,
+      });
+      mockUseGitHubRepositories.mockReturnValue({
+        data: [{ id: "repo-1", name: "repo", fullName: "org/repo" }],
+        isLoading: false,
+      });
+      mockMutate.mockImplementation((_input, options) => {
+        options?.onSuccess?.({
+          id: "new-prd-local",
+          title: "Generated PRD",
+          slug: "generated-prd",
+        });
+      });
+
+      render(
+        <CreateDocumentModal
+          documentType={DocumentType.Prd}
+          onOpenChange={mockOnOpenChange}
+          open={true}
+          projectId="project-1"
+          teamId="team-1"
+        />
+      );
+
+      fireEvent.change(screen.getByLabelText(TITLE_REGEX), {
+        target: { value: "Local PRD" },
+      });
+      screen.getByRole("combobox", { name: TARGET_REPOSITORY_REGEX }).click();
+      await waitFor(() => {
+        screen.getByText("org/repo").click();
+      });
+
+      screen.getByRole("button", { name: GENERATE_PRD_REGEX }).click();
+
+      await waitFor(() => {
+        expect(mockGeneratePrdLaunchMutate).toHaveBeenCalledWith(
+          {
+            artifact: expect.objectContaining({ id: "new-prd-local" }),
+            additionalRepos: undefined,
+            computeTargetId: "target-local",
+          },
+          expect.objectContaining({ onSuccess: expect.any(Function) })
         );
       });
     });

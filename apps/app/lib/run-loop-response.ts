@@ -1,7 +1,12 @@
 import type { ApiConflictBody } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
+  ComputePreferenceRequiredBody,
   ComputeTargetConflictBody,
+} from "@repo/api/src/types/compute-target";
+import {
+  ComputePreferenceRequiredError,
+  ComputePreferenceRequiredMessage,
 } from "@repo/api/src/types/compute-target";
 import type {
   CreateLoopResponse,
@@ -53,6 +58,11 @@ export function handleRunLoopResponse(
     return;
   }
 
+  if (response instanceof ComputePreferenceRequiredClientError) {
+    toast.error(ComputePreferenceRequiredMessage);
+    return;
+  }
+
   // Error case: route 409 conflict responses by discriminant.
   // The wire shape is `ApiConflictBody<F>` from @repo/api — a typed failure
   // body shared between server and client.
@@ -60,12 +70,17 @@ export function handleRunLoopResponse(
     const apiResult = response.data as
       | ApiConflictBody<
           | ComputeTargetConflictBody
+          | ComputePreferenceRequiredBody
           | BackendMismatchBody
           | LoopAlreadyActiveBody
         >
       | undefined;
     const conflictBody = apiResult?.data;
 
+    if (conflictBody?.error === ComputePreferenceRequiredError) {
+      toast.error(ComputePreferenceRequiredMessage);
+      return;
+    }
     if (
       conflictBody?.error === "loop_already_active" &&
       callbacks.onLoopAlreadyActive
@@ -85,6 +100,26 @@ export function handleRunLoopResponse(
   }
 
   toast.error(getErrorMessage(response));
+}
+
+/** Client-side representation of the server's compute preference conflict. */
+export class ComputePreferenceRequiredClientError extends Error {
+  readonly code = ComputePreferenceRequiredError;
+
+  constructor() {
+    super(ComputePreferenceRequiredMessage);
+    this.name = "ComputePreferenceRequiredClientError";
+  }
+}
+
+export function isComputePreferenceRequiredError(error: unknown): boolean {
+  return (
+    error instanceof ComputePreferenceRequiredClientError ||
+    (error instanceof ApiError &&
+      error.status === 409 &&
+      (error.data as ApiConflictBody<ComputePreferenceRequiredBody> | undefined)
+        ?.data?.error === ComputePreferenceRequiredError)
+  );
 }
 
 function isCreateLoopResponse(value: unknown): value is CreateLoopResponse {

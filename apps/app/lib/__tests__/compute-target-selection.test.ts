@@ -41,8 +41,55 @@ describe("resolveEffectiveComputeTargetSelection", () => {
     });
 
     expect(selection.currentPreference).toBe(ComputePreference.Local);
+    expect(selection.needsSelection).toBe(false);
     expect(selection.effectiveTarget).toBe(target);
     expect(selection.effectiveTargetId).toBe(target.id);
+  });
+
+  it("preserves Cloud fallback when explicit selection is not required", () => {
+    const selection = resolveEffectiveComputeTargetSelection({
+      preference: {
+        preferredComputeMode: ComputePreference.Cloud,
+        isExplicit: false,
+      },
+      targets: [],
+    });
+
+    expect(selection.currentPreference).toBe(ComputePreference.Cloud);
+    expect(selection.needsSelection).toBe(false);
+  });
+
+  it("requires selection when flag is enabled and preference is inferred", () => {
+    const target = makeTarget("target-1", true, "2026-04-28T12:00:00.000Z");
+
+    const selection = resolveEffectiveComputeTargetSelection({
+      preference: {
+        preferredComputeMode: ComputePreference.Cloud,
+        isExplicit: false,
+      },
+      requireExplicitSelection: true,
+      targets: [target],
+    });
+
+    expect(selection.currentPreference).toBeNull();
+    expect(selection.needsSelection).toBe(true);
+    expect(selection.effectiveTarget).toBeNull();
+    expect(selection.effectiveTargetId).toBeNull();
+    expect(selection.onlineTargets).toEqual([target]);
+  });
+
+  it("renders persisted Cloud as selected when explicit selection is required", () => {
+    const selection = resolveEffectiveComputeTargetSelection({
+      preference: {
+        preferredComputeMode: ComputePreference.Cloud,
+        isExplicit: true,
+      },
+      requireExplicitSelection: true,
+      targets: [],
+    });
+
+    expect(selection.currentPreference).toBe(ComputePreference.Cloud);
+    expect(selection.needsSelection).toBe(false);
   });
 
   it("falls back to the most recently active online target when the persisted target is offline", () => {

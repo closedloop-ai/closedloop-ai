@@ -163,6 +163,9 @@ function setupBaseMocks(): void {
   mockUseCreateAndGenerateDocument.mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
+    clearTargetSelection: vi.fn(),
+    multiTargetState: null,
+    selectTarget: vi.fn(),
   });
   mockUseProjects.mockReturnValue({
     data: [],
@@ -315,6 +318,9 @@ describe("NewPlanModal additionalRepos pre-fill (PLN-462)", () => {
     mockUseCreateAndGenerateDocument.mockReturnValue({
       mutate: mockCreateAndGenerate,
       isPending: false,
+      clearTargetSelection: vi.fn(),
+      multiTargetState: null,
+      selectTarget: vi.fn(),
     });
     setupInherited({
       additionalRepos: PEERS_FROM_BACKEND,

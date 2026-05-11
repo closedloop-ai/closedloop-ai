@@ -6,6 +6,7 @@ import {
 import { type JsonValue, success } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
+  ComputePreferenceRequiredBody,
   ComputeTargetConflictBody,
 } from "@repo/api/src/types/compute-target";
 import type {
@@ -20,6 +21,7 @@ import { handleLoopServiceError } from "@/app/loops/loop-error-responses";
 import { loopsService } from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import { buildMissingExplicitPreferenceResponse } from "@/lib/loops/explicit-compute-selection";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { buildLoopPrompt } from "@/lib/loops/prompts";
@@ -55,6 +57,7 @@ function getLoopMetadata(
 type RunLoopResponse =
   | CreateLoopResponse
   | ComputeTargetConflictBody
+  | ComputePreferenceRequiredBody
   | BackendMismatchBody
   | LoopAlreadyActiveBody;
 
@@ -86,10 +89,21 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
 
       const handler = getCommandHandler(COMMAND_MAP[body.command]);
 
+      const explicitSelectionGate =
+        await buildMissingExplicitPreferenceResponse({
+          clerkUserId: user.clerkId,
+          computeTargetId: body.computeTargetId,
+          userId: user.id,
+        });
+      if (explicitSelectionGate.response) {
+        return explicitSelectionGate.response;
+      }
+
       const ctRouteResult = await resolveRunLoopComputeTarget(
         user.organizationId,
         user.id,
-        body.computeTargetId
+        body.computeTargetId,
+        explicitSelectionGate.userComputePreferences
       );
       if ("errorResponse" in ctRouteResult) {
         return ctRouteResult.errorResponse;

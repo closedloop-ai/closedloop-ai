@@ -39,7 +39,13 @@ vi.mock("@/hooks/queries/use-documents", async () => {
     ...actual,
     useDocuments: () => ({ data: [], isLoading: false }),
     useCreateDocument: () => ({ mutate: vi.fn(), isPending: false }),
-    useCreateAndGenerateDocument: () => ({ mutate: vi.fn(), isPending: false }),
+    useCreateAndGenerateDocument: () => ({
+      mutate: vi.fn(),
+      isPending: false,
+      clearTargetSelection: vi.fn(),
+      multiTargetState: null,
+      selectTarget: vi.fn(),
+    }),
   };
 });
 

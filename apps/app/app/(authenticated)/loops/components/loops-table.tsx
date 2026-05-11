@@ -1,6 +1,7 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
+import { EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY } from "@repo/api/src/types/compute-target";
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -42,7 +43,9 @@ import {
   useLoops,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
 import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { getErrorMessage } from "@/lib/api-error";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
@@ -191,6 +194,9 @@ const DEFAULT_PAGE_SIZE = 10;
 export function LoopsTable() {
   const router = useRouter();
   const tokensFlag = useFeatureFlag("the-one-flag");
+  const explicitComputeSelectionEnabled = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
   const [pageSize, setPageSize] = useLocalStorageState(
     "loops:table:pageSize",
     DEFAULT_PAGE_SIZE
@@ -227,14 +233,21 @@ export function LoopsTable() {
     router.push(`/loops/${loop.id}`);
   };
 
-  const handleRestart = async (loopId: string) => {
-    setPendingLoopId(loopId);
+  const handleRestart = async (loop: LoopWithUser) => {
+    setPendingLoopId(loop.id);
     try {
-      const result = await resumeLoop.mutateAsync({ id: loopId });
+      const result = await resumeLoop.mutateAsync({
+        id: loop.id,
+        ...(explicitComputeSelectionEnabled && loop.computeTarget?.id
+          ? { computeTargetId: loop.computeTarget.id }
+          : {}),
+      });
       toast.success("Loop restarted");
       router.push(`/loops/${result.loopId}`);
-    } catch {
-      // Global QueryClient onError handler toasts the error
+    } catch (error) {
+      toast.error("Loop restart failed", {
+        description: getErrorMessage(error),
+      });
     } finally {
       setPendingLoopId(null);
     }
@@ -390,7 +403,7 @@ export function LoopsTable() {
                         pendingLoopId === loop.id || resumeLoop.isPending
                       }
                       onClick={async () => {
-                        await handleRestart(loop.id);
+                        await handleRestart(loop);
                       }}
                       size="sm"
                       variant="ghost"

@@ -5,9 +5,10 @@
  * 1. Fast-path: when user.preferredComputeMode is set (LOCAL or CLOUD),
  *    the endpoint returns it immediately without calling resolveEffectiveComputePreference.
  * 2. NULL-fallback: when user.preferredComputeMode is NULL, delegates to
- *    resolveEffectiveComputePreference which inspects online compute targets.
- *    - NULL + online targets → LOCAL
- *    - NULL + no online targets → CLOUD
+ *    resolveEffectiveComputePreference which inspects registered compute targets.
+ *    - NULL + online registered targets → LOCAL
+ *    - NULL + no online registered targets → CLOUD
+ *    - NULL + no registered targets → CLOUD
  */
 
 import { vi } from "vitest";
@@ -23,11 +24,12 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 
 // Mock withDb so we can control what preferredComputeMode is returned per test
 const mockUserFindUnique = vi.fn();
+const mockUserUpdate = vi.fn();
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => unknown) =>
       fn({
-        user: { findUnique: mockUserFindUnique },
+        user: { findUnique: mockUserFindUnique, update: mockUserUpdate },
       })
     ),
     { tx: vi.fn() }
@@ -64,7 +66,7 @@ vi.mock("@repo/observability/log", () => ({
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { GET } from "@/app/settings/compute-preference/route";
+import { GET, PUT } from "@/app/settings/compute-preference/route";
 import {
   createMockRequest,
   createMockRouteContext,
@@ -112,6 +114,7 @@ describe("GET /settings/compute-preference — fast-path (explicit preference se
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("LOCAL");
+    expect(json.data.isExplicit).toBe(true);
     // Fast-path: should not call the targets service
     expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
@@ -130,6 +133,7 @@ describe("GET /settings/compute-preference — fast-path (explicit preference se
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.isExplicit).toBe(true);
     // Fast-path: should not call the targets service
     expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
@@ -153,13 +157,38 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("LOCAL");
+    expect(json.data.isExplicit).toBe(false);
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
     );
   });
 
-  it("returns CLOUD when user has no preference and has no online compute targets", async () => {
+  it("returns CLOUD when user has no preference and only has offline compute targets", async () => {
+    mockUserFindUnique.mockResolvedValue({ preferredComputeMode: null });
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      makeTarget({ isOnline: false }),
+    ]);
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.isExplicit).toBe(false);
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
+      "org-1",
+      "user-1"
+    );
+  });
+
+  it("returns CLOUD when user has no preference and has no registered compute targets", async () => {
     mockUserFindUnique.mockResolvedValue({ preferredComputeMode: null });
     vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
@@ -174,6 +203,7 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.isExplicit).toBe(false);
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
@@ -195,5 +225,33 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.isExplicit).toBe(false);
+  });
+});
+
+describe("PUT /settings/compute-preference", () => {
+  it("marks the persisted preference response as explicit", async () => {
+    mockUserUpdate.mockResolvedValue({});
+
+    const response = await PUT(
+      createMockRequest({
+        body: {
+          mode: "LOCAL",
+          computeTargetId: "11111111-1111-4111-8111-111111111111",
+        },
+        method: "PUT",
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual({
+      preferredComputeMode: "LOCAL",
+      computeTargetId: "11111111-1111-4111-8111-111111111111",
+      isExplicit: true,
+    });
   });
 });

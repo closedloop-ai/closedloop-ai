@@ -1,8 +1,11 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
+import { EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY } from "@repo/api/src/types/compute-target";
+import type { FriendlyErrorInput } from "@repo/api/src/types/friendly-error";
 import type {
   AdditionalRepoRefWithPr,
+  LoopError,
   LoopEventError,
   LoopSupportArtifact,
   TokensByModel,
@@ -58,6 +61,8 @@ import {
   useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
+import { ApiError, getErrorMessage } from "@/lib/api-error";
 import { formatDateTime } from "@/lib/date-utils";
 import { getDocumentRoute } from "@/lib/document-navigation";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
@@ -66,6 +71,57 @@ import {
   RESTARTABLE_LOOP_STATUSES,
 } from "@/lib/loop-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
+
+function toFriendlyErrorInput(error: unknown): FriendlyErrorInput {
+  if (error instanceof ApiError) {
+    return {
+      code: error.code,
+      details: error.details,
+      message: error.message,
+      timestamp: error.timestamp,
+    };
+  }
+  return {
+    message:
+      error instanceof Error ? error.message : "Loop restart failed to start.",
+  };
+}
+
+function getRestartRequest(
+  loop: {
+    id: string;
+    computeTarget?: { id: string } | null;
+  },
+  preserveComputeTarget: boolean
+) {
+  const computeTargetId = loop.computeTarget?.id;
+  return preserveComputeTarget && computeTargetId
+    ? { id: loop.id, computeTargetId }
+    : { id: loop.id };
+}
+
+function LoopErrorAlerts({
+  loopError,
+  restartError,
+}: {
+  loopError: LoopError | null;
+  restartError: FriendlyErrorInput | null;
+}) {
+  return (
+    <>
+      {restartError && <FriendlyErrorAlert error={restartError} />}
+      {loopError && (
+        <FriendlyErrorAlert
+          error={{
+            code: loopError.code,
+            message: loopError.message,
+            result: loopError.result ?? undefined,
+          }}
+        />
+      )}
+    </>
+  );
+}
 
 function formatModelName(model: string): string {
   return model
@@ -355,6 +411,12 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const cancelLoop = useCancelLoop();
   const router = useRouter();
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [restartError, setRestartError] = useState<FriendlyErrorInput | null>(
+    null
+  );
+  const explicitComputeSelectionEnabled = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
   const ghostLoopFlag = useFeatureFlag("ghost-loop-ux");
   const ghostLoopUx = ghostLoopFlag?.enabled;
   const { data: errorEvents } = useLoopEventsPaginated(
@@ -395,12 +457,19 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
     : undefined;
   const handleRestart = () => {
+    setRestartError(null);
     resumeLoop.mutate(
-      { id: loop.id },
+      getRestartRequest(loop, explicitComputeSelectionEnabled),
       {
         onSuccess: (result) => {
           toast.success("Loop restarted");
           router.push(`/loops/${result.loopId}`);
+        },
+        onError: (error) => {
+          setRestartError(toFriendlyErrorInput(error));
+          toast.error("Loop restart failed", {
+            description: getErrorMessage(error),
+          });
         },
       }
     );
@@ -501,15 +570,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       {loop.documentId && <ArtifactLink documentId={loop.documentId} />}
 
       {/* Error display */}
-      {loop.error && (
-        <FriendlyErrorAlert
-          error={{
-            code: loop.error.code,
-            message: loop.error.message,
-            result: loop.error.result ?? undefined,
-          }}
-        />
-      )}
+      <LoopErrorAlerts loopError={loop.error} restartError={restartError} />
 
       {/* Diagnostics */}
       {diagnosticsLogTail && (

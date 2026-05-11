@@ -62,6 +62,7 @@ export function useSetComputePreference(userId: string) {
       queryClient.setQueryData<ComputePreferenceResponse>(queryKey, {
         preferredComputeMode: request.mode,
         computeTargetId: request.computeTargetId,
+        isExplicit: true,
       });
       return { previous };
     },

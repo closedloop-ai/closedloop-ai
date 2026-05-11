@@ -33,6 +33,8 @@ type TemplateVariables = {
 };
 
 const GitGatewayErrorCategory = {
+  ComputeTargetOffline: "compute_target_offline",
+  ComputeTargetUnavailable: "compute_target_unavailable",
   GitCommandFailed: "git_command_failed",
   GitPushAuth: "git_push_auth",
   PreCommitHook: "pre_commit_hook",
@@ -355,6 +357,24 @@ const runnerSubcodeMessages = {
 } satisfies Record<RunnerErrorSubcode, FriendlyErrorTemplate>;
 
 const gitCategoryMessages = {
+  [GitGatewayErrorCategory.ComputeTargetOffline]: {
+    title: "Compute target is offline",
+    description:
+      "The loop was not restarted because the selected compute target is not online.",
+    remediation: [
+      "Start the ClosedLoop Desktop app on the selected target.",
+      "Retry after the target shows online.",
+    ],
+  },
+  [GitGatewayErrorCategory.ComputeTargetUnavailable]: {
+    title: "No compute target is online",
+    description:
+      "The loop was not restarted because no local compute target is online.",
+    remediation: [
+      "Start the ClosedLoop Desktop app on the target you want to use.",
+      "Retry after a compute target shows online.",
+    ],
+  },
   [GitGatewayErrorCategory.PreCommitHook]: {
     title: "Pre-commit hook failed",
     description:
@@ -425,10 +445,10 @@ export function resolveFriendlyError(
   const baseMessage = knownCode.success
     ? loopErrorMessages[knownCode.data]
     : fallbackMessage;
-  const categorizedMessage =
-    !knownCode.success || knownCode.data === LoopErrorCode.ProcessFailed
-      ? getGitCategoryMessage(input.details)
-      : null;
+  const categorizedMessage = getScopedCategoryMessage(
+    knownCode.success ? knownCode.data : null,
+    input.details
+  );
   const runnerMessage =
     knownCode.success && knownCode.data === LoopErrorCode.RunnerError
       ? getRunnerSubcodeMessage(input.result)
@@ -477,14 +497,30 @@ function getRunnerSubcodeMessage(
   );
 }
 
-function getGitCategoryMessage(
+function getScopedCategoryMessage(
+  code: LoopErrorCode | null,
   details: JsonObject | null | undefined
 ): FriendlyErrorTemplate | null {
   const category = getString(details, "category");
   if (!category) {
     return null;
   }
-  return gitCategoryMessages[category as GitGatewayErrorCategory] ?? null;
+  if (
+    code === null ||
+    code === LoopErrorCode.ProcessFailed ||
+    (code === LoopErrorCode.PreRunValidationFailed &&
+      isComputeTargetCategory(category))
+  ) {
+    return gitCategoryMessages[category as GitGatewayErrorCategory] ?? null;
+  }
+  return null;
+}
+
+function isComputeTargetCategory(category: string): boolean {
+  return (
+    category === GitGatewayErrorCategory.ComputeTargetOffline ||
+    category === GitGatewayErrorCategory.ComputeTargetUnavailable
+  );
 }
 
 function getRemediation(

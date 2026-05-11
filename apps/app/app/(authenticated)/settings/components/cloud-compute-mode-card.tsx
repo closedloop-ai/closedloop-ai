@@ -1,6 +1,9 @@
 "use client";
 
-import { ComputePreference } from "@repo/api/src/types/compute-target";
+import {
+  ComputePreference,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+} from "@repo/api/src/types/compute-target";
 import { useUser } from "@repo/auth/client";
 import {
   Card,
@@ -19,14 +22,21 @@ import {
   useComputePreference,
   useSetComputePreference,
 } from "@/hooks/queries/use-compute-preference";
+import { useFeatureFlagEnabled } from "@/hooks/use-feature-flag-enabled";
 
 export function CloudComputeModeCard() {
   const { user } = useUser();
   const userId = user?.id ?? "";
   const { data, isLoading } = useComputePreference(userId);
   const setPreference = useSetComputePreference(userId);
+  const requireExplicitSelection = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
 
-  const currentMode = data?.preferredComputeMode ?? ComputePreference.Cloud;
+  const currentMode =
+    requireExplicitSelection && data?.isExplicit !== true
+      ? undefined
+      : (data?.preferredComputeMode ?? ComputePreference.Cloud);
 
   function handleChange(value: string): void {
     setPreference.mutate({ mode: value as ComputePreference });
@@ -54,7 +64,7 @@ export function CloudComputeModeCard() {
             className="gap-3"
             disabled={setPreference.isPending}
             onValueChange={handleChange}
-            value={currentMode}
+            value={currentMode ?? ""}
           >
             <div className="flex items-center gap-3">
               <RadioGroupItem

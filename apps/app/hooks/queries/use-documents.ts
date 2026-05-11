@@ -1,6 +1,5 @@
 "use client";
 
-import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import {
   type CreateDocumentInput,
@@ -30,7 +29,8 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
-import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
+import { getErrorMessage } from "@/lib/api-error";
+import { postRunLoop } from "@/lib/run-loop-launcher";
 import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import { invalidateArtifactLinkQueries } from "./use-artifact-links";
 import { dashboardKeys } from "./use-dashboard-stats";
@@ -39,6 +39,23 @@ import { projectKeys, useProjectsByTeam } from "./use-projects";
 
 /** Summary fields returned by the versions list endpoint (no content). */
 type DocumentVersionSummary = Omit<DocumentVersion, "content">;
+
+export type CreateAndGenerateDocumentResult = {
+  artifact: Document;
+  status: "launched" | "pending_target_selection";
+};
+
+export type GeneratePrdLaunchResult =
+  | {
+      artifact: Document;
+      status: "launched";
+    }
+  | {
+      additionalRepos?: AdditionalRepoRef[];
+      artifact: Document;
+      availableTargets: ComputeTargetConflictBody["availableTargets"];
+      status: "pending_target_selection";
+    };
 
 // Query keys
 export const documentKeys = {
@@ -389,44 +406,51 @@ export function useCreateAndGenerateDocument() {
 
   const [multiTargetState, setMultiTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
+    pendingArtifact: Document;
     pendingDocumentId: string;
     additionalRepos?: AdditionalRepoRef[];
   } | null>(null);
 
   const mutation = useMutation({
+    meta: { suppressDefaultErrorToast: true },
     mutationFn: async ({
       input,
       additionalRepos,
+      computeTargetId,
     }: {
       input: CreateDocumentInput;
       additionalRepos?: AdditionalRepoRef[];
-    }) => {
-      const artifact = await apiClient.post<Document>("/documents", input);
+      computeTargetId?: string | null;
+    }): Promise<CreateAndGenerateDocumentResult> => {
+      let artifact: Document;
+      try {
+        artifact = await apiClient.post<Document>("/documents", input);
+      } catch (error) {
+        toast.error(getErrorMessage(error));
+        throw error;
+      }
 
       // Trigger generation via Loops — compute target resolved server-side
       try {
-        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
-        await apiClient.post(`/documents/${artifact.id}/run-loop`, {
+        await postRunLoop(apiClient, {
+          documentId: artifact.id,
           command: RunLoopCommand.Plan,
+          ...(computeTargetId === undefined ? {} : { computeTargetId }),
           ...(additionalRepos?.length ? { additionalRepos } : {}),
-          ...(desktopApiNamespace &&
-          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
-            ? { desktopApiNamespace }
-            : {}),
         });
-        return artifact;
+        return { artifact, status: "launched" };
       } catch (error) {
-        // This catch is inside mutationFn (not onError), so TanStack Query sees onSuccess —
-        // intentionally, so the caller can navigate to the created artifact regardless of
-        // whether generation succeeded.
-        // Unhandled error types are logged inside handleRunLoopResponse.
+        let isPendingTargetSelection = false;
         handleRunLoopResponse(error, {
-          onMultipleTargets: (conflict) =>
+          onMultipleTargets: (conflict) => {
+            isPendingTargetSelection = true;
             setMultiTargetState({
               availableTargets: conflict.availableTargets,
+              pendingArtifact: artifact,
               pendingDocumentId: artifact.id,
               additionalRepos,
-            }),
+            });
+          },
           onBackendMismatch: () => {
             // Backend mismatch modal handled in T-3.4
           },
@@ -434,18 +458,21 @@ export function useCreateAndGenerateDocument() {
             // unreachable: catch only receives thrown errors
           },
         });
-        return artifact;
+        if (isPendingTargetSelection) {
+          return { artifact, status: "pending_target_selection" };
+        }
+        throw error;
       }
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
       queryClient.invalidateQueries({ queryKey: documentKeys.bySlugs() });
       queryClient.invalidateQueries({
-        queryKey: documentKeys.generationStatus(data.id),
+        queryKey: documentKeys.generationStatus(data.artifact.id),
       });
-      if (data.projectId) {
+      if (data.artifact.projectId) {
         queryClient.invalidateQueries({
-          queryKey: projectTreeKeys.detail(data.projectId),
+          queryKey: projectTreeKeys.detail(data.artifact.projectId),
         });
       }
     },
@@ -456,34 +483,102 @@ export function useCreateAndGenerateDocument() {
       if (!multiTargetState) {
         return;
       }
-      const { pendingDocumentId, additionalRepos } = multiTargetState;
+      const { pendingArtifact, pendingDocumentId, additionalRepos } =
+        multiTargetState;
       setMultiTargetState(null);
       try {
-        const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
-        await apiClient.post(`/documents/${pendingDocumentId}/run-loop`, {
+        await postRunLoop(apiClient, {
+          documentId: pendingDocumentId,
           command: RunLoopCommand.Plan,
           computeTargetId: targetId,
           ...(additionalRepos?.length ? { additionalRepos } : {}),
-          ...(desktopApiNamespace &&
-          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
-            ? { desktopApiNamespace }
-            : {}),
         });
         queryClient.invalidateQueries({
           queryKey: documentKeys.generationStatus(pendingDocumentId),
         });
+        return { artifact: pendingArtifact, status: "launched" } as const;
       } catch (retryError) {
         toast.error(
           retryError instanceof Error
             ? retryError.message
             : "Failed to start plan generation"
         );
+        return undefined;
       }
     },
     [multiTargetState, apiClient, queryClient]
   );
 
-  return { ...mutation, multiTargetState, selectTarget };
+  const clearTargetSelection = useCallback(() => {
+    setMultiTargetState(null);
+  }, []);
+
+  return { ...mutation, clearTargetSelection, multiTargetState, selectTarget };
+}
+
+/**
+ * Launches PRD generation for a newly-created artifact through a dedicated
+ * mutation so component call sites can use mutate callbacks instead of
+ * `mutateAsync` try/catch flows.
+ */
+export function useGeneratePrdLaunch() {
+  const apiClient = useApiClient();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    meta: { suppressDefaultErrorToast: true },
+    mutationFn: async ({
+      additionalRepos,
+      artifact,
+      computeTargetId,
+    }: {
+      additionalRepos?: AdditionalRepoRef[];
+      artifact: Document;
+      computeTargetId?: string | null;
+    }): Promise<GeneratePrdLaunchResult> => {
+      try {
+        await postRunLoop(apiClient, {
+          documentId: artifact.id,
+          command: RunLoopCommand.GeneratePrd,
+          ...(computeTargetId === undefined ? {} : { computeTargetId }),
+          ...(additionalRepos?.length ? { additionalRepos } : {}),
+        });
+        return { artifact, status: "launched" };
+      } catch (error) {
+        let availableTargets:
+          | ComputeTargetConflictBody["availableTargets"]
+          | undefined;
+
+        handleRunLoopResponse(error, {
+          onMultipleTargets: (conflict) => {
+            availableTargets = conflict.availableTargets;
+          },
+          onBackendMismatch: () => {
+            toast.error(getErrorMessage(error));
+          },
+          onSuccess: () => {
+            // unreachable: catch only receives thrown errors
+          },
+        });
+
+        if (availableTargets) {
+          return {
+            additionalRepos,
+            artifact,
+            availableTargets,
+            status: "pending_target_selection",
+          };
+        }
+        throw error;
+      }
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({
+        queryKey: documentKeys.generationStatus(data.artifact.id),
+      });
+      queryClient.invalidateQueries({ queryKey: ["loops"] });
+    },
+  });
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   useDocument,
   useDocuments,
   useDocumentsByProject,
+  useGeneratePrdLaunch,
   useUpdateDocument,
 } from "../use-documents";
 import { createWrapper } from "./test-utils";
@@ -23,6 +24,13 @@ const mockApiClient = {
   put: vi.fn(),
   delete: vi.fn(),
 };
+const mockToastError = vi.hoisted(() => vi.fn());
+
+vi.mock("@repo/design-system/components/ui/sonner", () => ({
+  toast: {
+    error: mockToastError,
+  },
+}));
 
 vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => mockApiClient,
@@ -310,6 +318,7 @@ describe("useCreateAndGenerateDocument", () => {
       expect(result.current.multiTargetState).not.toBeNull();
     });
 
+    expect(result.current.data?.status).toBe("pending_target_selection");
     expect(result.current.multiTargetState?.availableTargets).toHaveLength(2);
 
     // Simulate the user selecting a target — this triggers the retry POST
@@ -370,6 +379,99 @@ describe("useCreateAndGenerateDocument", () => {
       2,
       `/documents/${mockArtifact.id}/run-loop`,
       expect.objectContaining({ additionalRepos })
+    );
+  });
+
+  test("rejects the mutation when post-create run-loop launch fails with an unhandled error", async () => {
+    const mockArtifact = createMockDocument({
+      id: "artifact-500",
+      projectId: "project-123",
+    });
+    const launchError = new Error("launch failed");
+
+    mockApiClient.post
+      .mockResolvedValueOnce(mockArtifact)
+      .mockRejectedValueOnce(launchError);
+
+    const { result } = renderHook(() => useCreateAndGenerateDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({
+        input: {
+          title: "Test Plan",
+          type: DocumentType.ImplementationPlan,
+          content: "",
+          projectId: "project-123",
+        },
+      });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(result.current.error).toBe(launchError);
+  });
+
+  test("surfaces document creation errors even though launch errors are handled by the mutation", async () => {
+    const createError = new Error("document create failed");
+    mockApiClient.post.mockRejectedValueOnce(createError);
+
+    const { result } = renderHook(() => useCreateAndGenerateDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({
+        input: {
+          title: "Test Plan",
+          type: DocumentType.ImplementationPlan,
+          content: "",
+          projectId: "project-123",
+        },
+      });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(mockToastError).toHaveBeenCalledWith("document create failed");
+    expect(mockApiClient.post).toHaveBeenCalledOnce();
+  });
+
+  test("launches generated PRDs through a dedicated mutation with target and repo context", async () => {
+    const mockArtifact = createMockDocument({
+      id: "prd-123",
+      projectId: "project-123",
+      type: DocumentType.Prd,
+    });
+    const additionalRepos = [{ fullName: "org/extra", branch: "main" }];
+
+    mockApiClient.post.mockResolvedValueOnce({
+      loopId: "loop-prd",
+      status: "PENDING",
+    });
+
+    const { result } = renderHook(() => useGeneratePrdLaunch(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({
+        artifact: mockArtifact,
+        additionalRepos,
+        computeTargetId: "target-1",
+      });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockApiClient.post).toHaveBeenCalledWith(
+      "/documents/prd-123/run-loop",
+      expect.objectContaining({
+        command: RunLoopCommand.GeneratePrd,
+        additionalRepos,
+        computeTargetId: "target-1",
+      })
     );
   });
 

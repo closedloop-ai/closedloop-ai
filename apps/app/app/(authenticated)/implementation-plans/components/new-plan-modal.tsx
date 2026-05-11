@@ -29,6 +29,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import {
   useCreateAndGenerateDocument,
   useCreateDocument,
@@ -42,7 +43,10 @@ import {
   toResolverTeamRepo,
   useTeamRepositoriesUnion,
 } from "@/hooks/use-team-repositories-union";
-import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
+import {
+  PreLoopCommand,
+  type PreLoopExecutionContext,
+} from "@/lib/system-check/pre-loop-health-check";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
@@ -130,10 +134,20 @@ function submitCreatePlan({
     const submitAdditionalRepos = showPicker
       ? normalizeAdditionalRepos(additionalRepos)
       : undefined;
-    const executeCreateAndGenerate = () => {
+    const executeCreateAndGenerate = (context: PreLoopExecutionContext) => {
       createAndGeneratePlan.mutate(
-        { input: createConfig.input, additionalRepos: submitAdditionalRepos },
-        { onSuccess }
+        {
+          input: createConfig.input,
+          additionalRepos: submitAdditionalRepos,
+          computeTargetId: context.computeTargetId,
+        },
+        {
+          onSuccess: (result) => {
+            if (result.status === "launched") {
+              onSuccess(result.artifact);
+            }
+          },
+        }
       );
     };
     if (preLoopGate) {
@@ -149,7 +163,7 @@ function submitCreatePlan({
         .catch(() => undefined);
       return;
     }
-    executeCreateAndGenerate();
+    executeCreateAndGenerate({});
     return;
   }
   createPlan.mutate(createConfig.input, { onSuccess });
@@ -318,6 +332,7 @@ export function NewPlanModal({
     setOpen(newOpen);
     if (!newOpen) {
       preLoopGate?.cancelPendingPreLoopAttempt(preLoopOwnerKey);
+      createAndGeneratePlan.clearTargetSelection();
     }
   };
 
@@ -325,6 +340,14 @@ export function NewPlanModal({
     setSelectedRepoId(repoId);
     setTargetRepo(fullName);
     setTargetBranch("");
+  };
+
+  const handlePostCreateTargetSelect = async (targetId: string) => {
+    const result = await createAndGeneratePlan.selectTarget(targetId);
+    if (result?.status === "launched") {
+      setOpen(false);
+      router.push(`/implementation-plans/${result.artifact.slug}`);
+    }
   };
 
   const showProjectSelector = !selectedSource?.projectId;
@@ -337,6 +360,9 @@ export function NewPlanModal({
     createPlan.isPending ||
     createAndGeneratePlan.isPending ||
     isPreLoopPendingForThisModal;
+  const isTargetSelectionPending = Boolean(
+    createAndGeneratePlan.multiTargetState
+  );
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
@@ -477,6 +503,22 @@ export function NewPlanModal({
             missingRepo={missingRepo}
             selectedSource={selectedSource}
           />
+
+          {createAndGeneratePlan.multiTargetState ? (
+            <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 p-3">
+              <p className="text-muted-foreground text-sm">
+                Select a compute target to start generation.
+              </p>
+              <LoopDispatchTargetSelector
+                availableTargets={
+                  createAndGeneratePlan.multiTargetState.availableTargets
+                }
+                onSelect={(targetId) => {
+                  handlePostCreateTargetSelect(targetId).catch(() => undefined);
+                }}
+              />
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -485,7 +527,7 @@ export function NewPlanModal({
           </Button>
           <Button
             disabled={isCreateSubmitDisabled(
-              isSubmitting,
+              isSubmitting || isTargetSelectionPending,
               title.trim().length > 0,
               selectedSource,
               missingRepo,
