@@ -520,7 +520,7 @@ export const googleService = {
           const MAX_SIZE = 1024 * 1024; // 1MB
           let content = markdown;
           if (content.length > MAX_SIZE) {
-            content = content.substring(0, MAX_SIZE);
+            content = content.slice(0, MAX_SIZE);
             log.warn("[google/import] Truncated doc to 1MB", {
               organizationId,
               docId: doc.id,

@@ -90,7 +90,7 @@ export const POST = withAnyAuth<
 
         let content = markdown;
         if (content.length > MAX_CONTENT_SIZE) {
-          content = content.substring(0, MAX_CONTENT_SIZE);
+          content = content.slice(0, MAX_CONTENT_SIZE);
           log.warn("[gdrive-context] Truncated doc to 1MB", {
             docId,
             originalSize: markdown.length,

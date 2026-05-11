@@ -10,6 +10,10 @@ import {
   LoopArtifactType,
 } from "@closedloop-ai/loops-api/artifacts";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import {
+  LoopErrorCode,
+  RunnerErrorSubcode,
+} from "@closedloop-ai/loops-api/error-codes";
 import { MULTI_REPO_POLICY } from "@closedloop-ai/loops-api/multi-repo-policy";
 
 import {
@@ -39,6 +43,7 @@ import {
   redactSensitive,
   refreshGitHubToken,
   registerSecret,
+  reportFinalStatus,
   resetHarnessState,
   snapshotTokens,
   syncPlanFromContextPack,
@@ -51,6 +56,10 @@ import {
   writeFeatureEvaluationPrdFile,
   writePrdFile,
 } from "./harness-agent.mjs";
+import {
+  signUserVisibleLoopFailure,
+  USER_VISIBLE_LOOP_FAILURE_FILE,
+} from "./lib/user-visible-loop-failure.mjs";
 
 // ---------------------------------------------------------------------------
 // Temp directory management
@@ -3543,4 +3552,143 @@ describe("refreshGitHubToken command-agnostic peer token refresh", () => {
       assert.equal(config.githubToken, "new-primary");
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// reportFinalStatus — wiring tests for marker and JSONL auth-challenge paths
+// ---------------------------------------------------------------------------
+
+describe("reportFinalStatus auth-challenge wiring", () => {
+  let originalFetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    resetConfig({
+      command: LoopCommand.Plan,
+      loopId: "test-loop-id",
+      authToken: "test-auth-token",
+      apiBaseUrl: "https://api.example.com",
+      correlationId: "test-correlation-id",
+      targetRepo: null,
+    });
+    resetHarnessState({ contextPackRef: null });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function installFetchCapture() {
+    const capturedCalls = [];
+    globalThis.fetch = async (url, options) => {
+      capturedCalls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "ok",
+        json: async () => ({
+          data: { token: "new-token", additionalRepoTokens: [] },
+        }),
+      };
+    };
+    return capturedCalls;
+  }
+
+  function getEventData(capturedCalls) {
+    const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
+    if (eventCall === undefined) {
+      throw new Error("expected an event POST to /events");
+    }
+    return JSON.parse(eventCall.options.body).data;
+  }
+
+  const tokenUsage = {
+    totalInput: 1000,
+    totalOutput: 200,
+    tokensByModel: { "claude-3-5-sonnet": { input: 1000, output: 200 } },
+  };
+
+  async function callReportFinalStatus(workDir, overrides) {
+    await reportFinalStatus(workDir, [], {
+      timedOut: false,
+      signal: null,
+      duration: "10.0",
+      tokenUsage,
+      startTime: Date.now(),
+      symphonyWorkDir: null,
+      userVisibleLoopFailureSecret: "unused-secret",
+      spawnStartedAt: 0,
+      ...overrides,
+    });
+  }
+
+  test("primary marker path emits error event with code/subcode/message from signed marker", async () => {
+    const workDir = makeTempDir();
+    const signingSecret = "test-signing-secret-abc123";
+    const markerPayload = {
+      code: LoopErrorCode.RunnerError,
+      message: "Pre-run validation rejected the loop configuration.",
+      result: { subcode: RunnerErrorSubcode.BadPlanState },
+    };
+    const signature = signUserVisibleLoopFailure(markerPayload, signingSecret);
+    fs.writeFileSync(
+      path.join(workDir, USER_VISIBLE_LOOP_FAILURE_FILE),
+      JSON.stringify({ ...markerPayload, signature }),
+      "utf-8"
+    );
+
+    const capturedCalls = installFetchCapture();
+    await callReportFinalStatus(workDir, {
+      exitCode: 1,
+      userVisibleLoopFailureSecret: signingSecret,
+    });
+
+    const data = getEventData(capturedCalls);
+    assert.equal(data.code, markerPayload.code);
+    assert.equal(data.result.subcode, markerPayload.result.subcode);
+    assert.equal(data.message, markerPayload.message);
+    assert.equal(data.tokensUsed.input, tokenUsage.totalInput);
+    assert.equal(data.tokensUsed.output, tokenUsage.totalOutput);
+    assert.deepEqual(data.tokensByModel, tokenUsage.tokensByModel);
+  });
+
+  test("JSONL 429 entry on exitCode 0 emits AuthChallenge instead of completed", async () => {
+    const workDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(workDir, "claude-output.jsonl"),
+      `${JSON.stringify({
+        isApiErrorMessage: true,
+        error: "some unknown error text",
+        apiErrorStatus: 429,
+      })}\n`,
+      "utf-8"
+    );
+
+    const capturedCalls = installFetchCapture();
+    await callReportFinalStatus(workDir, { exitCode: 0 });
+
+    const data = getEventData(capturedCalls);
+    assert.equal(data.type, "error");
+    assert.equal(data.code, LoopErrorCode.AuthChallenge);
+  });
+
+  test("no marker and clean JSONL on exitCode 0 emits completed", async () => {
+    const workDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(workDir, "claude-output.jsonl"),
+      `${JSON.stringify({
+        type: "result",
+        is_error: false,
+        result: "Completed successfully",
+      })}\n`,
+      "utf-8"
+    );
+
+    const capturedCalls = installFetchCapture();
+    await callReportFinalStatus(workDir, { exitCode: 0 });
+
+    const data = getEventData(capturedCalls);
+    assert.equal(data.type, "completed");
+    assert.equal(data.code, undefined);
+  });
 });
