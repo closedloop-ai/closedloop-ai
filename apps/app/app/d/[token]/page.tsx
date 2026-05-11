@@ -7,6 +7,7 @@ import type {
   ProjectUsage,
   RecentSession,
   TimeSeriesBucket,
+  UserLeaderboardEntry,
 } from "@repo/api/src/types/dashboard";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -660,6 +661,113 @@ function SessionsTable({ sessions }: { sessions: RecentSession[] }) {
 
 // ── Dashboard Content ────────────────────────────────────────────────────────
 
+function Sparkline({
+  data,
+  color = ACCENT,
+}: {
+  data: number[];
+  color?: string;
+}) {
+  if (data.length < 2) {
+    return null;
+  }
+  const max = Math.max(...data, 1);
+  const h = 24;
+  const w = 80;
+  const points = data
+    .map((v, i) => `${(i / (data.length - 1)) * w},${h - (v / max) * h}`)
+    .join(" ");
+  return (
+    <svg
+      aria-label="Usage trend"
+      className="inline-block"
+      height={h}
+      role="img"
+      viewBox={`0 0 ${w} ${h}`}
+      width={w}
+    >
+      <title>Usage trend</title>
+      <polyline
+        fill="none"
+        points={points}
+        stroke={color}
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function UserLeaderboard({ users }: { users: UserLeaderboardEntry[] }) {
+  if (users.length === 0) {
+    return null;
+  }
+  return (
+    <div className="rounded-lg border border-slate-700/50 bg-slate-800/60 p-5">
+      <h3 className="mb-4 font-semibold text-slate-300 text-sm uppercase tracking-wider">
+        Member Leaderboard
+      </h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-slate-700 border-b text-slate-400 text-xs uppercase tracking-wider">
+              <th className="pr-4 pb-3 font-medium">#</th>
+              <th className="pr-4 pb-3 font-medium">Member</th>
+              <th className="pr-4 pb-3 font-medium">Trend</th>
+              <th className="pr-4 pb-3 text-right font-medium">Tokens</th>
+              <th className="pr-4 pb-3 text-right font-medium">Loops</th>
+              <th className="pr-4 pb-3 text-right font-medium">Sessions</th>
+              <th className="pr-4 pb-3 text-right font-medium">Avg Runtime</th>
+              <th className="pb-3 font-medium">Top Model</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u, i) => (
+              <tr
+                className="border-slate-700/40 border-b text-slate-300"
+                key={u.userId}
+              >
+                <td className="py-3 pr-4 text-slate-500">{i + 1}</td>
+                <td className="py-3 pr-4">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-700 text-xs">
+                      {u.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="text-sm">{u.name}</div>
+                      <div className="text-slate-500 text-xs">{u.email}</div>
+                    </div>
+                  </div>
+                </td>
+                <td className="py-3 pr-4">
+                  <Sparkline data={u.sparkline ?? []} />
+                </td>
+                <td className="py-3 pr-4 text-right font-medium">
+                  {fmt(u.totalTokens)}
+                </td>
+                <td className="py-3 pr-4 text-right">{u.loops}</td>
+                <td className="py-3 pr-4 text-right">{u.sessions}</td>
+                <td className="py-3 pr-4 text-right">{u.avgRuntimeMinutes}m</td>
+                <td className="py-3">
+                  <span
+                    className="rounded-full border px-2 py-0.5 text-xs"
+                    style={{
+                      borderColor: modelColor(u.topModel),
+                      color: modelColor(u.topModel),
+                    }}
+                  >
+                    {u.topModel}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function AgentUsageTable({ agents }: { agents: AgentUsage[] }) {
   if (agents.length === 0) {
     return null;
@@ -702,6 +810,7 @@ function AgentUsageTable({ agents }: { agents: AgentUsage[] }) {
   );
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Dashboard orchestrator with view toggle and interactive stat cards
 function DashboardContent({
   data,
   range,
@@ -714,6 +823,7 @@ function DashboardContent({
   onIntervalChange: (v: TimeInterval) => void;
 }) {
   const { stats, delivery } = data;
+  const [view, setView] = useState<"overall" | "members">("overall");
   const [activeMetric, setActiveMetric] = useState<ChartMetric>("tokens");
   const [chartType, setChartType] = useState<ChartType>("bar");
   const totalTokens =
@@ -725,117 +835,157 @@ function DashboardContent({
 
   return (
     <>
-      {/* Hero: clickable stat cards */}
-      <div className="mb-6">
-        <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
-          Token Investment
-        </h2>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          <StatCard
-            active={activeMetric === "apiCost"}
-            label="API Cost Equivalent"
-            onClick={() => setActiveMetric("apiCost")}
-            sub="Anthropic API pricing by model"
-            value={fmtCost(stats.apiCostEquivalent ?? 0)}
-          />
-          <StatCard
-            active={activeMetric === "tokens"}
-            label="Total Tokens"
-            onClick={() => setActiveMetric("tokens")}
-            sub={suffix}
-            value={fmt(totalTokens)}
-          />
-          <StatCard
-            active={activeMetric === "activeUsers"}
-            label="Active Users"
-            onClick={() => setActiveMetric("activeUsers")}
-            sub={suffix}
-            value={(stats.activeUsers ?? 0).toString()}
-          />
-          <StatCard
-            label="Sessions"
-            sub="logins / session refreshes"
-            value={fmt(stats.sessions ?? 0)}
-          />
-          <StatCard
-            label="Active Nodes"
-            sub="compute targets"
-            value={(stats.activeNodes ?? 0).toString()}
-          />
-        </div>
+      {/* View Toggle */}
+      <div className="mb-6 flex items-center gap-2">
+        <button
+          className={`rounded px-4 py-1.5 font-medium text-sm transition-colors ${
+            view === "overall"
+              ? "bg-emerald-600 text-white"
+              : "text-slate-400 hover:text-white"
+          }`}
+          onClick={() => setView("overall")}
+          type="button"
+        >
+          Overall
+        </button>
+        <button
+          className={`rounded px-4 py-1.5 font-medium text-sm transition-colors ${
+            view === "members"
+              ? "bg-emerald-600 text-white"
+              : "text-slate-400 hover:text-white"
+          }`}
+          onClick={() => setView("members")}
+          type="button"
+        >
+          By Member
+        </button>
       </div>
 
-      {/* Operational metrics */}
-      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard
-          active={activeMetric === "loops"}
-          label="Total Loops"
-          onClick={() => setActiveMetric("loops")}
-          sub={`${stats.avgLoopsPerDay ?? 0}/day avg`}
-          value={fmt(stats.turns ?? 0)}
-        />
-        <StatCard
-          label="Avg Runtime"
-          sub="minutes per loop"
-          value={`${stats.avgRuntimeMinutes ?? 0}m`}
-        />
-      </div>
+      {view === "members" ? (
+        <UserLeaderboard users={data.userLeaderboard ?? []} />
+      ) : (
+        <>
+          {/* Hero: clickable stat cards */}
+          <div className="mb-6">
+            <h2 className="mb-3 font-semibold text-slate-300 text-sm uppercase tracking-wider">
+              Token Investment
+            </h2>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              <StatCard
+                active={activeMetric === "apiCost"}
+                label="API Cost Equivalent"
+                onClick={() => setActiveMetric("apiCost")}
+                sub="Anthropic API pricing by model"
+                value={fmtCost(stats.apiCostEquivalent ?? 0)}
+              />
+              <StatCard
+                active={activeMetric === "tokens"}
+                label="Total Tokens"
+                onClick={() => setActiveMetric("tokens")}
+                sub={suffix}
+                value={fmt(totalTokens)}
+              />
+              <StatCard
+                active={activeMetric === "activeUsers"}
+                label="Active Users"
+                onClick={() => setActiveMetric("activeUsers")}
+                sub={suffix}
+                value={(stats.activeUsers ?? 0).toString()}
+              />
+              <StatCard
+                label="Sessions"
+                sub="logins / session refreshes"
+                value={fmt(stats.sessions ?? 0)}
+              />
+              <StatCard
+                label="Active Nodes"
+                sub="compute targets"
+                value={(stats.activeNodes ?? 0).toString()}
+              />
+            </div>
+          </div>
 
-      {/* Subscription vs API split */}
-      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard
-          label="Subscription"
-          sub={`${stats.subscriptionPct ?? 0}% of tokens`}
-          value={fmt(stats.subscriptionTokens ?? 0)}
-        />
-        <StatCard
-          label="API Tokens"
-          sub="cloud / API key usage"
-          value={fmt(stats.apiTokens ?? 0)}
-        />
-        <StatCard label="Input" sub={suffix} value={fmt(stats.inputTokens)} />
-        <StatCard label="Output" sub={suffix} value={fmt(stats.outputTokens)} />
-      </div>
+          {/* Operational metrics */}
+          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <StatCard
+              active={activeMetric === "loops"}
+              label="Total Loops"
+              onClick={() => setActiveMetric("loops")}
+              sub={`${stats.avgLoopsPerDay ?? 0}/day avg`}
+              value={fmt(stats.turns ?? 0)}
+            />
+            <StatCard
+              label="Avg Runtime"
+              sub="minutes per loop"
+              value={`${stats.avgRuntimeMinutes ?? 0}m`}
+            />
+          </div>
 
-      {/* Delivery Output */}
-      {delivery && <DeliveryCards delivery={delivery} range={range} />}
+          {/* Subscription vs API split */}
+          <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <StatCard
+              label="Subscription"
+              sub={`${stats.subscriptionPct ?? 0}% of tokens`}
+              value={fmt(stats.subscriptionTokens ?? 0)}
+            />
+            <StatCard
+              label="API Tokens"
+              sub="cloud / API key usage"
+              value={fmt(stats.apiTokens ?? 0)}
+            />
+            <StatCard
+              label="Input"
+              sub={suffix}
+              value={fmt(stats.inputTokens)}
+            />
+            <StatCard
+              label="Output"
+              sub={suffix}
+              value={fmt(stats.outputTokens)}
+            />
+          </div>
 
-      {/* Time Series Chart with controls */}
-      <div className="mb-6">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="font-semibold text-slate-300 text-sm uppercase tracking-wider">
-            {METRIC_CONFIG[activeMetric].label} Over Time
-          </h2>
-          <ChartControls
-            chartType={chartType}
-            interval={interval}
-            onChartTypeChange={setChartType}
-            onIntervalChange={onIntervalChange}
-          />
-        </div>
-        <TimeSeriesChart
-          chartType={chartType}
-          data={data.timeSeries ?? []}
-          metric={activeMetric}
-        />
-      </div>
+          {/* Delivery Output */}
+          {delivery && <DeliveryCards delivery={delivery} range={range} />}
 
-      {/* Model Donut + Top Projects */}
-      <div className="mb-6 grid gap-6 lg:grid-cols-2">
-        <ModelDonutChart data={data.byModel ?? []} />
-        <TopProjectsChart data={data.topProjects ?? []} />
-      </div>
+          {/* Time Series Chart with controls */}
+          <div className="mb-6">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-semibold text-slate-300 text-sm uppercase tracking-wider">
+                {METRIC_CONFIG[activeMetric].label} Over Time
+              </h2>
+              <ChartControls
+                chartType={chartType}
+                interval={interval}
+                onChartTypeChange={setChartType}
+                onIntervalChange={onIntervalChange}
+              />
+            </div>
+            <TimeSeriesChart
+              chartType={chartType}
+              data={data.timeSeries ?? []}
+              metric={activeMetric}
+            />
+          </div>
 
-      {/* Recent Sessions */}
-      {/* Agent & Skill Usage */}
-      {(data.agentUsage ?? []).length > 0 && (
-        <div className="mb-6">
-          <AgentUsageTable agents={data.agentUsage} />
-        </div>
+          {/* Model Donut + Top Projects */}
+          <div className="mb-6 grid gap-6 lg:grid-cols-2">
+            <ModelDonutChart data={data.byModel ?? []} />
+            <TopProjectsChart data={data.topProjects ?? []} />
+          </div>
+
+          {/* Recent Sessions */}
+          {/* Agent & Skill Usage */}
+          {(data.agentUsage ?? []).length > 0 && (
+            <div className="mb-6">
+              <AgentUsageTable agents={data.agentUsage} />
+            </div>
+          )}
+
+          {/* Recent Sessions */}
+          <SessionsTable sessions={data.recentSessions ?? []} />
+        </>
       )}
-
-      {/* Recent Sessions */}
-      <SessionsTable sessions={data.recentSessions ?? []} />
     </>
   );
 }
