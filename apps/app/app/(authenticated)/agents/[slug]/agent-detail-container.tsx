@@ -393,7 +393,7 @@ function PromptTab({
 type DetailsTabProps = {
   agent: {
     description: string | null;
-    sourceRepo: string | null;
+    sourceRepo: string;
     createdBy: {
       id: string;
       firstName: string | null;
@@ -469,7 +469,7 @@ function DetailsTab({
           <dt className="font-medium text-muted-foreground text-sm">
             Source Repo
           </dt>
-          <dd className="text-sm">{agent.sourceRepo ?? "Manual"}</dd>
+          <dd className="text-sm">{agent.sourceRepo || "Org-wide"}</dd>
 
           <dt className="font-medium text-muted-foreground text-sm">
             Created By

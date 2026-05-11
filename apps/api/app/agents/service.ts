@@ -9,12 +9,14 @@ import type {
   ContextPackAgent,
   ContextPackRepoConfig,
 } from "@repo/api/src/types/agent";
+import { Result } from "@repo/api/src/types/result";
 import {
   type Agent,
   type Prisma,
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { isUuid } from "@/lib/identifier-utils";
 
 type AgentWithCreator = Prisma.AgentGetPayload<{
@@ -120,11 +122,14 @@ async function generateUniqueSlug(
 export const agentsService = {
   async findAll(
     organizationId: string,
-    options?: { enabled?: boolean; search?: string }
+    options?: { enabled?: boolean; search?: string; sourceRepo?: string }
   ): Promise<{ agents: AgentSummary[]; total: number }> {
     const where: Prisma.AgentWhereInput = {
       organizationId,
       ...(options?.enabled === undefined ? {} : { enabled: options.enabled }),
+      ...(options?.sourceRepo === undefined
+        ? {}
+        : { sourceRepo: options.sourceRepo }),
       ...(options?.search
         ? {
             OR: [
@@ -173,40 +178,47 @@ export const agentsService = {
       sourceRepo?: string;
       bootstrapRunId?: string;
     }
-  ): Promise<AgentDetail> {
-    const agent = await withDb.tx(async (tx) => {
-      const slug = await generateUniqueSlug(organizationId, input.role, tx);
+  ): Promise<Result<AgentDetail, "conflict">> {
+    try {
+      const agent = await withDb.tx(async (tx) => {
+        const slug = await generateUniqueSlug(organizationId, input.role, tx);
 
-      const created = await tx.agent.create({
-        data: {
-          organizationId,
-          name: input.name,
-          slug,
-          role: input.role,
-          description: input.description,
-          prompt: input.prompt,
-          sourceRepo: input.sourceRepo,
-          bootstrapRunId: input.bootstrapRunId,
-          createdById: userId,
-        },
-        include: AGENT_DETAIL_INCLUDE,
+        const created = await tx.agent.create({
+          data: {
+            organizationId,
+            name: input.name,
+            slug,
+            role: input.role,
+            description: input.description,
+            prompt: input.prompt,
+            sourceRepo: input.sourceRepo,
+            bootstrapRunId: input.bootstrapRunId,
+            createdById: userId,
+          },
+          include: AGENT_DETAIL_INCLUDE,
+        });
+
+        await tx.agentVersion.create({
+          data: {
+            agentId: created.id,
+            version: 1,
+            name: created.name,
+            prompt: created.prompt,
+            changeNote: "Initial version",
+            changedById: userId,
+          },
+        });
+
+        return created;
       });
 
-      await tx.agentVersion.create({
-        data: {
-          agentId: created.id,
-          version: 1,
-          name: created.name,
-          prompt: created.prompt,
-          changeNote: "Initial version",
-          changedById: userId,
-        },
-      });
-
-      return created;
-    });
-
-    return toAgentDetail(agent);
+      return Result.ok(toAgentDetail(agent));
+    } catch (error) {
+      if (getPrismaErrorCode(error) === "P2002") {
+        return Result.err("conflict");
+      }
+      throw error;
+    }
   },
 
   async update(
@@ -357,7 +369,11 @@ export const agentsService = {
       ];
       const roles = dedupedAgents.map((a) => a.role);
       const existingAgents = await tx.agent.findMany({
-        where: { organizationId, role: { in: roles } },
+        where: {
+          organizationId,
+          sourceRepo: input.sourceRepo,
+          role: { in: roles },
+        },
       });
       const byRole = new Map(existingAgents.map((a) => [a.role, a]));
 

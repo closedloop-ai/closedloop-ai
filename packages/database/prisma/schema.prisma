@@ -1761,7 +1761,7 @@ model Agent {
   description    String?
   prompt         String   @db.Text
   enabled        Boolean  @default(true)
-  sourceRepo     String?  @map("source_repo")
+  sourceRepo     String   @default("") @map("source_repo")
   bootstrapRunId String?  @map("bootstrap_run_id")
   currentVersion Int      @default(1) @map("current_version")
   createdById    String   @map("created_by_id") @db.Uuid
@@ -1774,7 +1774,7 @@ model Agent {
   versions     AgentVersion[]
 
   @@unique([organizationId, slug])
-  @@unique([organizationId, role])
+  @@unique([organizationId, sourceRepo, role])
   @@index([organizationId])
   @@index([organizationId, enabled])
   @@map("agents")

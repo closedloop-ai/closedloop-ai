@@ -171,6 +171,20 @@ describe("agentsService", () => {
 
       expect(result).toEqual({ agents: [], total: 0 });
     });
+
+    it("filters by sourceRepo when provided", async () => {
+      const findMany = vi.fn().mockResolvedValue([]);
+      const count = vi.fn().mockResolvedValue(0);
+      installDb({ agent: { findMany, count } });
+
+      await agentsService.findAll(ORG_ID, { sourceRepo: "org/repo-a" });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ sourceRepo: "org/repo-a" }),
+        })
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -292,8 +306,11 @@ describe("agentsService", () => {
           }),
         })
       );
-      expect(result.slug).toBe("frontend-architect");
-      expect(result.createdBy).toEqual(TEST_USER_SUMMARY);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.slug).toBe("frontend-architect");
+        expect(result.value.createdBy).toEqual(TEST_USER_SUMMARY);
+      }
     });
 
     it("generates a unique slug with suffix when base slug is taken", async () => {
@@ -326,7 +343,10 @@ describe("agentsService", () => {
           data: expect.objectContaining({ slug: "frontend-architect-2" }),
         })
       );
-      expect(result.slug).toBe("frontend-architect-2");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.slug).toBe("frontend-architect-2");
+      }
     });
 
     it("slugifies special characters in role to hyphens and trims leading/trailing hyphens", async () => {
@@ -984,6 +1004,38 @@ describe("agentsService", () => {
             organizationId: ORG_ID,
             repoFullName: INGEST_SOURCE_REPO,
             bootstrapRunId: INGEST_BOOTSTRAP_RUN_ID,
+          }),
+        })
+      );
+    });
+
+    it("scopes existing agent lookup by sourceRepo", async () => {
+      const agentFindMany = vi.fn().mockResolvedValue([]);
+      const agentFindUnique = vi.fn().mockResolvedValue(null);
+      const agentCreate = vi.fn().mockResolvedValue(buildAgent());
+      const versionCreate = vi.fn().mockResolvedValue({});
+
+      installDbTx({
+        agent: {
+          findMany: agentFindMany,
+          findUnique: agentFindUnique,
+          create: agentCreate,
+        },
+        agentVersion: { create: versionCreate },
+      });
+
+      await agentsService.bulkIngest(ORG_ID, USER_ID, {
+        agents: [INGEST_AGENT_INPUT],
+        bootstrapRunId: INGEST_BOOTSTRAP_RUN_ID,
+        sourceRepo: "org/repo-b",
+      });
+
+      expect(agentFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            organizationId: ORG_ID,
+            sourceRepo: "org/repo-b",
+            role: { in: ["frontend-architect"] },
           }),
         })
       );

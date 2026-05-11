@@ -47,4 +47,5 @@ export const listAgentsQueryValidator = z.object({
     .transform((v) => v === "true")
     .optional(),
   search: z.string().max(200).optional(),
+  sourceRepo: z.string().max(200).optional(),
 });
