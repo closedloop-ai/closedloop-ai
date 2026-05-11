@@ -78,48 +78,42 @@ describe("detectAuthChallengeFromJsonl", () => {
     assert.equal(detectAuthChallengeFromJsonl(workDir), null);
   });
 
-  const authResultStrings = [
-    "authentication_error: invalid api key",
-    "rate_limit_error: quota exceeded",
-    "your token has expired",
-    "unauthorized access",
-    "invalid bearer token",
-    "billing_error: payment required",
-    "overloaded_error: server busy",
-    "usage limit reached",
-  ];
-
-  for (const text of authResultStrings) {
-    test(`detects is_error result with auth text: "${text}"`, () => {
+  test("detects every auth/rate-limit/billing keyword in is_error result text", () => {
+    for (const text of [
+      "authentication_error: invalid api key",
+      "rate_limit_error: quota exceeded",
+      "your token has expired",
+      "unauthorized access",
+      "invalid bearer token",
+      "billing_error: payment required",
+      "overloaded_error: server busy",
+      "usage limit reached",
+    ]) {
       const workDir = makeTempDir();
       writeJsonlOutput(workDir, [
         JSON.stringify({ type: "result", is_error: true, result: text }),
       ]);
-      const result = detectAuthChallengeFromJsonl(workDir);
-      assert.ok(result !== null, `expected detection for: ${text}`);
-      assert.equal(result, text);
-    });
-  }
+      assert.equal(detectAuthChallengeFromJsonl(workDir), text);
+    }
+  });
 
-  const nonAuthResultStrings = [
-    "task completed successfully",
-    "file not found",
-    "syntax error at line 42",
-    "permission denied by filesystem",
-  ];
-
-  for (const text of nonAuthResultStrings) {
-    test(`does not detect non-auth is_error text: "${text}"`, () => {
+  test("does not detect non-auth is_error text (incl. fs 'permission denied')", () => {
+    for (const text of [
+      "task completed successfully",
+      "file not found",
+      "syntax error at line 42",
+      "permission denied by filesystem",
+    ]) {
       const workDir = makeTempDir();
       writeJsonlOutput(workDir, [
         JSON.stringify({ type: "result", is_error: true, result: text }),
       ]);
       assert.equal(detectAuthChallengeFromJsonl(workDir), null);
-    });
-  }
+    }
+  });
 
-  for (const status of [401, 403, 429]) {
-    test(`detects isApiErrorMessage with apiErrorStatus ${status}`, () => {
+  test("detects isApiErrorMessage for any recognized auth status (401/403/429)", () => {
+    for (const status of [401, 403, 429]) {
       const workDir = makeTempDir();
       writeJsonlOutput(workDir, [
         JSON.stringify({
@@ -129,13 +123,9 @@ describe("detectAuthChallengeFromJsonl", () => {
         }),
       ]);
       const result = detectAuthChallengeFromJsonl(workDir);
-      assert.ok(result !== null);
-      assert.ok(
-        result.includes(String(status)),
-        `result must mention status ${status}, got: ${result}`
-      );
-    });
-  }
+      assert.ok(result?.includes(String(status)), `status ${status}: ${result}`);
+    }
+  });
 
   test("detects isApiErrorMessage with auth text and no recognized status", () => {
     const workDir = makeTempDir();
