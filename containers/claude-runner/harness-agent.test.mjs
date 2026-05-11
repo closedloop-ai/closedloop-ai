@@ -45,6 +45,7 @@ import {
   registerSecret,
   reportFinalStatus,
   resetHarnessState,
+  setConfigEnvKey,
   snapshotTokens,
   syncPlanFromContextPack,
   validateConfig,
@@ -1290,19 +1291,110 @@ describe("syncPlanFromContextPack", () => {
     assert.equal(updated.content, "plan text");
   });
 
-  test("skips when plan.json does not exist", () => {
-    const dir = makeTempDir();
-    // No plan.json — should not throw
-    syncPlanFromContextPack(dir, {
-      artifacts: [
-        {
-          id: "1",
-          type: LoopArtifactType.ImplementationPlan,
-          content: "new content",
-        },
-      ],
-    });
-    assert.ok(!fs.existsSync(path.join(dir, "plan.json")));
+  test("writes plan-source.md and config.env when plan.json does not exist", () => {
+    const runDir = makeTempDir();
+    const workDir = makeTempDir();
+    fs.mkdirSync(path.join(workDir, ".closedloop-ai"), { recursive: true });
+
+    syncPlanFromContextPack(
+      runDir,
+      {
+        artifacts: [
+          {
+            id: "1",
+            type: LoopArtifactType.ImplementationPlan,
+            content: "new content",
+          },
+        ],
+      },
+      workDir
+    );
+
+    // plan.json must NOT be created
+    assert.ok(!fs.existsSync(path.join(runDir, "plan.json")));
+
+    // plan-source.md must be written with the artifact content
+    const planSourcePath = path.join(runDir, "plan-source.md");
+    assert.ok(
+      fs.existsSync(planSourcePath),
+      "plan-source.md should be created"
+    );
+    assert.equal(fs.readFileSync(planSourcePath, "utf-8"), "new content");
+
+    // config.env must be written to runDir (which run-loop.sh exports as
+    // CLOSEDLOOP_WORKDIR) so Phase 0.9 hooks reading
+    // $CLOSEDLOOP_WORKDIR/.closedloop-ai/config.env observe CLOSEDLOOP_PLAN_FILE.
+    const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
+    assert.ok(
+      fs.existsSync(configEnvPath),
+      "config.env should be created in runDir"
+    );
+    const configEnvContent = fs.readFileSync(configEnvPath, "utf-8");
+    assert.ok(
+      configEnvContent.includes(`CLOSEDLOOP_PLAN_FILE=${planSourcePath}`),
+      `config.env should contain CLOSEDLOOP_PLAN_FILE=${planSourcePath}; got: ${configEnvContent}`
+    );
+
+    // Negative assertion: nothing should be written to workDir's config.env.
+    assert.ok(
+      !fs.existsSync(path.join(workDir, ".closedloop-ai", "config.env")),
+      "config.env must not be written to workDir"
+    );
+  });
+
+  test("does not write plan-source.md or modify config.env when plan.json already exists (AC-006)", () => {
+    const runDir = makeTempDir();
+    const workDir = makeTempDir();
+    fs.mkdirSync(path.join(runDir, ".closedloop-ai"), { recursive: true });
+
+    const planPath = path.join(runDir, "plan.json");
+    fs.writeFileSync(
+      planPath,
+      JSON.stringify({
+        content: "old content",
+        pendingTasks: ["task1"],
+        openQuestions: [],
+      })
+    );
+
+    // Pre-write a config.env at the path setConfigEnvKey would target so
+    // we can detect unwanted mutations from a broken !fs.existsSync(plan.json) guard.
+    const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
+    const originalConfigEnv = "SOME_EXISTING_VAR=value\n";
+    fs.writeFileSync(configEnvPath, originalConfigEnv);
+
+    syncPlanFromContextPack(
+      runDir,
+      {
+        artifacts: [
+          {
+            id: "1",
+            type: LoopArtifactType.ImplementationPlan,
+            content: "updated content",
+          },
+        ],
+      },
+      workDir
+    );
+
+    // plan.json content must be updated (sibling-field preservation is covered
+    // by the "preserves other plan.json fields" test above).
+    const updated = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    assert.equal(updated.content, "updated content");
+
+    // plan-source.md must NOT be created when plan.json already exists
+    assert.ok(
+      !fs.existsSync(path.join(runDir, "plan-source.md")),
+      "plan-source.md must not be written when plan.json already exists"
+    );
+
+    // config.env must NOT be modified when plan.json already exists
+    const configEnvAfter = fs.readFileSync(configEnvPath, "utf-8");
+    assert.equal(
+      configEnvAfter,
+      originalConfigEnv,
+      "config.env must not be modified when plan.json already exists"
+    );
   });
 
   test("skips when no artifacts", () => {
@@ -1336,6 +1428,96 @@ describe("syncPlanFromContextPack", () => {
 
     const result = JSON.parse(fs.readFileSync(planPath, "utf-8"));
     assert.equal(result.content, "original");
+  });
+
+  test("does not write plan-source.md or config.env when plan.json absent and only PRD/Feature artifacts present", () => {
+    const runDir = makeTempDir();
+    const workDir = makeTempDir();
+
+    // No plan.json in runDir — intentionally not created.
+    // We do NOT pre-create runDir/.closedloop-ai so the negative assertion
+    // below catches both an unexpected file write and an unexpected dir creation.
+
+    syncPlanFromContextPack(
+      runDir,
+      {
+        artifacts: [
+          { id: "1", type: LoopArtifactType.Prd, content: "prd content" },
+          {
+            id: "2",
+            type: LoopArtifactType.Feature,
+            content: "feature content",
+          },
+        ],
+      },
+      workDir
+    );
+
+    // plan-source.md must NOT be written when no ImplementationPlan artifact is present
+    assert.ok(
+      !fs.existsSync(path.join(runDir, "plan-source.md")),
+      "plan-source.md must not be written when only PRD/Feature artifacts are present"
+    );
+
+    // config.env must NOT be created when no ImplementationPlan artifact is present.
+    // Check the path setConfigEnvKey would target so the assertion exercises the guard.
+    const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
+    assert.ok(
+      !fs.existsSync(configEnvPath),
+      "config.env must not be created when only PRD/Feature artifacts are present"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setConfigEnvKey — idempotency + preservation contract
+// ---------------------------------------------------------------------------
+
+describe("setConfigEnvKey", () => {
+  test("replaces an existing key rather than duplicating it on repeat calls", () => {
+    const targetDir = makeTempDir();
+
+    setConfigEnvKey(targetDir, "CLOSEDLOOP_PLAN_FILE", "/first/path/plan.json");
+    setConfigEnvKey(
+      targetDir,
+      "CLOSEDLOOP_PLAN_FILE",
+      "/second/path/plan.json"
+    );
+
+    const configEnvPath = path.join(targetDir, ".closedloop-ai", "config.env");
+    const contents = fs.readFileSync(configEnvPath, "utf-8");
+    const occurrences = Array.from(
+      contents.matchAll(/^CLOSEDLOOP_PLAN_FILE=/gm)
+    );
+    assert.equal(
+      occurrences.length,
+      1,
+      "CLOSEDLOOP_PLAN_FILE must appear exactly once after repeat calls"
+    );
+    assert.match(
+      contents,
+      /^CLOSEDLOOP_PLAN_FILE=\/second\/path\/plan\.json$/m,
+      "the latest value must win (last-write-wins)"
+    );
+    assert.doesNotMatch(
+      contents,
+      /\/first\/path\/plan\.json/,
+      "the earlier value must be removed, not retained"
+    );
+  });
+
+  test("preserves unrelated pre-existing keys when setting a new key", () => {
+    const targetDir = makeTempDir();
+    fs.mkdirSync(path.join(targetDir, ".closedloop-ai"), { recursive: true });
+    const configEnvPath = path.join(targetDir, ".closedloop-ai", "config.env");
+    fs.writeFileSync(configEnvPath, "OTHER_KEY=keep-me\nANOTHER=stay\n");
+
+    setConfigEnvKey(targetDir, "CLOSEDLOOP_PLAN_FILE", "/run/plan.json");
+
+    const contents = fs.readFileSync(configEnvPath, "utf-8");
+    assert.match(contents, /^OTHER_KEY=keep-me$/m);
+    assert.match(contents, /^ANOTHER=stay$/m);
+    assert.match(contents, /^CLOSEDLOOP_PLAN_FILE=\/run\/plan\.json$/m);
   });
 });
 
