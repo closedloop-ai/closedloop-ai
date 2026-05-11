@@ -41,7 +41,7 @@ export const Header = ({
           {breadcrumbs.map((entry, index) => {
             const isLast = index === breadcrumbs.length - 1;
             return (
-              <Fragment key={`${entry.label}-${index}`}>
+              <Fragment key={entry.href ?? entry.label}>
                 {index > 0 && (
                   <BreadcrumbSeparator className="hidden shrink-0 md:block" />
                 )}

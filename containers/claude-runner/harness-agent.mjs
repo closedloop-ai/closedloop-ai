@@ -3969,10 +3969,10 @@ async function reportFinalStatus(
     let source;
     if (stdoutAuthSignal != null) {
       source = "JSONL stdout guard";
-    } else if (fileAuthSignal != null) {
-      source = "JSONL file guard";
-    } else {
+    } else if (fileAuthSignal == null) {
       source = "LLM-commit tertiary guard";
+    } else {
+      source = "JSONL file guard";
     }
     log(
       "info",
