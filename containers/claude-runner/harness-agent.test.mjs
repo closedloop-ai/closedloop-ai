@@ -1324,7 +1324,10 @@ describe("syncPlanFromContextPack", () => {
     // CLOSEDLOOP_WORKDIR) so Phase 0.9 hooks reading
     // $CLOSEDLOOP_WORKDIR/.closedloop-ai/config.env observe CLOSEDLOOP_PLAN_FILE.
     const configEnvPath = path.join(runDir, ".closedloop-ai", "config.env");
-    assert.ok(fs.existsSync(configEnvPath), "config.env should be created in runDir");
+    assert.ok(
+      fs.existsSync(configEnvPath),
+      "config.env should be created in runDir"
+    );
     const configEnvContent = fs.readFileSync(configEnvPath, "utf-8");
     assert.ok(
       configEnvContent.includes(`CLOSEDLOOP_PLAN_FILE=${planSourcePath}`),
