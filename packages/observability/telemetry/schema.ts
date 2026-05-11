@@ -31,6 +31,7 @@ export const TelemetryCategory = {
   CommandCancelled: "command.cancelled",
   CommandGatewayError: "command.gateway_error",
   DesktopOutboundNetworkDecision: "desktop.outbound_network_decision",
+  DesktopShutdownFailed: "desktop.shutdown_failed",
   DesktopSupportUpload: "desktop.support_upload",
   PreflightBinaryNotFound: "preflight.binary_not_found",
   PreflightScriptNotFound: "preflight.script_not_found",
@@ -46,6 +47,18 @@ export const TelemetryCategory = {
   OnboardingPopupDismissedSession: "onboarding.popup_dismissed_session",
   OnboardingPopupDismissedPermanent: "onboarding.popup_dismissed_permanent",
   OnboardingPopupSuppressedAuto: "onboarding.popup_suppressed_auto",
+  // PRD-254 — loop.perf.* telemetry categories (one outer category per
+  // perf.jsonl event type plus a parse-failure warning channel).
+  LoopPerfRun: "loop.perf.run",
+  LoopPerfPhase: "loop.perf.phase",
+  LoopPerfIteration: "loop.perf.iteration",
+  LoopPerfPipelineStep: "loop.perf.pipeline_step",
+  LoopPerfAgent: "loop.perf.agent",
+  LoopPerfTool: "loop.perf.tool",
+  LoopPerfSkill: "loop.perf.skill",
+  LoopPerfSpawn: "loop.perf.spawn",
+  LoopPerfParseFailure: "loop.perf.parse_failure",
+  LoopPerfUnknownEventVariant: "loop.perf.unknown_event_variant",
 } as const;
 
 export type TelemetryCategory =
@@ -136,16 +149,41 @@ export const SupportUploadReason = {
 export type SupportUploadReason =
   (typeof SupportUploadReason)[keyof typeof SupportUploadReason];
 
+export const DesktopUpdateTrigger = {
+  Unknown: "unknown",
+  UpdaterError: "updater-error",
+  CheckForUpdates: "check-for-updates",
+  ManualCheck: "manual-check",
+  ApplyBeforeDownloaded: "apply-before-downloaded",
+  RendererApplyUpdate: "renderer-apply-update",
+} as const;
+
+export type DesktopUpdateTrigger =
+  (typeof DesktopUpdateTrigger)[keyof typeof DesktopUpdateTrigger];
+
+export const DesktopShutdownTrigger = {
+  Unknown: "unknown",
+  BeforeQuit: "before-quit",
+  ShutdownSequence: "shutdown-sequence",
+  ShutdownRejected: "shutdown-rejected",
+  OuterHardExit: "outer-hard-exit",
+} as const;
+
+export type DesktopShutdownTrigger =
+  (typeof DesktopShutdownTrigger)[keyof typeof DesktopShutdownTrigger];
+
 function objectValues<T extends Record<string, string>>(values: T) {
   return new Set(Object.values(values));
 }
 
 /**
- * Preserve desktop-originated outbound telemetry across version skew by mapping
- * newer classification strings to a bounded generic value instead of rejecting
- * the whole event. Non-string values remain invalid.
+ * Preserve desktop-originated telemetry across version skew by mapping newer
+ * wire strings to a bounded generic value instead of rejecting the whole event.
+ * Non-string values remain invalid.
  */
-function tolerantOutboundValue<T extends Record<string, string>>(values: T) {
+function tolerantDesktopTelemetryValue<
+  T extends { Unknown: string } & Record<string, string>,
+>(values: T) {
   const knownValues = objectValues(values);
   return z.preprocess((value) => {
     if (typeof value !== "string") {
@@ -246,10 +284,12 @@ const decisionTableVerificationDiagnosticsSchema = z.discriminatedUnion(
 );
 
 const outboundNetworkDiagnosticsSchema = z.object({
-  surface: tolerantOutboundValue(OutboundNetworkSurface),
-  decision: tolerantOutboundValue(OutboundNetworkDecision),
-  reason: tolerantOutboundValue(OutboundNetworkDecisionReason),
-  destinationClass: tolerantOutboundValue(OutboundNetworkDestinationClass),
+  surface: tolerantDesktopTelemetryValue(OutboundNetworkSurface),
+  decision: tolerantDesktopTelemetryValue(OutboundNetworkDecision),
+  reason: tolerantDesktopTelemetryValue(OutboundNetworkDecisionReason),
+  destinationClass: tolerantDesktopTelemetryValue(
+    OutboundNetworkDestinationClass
+  ),
   protocol: z.string().optional(),
   hostname: z.string().optional(),
   port: z.string().optional(),
@@ -262,10 +302,76 @@ const supportUploadDiagnosticsSchema = z.object({
   s3StateKeySuffix: z.string().optional(),
   attemptedLogicalNames: z.array(z.string()).max(4).optional(),
   attemptedUploadedNames: z.array(z.string()).max(4).optional(),
-  reason: tolerantOutboundValue(SupportUploadReason).optional(),
+  reason: tolerantDesktopTelemetryValue(SupportUploadReason).optional(),
   uploadedCount: z.number().int().nonnegative().optional(),
   durationMs: z.number().int().nonnegative().optional(),
 });
+
+const desktopUpdateDiagnosticsSchema = z.object({
+  trigger: tolerantDesktopTelemetryValue(DesktopUpdateTrigger),
+  status: z.string().max(64).optional(),
+  version: z.string().max(64).optional(),
+  percent: z.number().min(0).max(100).optional(),
+  error: z.string().max(512).optional(),
+  downloaded: z.boolean().optional(),
+  readyToInstall: z.boolean().optional(),
+});
+
+const desktopShutdownDiagnosticsSchema = z.object({
+  trigger: tolerantDesktopTelemetryValue(DesktopShutdownTrigger),
+  result: z.enum(["timed_out", "failed"]).optional(),
+  phase: z.string().max(128).optional(),
+  duringUpdate: z.boolean().optional(),
+  outerHardExit: z.boolean().optional(),
+  elapsedMs: z.number().int().nonnegative().optional(),
+  error: z.string().max(512).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// LoopPerfEventDiagnostics — permissive passthrough for loop.perf.* categories
+// ---------------------------------------------------------------------------
+// The relay forwards `loopPerf` payloads to Datadog opaquely so version skew
+// between desktop producers and the relay never drops observability data
+// (PRD-254 §FR-6 fail-open, producer-additivity rollout property). Field-level
+// validation is owned by the producer schema in closedloop-electron.
+//
+// Drift detection: the handler emits a `loop.perf.unknown_event_variant`
+// warning when the inner `event` value falls outside `KNOWN_LOOP_PERF_EVENTS`
+// (or is missing entirely), while still forwarding the payload — this is how
+// desktop-version skew becomes observable rather than silent or breaking
+// (e.g. legacy `post_loop_review` / `post_loop_fix` arrivals, or a future
+// desktop build that renames the discriminator).
+//
+// `event` is `.optional()` so missing-discriminator payloads also fail open
+// rather than tripping envelope-level validation; the handler's drift check
+// catches the absent case and emits the same warning channel.
+//
+// Producer-side wire-format invariants (informational; not enforced here):
+// - Optional fields are absent (omitted), not `null`. Exception: `tool` events
+//   may carry `endedAt`/`durationS`/`ok` as `null` as the in-flight sentinel
+//   for orphan-tool reconciliation at end-of-loop.
+// - `pipeline_step.step` is a number, not an integer (producer emits 8.5 for
+//   the synthetic `write_merged_patterns` step).
+
+export const KNOWN_LOOP_PERF_EVENTS: ReadonlySet<string> = new Set([
+  "run",
+  "phase",
+  "iteration",
+  "pipeline_step",
+  "agent",
+  "tool",
+  "skill",
+  "spawn",
+  "parse_failure",
+]);
+
+export const loopPerfEventDiagnosticsSchema = z
+  .object({ event: z.string().optional() })
+  .passthrough();
+
+export type LoopPerfEventDiagnostics = z.infer<
+  typeof loopPerfEventDiagnosticsSchema
+>;
 
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
@@ -305,8 +411,11 @@ const desktopTelemetryDiagnosticsSchema = z.object({
   diagnosticsVersion: z.number().optional(),
   decisionTableVerification:
     decisionTableVerificationDiagnosticsSchema.optional(),
+  desktopUpdate: desktopUpdateDiagnosticsSchema.optional(),
+  desktopShutdown: desktopShutdownDiagnosticsSchema.optional(),
   outboundNetwork: outboundNetworkDiagnosticsSchema.optional(),
   supportUpload: supportUploadDiagnosticsSchema.optional(),
+  loopPerf: loopPerfEventDiagnosticsSchema.optional(),
   spawnMeta: z
     .object({
       command: z.string(),

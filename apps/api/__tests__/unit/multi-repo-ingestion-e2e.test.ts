@@ -90,7 +90,7 @@ function makeV2Payload() {
         fullName: "org/repo-success",
         prUrl: "https://github.com/org/repo-success/pull/100",
         prNumber: 100,
-        prTitle: "Symphony: success feature",
+        prTitle: "ClosedLoop: success feature",
         branchName: "symphony/success-feature",
         commitSha: "abc123def456",
         githubId: 9001,

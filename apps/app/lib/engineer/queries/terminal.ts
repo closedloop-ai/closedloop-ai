@@ -30,6 +30,8 @@ export function terminalChatHistoryOptions() {
     queryFn: async () => {
       const response = await fetch("/api/gateway/terminal-chat");
       if (!response.ok) {
+        // Terminal history is a non-blocking convenience read; keep the legacy
+        // empty-history fallback so chat surfaces can still render offline.
         return { messages: [] };
       }
       return response.json();

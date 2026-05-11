@@ -1,10 +1,10 @@
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error";
 import { LoopErrorCode, RunnerErrorSubcode } from "@repo/api/src/types/loop";
 import { describe, expect, it } from "vitest";
 import {
   getLoopErrorReason,
   getLoopErrorTitle,
 } from "@/lib/loop-error-display";
-import { loopErrorCodeLabels } from "@/lib/loop-error-labels";
 
 describe("loop error display", () => {
   it("maps known runner subcodes to user-facing reasons", () => {
@@ -14,8 +14,8 @@ describe("loop error display", () => {
       result: { subcode: RunnerErrorSubcode.ClaudeRateLimit },
     };
 
-    expect(getLoopErrorReason(error)).toBe("Claude rate limit");
-    expect(getLoopErrorTitle(error)).toBe("Claude rate limit");
+    expect(getLoopErrorReason(error)).toBe("Claude rate limit reached");
+    expect(getLoopErrorTitle(error)).toBe("Claude rate limit reached");
   });
 
   it("formats unknown runner subcodes without hiding the message", () => {
@@ -29,13 +29,16 @@ describe("loop error display", () => {
     expect(getLoopErrorTitle(error)).toBe("Some New Failure");
   });
 
-  it("falls back to the raw code for non-runner errors unless labels are enabled", () => {
+  it("uses friendly labels for non-runner errors by default", () => {
     const error = {
       code: LoopErrorCode.ContextLimitExceeded,
       message: "Context limit hit.",
     };
 
-    expect(getLoopErrorTitle(error)).toBe("CONTEXT_LIMIT_EXCEEDED");
+    expect(getLoopErrorTitle(error)).toBe("Context limit exceeded");
+    expect(getLoopErrorTitle(error, { useFriendlyCodeLabels: false })).toBe(
+      "CONTEXT_LIMIT_EXCEEDED"
+    );
     expect(getLoopErrorTitle(error, { useFriendlyCodeLabels: true })).toBe(
       "Context limit exceeded"
     );
@@ -50,7 +53,11 @@ describe("loop error display", () => {
 
     expect(getLoopErrorReason(error)).toBeNull();
     expect(getLoopErrorTitle(error)).toBe(
-      loopErrorCodeLabels[LoopErrorCode.RunnerError]
+      resolveFriendlyError({
+        code: LoopErrorCode.RunnerError,
+        message: error.message,
+        result: error.result,
+      }).title
     );
   });
 });

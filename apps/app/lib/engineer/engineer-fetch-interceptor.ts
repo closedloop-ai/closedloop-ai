@@ -1,9 +1,20 @@
 "use client";
 
 import { rewriteDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
+import type { JsonValue } from "@repo/api/src/types/common";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import {
+  hasEffectiveCommandSigningSupport,
+  signDesktopCommand,
+} from "@/lib/crypto/command-signer";
+import { bytesToBase64 } from "@/lib/crypto/crypto-utils";
+import { getCachedComputeTargetForSigning } from "@/lib/engineer/compute-target-signing-cache";
+import {
   CLOUD_RELAY_ENABLED,
+  COMMAND_ID_HEADER,
+  COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER,
+  COMMAND_SIGNATURE_HEADER,
+  COMMAND_SIGNATURE_PAYLOAD_HEADER,
   COMPUTE_TARGET_HEADER,
   GATEWAY_PATH_PREFIX,
   GATEWAY_RELAY_PATH_PREFIX,
@@ -44,12 +55,51 @@ function methodAllowsBody(method: string): boolean {
   return method !== "GET" && method !== "HEAD";
 }
 
+function encodeRelayBodyForSigning(
+  request: Request,
+  bodyBuffer: ArrayBuffer | null
+): JsonValue | undefined {
+  if (bodyBuffer === null || bodyBuffer.byteLength === 0) {
+    return undefined;
+  }
+
+  const contentType = request.headers.get("content-type");
+  const bytes = new Uint8Array(bodyBuffer);
+  const decoder = new TextDecoder();
+  if (contentType?.includes("application/json")) {
+    const text = decoder.decode(bytes);
+    try {
+      return JSON.parse(text) as JsonValue;
+    } catch {
+      throw new Error("Invalid JSON body");
+    }
+  }
+
+  if (
+    contentType?.startsWith("text/") ||
+    contentType?.includes("application/x-www-form-urlencoded")
+  ) {
+    return decoder.decode(bytes) as unknown as JsonValue;
+  }
+
+  return bytesToBase64(bytes) as unknown as JsonValue;
+}
+
 function buildExchangeErrorResponse(exchangeError: {
   message: string;
   statusCode: number;
 }): Response {
   return new Response(JSON.stringify({ error: exchangeError.message }), {
     status: exchangeError.statusCode,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function buildCommandSigningErrorResponse(error: unknown): Response {
+  const message =
+    error instanceof Error ? error.message : "Command signing failed";
+  return new Response(JSON.stringify({ error: message }), {
+    status: message.includes("Invalid JSON body") ? 400 : 503,
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -98,6 +148,18 @@ function withComputeTargetHeader(headers: Headers, targetId: string): Headers {
   return next;
 }
 
+function withCommandSigningHeaders(
+  headers: Headers,
+  signed: Awaited<ReturnType<typeof signDesktopCommand>>
+): Headers {
+  const next = new Headers(headers);
+  next.set(COMMAND_ID_HEADER, signed.commandId);
+  next.set(COMMAND_SIGNATURE_HEADER, signed.signature);
+  next.set(COMMAND_SIGNATURE_PAYLOAD_HEADER, signed.signaturePayload);
+  next.set(COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER, signed.publicKeyFingerprint);
+  return next;
+}
+
 function toRelayPath(pathname: string): string {
   return pathname.startsWith(GATEWAY_PATH_PREFIX)
     ? pathname.replace(GATEWAY_PATH_PREFIX, GATEWAY_RELAY_PATH_PREFIX)
@@ -132,14 +194,35 @@ function createFetchInterceptor(
       routingSelection.mode === EngineerRoutingMode.CloudRelay &&
       routingSelection.computeTargetId
     ) {
+      const bodyBuffer = methodAllowsBody(request.method)
+        ? await request.arrayBuffer()
+        : null;
       const rewrittenUrl = new URL(
         `${toRelayPath(requestUrl.pathname)}${requestUrl.search}`,
         globalThis.location.origin
       );
-      const headers = withComputeTargetHeader(
+      let headers = withComputeTargetHeader(
         request.headers,
         routingSelection.computeTargetId
       );
+      const target = getCachedComputeTargetForSigning(
+        routingSelection.computeTargetId
+      );
+      if (target && hasEffectiveCommandSigningSupport(target)) {
+        try {
+          const signed = await signDesktopCommand(
+            {
+              method: request.method,
+              pathWithQuery: `${requestUrl.pathname}${requestUrl.search}`,
+              body: encodeRelayBodyForSigning(request, bodyBuffer),
+            },
+            target
+          );
+          headers = withCommandSigningHeaders(headers, signed);
+        } catch (error) {
+          return buildCommandSigningErrorResponse(error);
+        }
+      }
 
       const init: RequestInit = {
         method: request.method,
@@ -152,8 +235,8 @@ function createFetchInterceptor(
         signal: request.signal,
       };
 
-      if (methodAllowsBody(request.method)) {
-        init.body = await request.arrayBuffer();
+      if (bodyBuffer !== null) {
+        init.body = bodyBuffer;
       }
 
       return originalFetch(new Request(rewrittenUrl.toString(), init));

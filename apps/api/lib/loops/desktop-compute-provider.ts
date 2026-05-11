@@ -42,6 +42,7 @@ export class DesktopComputeProvider implements ComputeProvider {
     const commandId = await launchLoopOnDesktop({
       loopId: ctx.loopId,
       organizationId: ctx.organizationId,
+      userId: ctx.userId,
       command: ctx.command,
       computeTargetId: ctx.computeTargetId!,
       desktopApiNamespace: ctx.desktopApiNamespace,
@@ -56,6 +57,9 @@ export class DesktopComputeProvider implements ComputeProvider {
       additionalRepos: ctx.additionalRepos,
       documentId: ctx.documentId ?? undefined,
       s3StateKey: prepared.s3StateKey ?? undefined,
+      ...(ctx.desktopUserIntentSignature
+        ? { desktopUserIntentSignature: ctx.desktopUserIntentSignature }
+        : {}),
     });
 
     return { containerId: commandId, s3StateKey: prepared.s3StateKey };

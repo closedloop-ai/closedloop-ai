@@ -26,8 +26,9 @@ const CACHE_WRITE = /cache write/i;
 const CACHE_READ = /cache read/i;
 const NO_OUTPUT_PRODUCED = /No output produced/;
 const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
-const CLAUDE_RATE_LIMIT_ERROR = /^Error: Claude rate limit$/;
-const CLAUDE_RATE_LIMIT_MESSAGE = /Claude rate limit reached\./;
+const CLAUDE_RATE_LIMIT_ERROR = /^Claude rate limit reached$/;
+const CLAUDE_RATE_LIMIT_MESSAGE =
+  /Claude was rate limited before the runner completed\./;
 const ERROR_LABEL = /^Error:/;
 const ARTIFACTS_TAB_NAME = /Artifacts/i;
 const SUPPORT_CLAUDE_OUTPUT_LINK = /claude-output\.jsonl/i;
@@ -420,7 +421,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     } as ReturnType<typeof useLoop>);
   });
 
-  it("calls mutate with the loop id after confirming the stop dialog", async () => {
+  it("calls mutate with the loop identity after confirming the stop dialog", async () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
@@ -432,7 +433,10 @@ describe("LoopDetailContainer — cancel button interaction", () => {
 
     await waitFor(() => {
       expect(mockCancelMutate).toHaveBeenCalledWith(
-        "loop-001",
+        {
+          id: "loop-001",
+          computeTargetId: null,
+        },
         expect.any(Object)
       );
     });
@@ -748,7 +752,7 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
     expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
   });
 
-  it("renders raw 'NO_WORK_PRODUCED' string (not 'No output produced') when flag is disabled", () => {
+  it("renders friendly 'No output produced' copy and preserves raw details when flag is disabled", () => {
     vi.mocked(useFeatureFlag).mockReturnValue({
       key: "ghost-loop-ux",
       enabled: false,
@@ -769,7 +773,7 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
 
     render(<LoopDetailContainer id="loop-004" />);
 
-    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
+    expect(screen.getByText(NO_OUTPUT_PRODUCED)).toBeInTheDocument();
     expect(screen.getByText(NO_WORK_PRODUCED_RAW)).toBeInTheDocument();
   });
 });

@@ -1,3 +1,6 @@
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error.js";
+import { McpApiError } from "../api-error.js";
+
 type ToolResult = {
   content: { type: "text"; text: string }[];
   isError?: boolean;
@@ -19,11 +22,39 @@ export function withErrorHandling(
     content: [
       {
         type: "text" as const,
-        text: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        text: formatToolError(error),
       },
     ],
     isError: true,
   }));
+}
+
+function formatToolError(error: unknown): string {
+  const friendly = resolveFriendlyError(
+    error instanceof McpApiError
+      ? {
+          code: error.code,
+          details: error.details,
+          message: error.message,
+          timestamp: error.timestamp,
+        }
+      : {
+          message: error instanceof Error ? error.message : "Unknown error",
+        }
+  );
+  const parts = [friendly.title, "", friendly.description];
+  if (friendly.remediation.length > 0) {
+    parts.push("", "Remediation:");
+    parts.push(...friendly.remediation.map((step) => `- ${step}`));
+  }
+  if (Object.keys(friendly.technicalDetails).length > 0) {
+    parts.push(
+      "",
+      "Technical details:",
+      JSON.stringify(friendly.technicalDetails, null, 2)
+    );
+  }
+  return parts.join("\n");
 }
 
 /**

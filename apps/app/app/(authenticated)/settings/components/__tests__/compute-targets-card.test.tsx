@@ -1,4 +1,5 @@
 import {
+  COMMAND_SIGNING_CAPABILITY_KEY,
   type ComputeTarget,
   DesktopSecurityStatus,
 } from "@repo/api/src/types/compute-target";
@@ -25,6 +26,8 @@ const RE_UPGRADE_SECURITY = /Upgrade security/i;
 const RE_DOWNLOAD_UPDATE = /Download update/i;
 const RE_DOWNLOAD_UNAVAILABLE = /Download unavailable/i;
 const RE_UPDATE_REQUIRED = /Update required/i;
+const RE_REGISTER_BROWSER = /Register Browser/i;
+const RE_UNREGISTER = /Unregister/i;
 const TEST_TARGET_ID = "target-1";
 const TEST_TARGET_NAME = "Daniel-MBP";
 const TEST_DESKTOP_DOWNLOAD_URL = "https://example.com/closedloop.dmg";
@@ -33,7 +36,11 @@ const mockUseComputeTargets = vi.fn();
 const mockUseDeleteComputeTarget = vi.fn();
 const mockDeleteMutate = vi.fn();
 const mockDispatchDesktopCommandMutate = vi.fn();
+const mockRegisterBrowserKeyMutate = vi.fn();
+const mockUnregisterBrowserKeyMutate = vi.fn();
 const mockUseLatestElectronRelease = vi.fn();
+const mockUseRegisterBrowserCommandKey = vi.fn();
+const mockUseUnregisterBrowserCommandKey = vi.fn();
 
 function makeComputeTarget(
   overrides: Partial<ComputeTarget> = {}
@@ -76,6 +83,11 @@ vi.mock("@/hooks/queries/use-electron-release", () => ({
   useLatestElectronRelease: () => mockUseLatestElectronRelease(),
 }));
 
+vi.mock("@/hooks/queries/use-public-keys", () => ({
+  useRegisterBrowserCommandKey: () => mockUseRegisterBrowserCommandKey(),
+  useUnregisterBrowserCommandKey: () => mockUseUnregisterBrowserCommandKey(),
+}));
+
 // Resolve the expected MCP URL the same way the component does so that
 // query-cache seeds and URL assertions stay in sync with the env value.
 const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
@@ -109,6 +121,14 @@ describe("ComputeTargetsCard", () => {
         releaseNotes: "",
       },
       isLoading: false,
+    });
+    mockUseRegisterBrowserCommandKey.mockReturnValue({
+      isPending: false,
+      mutate: mockRegisterBrowserKeyMutate,
+    });
+    mockUseUnregisterBrowserCommandKey.mockReturnValue({
+      isPending: false,
+      mutate: mockUnregisterBrowserKeyMutate,
     });
 
     Object.defineProperty(globalThis, "fetch", {
@@ -486,5 +506,92 @@ describe("ComputeTargetsCard", () => {
     expect(
       screen.getByRole("button", { name: RE_DOWNLOAD_UNAVAILABLE })
     ).toBeDisabled();
+  });
+
+  it("offers browser key unregister after the current key is registered", async () => {
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        makeComputeTarget({
+          capabilities: {
+            [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+          },
+          serverCapabilities: {
+            computeTargetSigning: true,
+          },
+        }),
+      ],
+      isLoading: false,
+    });
+    mockRegisterBrowserKeyMutate.mockImplementation((_variables, options) => {
+      options.onSuccess({
+        id: "key-1",
+        userId: "user-1",
+        organizationId: "org-1",
+        publicKeyBase64: "public-key",
+        fingerprint: "cl:registered-browser-key",
+        createdAt: "2026-05-09T00:00:00.000Z",
+      });
+    });
+
+    renderWithClient();
+
+    const registerButton = screen.getByRole("button", {
+      name: RE_REGISTER_BROWSER,
+    });
+    expect(registerButton).toBeEnabled();
+
+    fireEvent.click(registerButton);
+
+    expect(
+      await screen.findByText("Registered key cl:registered-browser-key")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: RE_REGISTER_BROWSER })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: RE_UNREGISTER })).toBeEnabled();
+  });
+
+  it("unregisters the current browser key and returns to registration state", async () => {
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        makeComputeTarget({
+          capabilities: {
+            [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+          },
+          serverCapabilities: {
+            computeTargetSigning: true,
+          },
+        }),
+      ],
+      isLoading: false,
+    });
+    mockRegisterBrowserKeyMutate.mockImplementation((_variables, options) => {
+      options.onSuccess({
+        id: "key-1",
+        userId: "user-1",
+        organizationId: "org-1",
+        publicKeyBase64: "public-key",
+        fingerprint: "cl:registered-browser-key",
+        createdAt: "2026-05-09T00:00:00.000Z",
+      });
+    });
+    mockUnregisterBrowserKeyMutate.mockImplementation(
+      (_fingerprint, options) => {
+        options.onSuccess({ deleted: true });
+      }
+    );
+
+    renderWithClient();
+
+    fireEvent.click(screen.getByRole("button", { name: RE_REGISTER_BROWSER }));
+    fireEvent.click(await screen.findByRole("button", { name: RE_UNREGISTER }));
+
+    expect(mockUnregisterBrowserKeyMutate).toHaveBeenCalledWith(
+      "cl:registered-browser-key",
+      expect.any(Object)
+    );
+    expect(
+      screen.getByRole("button", { name: RE_REGISTER_BROWSER })
+    ).toBeEnabled();
   });
 });

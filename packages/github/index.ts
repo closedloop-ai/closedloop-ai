@@ -26,7 +26,7 @@ function getDispatchRepo() {
 
 /**
  * Create an authenticated Octokit instance using the GitHub App installation token.
- * This generates a fresh token for the symphony-cli repo where workflows run.
+ * This generates a fresh token for the dispatch repo where workflows run.
  */
 export async function getAuthenticatedOctokit(): Promise<Octokit> {
   const config = getConfig();

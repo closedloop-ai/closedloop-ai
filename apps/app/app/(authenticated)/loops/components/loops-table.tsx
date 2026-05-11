@@ -201,7 +201,8 @@ export function LoopsTable() {
   const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(
     new Set()
   );
-  const [confirmCancelId, setConfirmCancelId] = useState<string | null>(null);
+  const [confirmCancelLoop, setConfirmCancelLoop] =
+    useState<LoopWithUser | null>(null);
   const resumeLoop = useResumeLoop();
   const cancelLoop = useCancelLoop();
   const [pendingLoopId, setPendingLoopId] = useState<string | null>(null);
@@ -239,10 +240,13 @@ export function LoopsTable() {
     }
   };
 
-  const handleCancel = async (loopId: string) => {
-    setCancellingLoopId(loopId);
+  const handleCancel = async (loop: LoopWithUser) => {
+    setCancellingLoopId(loop.id);
     try {
-      await cancelLoop.mutateAsync(loopId);
+      await cancelLoop.mutateAsync({
+        id: loop.id,
+        computeTargetId: loop.computeTarget?.id ?? null,
+      });
       toast.success("Loop cancelled");
     } catch {
       // Global QueryClient onError handler toasts the error
@@ -363,7 +367,7 @@ export function LoopsTable() {
                     <Button
                       aria-label="Stop loop"
                       disabled={cancellingLoopId === loop.id}
-                      onClick={() => setConfirmCancelId(loop.id)}
+                      onClick={() => setConfirmCancelLoop(loop)}
                       size="sm"
                       variant="ghost"
                     >
@@ -407,16 +411,16 @@ export function LoopsTable() {
       />
       <ConfirmStopLoopDialog
         onConfirm={() => {
-          if (confirmCancelId) {
-            handleCancel(confirmCancelId);
+          if (confirmCancelLoop) {
+            handleCancel(confirmCancelLoop);
           }
         }}
         onOpenChange={(open) => {
           if (!open) {
-            setConfirmCancelId(null);
+            setConfirmCancelLoop(null);
           }
         }}
-        open={confirmCancelId !== null}
+        open={confirmCancelLoop !== null}
       />
     </div>
   );

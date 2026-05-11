@@ -1,3 +1,4 @@
+import type { BrowserSignedCommandId } from "@repo/api/src/types/compute-target";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
@@ -194,6 +195,55 @@ describe("RelayClient.executeOperation preserves body fields", () => {
       path: string;
     };
     expect(createBody.path).toBe("/api/engineer/symphony/chat/pr-42");
+  });
+
+  it("passes browser command signing fields through to command creation", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const commandId =
+      "0196b1bb-7a00-7000-8000-000000000004" as BrowserSignedCommandId;
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId, status: "queued" },
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        `data: ${JSON.stringify({
+          commandId,
+          sequence: 1,
+          eventType: "result",
+          data: { statusCode: 200, body: { ok: true } },
+          createdAt: "2026-05-08T12:00:00.000Z",
+        })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }
+      )
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    await client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/gateway/git?repo=%2Ftmp%2Frepo&mode=status"),
+      {
+        commandId,
+        signature: "signature-base64",
+        signaturePayload: '{"signed":true}',
+        publicKeyFingerprint: "cl:testfingerprint",
+      }
+    );
+
+    const createBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(createBody).toMatchObject({
+      commandId,
+      path: "/api/gateway/git",
+      query: { repo: "/tmp/repo", mode: "status" },
+      signature: "signature-base64",
+      signaturePayload: '{"signed":true}',
+      publicKeyFingerprint: "cl:testfingerprint",
+    });
   });
 });
 

@@ -6,11 +6,11 @@
  * still toast normally.
  */
 
-import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api-error";
+import { makeQueryClient } from "@/lib/query-client";
 
-const mockToastError = vi.fn();
+const mockToastError = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: {
@@ -25,39 +25,8 @@ describe("QueryClient mutations.onError toast suppression", () => {
     vi.clearAllMocks();
   });
 
-  /**
-   * Re-implements the global onError logic for testing.
-   * The actual makeQueryClient is not exported; we test the pattern directly.
-   */
-  function makeTestQueryClient() {
-    return new QueryClient({
-      defaultOptions: {
-        mutations: {
-          retry: false,
-          onError: (error, _variables, _onMutateResult, mutation) => {
-            if (
-              mutation &&
-              (
-                mutation.meta as
-                  | { suppressDefaultErrorToast?: boolean }
-                  | undefined
-              )?.suppressDefaultErrorToast === true
-            ) {
-              return;
-            }
-            const message =
-              error instanceof ApiError || error instanceof Error
-                ? error.message
-                : "An unexpected error occurred";
-            mockToastError(message);
-          },
-        },
-      },
-    });
-  }
-
   it("toasts for mutations without suppressDefaultErrorToast meta", async () => {
-    const client = makeTestQueryClient();
+    const client = makeQueryClient();
     const mutation = client.getMutationCache().build(client, {
       mutationFn: () => Promise.reject(new Error("Test failure")),
     });
@@ -65,11 +34,14 @@ describe("QueryClient mutations.onError toast suppression", () => {
     await mutation.execute(undefined).catch(() => undefined);
 
     expect(mockToastError).toHaveBeenCalledOnce();
-    expect(mockToastError).toHaveBeenCalledWith("Test failure");
+    expect(mockToastError).toHaveBeenCalledWith("Operation failed", {
+      description:
+        "The operation did not complete. Technical details are available for debugging.",
+    });
   });
 
   it("does NOT toast for mutations with suppressDefaultErrorToast meta", async () => {
-    const client = makeTestQueryClient();
+    const client = makeQueryClient();
     const mutation = client.getMutationCache().build(client, {
       mutationFn: () => Promise.reject(new Error("Suppressed failure")),
       meta: { suppressDefaultErrorToast: true },
@@ -78,5 +50,30 @@ describe("QueryClient mutations.onError toast suppression", () => {
     await mutation.execute(undefined).catch(() => undefined);
 
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("uses friendly git remediation for structured ApiError metadata", async () => {
+    const client = makeQueryClient();
+    const mutation = client.getMutationCache().build(client, {
+      mutationFn: () =>
+        Promise.reject(
+          new ApiError("Pre-commit hook failed", 500, {
+            code: "PROCESS_FAILED",
+            details: {
+              action: "commit",
+              category: "pre_commit_hook",
+              hookType: "lint",
+              stderrExcerpt: "eslint failed",
+            },
+          })
+        ),
+    });
+
+    await mutation.execute(undefined).catch(() => undefined);
+
+    expect(mockToastError).toHaveBeenCalledWith("Pre-commit hook failed", {
+      description:
+        "Git refused the commit because a local pre-commit hook failed.",
+    });
   });
 });

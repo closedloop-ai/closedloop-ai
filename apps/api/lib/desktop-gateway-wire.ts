@@ -247,6 +247,16 @@ export function toWireCommandFromRelayOperation(operation: {
         ? params.approvalReason
         : undefined,
     streaming: operation.streaming === true ? true : undefined,
+    signature:
+      typeof params.signature === "string" ? params.signature : undefined,
+    signaturePayload:
+      typeof params.signaturePayload === "string"
+        ? params.signaturePayload
+        : undefined,
+    publicKeyFingerprint:
+      typeof params.publicKeyFingerprint === "string"
+        ? params.publicKeyFingerprint
+        : undefined,
   };
 }
 

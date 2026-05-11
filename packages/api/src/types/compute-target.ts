@@ -12,6 +12,7 @@ export type ComputeTarget = {
   lastSeenAt: Date;
   isOnline: boolean;
   isSharedWithOrg: boolean;
+  serverCapabilities?: ComputeTargetServerCapabilities;
   security?: ComputeTargetSecurity;
   /** Present when the target belongs to another user (shared target). */
   ownerName?: string;
@@ -85,6 +86,39 @@ export type UpsertComputeTargetHealthCheckSnapshotInput = {
   expectedMcpUrl?: string | null;
   latestVersion?: string | null;
   result: HealthCheckResponse;
+};
+
+export const COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY =
+  "compute-target-signing" as const;
+
+export const COMMAND_SIGNING_CAPABILITY_KEY = "commandSigning" as const;
+export const COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY =
+  "commandSigningRequired" as const;
+export const BROWSER_KEY_REVOCATION_OPERATION_ID =
+  "browser_key_revoke" as const;
+export const BROWSER_KEY_REVOCATION_PATH =
+  "/api/gateway/internal/browser-key/revoke" as const;
+export const BROWSER_KEY_APPROVAL_REQUEST_OPERATION_ID =
+  "browser_key_approval_request" as const;
+export const BROWSER_KEY_APPROVAL_REQUEST_PATH =
+  "/api/gateway/internal/browser-key/approval-request" as const;
+export const BROWSER_KEY_UNREGISTERED_ERROR_CODE =
+  "browser_key_unregistered" as const;
+export const BROWSER_KEY_REVOCATION_RESERVED_ERROR_CODE =
+  "browser_key_revocation_reserved" as const;
+
+export type ComputeTargetServerCapabilities = {
+  computeTargetSigning?: boolean;
+};
+
+export type CommandSignatureFields = {
+  signature: string;
+  signaturePayload: string;
+  publicKeyFingerprint: string;
+};
+
+export type BrowserSignedCommandId = string & {
+  readonly __brand: "BrowserSignedCommandId";
 };
 
 export const DesktopSecurityStatus = {
@@ -184,6 +218,7 @@ export type DesktopCommandEventType =
   | "done";
 
 export type CreateDesktopCommandInput = {
+  commandId?: BrowserSignedCommandId;
   operationId: string;
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
@@ -196,6 +231,40 @@ export type CreateDesktopCommandInput = {
   approvalReason?: string;
   idempotencyKey?: string;
   streaming?: boolean;
+  signature?: string;
+  signaturePayload?: string;
+  publicKeyFingerprint?: string;
+};
+
+export type PublicKeyRegistrationRequest = {
+  publicKeyBase64: string;
+  fingerprint: string;
+};
+
+export type BrowserKeyRevocationCommandBody = {
+  publicKeyId: string;
+  userId: string;
+  fingerprint: string;
+};
+
+export type BrowserKeyApprovalRequestCommandBody = {
+  publicKeyId: string;
+  userId: string;
+  fingerprint: string;
+};
+
+export type UserPublicKeySummary = {
+  id: string;
+  userId: string;
+  organizationId: string;
+  publicKeyBase64: string;
+  fingerprint: string;
+  createdAt: string;
+};
+
+export type OrganizationPublicKeySummary = UserPublicKeySummary & {
+  ownerName: string;
+  ownerEmail?: string;
 };
 
 export type CreateDesktopCommandResponse = {

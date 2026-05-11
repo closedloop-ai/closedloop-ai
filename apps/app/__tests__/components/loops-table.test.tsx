@@ -397,7 +397,7 @@ describe("LoopsTable — cancel button interaction", () => {
     } as ReturnType<typeof useLoops>);
   });
 
-  it("calls mutateAsync with the loop id after confirming the stop dialog", async () => {
+  it("calls mutateAsync with the loop identity after confirming the stop dialog", async () => {
     render(<LoopsTable />);
 
     fireEvent.click(screen.getByRole("button", { name: "Stop loop" }));
@@ -409,7 +409,41 @@ describe("LoopsTable — cancel button interaction", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");
+      expect(mockCancelMutateAsync).toHaveBeenCalledWith({
+        id: "loop-001",
+        computeTargetId: null,
+      });
+    });
+  });
+
+  it("uses the selected loop snapshot when the table refetches before confirm", async () => {
+    const selectedLoop = createMockLoopWithUser({
+      id: "loop-001",
+      status: LoopStatus.Running,
+    });
+    vi.mocked(useLoops).mockReturnValue({
+      data: [selectedLoop],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    const { rerender } = render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop loop" }));
+    vi.mocked(useLoops).mockReturnValue({
+      data: [] as (typeof selectedLoop)[],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+    rerender(<LoopsTable />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop Loop" }));
+
+    await waitFor(() => {
+      expect(mockCancelMutateAsync).toHaveBeenCalledWith({
+        id: "loop-001",
+        computeTargetId: null,
+      });
     });
   });
 });

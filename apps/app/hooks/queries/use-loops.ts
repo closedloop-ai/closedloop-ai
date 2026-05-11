@@ -1,6 +1,7 @@
 "use client";
 
 import { CURRENT_DESKTOP_API_NAMESPACE } from "@repo/api/src/desktop-api-namespace";
+import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   AdditionalRepoRef,
   CreateLoopRequest,
@@ -32,6 +33,11 @@ import { useMemo } from "react";
 import { documentKeys } from "@/hooks/queries/use-documents";
 import { judgesKeys } from "@/hooks/queries/use-judges";
 import { useApiClient } from "@/hooks/use-api-client";
+import {
+  hasEffectiveCommandSigningSupport,
+  signDesktopCommand,
+} from "@/lib/crypto/command-signer";
+import { getCachedComputeTargetForSigning } from "@/lib/engineer/compute-target-signing-cache";
 import { resolveDesktopApiNamespaceHint } from "@/lib/engineer/local-gateway-api-namespace";
 import { buildSearchParams } from "@/lib/format-utils";
 
@@ -259,8 +265,42 @@ export function useCancelLoop() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (id: string) => apiClient.delete<Loop>(`/loops/${id}`),
-    onSuccess: (_, id) => {
+    mutationFn: async (
+      input: string | { id: string; computeTargetId?: string | null }
+    ) => {
+      const id = typeof input === "string" ? input : input.id;
+      const target =
+        typeof input === "string" || !input.computeTargetId
+          ? null
+          : getCachedComputeTargetForSigning(input.computeTargetId);
+      if (target && hasEffectiveCommandSigningSupport(target)) {
+        const userIntent = {
+          loopId: id,
+          computeTargetId: target.id,
+          action: "cancel_loop",
+        } satisfies JsonValue;
+        const signed = await signDesktopCommand(
+          {
+            method: "POST",
+            pathWithQuery: "/api/gateway/symphony/loop/kill",
+            body: userIntent,
+          },
+          target
+        );
+        return apiClient.post<Loop>(`/loops/${id}/cancel`, {
+          userIntentSignature: {
+            commandId: signed.commandId,
+            signature: signed.signature,
+            signaturePayload: signed.signaturePayload,
+            publicKeyFingerprint: signed.publicKeyFingerprint,
+            body: userIntent,
+          },
+        });
+      }
+      return apiClient.delete<Loop>(`/loops/${id}`);
+    },
+    onSuccess: (_, input) => {
+      const id = typeof input === "string" ? input : input.id;
       queryClient.invalidateQueries({ queryKey: loopKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
     },
@@ -311,20 +351,49 @@ export function useRunLoop() {
     }) => {
       const desktopApiNamespace = await resolveDesktopApiNamespaceHint();
 
+      const requestBody = {
+        command,
+        ...(prompt === undefined ? {} : { prompt }),
+        ...(computeTargetId === undefined ? {} : { computeTargetId }),
+        ...(backendOverride ? { backendOverride } : {}),
+        ...(repo ? { repo } : {}),
+        ...(additionalRepos ? { additionalRepos } : {}),
+        ...(desktopApiNamespace &&
+        desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
+          ? { desktopApiNamespace }
+          : {}),
+      };
+      const signingTarget =
+        typeof computeTargetId === "string"
+          ? getCachedComputeTargetForSigning(computeTargetId)
+          : null;
+      if (signingTarget && hasEffectiveCommandSigningSupport(signingTarget)) {
+        const userIntent = {
+          documentId,
+          ...requestBody,
+        } satisfies JsonValue;
+        const signed = await signDesktopCommand(
+          {
+            method: "POST",
+            pathWithQuery: "/api/gateway/symphony/loop",
+            body: userIntent,
+          },
+          signingTarget
+        );
+        Object.assign(requestBody, {
+          userIntentSignature: {
+            commandId: signed.commandId,
+            signature: signed.signature,
+            signaturePayload: signed.signaturePayload,
+            publicKeyFingerprint: signed.publicKeyFingerprint,
+            body: userIntent,
+          },
+        });
+      }
+
       return apiClient.post<CreateLoopResponse>(
         `/documents/${documentId}/run-loop`,
-        {
-          command,
-          prompt,
-          ...(computeTargetId === undefined ? {} : { computeTargetId }),
-          ...(backendOverride ? { backendOverride } : {}),
-          ...(repo ? { repo } : {}),
-          ...(additionalRepos ? { additionalRepos } : {}),
-          ...(desktopApiNamespace &&
-          desktopApiNamespace !== CURRENT_DESKTOP_API_NAMESPACE
-            ? { desktopApiNamespace }
-            : {}),
-        }
+        requestBody
       );
     },
     onSuccess: (_, { documentId, command }) => {

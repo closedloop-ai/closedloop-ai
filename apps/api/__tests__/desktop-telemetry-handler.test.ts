@@ -2,6 +2,8 @@ import { log } from "@repo/observability/log";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
 import {
+  DesktopShutdownTrigger,
+  DesktopUpdateTrigger,
   desktopTelemetryEventSchema,
   OutboundNetworkDecision,
   OutboundNetworkDecisionReason,
@@ -64,6 +66,27 @@ const reportedDecisionTableVerification = {
 const defaultHandlerContext: TelemetryHandlerContext = {
   authenticatedTargetId: COMPUTE_TARGET_ID,
 };
+
+/**
+ * Stub global fetch + reset modules + dynamically import the log buffer and
+ * handler so each test gets a fresh module-scope state. Callers are
+ * responsible for stubbing any env vars (DD_API_KEY, DD_SERVICE, etc.)
+ * BEFORE invoking this helper, since module-load reads them once.
+ */
+async function importFreshHandlerWithFetch(
+  fetchMock: ReturnType<typeof vi.fn>
+): Promise<{
+  freshLog: typeof import("@repo/observability/log").log;
+  freshHandler: typeof handleTelemetryEvent;
+}> {
+  vi.stubGlobal("fetch", fetchMock);
+  vi.resetModules();
+  const { log: freshLog } = await import("@repo/observability/log");
+  const { handleTelemetryEvent: freshHandler } = await import(
+    "@/lib/desktop-telemetry-handler"
+  );
+  return { freshLog, freshHandler };
+}
 
 // ---------------------------------------------------------------------------
 // (a) handleTelemetryEvent — handler always enriches origin to Origin.Desktop
@@ -560,6 +583,171 @@ describe("handleTelemetryEvent — decision-table verification telemetry", () =>
 });
 
 // ---------------------------------------------------------------------------
+// (h1) handleTelemetryEvent — desktop update/shutdown telemetry
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — desktop update and shutdown telemetry", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs accepted electron update telemetry with queryable origin/category and sanitized diagnostics", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.ElectronUpdateFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Electron update failed",
+        diagnostics: {
+          desktopUpdate: {
+            trigger: "apply-before-downloaded",
+            status: "available",
+            version: "0.14.29",
+            error: "Update has not finished downloading yet",
+            downloaded: false,
+            readyToInstall: false,
+            rawLog: "authorization: Bearer secret",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.origin).toBe(Origin.Desktop);
+    expect(meta.category).toBe(TelemetryCategory.ElectronUpdateFailed);
+    expect(meta.diagnostics).toMatchObject({
+      desktopUpdate: {
+        trigger: "apply-before-downloaded",
+        status: "available",
+        version: "0.14.29",
+        error: "Update has not finished downloading yet",
+        downloaded: false,
+        readyToInstall: false,
+      },
+    });
+    expect(JSON.stringify(meta)).not.toContain("Bearer secret");
+    expect(JSON.stringify(meta)).not.toContain("rawLog");
+  });
+
+  it("logs accepted shutdown failure telemetry with queryable origin/category", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopShutdownFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Desktop shutdown failed",
+        diagnostics: {
+          desktopShutdown: {
+            trigger: "outer-hard-exit",
+            result: "timed_out",
+            phase: "server.stop",
+            elapsedMs: 8000,
+            duringUpdate: true,
+            outerHardExit: true,
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.origin).toBe(Origin.Desktop);
+    expect(meta.category).toBe(TelemetryCategory.DesktopShutdownFailed);
+    expect(meta.diagnostics).toMatchObject({
+      desktopShutdown: {
+        trigger: "outer-hard-exit",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 8000,
+        duringUpdate: true,
+        outerHardExit: true,
+      },
+    });
+  });
+
+  it("preserves update telemetry when desktop sends an unknown trigger", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.ElectronUpdateFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Electron update failed",
+        diagnostics: {
+          desktopUpdate: {
+            trigger: "future-update-trigger",
+            status: "available",
+            error: "new updater path failed",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      desktopUpdate: {
+        trigger: DesktopUpdateTrigger.Unknown,
+        status: "available",
+        error: "new updater path failed",
+      },
+    });
+  });
+
+  it("preserves shutdown telemetry when desktop sends an unknown trigger", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopShutdownFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Desktop shutdown failed",
+        diagnostics: {
+          desktopShutdown: {
+            trigger: "future-shutdown-trigger",
+            result: "failed",
+            phase: "future.phase",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      desktopShutdown: {
+        trigger: DesktopShutdownTrigger.Unknown,
+        result: "failed",
+        phase: "future.phase",
+      },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (h2) handleTelemetryEvent — outbound network diagnostics reach Datadog
 // ---------------------------------------------------------------------------
 
@@ -916,6 +1104,423 @@ describe("sanitizeDesktopTelemetryDiagnostics — envSnapshot filtering", () => 
 });
 
 // ---------------------------------------------------------------------------
+// (k1) handleTelemetryEvent — loop.perf.agent category pass-through (AC-001)
+//
+// Verifies that the handler is category-agnostic: a synthetic loop.perf.agent
+// event flows through without filtering and reaches the Datadog HTTP intake
+// with origin: Origin.Desktop and the category string preserved. Asserts on
+// the flushed Datadog entry per CLAUDE.md "assert on observable behavior".
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — loop.perf.agent category pass-through", () => {
+  beforeEach(() => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_SERVICE", "api");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("flushes a Datadog entry with origin: Origin.Desktop and category: TelemetryCategory.LoopPerfAgent for a loop.perf.agent payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.LoopPerfAgent,
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      origin?: string;
+      message?: string;
+    }>;
+    const entry = body.find(
+      (e) => e.message === "Desktop telemetry event received"
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.origin).toBe(Origin.Desktop);
+    expect(entry?.category).toBe(TelemetryCategory.LoopPerfAgent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (k2) handleTelemetryEvent — loopPerf payload-preservation across all 9 event types (AC-006)
+//
+// For loop.perf.agent: emits a synthetic event with a fully-populated
+// diagnostics.loopPerf payload and asserts every field appears in the
+// flushed Datadog entry under diagnostics.loopPerf.*.
+//
+// Parametric variants exercise the remaining 8 event discriminators:
+// run, phase, iteration, pipeline_step (step: 8.5), tool (null sentinels),
+// skill, spawn, and parse_failure.
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — loopPerf payload-preservation (AC-006)", () => {
+  beforeEach(() => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_SERVICE", "api");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // (k2-a) Fully-populated agent event — verifies every field preserved
+  it("preserves all diagnostics.loopPerf fields for a fully-populated loop.perf.agent event", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const agentPayload = {
+      event: "agent",
+      runId: "run-abc123",
+      iteration: 3,
+      agentId: "agent-xyz789",
+      agentType: "implementer",
+      agentName: "ImplementationSubagent",
+      startedAt: "2026-05-08T10:00:00.000Z",
+      endedAt: "2026-05-08T10:05:30.000Z",
+      durationS: 330,
+      command: "EXECUTE",
+      model: "claude-opus-4-5",
+      inputTokens: 12_500,
+      outputTokens: 3800,
+      cacheCreationInputTokens: 500,
+      cacheReadInputTokens: 1200,
+      totalContextTokens: 18_000,
+      phase: "Phase 3",
+    };
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.LoopPerfAgent,
+        diagnostics: { loopPerf: agentPayload },
+      },
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      diagnostics?: { loopPerf?: typeof agentPayload };
+    }>;
+    const entry = body.find(
+      (e) => e.category === TelemetryCategory.LoopPerfAgent
+    );
+
+    expect(entry).toBeDefined();
+    const loopPerf = entry?.diagnostics?.loopPerf;
+    expect(loopPerf).toMatchObject(agentPayload);
+  });
+
+  // (k2-b) Parametric: all 9 loopPerf event discriminators
+  const loopPerfVariants: Array<{
+    label: string;
+    category: TelemetryCategory;
+    loopPerf: Record<string, unknown>;
+  }> = [
+    {
+      label: "run",
+      category: TelemetryCategory.LoopPerfRun,
+      loopPerf: {
+        event: "run",
+        runId: "run-001",
+        command: "EXECUTE",
+        startedAt: "2026-05-08T09:00:00.000Z",
+        repo: "closedloop-ai/symphony",
+        branch: "main",
+      },
+    },
+    {
+      label: "phase",
+      category: TelemetryCategory.LoopPerfPhase,
+      loopPerf: {
+        event: "phase",
+        runId: "run-001",
+        iteration: 1,
+        phase: "Phase 1",
+        status: "completed",
+        startSha: "abc123",
+        startedAt: "2026-05-08T09:01:00.000Z",
+        command: "EXECUTE",
+      },
+    },
+    {
+      label: "iteration",
+      category: TelemetryCategory.LoopPerfIteration,
+      loopPerf: {
+        event: "iteration",
+        runId: "run-001",
+        iteration: 2,
+        startedAt: "2026-05-08T09:02:00.000Z",
+        endedAt: "2026-05-08T09:10:00.000Z",
+        durationS: 480,
+        claudeExitCode: 0,
+        status: "success",
+      },
+    },
+    {
+      label: "pipeline_step with fractional step 8.5",
+      category: TelemetryCategory.LoopPerfPipelineStep,
+      loopPerf: {
+        event: "pipeline_step",
+        runId: "run-001",
+        iteration: 1,
+        step: 8.5,
+        stepName: "write_merged_patterns",
+        startedAt: "2026-05-08T09:03:00.000Z",
+        endedAt: "2026-05-08T09:03:30.000Z",
+        durationS: 30,
+        exitCode: 0,
+        skipped: false,
+      },
+    },
+    {
+      label: "tool with null orphan-sentinel fields",
+      category: TelemetryCategory.LoopPerfTool,
+      loopPerf: {
+        event: "tool",
+        runId: "run-001",
+        command: "EXECUTE",
+        iteration: 1,
+        agentId: "agent-001",
+        toolName: "Bash",
+        startedAt: "2026-05-08T09:04:00.000Z",
+        endedAt: null,
+        durationS: null,
+        ok: null,
+        phase: "Phase 2",
+      },
+    },
+    {
+      label: "skill",
+      category: TelemetryCategory.LoopPerfSkill,
+      loopPerf: {
+        event: "skill",
+        runId: "run-001",
+        command: "EXECUTE",
+        iteration: 1,
+        agentId: "agent-001",
+        toolName: "mcp__closedloop__run_skill",
+        skillName: "generate-tests",
+        startedAt: "2026-05-08T09:05:00.000Z",
+        endedAt: "2026-05-08T09:05:45.000Z",
+        durationS: 45,
+        ok: true,
+        phase: "Phase 4",
+      },
+    },
+    {
+      label: "spawn",
+      category: TelemetryCategory.LoopPerfSpawn,
+      loopPerf: {
+        event: "spawn",
+        runId: "run-001",
+        command: "EXECUTE",
+        iteration: 1,
+        parentSessionId: "session-parent-001",
+        parentAgentId: "agent-parent-001",
+        plannedSubagentType: "implementer",
+        startedAt: "2026-05-08T09:06:00.000Z",
+        phase: "Phase 3",
+      },
+    },
+    {
+      label: "parse_failure",
+      category: TelemetryCategory.LoopPerfParseFailure,
+      loopPerf: {
+        event: "parse_failure",
+        lineNumber: 42,
+        rawBytes: "{invalid json",
+        errorMessage: "Unexpected token at position 1",
+      },
+    },
+  ];
+
+  it.each(
+    loopPerfVariants
+  )("preserves diagnostics.loopPerf fields for event type: $label", async ({
+    category,
+    loopPerf,
+  }) => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category,
+        diagnostics: { loopPerf },
+      },
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      diagnostics?: { loopPerf?: Record<string, unknown> };
+    }>;
+    const entry = body.find((e) => e.category === category);
+
+    expect(entry).toBeDefined();
+    const parsedLoopPerf = entry?.diagnostics?.loopPerf;
+    expect(parsedLoopPerf).toBeDefined();
+
+    // Every key supplied in the fixture must appear in the logged metadata
+    for (const [key, value] of Object.entries(loopPerf)) {
+      expect(parsedLoopPerf).toHaveProperty(key);
+      expect(parsedLoopPerf?.[key]).toStrictEqual(value);
+    }
+  });
+
+  // (k2-c) PRD-254 §FR-6 producer-additivity: an unknown loopPerf.event value
+  // (desktop-version skew, e.g. post_loop_review) must be forwarded to Datadog
+  // as an opaque payload AND a `loop.perf.unknown_event_variant` warning must
+  // be emitted so drift is observable rather than silent or breaking.
+  it("forwards unknown loopPerf event variants to Datadog with a drift-detection warning", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const skewedPayload = {
+      event: "post_loop_review",
+      runId: "run-skew-001",
+      command: "EXECUTE",
+      reviewer: "claude",
+      reviewedAt: "2026-05-08T11:00:00.000Z",
+    };
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.LoopPerfTool,
+        diagnostics: { loopPerf: skewedPayload },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      level?: string;
+      category?: string;
+      diagnostics?: { loopPerf?: Record<string, unknown> };
+      loopPerfEvent?: string;
+    }>;
+
+    // The original payload was forwarded with all fields preserved
+    const passthroughEntry = body.find(
+      (e) => e.category === TelemetryCategory.LoopPerfTool
+    );
+    expect(passthroughEntry).toBeDefined();
+    expect(passthroughEntry?.diagnostics?.loopPerf).toMatchObject(
+      skewedPayload
+    );
+
+    // A drift-detection warning was also emitted, carrying the unknown event
+    const warningEntry = body.find(
+      (e) => e.category === TelemetryCategory.LoopPerfUnknownEventVariant
+    );
+    expect(warningEntry).toBeDefined();
+    expect(warningEntry?.level).toBe("warn");
+    expect(warningEntry?.loopPerfEvent).toBe("post_loop_review");
+  });
+
+  // (k2-d) PRD-254 §FR-6 fail-open: a loopPerf payload with the discriminator
+  // missing entirely (e.g. desktop bug or future field rename) must also flow
+  // through to Datadog with the drift warning carrying `loopPerfEvent: null`.
+  it("forwards loopPerf payloads with missing `event` field with a null-event drift warning", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const eventlessPayload = {
+      runId: "run-eventless-001",
+      command: "EXECUTE",
+    };
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.LoopPerfTool,
+        diagnostics: { loopPerf: eventlessPayload },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      level?: string;
+      category?: string;
+      diagnostics?: { loopPerf?: Record<string, unknown> };
+      loopPerfEvent?: string | null;
+    }>;
+
+    // The original eventless payload was forwarded unchanged
+    const passthroughEntry = body.find(
+      (e) => e.category === TelemetryCategory.LoopPerfTool
+    );
+    expect(passthroughEntry).toBeDefined();
+    expect(passthroughEntry?.diagnostics?.loopPerf).toMatchObject(
+      eventlessPayload
+    );
+
+    // The drift warning fired with explicit null event marker so a Datadog
+    // query can isolate "missing event" from "unknown event value".
+    const warningEntry = body.find(
+      (e) => e.category === TelemetryCategory.LoopPerfUnknownEventVariant
+    );
+    expect(warningEntry).toBeDefined();
+    expect(warningEntry?.level).toBe("warn");
+    expect(warningEntry?.loopPerfEvent).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (k) validation-failure paths carry category: TelemetryValidationFailed
 //
 // The handler's two rejection sites (schema parse failure and
@@ -939,21 +1544,6 @@ describe("handleTelemetryEvent — validation failures emit category attribute",
     message?: string;
     level?: string;
   };
-
-  async function importFreshHandlerWithFetch(
-    fetchMock: ReturnType<typeof vi.fn>
-  ): Promise<{
-    freshLog: typeof import("@repo/observability/log").log;
-    freshHandler: typeof handleTelemetryEvent;
-  }> {
-    vi.stubGlobal("fetch", fetchMock);
-    vi.resetModules();
-    const { log: freshLog } = await import("@repo/observability/log");
-    const { handleTelemetryEvent: freshHandler } = await import(
-      "@/lib/desktop-telemetry-handler"
-    );
-    return { freshLog, freshHandler };
-  }
 
   it("(a) schema parse failure flushes entry with category: TelemetryValidationFailed", async () => {
     vi.stubEnv("DD_API_KEY", "test-key");

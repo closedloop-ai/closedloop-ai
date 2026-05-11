@@ -27,17 +27,17 @@ Built as a Next.js monorepo on the [next-forge](https://github.com/vercel/next-f
 | Reviews happen too late | 13 quality judges evaluate plans before implementation begins |
 | Cross-team visibility is fragmented | Single platform for PM, design, engineering, and QA with Linear and Slack integration |
 
-### Legacy "Symphony" Identifiers
+### Legacy "Symphony" Technical Identifiers
 
-The codebase contains references to "Symphony" in technical identifiers that predate the ClosedLoop rebrand. These do **not** affect the user-facing brand and are preserved intentionally to avoid breaking changes:
+The codebase retains "Symphony" in some technical identifiers from an earlier internal codename. These are purely internal and do not affect the user-facing product:
 
 - **GitHub Actions**: workflow name (`symphony.yml`), action names (`symphony-setup`, `symphony-artifact`, `symphony-post-results`)
-- **Component names**: `SymphonyChat`, `SymphonyStatus`, `useSymphonyLaunch`, and related React components in the Engineer feature
 - **API routes**: `/api/gateway/symphony/*` endpoints
-- **Bot/plugin names**: references in CI/CD and plugin configuration
+- **Bot names**: `symphony-cl`, `symphony[bot]` in CI/CD workflows
+- **GitHub App names**: `symphony-{env}` (e.g., `symphony-stage`, `symphony-prod`)
 - **Repository name**: `symphony-alpha`
 
-These will be migrated in a future dedicated effort.
+These are preserved intentionally to avoid breaking runtime behavior.
 
 ## Architecture
 

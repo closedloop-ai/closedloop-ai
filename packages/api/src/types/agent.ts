@@ -5,7 +5,7 @@ export type AgentSummary = {
   role: string;
   description: string | null;
   enabled: boolean;
-  sourceRepo: string | null;
+  sourceRepo: string;
   currentVersion: number;
   createdAt: Date;
   updatedAt: Date;

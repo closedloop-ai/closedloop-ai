@@ -51,6 +51,10 @@ vi.mock("@/lib/desktop-relay-event-bridge", () => ({
   publishLegacyRelayEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/loops/rejected-command-loop-failure", () => ({
+  failLoopFromRejectedCommand: vi.fn().mockResolvedValue({ failed: false }),
+}));
+
 beforeAll(() => {
   process.env.INTERNAL_API_SECRET = INTERNAL_SECRET;
 });

@@ -70,6 +70,9 @@ jobs:
         env:
           DATABASE_URL: postgresql://localhost:5432/placeholder
 
+      - name: Build shared loop API package
+        run: pnpm turbo build --filter=@closedloop-ai/loops-api
+
       - name: Read last-known-good electron SHA
         id: lkg
         uses: actions/github-script@v9

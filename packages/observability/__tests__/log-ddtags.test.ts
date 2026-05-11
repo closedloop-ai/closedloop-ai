@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TelemetryCategory } from "../telemetry/schema";
 import {
   deleteEnvForTest,
   importLogWithFetch,
@@ -404,6 +405,38 @@ describe("cross-cutting ddtags regression guard", () => {
     const secondBody = parseFlushedBody<{ ddtags: string }>(fetchMock, 1);
     expect(secondBody[0].ddtags.includes("version:1.2.3")).toBe(true);
     expect(secondBody[0].ddtags.includes("version:9.9.9")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e2) loop.perf.* ddtag cardinality — exactly three segments, no extras
+// ---------------------------------------------------------------------------
+
+describe("loop.perf.* ddtag cardinality — exactly three segments", () => {
+  it("flushed entry for a loop.perf.agent event carries exactly three ddtag segments (env, version, git_sha)", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.2.3");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123def456");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("loop perf agent event", {
+      category: TelemetryCategory.LoopPerfAgent,
+    });
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ ddtags: string }>(fetchMock);
+    // Verify the overall pattern matches env:*, version:*, git_sha:*
+    expect(body[0].ddtags).toMatch(DDTAGS_RE);
+    // Verify exactly three comma-separated segments — no extra ddtag keys added
+    const segments = body[0].ddtags.split(",");
+    expect(segments).toHaveLength(3);
+    for (const segment of segments) {
+      expect(segment).toMatch(DDTAGS_SEGMENT_RE);
+    }
   });
 });
 

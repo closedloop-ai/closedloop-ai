@@ -11,12 +11,24 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repo/design-system/components/ui/select";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useCreateAgent } from "@/hooks/queries/use-agents";
+import {
+  useGitHubIntegrationStatus,
+  useGitHubRepositories,
+} from "@/hooks/queries/use-github-integration";
+import { sortRepositoriesByActivity } from "@/lib/sort-utils";
 
 type CreateAgentDialogProps = {
   open: boolean;
@@ -33,6 +45,15 @@ export function CreateAgentDialog({
   const [role, setRole] = useState("");
   const [description, setDescription] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [sourceRepo, setSourceRepo] = useState("");
+  const { data: githubStatus } = useGitHubIntegrationStatus({ enabled: open });
+  const { data: repositories } = useGitHubRepositories({
+    enabled: open && githubStatus?.connected === true,
+  });
+  const sortedRepos = useMemo(
+    () => (repositories ? sortRepositoriesByActivity(repositories) : []),
+    [repositories]
+  );
 
   const canSubmit = name.trim() && role.trim() && prompt.trim();
 
@@ -46,6 +67,7 @@ export function CreateAgentDialog({
         role: role.trim(),
         description: description.trim() || undefined,
         prompt: prompt.trim(),
+        sourceRepo: sourceRepo || undefined,
       },
       {
         onSuccess: (agent) => {
@@ -63,6 +85,7 @@ export function CreateAgentDialog({
     setRole("");
     setDescription("");
     setPrompt("");
+    setSourceRepo("");
   };
 
   return (
@@ -112,6 +135,30 @@ export function CreateAgentDialog({
               placeholder="Specializes in React/Next.js frontend architecture"
               value={description}
             />
+          </div>
+          <div className="grid gap-2">
+            <Label>Repository (optional)</Label>
+            <Select
+              onValueChange={(v) =>
+                setSourceRepo(v === "__org_wide__" ? "" : v)
+              }
+              value={sourceRepo || "__org_wide__"}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Org-wide (no repo)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__org_wide__">Org-wide (no repo)</SelectItem>
+                {sortedRepos.map((repo) => (
+                  <SelectItem key={repo.id} value={repo.fullName}>
+                    {repo.fullName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-muted-foreground text-xs">
+              Scope this agent to a specific repository, or leave org-wide.
+            </p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="agent-prompt">Prompt</Label>

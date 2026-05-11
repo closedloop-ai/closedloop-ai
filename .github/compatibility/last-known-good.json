@@ -4,10 +4,10 @@
     "branch": "main"
   },
   "closedloopElectron": {
-    "sha": "e04ce3a781dc3d28c9ea31f004b8e30f9e9498ac",
+    "sha": "9162bf9c0013e21a183dfe1355e5ce751890eed4",
     "branch": "main",
     "repo": "closedloop-ai/closedloop-electron"
   },
-  "lastUpdated": "2026-03-26T00:00:00.000Z",
+  "lastUpdated": "2026-05-10T05:54:34Z",
   "updatedBy": "manual"
 }

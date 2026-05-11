@@ -74,6 +74,18 @@ vi.mock("@/hooks/queries/use-loops", () => ({
   }),
 }));
 
+// PLN-237: NewPlanModal resolves the project's primary repo via
+// `useTeamRepositoriesUnion`, which uses `useQueries` and would require a
+// QueryClientProvider. Stub it for these structural tests; multi-repo
+// behaviour has its own dedicated test file.
+vi.mock("@/hooks/use-team-repositories-union", () => ({
+  useTeamRepositoriesUnion: () => ({
+    repositories: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 function createMockSource(overrides?: Partial<PlanSource>): PlanSource {
   return {
     id: "source-1",

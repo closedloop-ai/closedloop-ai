@@ -69,7 +69,7 @@ const columns: Column<AgentSummary>[] = [
     header: "Source",
     render: (agent) => (
       <span className="text-muted-foreground text-sm">
-        {agent.sourceRepo ?? "Manual"}
+        {agent.sourceRepo === "" ? "Org-wide" : agent.sourceRepo}
       </span>
     ),
   },

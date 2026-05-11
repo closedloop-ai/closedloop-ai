@@ -1,5 +1,6 @@
 "use client";
 
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error";
 import type {
   LoopEvent,
   LoopEventError,
@@ -37,7 +38,6 @@ import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { useState } from "react";
 import { useLoopEventsPaginated } from "@/hooks/queries/use-loops";
 import { formatDateTime, formatRelativeTime } from "@/lib/date-utils";
-import { getLoopErrorTitle } from "@/lib/loop-error-display";
 
 type LoopAuditLogProps = {
   loopId: string;
@@ -104,12 +104,20 @@ function getEventDetails(event: LoopEvent): string {
       return `Tokens: ${tokens.input} in / ${tokens.output} out`;
     }
     case "error":
-      return `${getLoopErrorTitle(event)}: ${event.message}`;
+      return getFriendlyErrorDetails(event);
     case "cancelled":
       return event.reason ?? "Cancelled";
     default:
       return "";
   }
+}
+
+function getEventKey(event: LoopEvent): string {
+  const details =
+    event.type === "error"
+      ? `${event.code}-${event.message.slice(0, 80)}`
+      : getEventDetails(event).slice(0, 80);
+  return `${event.type}-${event.timestamp ?? "untimed"}-${details}`;
 }
 
 function isExpandableEvent(event: LoopEvent): boolean {
@@ -131,6 +139,7 @@ function isExpandableEvent(event: LoopEvent): boolean {
   if (event.type === "error") {
     const e = event as LoopEventError;
     return (
+      Object.keys(resolveLoopEventError(e).technicalDetails).length > 0 ||
       (typeof e.logTail === "string" && e.logTail.length > 0) ||
       e.tokenUsage !== undefined ||
       e.diagnosticsVersion !== undefined
@@ -166,6 +175,12 @@ function getExpandedContent(event: LoopEvent): string | null {
     case "error": {
       const e = event as LoopEventError;
       const parts: string[] = [];
+      const friendly = resolveLoopEventError(e);
+      if (Object.keys(friendly.technicalDetails).length > 0) {
+        parts.push(
+          `Technical details:\n${JSON.stringify(friendly.technicalDetails, null, 2)}`
+        );
+      }
       if (e.tokenUsage) {
         parts.push(
           `Tokens: ${e.tokenUsage.inputTokens} in / ${e.tokenUsage.outputTokens} out`
@@ -189,6 +204,20 @@ function truncateDetails(text: string, maxLength = 100): string {
     return text;
   }
   return `${text.slice(0, maxLength)}...`;
+}
+
+function getFriendlyErrorDetails(event: LoopEventError): string {
+  const friendly = resolveLoopEventError(event);
+  return `${friendly.title}: ${friendly.description}`;
+}
+
+function resolveLoopEventError(event: LoopEventError) {
+  return resolveFriendlyError({
+    code: event.code,
+    message: event.message,
+    result: event.result ?? undefined,
+    timestamp: event.timestamp,
+  });
 }
 
 // -- Event Row --
@@ -340,11 +369,8 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {events.map((event, idx) => (
-                <EventRow
-                  event={event}
-                  key={`${event.type}-${event.timestamp}-${idx}`}
-                />
+              {events.map((event) => (
+                <EventRow event={event} key={getEventKey(event)} />
               ))}
             </TableBody>
           </Table>

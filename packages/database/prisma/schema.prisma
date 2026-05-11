@@ -317,6 +317,7 @@ model Organization {
   commentThreads            CommentThread[]
   agents                    Agent[]
   repoBootstrapConfigs      RepoBootstrapConfig[]
+  userPublicKeys            UserPublicKey[]
 
   @@map("organizations")
 }
@@ -365,6 +366,7 @@ model User {
   dismissedGenerationStatuses DocumentGenerationStatusDismissal[]
   createdAgents               Agent[]                             @relation("AgentCreatedBy")
   agentVersionChanges         AgentVersion[]                      @relation("AgentVersionChangedBy")
+  publicKeys                  UserPublicKey[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -373,6 +375,22 @@ model User {
   @@index([slackId])
   @@index([githubUsername])
   @@map("users")
+}
+
+model UserPublicKey {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  publicKeyBase64 String   @map("public_key_base64")
+  fingerprint     String
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@index([organizationId])
+  @@map("user_public_keys")
 }
 
 model ComputeTarget {
@@ -390,12 +408,13 @@ model ComputeTarget {
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  organization    Organization              @relation(fields: [organizationId], references: [id])
-  user            User                      @relation(fields: [userId], references: [id])
-  preferringUsers User[]                    @relation("UserPreferredComputeTarget")
-  desktopCommands DesktopCommand[]
-  loops           Loop[]
-  healthCheck     ComputeTargetHealthCheck?
+  organization                        Organization                         @relation(fields: [organizationId], references: [id])
+  user                                User                                 @relation(fields: [userId], references: [id])
+  preferringUsers                     User[]                               @relation("UserPreferredComputeTarget")
+  desktopCommands                     DesktopCommand[]
+  loopExecutionCredentialConsumptions LoopExecutionCredentialConsumption[]
+  loops                               Loop[]
+  healthCheck                         ComputeTargetHealthCheck?
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
@@ -446,8 +465,9 @@ model DesktopCommand {
   startedAt          DateTime? @map("started_at")
   finishedAt         DateTime? @map("finished_at")
 
-  computeTarget ComputeTarget         @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
-  events        DesktopCommandEvent[]
+  computeTarget                      ComputeTarget                       @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  events                             DesktopCommandEvent[]
+  loopExecutionCredentialConsumption LoopExecutionCredentialConsumption?
 
   // NOTE: A partial unique index on (compute_target_id, idempotency_key) WHERE
   // idempotency_key IS NOT NULL is maintained via raw migrations. Prisma cannot
@@ -457,6 +477,23 @@ model DesktopCommand {
   @@index([computeTargetId, status, createdAt])
   @@index([operationId])
   @@map("desktop_commands")
+}
+
+model LoopExecutionCredentialConsumption {
+  commandId       String   @id @map("command_id") @db.Uuid
+  loopId          String   @map("loop_id") @db.Uuid
+  computeTargetId String   @map("compute_target_id") @db.Uuid
+  gatewayId       String   @map("gateway_id")
+  action          String
+  consumedAt      DateTime @default(now()) @map("consumed_at")
+
+  command       DesktopCommand @relation(fields: [commandId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget  @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  loop          Loop           @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@index([loopId])
+  @@index([computeTargetId, gatewayId], map: "loop_execution_credential_consumptions_compute_target_id_gatewa")
+  @@map("loop_execution_credential_consumptions")
 }
 
 model DesktopCommandEvent {
@@ -1163,15 +1200,16 @@ model Loop {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  organization  Organization         @relation(fields: [organizationId], references: [id])
-  user          User                 @relation(fields: [userId], references: [id])
-  artifact      Artifact?            @relation(fields: [artifactId], references: [id], onDelete: SetNull)
-  workstream    Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  computeTarget ComputeTarget?       @relation(fields: [computeTargetId], references: [id])
-  parentLoop    Loop?                @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  childLoops    Loop[]               @relation("LoopParent")
-  evaluations   ArtifactEvaluation[]
-  events        LoopEvent[]
+  organization                    Organization                         @relation(fields: [organizationId], references: [id])
+  user                            User                                 @relation(fields: [userId], references: [id])
+  artifact                        Artifact?                            @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  workstream                      Workstream?                          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  computeTarget                   ComputeTarget?                       @relation(fields: [computeTargetId], references: [id])
+  parentLoop                      Loop?                                @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  childLoops                      Loop[]                               @relation("LoopParent")
+  evaluations                     ArtifactEvaluation[]
+  events                          LoopEvent[]
+  executionCredentialConsumptions LoopExecutionCredentialConsumption[]
 
   // NOTE: A partial unique index on (artifact_id, command, artifact_version)
   // WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING') is maintained via raw migrations.
@@ -1723,7 +1761,7 @@ model Agent {
   description    String?
   prompt         String   @db.Text
   enabled        Boolean  @default(true)
-  sourceRepo     String?  @map("source_repo")
+  sourceRepo     String   @default("") @map("source_repo")
   bootstrapRunId String?  @map("bootstrap_run_id")
   currentVersion Int      @default(1) @map("current_version")
   createdById    String   @map("created_by_id") @db.Uuid
@@ -1736,7 +1774,7 @@ model Agent {
   versions     AgentVersion[]
 
   @@unique([organizationId, slug])
-  @@unique([organizationId, role])
+  @@unique([organizationId, sourceRepo, role])
   @@index([organizationId])
   @@index([organizationId, enabled])
   @@map("agents")

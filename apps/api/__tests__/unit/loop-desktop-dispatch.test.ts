@@ -26,7 +26,21 @@ vi.mock("@/lib/desktop-command-store", () => ({
       command: { commandId: "cmd-test-1" },
       deduped: false,
     }),
+    markCommandExpired: vi.fn().mockResolvedValue(undefined),
   },
+}));
+
+vi.mock("@/app/compute-targets/service", () => ({
+  computeTargetsService: {
+    findById: vi.fn().mockResolvedValue({
+      userId: "owner-1",
+      capabilities: {},
+    }),
+  },
+}));
+
+vi.mock("@/lib/command-signing-feature", () => ({
+  isComputeTargetSigningSupportedForUser: vi.fn().mockResolvedValue(false),
 }));
 
 // relayEventBus is used by the non-relay (direct socket.io) path.
@@ -60,11 +74,18 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 
 // --- Imports (after mocks) ---
 
+import {
+  COMMAND_SIGNING_CAPABILITY_KEY,
+  COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
+} from "@repo/api/src/types/compute-target";
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
+import { computeTargetsService } from "@/app/compute-targets/service";
+import { isComputeTargetSigningSupportedForUser } from "@/lib/command-signing-feature";
+import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   DispatchError,
   isDispatchError,
@@ -128,6 +149,11 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(computeTargetsService.findById).mockResolvedValue({
+      userId: "owner-1",
+      capabilities: {},
+    } as any);
+    vi.mocked(isComputeTargetSigningSupportedForUser).mockResolvedValue(false);
     // Enable the fetch path by providing relay env vars.
     process.env.RELAY_API_URL = "http://relay.test";
     process.env.INTERNAL_API_SECRET = "secret";
@@ -184,6 +210,59 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
 
     await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
       RE_503
+    );
+  });
+
+  it("requires signed launch intent only when server, signing support, and enforcement opt-in are all true", async () => {
+    vi.mocked(computeTargetsService.findById).mockResolvedValue({
+      userId: "owner-1",
+      capabilities: {
+        [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: true,
+      },
+      user: { clerkId: "clerk-owner-1" },
+    } as any);
+    vi.mocked(isComputeTargetSigningSupportedForUser).mockResolvedValue(true);
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
+      "Command signing is required for this compute target"
+    );
+    expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["false", false],
+    ["malformed string", "true"],
+  ])("uses legacy launch body when commandSigningRequired is %s", async (_label, commandSigningRequired) => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: true })
+    );
+    vi.mocked(computeTargetsService.findById).mockResolvedValue({
+      userId: "owner-1",
+      capabilities: {
+        [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        ...(commandSigningRequired === undefined
+          ? {}
+          : {
+              [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: commandSigningRequired,
+            }),
+      },
+      user: { clerkId: "clerk-owner-1" },
+    } as any);
+    vi.mocked(isComputeTargetSigningSupportedForUser).mockResolvedValue(true);
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).resolves.toBeDefined();
+
+    const toRelayOperationMock = vi.mocked(toRelayOperation);
+    const [, dispatchedInput] = toRelayOperationMock.mock.calls[0];
+    expect(dispatchedInput).toEqual(
+      expect.objectContaining({
+        operationId: "symphony_loop",
+        body: expect.objectContaining({
+          closedLoopAuthToken: VALID_LAUNCH_OPTS.closedLoopAuthToken,
+        }),
+      })
     );
   });
 
@@ -334,6 +413,52 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
 
     await expect(stopDesktopLoop("loop-1", "ct-1")).resolves.toBeUndefined();
+  });
+
+  it("requires signed kill intent only when server, signing support, and enforcement opt-in are all true", async () => {
+    vi.mocked(computeTargetsService.findById).mockResolvedValue({
+      userId: "owner-1",
+      capabilities: {
+        [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: true,
+      },
+      user: { clerkId: "clerk-owner-1" },
+    } as any);
+    vi.mocked(isComputeTargetSigningSupportedForUser).mockResolvedValue(true);
+
+    const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
+
+    await expect(stopDesktopLoop("loop-1", "ct-1")).rejects.toThrow(
+      "Command signing is required for this compute target"
+    );
+    expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
+  });
+
+  it("expires signed kill commands and throws when immediate delivery fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: false, reason: "target_offline" })
+    );
+
+    const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
+
+    await expect(
+      stopDesktopLoop("loop-1", "ct-1", {
+        commandId: "0196b1bb-7a00-7000-8000-000000000010",
+        signature: "signature",
+        signaturePayload: "{}",
+        publicKeyFingerprint: "cl:abcdefghijklmnopqrstuv",
+        body: { loopId: "loop-1", action: "loop.kill" },
+      })
+    ).rejects.toThrow(DispatchError);
+    expect(desktopCommandStore.markCommandExpired).toHaveBeenCalledWith(
+      "cmd-test-1",
+      "signed_command_delivery_failed:target_offline",
+      expect.objectContaining({
+        commandId: "cmd-test-1",
+        operationId: "symphony_loop_kill",
+        computeTargetId: "ct-1",
+      })
+    );
   });
 });
 

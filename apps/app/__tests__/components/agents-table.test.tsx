@@ -180,10 +180,10 @@ describe("AgentsTable", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows 'Manual' as source when sourceRepo is null", () => {
+  it("shows 'Org-wide' as source when sourceRepo is empty string", () => {
     vi.mocked(useAgents).mockReturnValue({
       data: {
-        agents: [makeAgent({ sourceRepo: null })],
+        agents: [makeAgent({ sourceRepo: "" })],
         total: 1,
       },
       isLoading: false,
@@ -192,7 +192,7 @@ describe("AgentsTable", () => {
 
     render(<AgentsTable />);
 
-    expect(screen.getByText("Manual")).toBeInTheDocument();
+    expect(screen.getByText("Org-wide")).toBeInTheDocument();
   });
 
   it("navigates to agent detail when row is clicked", () => {

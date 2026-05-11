@@ -39,7 +39,7 @@ describe("executeHandler upload ingestion", () => {
         has_changes: true,
         pr_url: "https://github.com/org/repo/pull/42",
         pr_number: "42",
-        pr_title: "Symphony: feature",
+        pr_title: "ClosedLoop: feature",
         branch_name: "symphony/feature",
         base_branch: "develop",
         commit_sha: "abc123",

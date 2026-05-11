@@ -45,6 +45,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { EmptyState } from "@/components/empty-state";
+import { FriendlyErrorAlert } from "@/components/errors/friendly-error-alert";
 import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
@@ -64,7 +65,6 @@ import {
   CANCELLABLE_LOOP_STATUSES,
   RESTARTABLE_LOOP_STATUSES,
 } from "@/lib/loop-constants";
-import { getLoopErrorTitle } from "@/lib/loop-error-display";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatModelName(model: string): string {
@@ -394,10 +394,6 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const diagnosticsLogTail = ghostLoopUx
     ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
     : undefined;
-  const loopErrorTitle = loop.error
-    ? getLoopErrorTitle(loop.error, { useFriendlyCodeLabels: !!ghostLoopUx })
-    : null;
-
   const handleRestart = () => {
     resumeLoop.mutate(
       { id: loop.id },
@@ -411,9 +407,12 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   };
 
   const handleCancel = () => {
-    cancelLoop.mutate(loop.id, {
-      onSuccess: () => toast.success("Loop cancelled"),
-    });
+    cancelLoop.mutate(
+      { id: loop.id, computeTargetId: loop.computeTarget?.id ?? null },
+      {
+        onSuccess: () => toast.success("Loop cancelled"),
+      }
+    );
   };
 
   return (
@@ -503,14 +502,13 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
       {/* Error display */}
       {loop.error && (
-        <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4">
-          <p className="font-medium text-destructive text-sm">
-            Error: {loopErrorTitle}
-          </p>
-          <p className="mt-1 text-destructive/80 text-sm">
-            {loop.error.message}
-          </p>
-        </div>
+        <FriendlyErrorAlert
+          error={{
+            code: loop.error.code,
+            message: loop.error.message,
+            result: loop.error.result ?? undefined,
+          }}
+        />
       )}
 
       {/* Diagnostics */}

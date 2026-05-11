@@ -79,6 +79,16 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubBranches: () => ({ data: undefined, isLoading: false }),
 }));
 
+// PLN-237: stub out team-repo union so multi-repo tests don't need a
+// QueryClientProvider; resolution-chain behaviour is unit-tested separately.
+vi.mock("@/hooks/use-team-repositories-union", () => ({
+  useTeamRepositoriesUnion: () => ({
+    repositories: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Capture each render's initialValue + the latest onChange so tests can drive
 // edits without standing up the full picker UI (which depends on GitHub APIs).
 type PickerSnapshot = {

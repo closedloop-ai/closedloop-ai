@@ -6,6 +6,7 @@ import {
 } from "@repo/api/src/desktop-api-namespace";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type {
+  BrowserSignedCommandId,
   HealthCheckResponse,
   UpsertComputeTargetHealthCheckSnapshotInput,
 } from "@repo/api/src/types/compute-target";
@@ -16,6 +17,10 @@ import { z } from "zod";
 import { env } from "@/env";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import {
+  COMMAND_ID_HEADER,
+  COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER,
+  COMMAND_SIGNATURE_HEADER,
+  COMMAND_SIGNATURE_PAYLOAD_HEADER,
   COMPUTE_TARGET_HEADER,
   GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_PATH_PREFIX,
@@ -48,6 +53,10 @@ function collectRelayHeaders(request: NextRequest): Record<string, string> {
     "authorization",
     "cookie",
     COMPUTE_TARGET_HEADER,
+    COMMAND_ID_HEADER,
+    COMMAND_SIGNATURE_HEADER,
+    COMMAND_SIGNATURE_PAYLOAD_HEADER,
+    COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER,
     "x-relay-command-id",
     "x-relay-after-sequence",
     "host",
@@ -62,6 +71,37 @@ function collectRelayHeaders(request: NextRequest): Record<string, string> {
     headers[key] = value;
   }
   return headers;
+}
+
+function collectCommandSigningHeaders(request: NextRequest):
+  | {
+      commandId: BrowserSignedCommandId;
+      signature: string;
+      signaturePayload: string;
+      publicKeyFingerprint: string;
+    }
+  | undefined {
+  const commandId = request.headers.get(COMMAND_ID_HEADER)?.trim();
+  const signature = request.headers.get(COMMAND_SIGNATURE_HEADER)?.trim();
+  const signaturePayload = request.headers
+    .get(COMMAND_SIGNATURE_PAYLOAD_HEADER)
+    ?.trim();
+  const publicKeyFingerprint = request.headers
+    .get(COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER)
+    ?.trim();
+
+  if (!(commandId || signature || signaturePayload || publicKeyFingerprint)) {
+    return undefined;
+  }
+  if (!(commandId && signature && signaturePayload && publicKeyFingerprint)) {
+    throw new RelayRequestError("Incomplete command signing headers", 400);
+  }
+  return {
+    commandId: commandId as BrowserSignedCommandId,
+    signature,
+    signaturePayload,
+    publicKeyFingerprint,
+  };
 }
 
 async function encodeBody(request: NextRequest): Promise<RelayEncodedBody> {
@@ -366,6 +406,7 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     headers: collectRelayHeaders(request),
     body: await encodeBody(request),
   };
+  const commandSigning = collectCommandSigningHeaders(request);
 
   const relayClient = new RelayClient(
     apiOrigin,
@@ -389,7 +430,11 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
 
     const { stream, commandId } = reconnectCommandId
       ? relayClient.resumeStream(targetId, reconnectCommandId, afterSequence)
-      : await relayClient.streamOperation(targetId, relayRequest);
+      : await relayClient.streamOperation(
+          targetId,
+          relayRequest,
+          commandSigning
+        );
 
     // Body is NDJSON but we use text/event-stream so Vercel's CDN layer
     // treats this as an SSE response and skips Brotli/gzip compression
@@ -409,7 +454,11 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     });
   }
 
-  const { value } = await relayClient.executeOperation(targetId, relayRequest);
+  const { value } = await relayClient.executeOperation(
+    targetId,
+    relayRequest,
+    commandSigning
+  );
   scheduleHealthCheckPersistence({
     apiOrigin,
     authToken: token,

@@ -39,7 +39,7 @@ export async function GET(
     }
 
     const { id: targetId, commandId } = await params;
-    const target = await computeTargetsService.findOwnedById(
+    const target = await computeTargetsService.findAccessibleById(
       targetId,
       authContext.organizationId,
       authContext.userId
