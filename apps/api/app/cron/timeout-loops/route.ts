@@ -178,11 +178,15 @@ async function warnGhostLoopAnomalies(now: Date): Promise<void> {
  * passed via `Authorization: Bearer <secret>` header (e.g., Vercel Cron).
  *
  * Detection strategy:
- * - RUNNING: Activity-based — only reap if the loop has had NO events in the
- *   last 75 minutes. The harness reports output events every ~5s, so 75
+ * - ECS RUNNING: Activity-based — only reap if the loop has had NO events in
+ *   the last 75 minutes. The harness reports output events every ~5s, so 75
  *   minutes of silence means the container is dead. Active loops are never
  *   reaped regardless of how long they've been running (6+ hours is normal).
  *   A single recent event = alive, don't touch it.
+ * - Desktop RUNNING: Age-based — created > 24h ago.
+ * - Manual RUNNING: 7-day inactivity — created > 7 days ago AND no events in
+ *   7 days. Manual loops are long-lived user-initiated loops with no automated
+ *   heartbeat; they stay alive as long as events keep flowing.
  * - CLAIMED: createdAt > 90 minutes ago (container never reported "started")
  * - PENDING: createdAt > 30 minutes ago (never picked up by a container)
  */
@@ -219,6 +223,11 @@ export const GET = async (request: Request): Promise<Response> => {
   // "events.none" check would always match. Use a generous 24h age cutoff.
   const desktopRunningCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
+  // RUNNING manual loops: 7-day inactivity window.
+  // Manual loops are long-lived user-initiated loops (via MCP/Claude Code)
+  // with no automated heartbeat. They stay alive as long as events flow.
+  const manualRunningCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
   // 90 minutes for CLAIMED loops (container may have never reported started)
   const claimedCutoff = new Date(now.getTime() - 90 * 60 * 1000);
   // 30 minutes for PENDING loops (should have been claimed quickly)
@@ -226,19 +235,32 @@ export const GET = async (request: Request): Promise<Response> => {
 
   // Find stuck loops across all categories.
   // ECS RUNNING: activity-based (no events in 75 min = dead container).
+  // Manual RUNNING: inactivity-based (no events in 7 days).
   // Desktop RUNNING: age-based (created > 24h ago).
   // CLAIMED/PENDING: both ECS and desktop are reaped at standard thresholds.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {
         OR: [
-          // ECS RUNNING: no events in 75 min
+          // ECS RUNNING: no events in 75 min (excludes manual loops)
           {
             status: LoopStatus.RUNNING,
             computeTargetId: null,
+            command: { not: LoopCommand.Manual },
             events: {
               none: {
                 createdAt: { gte: activityCutoff },
+              },
+            },
+          },
+          // Manual RUNNING: no events in 7 days
+          {
+            status: LoopStatus.RUNNING,
+            command: LoopCommand.Manual,
+            createdAt: { lt: manualRunningCutoff },
+            events: {
+              none: {
+                createdAt: { gte: manualRunningCutoff },
               },
             },
           },
