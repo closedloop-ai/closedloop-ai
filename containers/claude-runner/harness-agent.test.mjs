@@ -3552,25 +3552,14 @@ describe("refreshGitHubToken command-agnostic peer token refresh", () => {
 });
 
 // ---------------------------------------------------------------------------
-// reportFinalStatus — integration test for user-visible loop failure marker
+// reportFinalStatus — wiring tests for marker and JSONL auth-challenge paths
 // ---------------------------------------------------------------------------
 
-describe("reportFinalStatus with valid signed marker", () => {
+describe("reportFinalStatus auth-challenge wiring", () => {
   let originalFetch;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  test("emits error event with code, subcode, message, tokensUsed, and tokensByModel from signed marker", async () => {
-    const workDir = makeTempDir();
-
-    // Set up config — no S3_STATE_KEY so upload steps are no-ops;
-    // authToken/apiBaseUrl/loopId are required for refreshGitHubToken to attempt a call.
     resetConfig({
       command: LoopCommand.Plan,
       loopId: "test-loop-id",
@@ -3579,11 +3568,57 @@ describe("reportFinalStatus with valid signed marker", () => {
       correlationId: "test-correlation-id",
       targetRepo: null,
     });
-
-    // Reset module-level state so contextPackRef is null (no peer repos).
     resetHarnessState({ contextPackRef: null });
+  });
 
-    // Build and sign the marker payload.
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function installFetchCapture() {
+    const capturedCalls = [];
+    globalThis.fetch = async (url, options) => {
+      capturedCalls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "ok",
+        json: async () => ({
+          data: { token: "new-token", additionalRepoTokens: [] },
+        }),
+      };
+    };
+    return capturedCalls;
+  }
+
+  function getEventData(capturedCalls) {
+    const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
+    assert.ok(eventCall !== undefined, "expected an event POST to /events");
+    return JSON.parse(eventCall.options.body).data;
+  }
+
+  const tokenUsage = {
+    totalInput: 1000,
+    totalOutput: 200,
+    tokensByModel: { "claude-3-5-sonnet": { input: 1000, output: 200 } },
+  };
+
+  async function callReportFinalStatus(workDir, overrides) {
+    await reportFinalStatus(workDir, [], {
+      timedOut: false,
+      signal: null,
+      duration: "10.0",
+      tokenUsage,
+      startTime: Date.now(),
+      symphonyWorkDir: null,
+      userVisibleLoopFailureSecret: "unused-secret",
+      spawnStartedAt: 0,
+      ...overrides,
+    });
+  }
+
+  test("primary marker path emits error event with code/subcode/message from signed marker", async () => {
+    const workDir = makeTempDir();
     const signingSecret = "test-signing-secret-abc123";
     const markerPayload = {
       code: LoopErrorCode.RunnerError,
@@ -3591,467 +3626,64 @@ describe("reportFinalStatus with valid signed marker", () => {
       result: { subcode: "BAD_PLAN_STATE" },
     };
     const signature = signUserVisibleLoopFailure(markerPayload, signingSecret);
-    const markerFile = path.join(workDir, USER_VISIBLE_LOOP_FAILURE_FILE);
     fs.writeFileSync(
-      markerFile,
+      path.join(workDir, USER_VISIBLE_LOOP_FAILURE_FILE),
       JSON.stringify({ ...markerPayload, signature }),
       "utf-8"
     );
 
-    // tokenUsage with both totals and per-model breakdown.
-    const tokenUsage = {
-      totalInput: 1500,
-      totalOutput: 300,
-      tokensByModel: {
-        "claude-3-5-sonnet": { input: 1500, output: 300 },
-      },
-    };
-
-    // Capture every fetch call. Return ok=true for all (token refresh + event).
-    const capturedCalls = [];
-    globalThis.fetch = async (url, options) => {
-      capturedCalls.push({ url, options });
-      return {
-        ok: true,
-        status: 200,
-        text: async () => "ok",
-        json: async () => ({
-          data: { token: "new-token", additionalRepoTokens: [] },
-        }),
-      };
-    };
-
-    // spawnStartedAt of 0 means the marker mtime check is skipped (0 disables it).
-    await reportFinalStatus(workDir, [], {
-      timedOut: false,
+    const capturedCalls = installFetchCapture();
+    await callReportFinalStatus(workDir, {
       exitCode: 1,
-      signal: null,
-      duration: "42.5",
-      tokenUsage,
-      startTime: Date.now(),
-      symphonyWorkDir: null,
       userVisibleLoopFailureSecret: signingSecret,
-      spawnStartedAt: 0,
     });
 
-    // The last fetch call must be the event POST.
-    const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
-    assert.ok(eventCall !== undefined, "expected an event POST to /events");
-
-    const body = JSON.parse(eventCall.options.body);
-    const data = body.data;
-
-    // code matches the marker code
-    assert.equal(
-      data.code,
-      markerPayload.code,
-      `expected code="${markerPayload.code}", got "${data.code}"`
-    );
-
-    // subcode comes through result.subcode
-    assert.equal(
-      data.result.subcode,
-      markerPayload.result.subcode,
-      `expected result.subcode="${markerPayload.result.subcode}", got "${data.result.subcode}"`
-    );
-
-    // message matches the marker message
-    assert.equal(
-      data.message,
-      markerPayload.message,
-      `expected message="${markerPayload.message}", got "${data.message}"`
-    );
-
-    // tokensUsed has { input, output } shape
-    assert.ok(
-      data.tokensUsed !== null && typeof data.tokensUsed === "object",
-      "expected tokensUsed to be an object"
-    );
-    assert.equal(
-      data.tokensUsed.input,
-      tokenUsage.totalInput,
-      `expected tokensUsed.input=${tokenUsage.totalInput}, got ${data.tokensUsed.input}`
-    );
-    assert.equal(
-      data.tokensUsed.output,
-      tokenUsage.totalOutput,
-      `expected tokensUsed.output=${tokenUsage.totalOutput}, got ${data.tokensUsed.output}`
-    );
-
-    // tokensByModel field is present and matches
-    assert.ok(
-      data.tokensByModel !== null && typeof data.tokensByModel === "object",
-      "expected tokensByModel to be an object"
-    );
-    assert.deepEqual(
-      data.tokensByModel,
-      tokenUsage.tokensByModel,
-      "tokensByModel must match the tokenUsage.tokensByModel passed in"
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// reportFinalStatus — no marker, no JSONL auth signal, exitCode 0 → completed
-// ---------------------------------------------------------------------------
-
-describe("reportFinalStatus with no marker and no JSONL auth signal on exitCode 0", () => {
-  let originalFetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
+    const data = getEventData(capturedCalls);
+    assert.equal(data.code, markerPayload.code);
+    assert.equal(data.result.subcode, markerPayload.result.subcode);
+    assert.equal(data.message, markerPayload.message);
+    assert.equal(data.tokensUsed.input, tokenUsage.totalInput);
+    assert.equal(data.tokensUsed.output, tokenUsage.totalOutput);
+    assert.deepEqual(data.tokensByModel, tokenUsage.tokensByModel);
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  test("emits completed event (not error) when no marker file exists and JSONL output contains no auth signals", async () => {
+  test("JSONL 429 entry on exitCode 0 emits AuthChallenge instead of completed", async () => {
     const workDir = makeTempDir();
-
-    // Set up config — no S3_STATE_KEY so upload steps are no-ops;
-    // authToken/apiBaseUrl/loopId are required for refreshGitHubToken to attempt a call.
-    resetConfig({
-      command: LoopCommand.Plan,
-      loopId: "test-loop-id",
-      authToken: "test-auth-token",
-      apiBaseUrl: "https://api.example.com",
-      correlationId: "test-correlation-id",
-      targetRepo: null,
-    });
-
-    // Reset module-level state so contextPackRef is null (no peer repos) and
-    // llmCommitAuthChallenge is null (no tertiary auth guard signal).
-    resetHarnessState({ contextPackRef: null });
-
-    // Explicitly verify the marker file does NOT exist on disk — this is the
-    // primary requirement: no signed marker file present.
-    const markerFile = path.join(workDir, USER_VISIBLE_LOOP_FAILURE_FILE);
-    assert.equal(
-      fs.existsSync(markerFile),
-      false,
-      "marker file must not exist before calling reportFinalStatus"
-    );
-
-    // Write a clean JSONL output file with benign entries — no auth challenge
-    // signals to avoid false positives from the JSONL secondary guard.
-    const jsonlFile = path.join(workDir, "claude-output.jsonl");
-    const cleanLines = [
-      JSON.stringify({ type: "assistant", message: "Starting analysis..." }),
-      JSON.stringify({
-        type: "result",
-        is_error: false,
-        result: "Completed successfully",
-      }),
-    ].join("\n");
-    fs.writeFileSync(jsonlFile, cleanLines, "utf-8");
-
-    // Token usage for the run.
-    const tokenUsage = {
-      totalInput: 800,
-      totalOutput: 200,
-      tokensByModel: {
-        "claude-3-5-sonnet": { input: 800, output: 200 },
-      },
-    };
-
-    // Capture every fetch call. Return ok=true for all (token refresh + event).
-    const capturedCalls = [];
-    globalThis.fetch = async (url, options) => {
-      capturedCalls.push({ url, options });
-      return {
-        ok: true,
-        status: 200,
-        text: async () => "ok",
-        json: async () => ({
-          data: { token: "new-token", additionalRepoTokens: [] },
-        }),
-      };
-    };
-
-    // spawnStartedAt of 0 means the marker mtime check is skipped (0 disables it).
-    await reportFinalStatus(workDir, [], {
-      timedOut: false,
-      exitCode: 0,
-      signal: null,
-      duration: "15.3",
-      tokenUsage,
-      startTime: Date.now(),
-      symphonyWorkDir: null,
-      userVisibleLoopFailureSecret: "unused-secret",
-      spawnStartedAt: 0,
-    });
-
-    // The last fetch call must be the event POST.
-    const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
-    assert.ok(eventCall !== undefined, "expected an event POST to /events");
-
-    const body = JSON.parse(eventCall.options.body);
-    const data = body.data;
-
-    // Event type must be "completed" — not an error event.
-    assert.equal(
-      data.type,
-      "completed",
-      `expected event type="completed", got "${data.type}"`
-    );
-
-    // No auth challenge code must appear in the event.
-    assert.notEqual(
-      data.code,
-      LoopErrorCode.AuthChallenge,
-      "event must not carry AuthChallenge code — no false positive auth challenge detection"
-    );
-
-    // No error code at all on a completed event.
-    assert.equal(
-      data.code,
-      undefined,
-      `expected no error code on a completed event, got "${data.code}"`
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// reportFinalStatus — no marker, 429 isApiErrorMessage in JSONL, exitCode 0
-//   → AuthChallenge error event (not completed)
-// ---------------------------------------------------------------------------
-
-describe("reportFinalStatus with no marker and 429 isApiErrorMessage in JSONL on exitCode 0", () => {
-  let originalFetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  test("emits error event with AuthChallenge code when JSONL contains a 429 isApiErrorMessage entry and no marker file exists", async () => {
-    const workDir = makeTempDir();
-
-    // Set up config — no S3_STATE_KEY so upload steps are no-ops;
-    // authToken/apiBaseUrl/loopId are required for refreshGitHubToken to attempt a call.
-    resetConfig({
-      command: LoopCommand.Plan,
-      loopId: "test-loop-id",
-      authToken: "test-auth-token",
-      apiBaseUrl: "https://api.example.com",
-      correlationId: "test-correlation-id",
-      targetRepo: null,
-    });
-
-    // Reset module-level state so contextPackRef and llmCommitAuthChallenge are null.
-    resetHarnessState({ contextPackRef: null });
-
-    // Explicitly verify the marker file does NOT exist on disk — this test
-    // exercises the secondary JSONL guard, not the primary marker path.
-    const markerFile = path.join(workDir, USER_VISIBLE_LOOP_FAILURE_FILE);
-    assert.equal(
-      fs.existsSync(markerFile),
-      false,
-      "marker file must not exist before calling reportFinalStatus"
-    );
-
-    // Write a JSONL output file containing a synthetic isApiErrorMessage entry
-    // with apiErrorStatus: 429. Per auth-challenge-detection.mjs, HTTP 429 is
-    // treated as an auth/quota challenge regardless of the error text content.
-    const jsonlFile = path.join(workDir, "claude-output.jsonl");
-    const jsonlLines = [
-      JSON.stringify({ type: "assistant", message: "Analyzing..." }),
-      JSON.stringify({
+    fs.writeFileSync(
+      path.join(workDir, "claude-output.jsonl"),
+      `${JSON.stringify({
         isApiErrorMessage: true,
         error: "some unknown error text",
         apiErrorStatus: 429,
-      }),
-    ].join("\n");
-    fs.writeFileSync(jsonlFile, jsonlLines, "utf-8");
-
-    // Token usage for the run.
-    const tokenUsage = {
-      totalInput: 1000,
-      totalOutput: 150,
-      tokensByModel: {
-        "claude-3-5-sonnet": { input: 1000, output: 150 },
-      },
-    };
-
-    // Capture every fetch call. Return ok=true for all (token refresh + event).
-    const capturedCalls = [];
-    globalThis.fetch = async (url, options) => {
-      capturedCalls.push({ url, options });
-      return {
-        ok: true,
-        status: 200,
-        text: async () => "ok",
-        json: async () => ({
-          data: { token: "new-token", additionalRepoTokens: [] },
-        }),
-      };
-    };
-
-    // spawnStartedAt of 0 means the marker mtime check is skipped (0 disables it).
-    await reportFinalStatus(workDir, [], {
-      timedOut: false,
-      exitCode: 0,
-      signal: null,
-      duration: "20.1",
-      tokenUsage,
-      startTime: Date.now(),
-      symphonyWorkDir: null,
-      userVisibleLoopFailureSecret: "unused-secret",
-      spawnStartedAt: 0,
-    });
-
-    // The last fetch call must be the event POST.
-    const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
-    assert.ok(eventCall !== undefined, "expected an event POST to /events");
-
-    const body = JSON.parse(eventCall.options.body);
-    const data = body.data;
-
-    // Event type must be "error" — not "completed".
-    assert.equal(
-      data.type,
-      "error",
-      `expected event type="error", got "${data.type}"`
+      })}\n`,
+      "utf-8"
     );
 
-    // Error code must be AuthChallenge.
-    assert.equal(
-      data.code,
-      LoopErrorCode.AuthChallenge,
-      `expected code="${LoopErrorCode.AuthChallenge}", got "${data.code}"`
-    );
-  });
-});
+    const capturedCalls = installFetchCapture();
+    await callReportFinalStatus(workDir, { exitCode: 0 });
 
-// ---------------------------------------------------------------------------
-// reportFinalStatus — no marker, is_error rate-limit signal in JSONL, exitCode 1
-//   → AuthChallenge error event (not ProcessFailed or RunnerError)
-// ---------------------------------------------------------------------------
-
-describe("reportFinalStatus with no marker, is_error rate-limit signal in JSONL, and exitCode non-zero", () => {
-  let originalFetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
+    const data = getEventData(capturedCalls);
+    assert.equal(data.type, "error");
+    assert.equal(data.code, LoopErrorCode.AuthChallenge);
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  test("emits error event with AuthChallenge code when JSONL contains is_error result with rate_limit_error text and exitCode is non-zero", async () => {
+  test("no marker and clean JSONL on exitCode 0 emits completed", async () => {
     const workDir = makeTempDir();
-
-    // Set up config — no S3_STATE_KEY so upload steps are no-ops;
-    // authToken/apiBaseUrl/loopId are required for refreshGitHubToken to attempt a call.
-    resetConfig({
-      command: LoopCommand.Plan,
-      loopId: "test-loop-id",
-      authToken: "test-auth-token",
-      apiBaseUrl: "https://api.example.com",
-      correlationId: "test-correlation-id",
-      targetRepo: null,
-    });
-
-    // Reset module-level state so contextPackRef and llmCommitAuthChallenge are null.
-    resetHarnessState({ contextPackRef: null });
-
-    // Explicitly verify the marker file does NOT exist on disk — this test
-    // exercises the secondary JSONL guard (is_error path), not the primary marker path.
-    const markerFile = path.join(workDir, USER_VISIBLE_LOOP_FAILURE_FILE);
-    assert.equal(
-      fs.existsSync(markerFile),
-      false,
-      "marker file must not exist before calling reportFinalStatus"
-    );
-
-    // Write a JSONL output file containing a result entry with is_error: true
-    // and a result string that matches AUTH_CHALLENGE_PATTERN (rate_limit_error).
-    // This is the canonical is_error path tested by detectAuthChallengeFromJsonl.
-    const jsonlFile = path.join(workDir, "claude-output.jsonl");
-    const jsonlLines = [
-      JSON.stringify({ type: "assistant", message: "Working on the task..." }),
-      JSON.stringify({
+    fs.writeFileSync(
+      path.join(workDir, "claude-output.jsonl"),
+      `${JSON.stringify({
         type: "result",
-        is_error: true,
-        result:
-          "rate_limit_error: You have exceeded your rate limit. Please retry after some time.",
-      }),
-    ].join("\n");
-    fs.writeFileSync(jsonlFile, jsonlLines, "utf-8");
-
-    // Token usage for the run.
-    const tokenUsage = {
-      totalInput: 600,
-      totalOutput: 50,
-      tokensByModel: {
-        "claude-3-5-sonnet": { input: 600, output: 50 },
-      },
-    };
-
-    // Capture every fetch call. Return ok=true for all (token refresh + event).
-    const capturedCalls = [];
-    globalThis.fetch = async (url, options) => {
-      capturedCalls.push({ url, options });
-      return {
-        ok: true,
-        status: 200,
-        text: async () => "ok",
-        json: async () => ({
-          data: { token: "new-token", additionalRepoTokens: [] },
-        }),
-      };
-    };
-
-    // spawnStartedAt of 0 means the marker mtime check is skipped (0 disables it).
-    // exitCode is 1 (non-zero) — process exited with failure.
-    await reportFinalStatus(workDir, [], {
-      timedOut: false,
-      exitCode: 1,
-      signal: null,
-      duration: "8.7",
-      tokenUsage,
-      startTime: Date.now(),
-      symphonyWorkDir: null,
-      userVisibleLoopFailureSecret: "unused-secret",
-      spawnStartedAt: 0,
-    });
-
-    // The last fetch call must be the event POST.
-    const eventCall = capturedCalls.findLast((c) => c.url.includes("/events"));
-    assert.ok(eventCall !== undefined, "expected an event POST to /events");
-
-    const body = JSON.parse(eventCall.options.body);
-    const data = body.data;
-
-    // Event type must be "error" — not "completed".
-    assert.equal(
-      data.type,
-      "error",
-      `expected event type="error", got "${data.type}"`
+        is_error: false,
+        result: "Completed successfully",
+      })}\n`,
+      "utf-8"
     );
 
-    // Error code must be AuthChallenge — not ProcessFailed or RunnerError.
-    assert.equal(
-      data.code,
-      LoopErrorCode.AuthChallenge,
-      `expected code="${LoopErrorCode.AuthChallenge}", got "${data.code}" — JSONL is_error rate-limit signal must take precedence over non-zero exitCode`
-    );
+    const capturedCalls = installFetchCapture();
+    await callReportFinalStatus(workDir, { exitCode: 0 });
 
-    // Explicitly assert that neither ProcessFailed nor RunnerError is emitted.
-    assert.notEqual(
-      data.code,
-      LoopErrorCode.ProcessFailed,
-      "event must not carry ProcessFailed code — rate-limit signal in JSONL must win"
-    );
-    assert.notEqual(
-      data.code,
-      LoopErrorCode.RunnerError,
-      "event must not carry RunnerError code — rate-limit signal in JSONL must win"
-    );
+    const data = getEventData(capturedCalls);
+    assert.equal(data.type, "completed");
+    assert.equal(data.code, undefined);
   });
 });
