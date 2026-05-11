@@ -1179,6 +1179,53 @@ function writeFeatureEvaluationPrdFile(targetDir, contextPack) {
   });
 }
 
+/**
+ * Write plan-source.md from the context pack's ImplementationPlan artifact.
+ * Returns the written path, or null when no ImplementationPlan artifact has
+ * content. Sibling to writePrdFile.
+ */
+function writePlanSourceFile(targetDir, contextPack) {
+  const artifact = Array.isArray(contextPack?.artifacts)
+    ? contextPack.artifacts.find(
+        (a) =>
+          a.type === LoopArtifactType.ImplementationPlan &&
+          typeof a.content === "string" &&
+          a.content.length > 0
+      )
+    : null;
+  if (!artifact) {
+    return null;
+  }
+  const planSourcePath = path.join(targetDir, "plan-source.md");
+  fs.writeFileSync(planSourcePath, artifact.content);
+  log("info", `Wrote plan-source.md to ${planSourcePath}`);
+  return planSourcePath;
+}
+
+/**
+ * Idempotently set KEY=value in <workDir>/.closedloop-ai/config.env. Reads the
+ * existing file (if any), drops any prior occurrence of KEY=, appends the new
+ * line, and writes atomically via tmpPath + renameSync — matching the
+ * tmpPath+renameSync convention used by writeExecutionResultV2.
+ */
+function setConfigEnvKey(workDir, key, value) {
+  const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+  const prefix = `${key}=`;
+  const existing = fs.existsSync(configEnvPath)
+    ? fs.readFileSync(configEnvPath, "utf-8")
+    : "";
+  const kept = existing
+    .split("\n")
+    .filter((line) => !line.startsWith(prefix))
+    .join("\n");
+  const base = kept.length === 0 || kept.endsWith("\n") ? kept : `${kept}\n`;
+  const next = `${base}${prefix}${value}\n`;
+  const tmpPath = `${configEnvPath}.tmp`;
+  fs.writeFileSync(tmpPath, next);
+  fs.renameSync(tmpPath, configEnvPath);
+  return configEnvPath;
+}
+
 function hasArtifactContent(contextPack, artifactType) {
   return (
     Array.isArray(contextPack?.artifacts) &&
@@ -1230,20 +1277,15 @@ function syncPlanFromContextPack(runDir, contextPack, workDir) {
       primaryArtifact.type === LoopArtifactType.ImplementationPlan
     ) {
       try {
-        const planSourcePath = path.join(runDir, "plan-source.md");
-        fs.writeFileSync(planSourcePath, primaryArtifact.content);
-        log("info", `Wrote plan-source.md to ${planSourcePath}`);
-
-        const configEnvPath = path.join(
-          workDir,
-          ".closedloop-ai",
-          "config.env"
-        );
-        fs.appendFileSync(
-          configEnvPath,
-          `\nCLOSEDLOOP_PLAN_FILE=${planSourcePath}\n`
-        );
-        log("info", `Appended CLOSEDLOOP_PLAN_FILE to ${configEnvPath}`);
+        const planSourcePath = writePlanSourceFile(runDir, contextPack);
+        if (planSourcePath) {
+          const configEnvPath = setConfigEnvKey(
+            workDir,
+            "CLOSEDLOOP_PLAN_FILE",
+            planSourcePath
+          );
+          log("info", `Set CLOSEDLOOP_PLAN_FILE in ${configEnvPath}`);
+        }
       } catch (err) {
         log(
           "error",
@@ -4423,6 +4465,7 @@ export {
   registerSecret,
   reportFinalStatus,
   resetHarnessState,
+  setConfigEnvKey,
   snapshotTokens,
   syncPlanFromContextPack,
   validateConfig,
@@ -4432,6 +4475,7 @@ export {
   writeExecutionResult,
   writeExecutionResultV2,
   writeFeatureEvaluationPrdFile,
+  writePlanSourceFile,
   writePrdFile,
 };
 

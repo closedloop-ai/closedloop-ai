@@ -1364,10 +1364,10 @@ describe("syncPlanFromContextPack", () => {
       workDir
     );
 
-    // plan.json content must be updated (backward-compat: existing fields preserved)
+    // plan.json content must be updated (sibling-field preservation is covered
+    // by the "preserves other plan.json fields" test above).
     const updated = JSON.parse(fs.readFileSync(planPath, "utf-8"));
     assert.equal(updated.content, "updated content");
-    assert.deepEqual(updated.pendingTasks, ["task1"]);
 
     // plan-source.md must NOT be created when plan.json already exists
     assert.ok(
