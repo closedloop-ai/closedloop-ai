@@ -395,15 +395,21 @@ describe("SystemCheckBootstrap", () => {
 
   it("does not overwrite a newer live health-check cache with an older persisted snapshot", async () => {
     const queryClient = createBootstrapQueryClient();
-    const persistedCheckedAt = new Date(Date.now() - 60_000);
+    const persistedCheckedAt = new Date(Date.now() - 60_000); // 1 minute ago (within freshness window)
     const liveResult = {
       checks: [{ id: "live-git", label: "Git", required: true, passed: true }],
       allRequiredPassed: true,
     };
 
-    queryClient.setQueryData(["health-check"], liveResult, {
-      updatedAt: persistedCheckedAt.getTime() + 1000,
-    });
+    queryClient.setQueryData(["health-check"], liveResult);
+    // Manually set dataUpdatedAt to a time newer than the persisted snapshot
+    // so the component's guard (existingState.dataUpdatedAt >= snapshotUpdatedAt) holds.
+    const cache = queryClient
+      .getQueryCache()
+      .find({ queryKey: ["health-check"] });
+    if (cache) {
+      cache.state.dataUpdatedAt = persistedCheckedAt.getTime() + 1000;
+    }
     mockUseSystemCheckEligibility.mockReturnValue({
       shouldRunSystemCheck: true,
       isLoading: false,
@@ -425,7 +431,7 @@ describe("SystemCheckBootstrap", () => {
         result: {
           checks: [
             {
-              id: "persisted-git",
+              id: "git",
               label: "Git",
               required: true,
               passed: true,

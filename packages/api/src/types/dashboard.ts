@@ -77,6 +77,8 @@ export type PublicUsageDashboardResponse = {
   recentSessions: RecentSession[];
   /** Aggregated agent usage from execution perf stats (empty if no perf data) */
   agentUsage: AgentUsage[];
+  /** Per-user leaderboard sorted by total tokens descending */
+  userLeaderboard: UserLeaderboardEntry[];
 };
 
 export type UsageDashboardStats = {
@@ -135,6 +137,23 @@ export type TimeSeriesBucket = {
   activeUsers: number;
   loops: number;
   apiCost: number;
+};
+
+export type UserLeaderboardEntry = {
+  userId: string;
+  name: string;
+  email: string;
+  avatarUrl: string | null;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  apiCostEquivalent: number;
+  sessions: number;
+  loops: number;
+  avgRuntimeMinutes: number;
+  topModel: string;
+  /** Daily token totals for sparkline visualization */
+  sparkline: number[];
 };
 
 export type ModelUsage = {

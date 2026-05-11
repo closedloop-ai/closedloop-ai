@@ -11,6 +11,7 @@ import type {
   TimeInterval,
   TimeSeriesBucket,
   UsageDashboardStats,
+  UserLeaderboardEntry,
 } from "@repo/api/src/types/dashboard";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import {
@@ -266,6 +267,121 @@ async function fetchAgentUsage(
   return Array.from(agentMap.values()).sort(
     (a, b) => b.totalCalls - a.totalCalls
   );
+}
+
+async function fetchUserLeaderboard(
+  orgId: string,
+  startDate: Date | undefined,
+  whereClause: Prisma.Sql
+): Promise<UserLeaderboardEntry[]> {
+  type UserRow = {
+    user_id: string;
+    total_input: bigint;
+    total_output: bigint;
+    sessions: bigint;
+    loops: bigint;
+    avg_runtime: string | null;
+    top_model: string;
+  };
+
+  type UserDailyRow = {
+    user_id: string;
+    day: string;
+    tokens: bigint;
+  };
+
+  const [userRows, userDailyRows, users] = await Promise.all([
+    withDb((db) =>
+      db.$queryRaw<UserRow[]>(Prisma.sql`
+        SELECT
+          user_id,
+          COALESCE(SUM(tokens_input), 0) AS total_input,
+          COALESCE(SUM(tokens_output), 0) AS total_output,
+          COUNT(DISTINCT session_id) AS sessions,
+          COUNT(*) AS loops,
+          EXTRACT(EPOCH FROM AVG(completed_at - started_at)) / 60.0 AS avg_runtime,
+          COALESCE((
+            SELECT e.key FROM loops sub, LATERAL jsonb_each(sub.tokens_by_model) AS e(key, value)
+            WHERE sub.user_id = l.user_id AND sub.organization_id = ${orgId}::uuid
+              AND jsonb_typeof(sub.tokens_by_model) = 'object'
+              ${startDate ? Prisma.sql`AND sub.created_at >= ${startDate}` : Prisma.empty}
+            GROUP BY e.key
+            ORDER BY SUM(COALESCE((e.value ->> 'input')::numeric::bigint, 0) + COALESCE((e.value ->> 'output')::numeric::bigint, 0)) DESC
+            LIMIT 1
+          ), 'unknown') AS top_model
+        FROM loops l
+        WHERE ${whereClause}
+        GROUP BY user_id
+        ORDER BY (COALESCE(SUM(tokens_input), 0) + COALESCE(SUM(tokens_output), 0)) DESC
+      `)
+    ),
+    withDb((db) =>
+      db.$queryRaw<UserDailyRow[]>(Prisma.sql`
+        SELECT
+          user_id,
+          TO_CHAR(created_at, 'YYYY-MM-DD') AS day,
+          COALESCE(SUM(tokens_input), 0) + COALESCE(SUM(tokens_output), 0) AS tokens
+        FROM loops
+        WHERE ${whereClause}
+        GROUP BY user_id, day
+        ORDER BY user_id, day
+      `)
+    ),
+    withDb((db) =>
+      db.user.findMany({
+        where: { organizationId: orgId },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          avatarUrl: true,
+        },
+      })
+    ),
+  ]);
+
+  const sparklineMap = new Map<string, Map<string, number>>();
+  for (const row of userDailyRows) {
+    let userMap = sparklineMap.get(row.user_id);
+    if (!userMap) {
+      userMap = new Map();
+      sparklineMap.set(row.user_id, userMap);
+    }
+    userMap.set(row.day, Number(row.tokens));
+  }
+
+  const allDays = [...new Set(userDailyRows.map((r) => r.day))].sort();
+  const userLookup = new Map(users.map((u) => [u.id, u]));
+
+  return userRows.map((r) => {
+    const user = userLookup.get(r.user_id);
+    const inputTokens = Number(r.total_input);
+    const outputTokens = Number(r.total_output);
+    const name = user
+      ? [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+        user.email.split("@")[0]
+      : "Unknown";
+
+    const userSparkline = sparklineMap.get(r.user_id);
+    const sparkline = allDays.map((d) => userSparkline?.get(d) ?? 0);
+
+    return {
+      userId: "",
+      name,
+      email: "",
+      avatarUrl: user?.avatarUrl ?? null,
+      totalTokens: inputTokens + outputTokens,
+      inputTokens,
+      outputTokens,
+      apiCostEquivalent: 0,
+      sessions: Number(r.sessions),
+      loops: Number(r.loops),
+      avgRuntimeMinutes: Math.round(Number(r.avg_runtime ?? 0) * 10) / 10,
+      topModel: r.top_model,
+      sparkline,
+    };
+  });
 }
 
 /**
@@ -580,6 +696,7 @@ export const dashboardService = {
       originResult,
       delivery,
       agentUsage,
+      userLeaderboard,
     ] = await Promise.all([
       // Aggregate stats (all loops including failed — no status filter)
       withDb((db) =>
@@ -747,6 +864,7 @@ export const dashboardService = {
 
       fetchDeliveryStats(org.id, startDate),
       fetchAgentUsage(org.id, startDate),
+      fetchUserLeaderboard(org.id, startDate, whereClause),
     ]);
 
     const agg = aggResult[0];
@@ -875,6 +993,7 @@ export const dashboardService = {
       topProjects,
       recentSessions,
       agentUsage,
+      userLeaderboard,
     };
   },
 };
