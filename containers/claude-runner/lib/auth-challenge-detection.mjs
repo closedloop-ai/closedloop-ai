@@ -83,6 +83,37 @@ export function detectAuthChallengeFromJsonl(claudeWorkDir) {
 }
 
 /**
+ * Scan captured stdout output lines for auth/rate-limit/billing error signals.
+ *
+ * Direct Claude invocations (`claude -p --output-format stream-json`) emit
+ * JSONL on stdout and do NOT write `claude-output.jsonl` to disk — only
+ * run-loop.sh tees to that file. The harness still captures stdout into an
+ * in-memory `output` array, so we can scan it here to give direct runs
+ * coverage parity with run-loop.sh-based runs.
+ *
+ * Accepts the same shape as parseTokenUsageFromJsonl: an array of
+ * `{ line, stream? }` records. When `stream` is present, non-stdout lines
+ * are skipped to avoid matching log lines from the harness itself.
+ *
+ * @param {Array<{line: string, stream?: string}>} outputLines
+ * @returns {string | null}
+ */
+export function detectAuthChallengeFromJsonlLines(outputLines) {
+  if (!Array.isArray(outputLines) || outputLines.length === 0) {
+    return null;
+  }
+  const content = outputLines
+    .filter((o) => o && (o.stream === undefined || o.stream === "stdout"))
+    .map((o) => o.line)
+    .filter((l) => typeof l === "string" && l.length > 0)
+    .join("\n");
+  if (!content) {
+    return null;
+  }
+  return scanJsonlForAuthChallenge(content);
+}
+
+/**
  * Scan a specific JSONL transcript path. Used when the caller already knows
  * the exact path (e.g. `~/.claude/projects/<cwdHash>/<sessionId>.jsonl`).
  *

@@ -7,6 +7,7 @@ import { after, describe, test } from "node:test";
 import {
   detectAuthChallengeFromJsonl,
   detectAuthChallengeFromJsonlFile,
+  detectAuthChallengeFromJsonlLines,
 } from "./auth-challenge-detection.mjs";
 
 // ---------------------------------------------------------------------------
@@ -249,5 +250,64 @@ describe("detectAuthChallengeFromJsonlFile", () => {
       "utf-8"
     );
     assert.equal(detectAuthChallengeFromJsonlFile(transcriptPath), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectAuthChallengeFromJsonlLines — captured stdout shape (direct claude)
+// ---------------------------------------------------------------------------
+
+describe("detectAuthChallengeFromJsonlLines", () => {
+  test("returns null for empty/missing input", () => {
+    assert.equal(detectAuthChallengeFromJsonlLines(null), null);
+    assert.equal(detectAuthChallengeFromJsonlLines(undefined), null);
+    assert.equal(detectAuthChallengeFromJsonlLines([]), null);
+  });
+
+  test("detects isApiErrorMessage 429 from captured stdout entries", () => {
+    const result = detectAuthChallengeFromJsonlLines([
+      { ts: 1, stream: "stdout", line: JSON.stringify({ type: "system" }) },
+      {
+        ts: 2,
+        stream: "stdout",
+        line: JSON.stringify({
+          isApiErrorMessage: true,
+          error: "rate_limit_error",
+          apiErrorStatus: 429,
+        }),
+      },
+    ]);
+    assert.ok(result !== null);
+    assert.ok(result.includes("429"));
+  });
+
+  test("ignores non-stdout streams to avoid matching harness log lines", () => {
+    const result = detectAuthChallengeFromJsonlLines([
+      {
+        ts: 1,
+        stream: "stderr",
+        line: JSON.stringify({
+          isApiErrorMessage: true,
+          error: "rate_limit_error",
+          apiErrorStatus: 429,
+        }),
+      },
+    ]);
+    assert.equal(result, null);
+  });
+
+  test("returns null for healthy JSONL stdout", () => {
+    const result = detectAuthChallengeFromJsonlLines([
+      {
+        ts: 1,
+        stream: "stdout",
+        line: JSON.stringify({
+          type: "result",
+          is_error: false,
+          result: "Task completed.",
+        }),
+      },
+    ]);
+    assert.equal(result, null);
   });
 });

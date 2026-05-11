@@ -43,6 +43,7 @@ import { normalizeModelName } from "@closedloop-ai/loops-api/tokens";
 import {
   detectAuthChallengeFromJsonl,
   detectAuthChallengeFromJsonlFile,
+  detectAuthChallengeFromJsonlLines,
 } from "./lib/auth-challenge-detection.mjs";
 import {
   buildMountPathsFooter,
@@ -3324,14 +3325,18 @@ function buildCommand(workDir, symphonyWD, prdPath, peers) {
         err
       );
     }
-    return buildRunLoopArgs(
+    const built = buildRunLoopArgs(
       runLoopPath,
       symphonyWD || workDir,
       prdPath,
       gatedPeers.map((p) => p.localPath)
     );
+    return { ...built, usesRunLoop: true };
   }
-  return buildClaudeDirectArgs(workDir, symphonyWD, gatedPeers);
+  return {
+    ...buildClaudeDirectArgs(workDir, symphonyWD, gatedPeers),
+    usesRunLoop: false,
+  };
 }
 
 function toHarnessError(err) {
@@ -3939,18 +3944,36 @@ async function reportFinalStatus(
     return;
   }
 
-  // Secondary JSONL guard: scan claude-output.jsonl for auth/rate-limit/billing
-  // error entries that the primary marker may have missed (e.g. when the Claude
-  // CLI exits non-zero without writing a marker file).
+  // Secondary JSONL guard: scan auth/rate-limit/billing error entries that the
+  // primary marker may have missed (e.g. when the Claude CLI exits non-zero
+  // without writing a marker file).
+  //
+  // We scan captured stdout BEFORE the disk fallback because direct Claude
+  // invocations (`claude -p --output-format stream-json`) emit JSONL on stdout
+  // and never produce `claude-output.jsonl` — only run-loop.sh tees to disk.
+  // Without the stdout scan, a direct command that emits an isApiErrorMessage
+  // 401/403/429 and exits 0 would fall through to COMPLETED.
+  //
   // Tertiary guard: check for an auth/rate-limit signal detected from the
   // LLM-commit Claude CLI native session transcript. This catches auth failures
   // that occur during the post-run commit step and would otherwise be silently
   // swallowed, causing a spurious COMPLETED event when exitCode is 0.
-  const jsonlAuthSignal = detectAuthChallengeFromJsonl(swDir ?? workDir);
+  const stdoutAuthSignal = detectAuthChallengeFromJsonlLines(output);
+  const fileAuthSignal =
+    stdoutAuthSignal == null
+      ? detectAuthChallengeFromJsonl(swDir ?? workDir)
+      : null;
+  const jsonlAuthSignal = stdoutAuthSignal ?? fileAuthSignal;
   const authChallengeSignal = jsonlAuthSignal ?? llmCommitAuthChallenge;
   if (authChallengeSignal != null) {
-    const source =
-      jsonlAuthSignal == null ? "LLM-commit tertiary guard" : "JSONL guard";
+    let source;
+    if (stdoutAuthSignal != null) {
+      source = "JSONL stdout guard";
+    } else if (fileAuthSignal != null) {
+      source = "JSONL file guard";
+    } else {
+      source = "LLM-commit tertiary guard";
+    }
     log(
       "info",
       `Auth challenge detected from ${source}: ${authChallengeSignal}`
@@ -4140,17 +4163,26 @@ async function main() {
     }
 
     // Step 4: Determine execution mode and build command
-    const { cmd, args } = buildCommand(
+    const { cmd, args, usesRunLoop } = buildCommand(
       workDir,
       symphonyWorkDir,
       prdPath,
       peers
     );
 
-    // Step 5: Build environment for the child process
-    const userVisibleLoopFailureSecret = randomBytes(32).toString("base64url");
-    registerSecret(userVisibleLoopFailureSecret);
-    const childEnv = {
+    // Step 5: Build environment for the child process.
+    //
+    // The marker-signing HMAC secret is ONLY passed to run-loop.sh, the trusted
+    // wrapper that writes loop-error.json on the harness's behalf. Direct
+    // Claude invocations spawn the model with Bash/Read tools enabled
+    // (see buildClaudeDirectArgs --allowedTools), so any prompt-injected
+    // content in the PRD/plan/repo could exfiltrate the env var and forge a
+    // signed marker — defeating the signature check and letting the model
+    // dictate the user-visible failure classification. By only setting the
+    // secret when usesRunLoop is true, we keep the HMAC out of the model's
+    // reachable environment.
+    let userVisibleLoopFailureSecret = null;
+    const baseEnv = {
       ...setupEnvVars, // env vars from .closedloop-ai/loops-setup.sh (NODE_OPTIONS, etc.)
       ANTHROPIC_API_KEY: config.anthropicApiKey,
       GITHUB_TOKEN: config.githubToken,
@@ -4158,8 +4190,14 @@ async function main() {
       HOME: process.env.HOME || os.homedir(),
       PATH: process.env.PATH,
       LANG: process.env.LANG || "C.UTF-8",
-      [USER_VISIBLE_LOOP_FAILURE_SECRET_ENV]: userVisibleLoopFailureSecret,
     };
+    const childEnv = baseEnv;
+    if (usesRunLoop) {
+      userVisibleLoopFailureSecret = randomBytes(32).toString("base64url");
+      registerSecret(userVisibleLoopFailureSecret);
+      childEnv[USER_VISIBLE_LOOP_FAILURE_SECRET_ENV] =
+        userVisibleLoopFailureSecret;
+    }
 
     // Step 6: Execute
     log("info", `Executing: ${cmd} ${args.join(" ")}`);
