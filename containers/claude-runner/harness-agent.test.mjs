@@ -1290,19 +1290,98 @@ describe("syncPlanFromContextPack", () => {
     assert.equal(updated.content, "plan text");
   });
 
-  test("skips when plan.json does not exist", () => {
-    const dir = makeTempDir();
-    // No plan.json — should not throw
-    syncPlanFromContextPack(dir, {
-      artifacts: [
-        {
-          id: "1",
-          type: LoopArtifactType.ImplementationPlan,
-          content: "new content",
-        },
-      ],
-    });
-    assert.ok(!fs.existsSync(path.join(dir, "plan.json")));
+  test("writes plan-source.md and config.env when plan.json does not exist", () => {
+    const runDir = makeTempDir();
+    const workDir = makeTempDir();
+    fs.mkdirSync(path.join(workDir, ".closedloop-ai"), { recursive: true });
+
+    syncPlanFromContextPack(
+      runDir,
+      {
+        artifacts: [
+          {
+            id: "1",
+            type: LoopArtifactType.ImplementationPlan,
+            content: "new content",
+          },
+        ],
+      },
+      workDir
+    );
+
+    // plan.json must NOT be created
+    assert.ok(!fs.existsSync(path.join(runDir, "plan.json")));
+
+    // plan-source.md must be written with the artifact content
+    const planSourcePath = path.join(runDir, "plan-source.md");
+    assert.ok(
+      fs.existsSync(planSourcePath),
+      "plan-source.md should be created"
+    );
+    assert.equal(fs.readFileSync(planSourcePath, "utf-8"), "new content");
+
+    // config.env must contain the CLOSEDLOOP_PLAN_FILE line pointing to plan-source.md
+    const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+    assert.ok(fs.existsSync(configEnvPath), "config.env should be created");
+    const configEnvContent = fs.readFileSync(configEnvPath, "utf-8");
+    assert.ok(
+      configEnvContent.includes(`CLOSEDLOOP_PLAN_FILE=${planSourcePath}`),
+      `config.env should contain CLOSEDLOOP_PLAN_FILE=${planSourcePath}; got: ${configEnvContent}`
+    );
+  });
+
+  test("does not write plan-source.md or modify config.env when plan.json already exists (AC-006)", () => {
+    const runDir = makeTempDir();
+    const workDir = makeTempDir();
+    fs.mkdirSync(path.join(workDir, ".closedloop-ai"), { recursive: true });
+
+    const planPath = path.join(runDir, "plan.json");
+    fs.writeFileSync(
+      planPath,
+      JSON.stringify({
+        content: "old content",
+        pendingTasks: ["task1"],
+        openQuestions: [],
+      })
+    );
+
+    // Pre-write a config.env so we can detect unwanted mutations
+    const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+    const originalConfigEnv = "SOME_EXISTING_VAR=value\n";
+    fs.writeFileSync(configEnvPath, originalConfigEnv);
+
+    syncPlanFromContextPack(
+      runDir,
+      {
+        artifacts: [
+          {
+            id: "1",
+            type: LoopArtifactType.ImplementationPlan,
+            content: "updated content",
+          },
+        ],
+      },
+      workDir
+    );
+
+    // plan.json content must be updated (backward-compat: existing fields preserved)
+    const updated = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    assert.equal(updated.content, "updated content");
+    assert.deepEqual(updated.pendingTasks, ["task1"]);
+
+    // plan-source.md must NOT be created when plan.json already exists
+    assert.ok(
+      !fs.existsSync(path.join(runDir, "plan-source.md")),
+      "plan-source.md must not be written when plan.json already exists"
+    );
+
+    // config.env must NOT be modified when plan.json already exists
+    const configEnvAfter = fs.readFileSync(configEnvPath, "utf-8");
+    assert.equal(
+      configEnvAfter,
+      originalConfigEnv,
+      "config.env must not be modified when plan.json already exists"
+    );
   });
 
   test("skips when no artifacts", () => {
@@ -1336,6 +1415,42 @@ describe("syncPlanFromContextPack", () => {
 
     const result = JSON.parse(fs.readFileSync(planPath, "utf-8"));
     assert.equal(result.content, "original");
+  });
+
+  test("does not write plan-source.md or config.env when plan.json absent and only PRD/Feature artifacts present", () => {
+    const runDir = makeTempDir();
+    const workDir = makeTempDir();
+    fs.mkdirSync(path.join(workDir, ".closedloop-ai"), { recursive: true });
+
+    // No plan.json in runDir — intentionally not created
+
+    syncPlanFromContextPack(
+      runDir,
+      {
+        artifacts: [
+          { id: "1", type: LoopArtifactType.Prd, content: "prd content" },
+          {
+            id: "2",
+            type: LoopArtifactType.Feature,
+            content: "feature content",
+          },
+        ],
+      },
+      workDir
+    );
+
+    // plan-source.md must NOT be written when no ImplementationPlan artifact is present
+    assert.ok(
+      !fs.existsSync(path.join(runDir, "plan-source.md")),
+      "plan-source.md must not be written when only PRD/Feature artifacts are present"
+    );
+
+    // config.env must NOT be created when no ImplementationPlan artifact is present
+    const configEnvPath = path.join(workDir, ".closedloop-ai", "config.env");
+    assert.ok(
+      !fs.existsSync(configEnvPath),
+      "config.env must not be created when only PRD/Feature artifacts are present"
+    );
   });
 });
 

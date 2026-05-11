@@ -1200,7 +1200,7 @@ function hasArtifactContent(contextPack, artifactType) {
  * The context pack's primary artifact (found by type, not index) contains
  * the latest artifact version content from the platform.
  */
-function syncPlanFromContextPack(runDir, contextPack) {
+function syncPlanFromContextPack(runDir, contextPack, workDir) {
   if (!contextPack?.artifacts?.length) {
     return;
   }
@@ -1221,13 +1221,41 @@ function syncPlanFromContextPack(runDir, contextPack) {
   const planJsonPath = path.join(runDir, LoopArtifactFile.Plan);
 
   // If plan.json exists, update its .content field preserving other fields
-  // (pendingTasks, openQuestions, etc.). If it doesn't exist, the parent
-  // may not have produced one yet (edge case) — skip.
+  // (pendingTasks, openQuestions, etc.). If it doesn't exist and workDir is
+  // provided, write the artifact content as plan-source.md so the orchestrator's
+  // plan-importer flow can produce plan.json on the next run.
   if (!fs.existsSync(planJsonPath)) {
-    log(
-      "info",
-      "No existing plan.json in run dir — skipping context pack sync"
-    );
+    if (
+      workDir &&
+      primaryArtifact.type === LoopArtifactType.ImplementationPlan
+    ) {
+      try {
+        const planSourcePath = path.join(runDir, "plan-source.md");
+        fs.writeFileSync(planSourcePath, primaryArtifact.content);
+        log("info", `Wrote plan-source.md to ${planSourcePath}`);
+
+        const configEnvPath = path.join(
+          workDir,
+          ".closedloop-ai",
+          "config.env"
+        );
+        fs.appendFileSync(
+          configEnvPath,
+          `\nCLOSEDLOOP_PLAN_FILE=${planSourcePath}\n`
+        );
+        log("info", `Appended CLOSEDLOOP_PLAN_FILE to ${configEnvPath}`);
+      } catch (err) {
+        log(
+          "error",
+          `Failed to write plan-source.md or config.env: ${err.message}`
+        );
+      }
+    } else {
+      log(
+        "info",
+        "No existing plan.json in run dir — skipping context pack sync"
+      );
+    }
     return;
   }
 
@@ -3331,11 +3359,11 @@ function buildCommand(workDir, symphonyWD, prdPath, peers) {
       prdPath,
       gatedPeers.map((p) => p.localPath)
     );
-    return { ...built, usesRunLoop: true };
+    return { ...built, usesRunLoop };
   }
   return {
     ...buildClaudeDirectArgs(workDir, symphonyWD, gatedPeers),
-    usesRunLoop: false,
+    usesRunLoop,
   };
 }
 
@@ -3810,6 +3838,22 @@ function buildEventResult(prInfo, results, extra) {
   };
 }
 
+/**
+ * Build the tokensUsed + tokensByModel fields for a reportEvent() payload.
+ * Centralizes the repeated pattern of conditionally including tokensByModel.
+ */
+function buildTokenFields(tokenUsage) {
+  return {
+    tokensUsed: {
+      input: tokenUsage.totalInput,
+      output: tokenUsage.totalOutput,
+    },
+    ...(tokenUsage.tokensByModel
+      ? { tokensByModel: tokenUsage.tokensByModel }
+      : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Report final status (completed, failed, or timed out)
 // ---------------------------------------------------------------------------
@@ -3930,13 +3974,7 @@ async function reportFinalStatus(
       result: buildEventResult(prInfo, results, {
         subcode: primaryMarker.result.subcode,
       }),
-      tokensUsed: {
-        input: tokenUsage.totalInput,
-        output: tokenUsage.totalOutput,
-      },
-      ...(tokenUsage.tokensByModel
-        ? { tokensByModel: tokenUsage.tokensByModel }
-        : {}),
+      ...buildTokenFields(tokenUsage),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
@@ -3966,12 +4004,10 @@ async function reportFinalStatus(
   const jsonlAuthSignal = stdoutAuthSignal ?? fileAuthSignal;
   const authChallengeSignal = jsonlAuthSignal ?? llmCommitAuthChallenge;
   if (authChallengeSignal != null) {
-    let source;
+    let source = "LLM-commit tertiary guard";
     if (stdoutAuthSignal != null) {
       source = "JSONL stdout guard";
-    } else if (fileAuthSignal == null) {
-      source = "LLM-commit tertiary guard";
-    } else {
+    } else if (fileAuthSignal != null) {
       source = "JSONL file guard";
     }
     log(
@@ -3983,13 +4019,7 @@ async function reportFinalStatus(
       code: LoopErrorCode.AuthChallenge,
       message: authChallengeSignal,
       result: buildEventResult(prInfo, results),
-      tokensUsed: {
-        input: tokenUsage.totalInput,
-        output: tokenUsage.totalOutput,
-      },
-      ...(tokenUsage.tokensByModel
-        ? { tokensByModel: tokenUsage.tokensByModel }
-        : {}),
+      ...buildTokenFields(tokenUsage),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
@@ -4005,13 +4035,7 @@ async function reportFinalStatus(
         signal,
         durationSeconds,
       }),
-      tokensUsed: {
-        input: tokenUsage.totalInput,
-        output: tokenUsage.totalOutput,
-      },
-      ...(tokenUsage.tokensByModel
-        ? { tokensByModel: tokenUsage.tokensByModel }
-        : {}),
+      ...buildTokenFields(tokenUsage),
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
@@ -4153,7 +4177,7 @@ async function main() {
     // the Liveblocks editor between runs. The context pack's primary artifact
     // contains the latest artifact version content from the DB.
     if (config.s3ParentStateKey) {
-      syncPlanFromContextPack(symphonyWorkDir, contextPack);
+      syncPlanFromContextPack(symphonyWorkDir, contextPack, workDir);
     }
 
     // Step 3c: Command-level validation and branch hardening.
@@ -4182,7 +4206,7 @@ async function main() {
     // secret when usesRunLoop is true, we keep the HMAC out of the model's
     // reachable environment.
     let userVisibleLoopFailureSecret = null;
-    const baseEnv = {
+    const childEnv = {
       ...setupEnvVars, // env vars from .closedloop-ai/loops-setup.sh (NODE_OPTIONS, etc.)
       ANTHROPIC_API_KEY: config.anthropicApiKey,
       GITHUB_TOKEN: config.githubToken,
@@ -4191,7 +4215,6 @@ async function main() {
       PATH: process.env.PATH,
       LANG: process.env.LANG || "C.UTF-8",
     };
-    const childEnv = baseEnv;
     if (usesRunLoop) {
       userVisibleLoopFailureSecret = randomBytes(32).toString("base64url");
       registerSecret(userVisibleLoopFailureSecret);
