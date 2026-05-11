@@ -52,6 +52,7 @@ function sanitizeTextTail(value: string): string {
 /**
  * Sanitize diagnostics from a desktop-originated event:
  * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
+ * - Truncate diagnostics.pluginUpdate.stderrTail with the same credential scrubber
  * - Strip lines containing credential patterns
  * - Allowlist spawnMeta.envSnapshot to only safe env var keys
  * - Keep only descriptor fields for outbound-network diagnostics
@@ -71,6 +72,13 @@ export function sanitizeDesktopTelemetryDiagnostics(
 
   if (typeof sanitized.stderrTail === "string") {
     sanitized.stderrTail = sanitizeTextTail(sanitized.stderrTail);
+  }
+
+  if (typeof sanitized.pluginUpdate?.stderrTail === "string") {
+    sanitized.pluginUpdate = {
+      ...sanitized.pluginUpdate,
+      stderrTail: sanitizeTextTail(sanitized.pluginUpdate.stderrTail),
+    };
   }
 
   if (sanitized.spawnMeta?.envSnapshot) {

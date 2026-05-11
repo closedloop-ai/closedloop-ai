@@ -156,6 +156,15 @@ describe("getRenderableHealthChecks", () => {
             version: "0.14.10",
             error: "Update available: 0.14.11",
             remediation: "Open the ClosedLoop Gateway app to update",
+            updateAttempted: true,
+            updateOutcome: "failed",
+            updatePluginIds: ["plugin-code"],
+            remediationLinks: [
+              {
+                label: "Enable ClosedLoop plugin autoupdate",
+                url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+              },
+            ],
           },
         ],
         allRequiredPassed: true,
@@ -172,6 +181,15 @@ describe("getRenderableHealthChecks", () => {
         version: "0.14.10",
         error: "Update available: 0.14.11",
         remediation: "Open the ClosedLoop Gateway app to update",
+        updateAttempted: true,
+        updateOutcome: "failed",
+        updatePluginIds: ["plugin-code"],
+        remediationLinks: [
+          {
+            label: "Enable ClosedLoop plugin autoupdate",
+            url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+          },
+        ],
       },
     ]);
   });
@@ -216,6 +234,7 @@ describe("healthCheckOptions", () => {
       "cloud-relay:target-1",
       "https://example.com/mcp",
       "9.9.9",
+      "plugin-no-auto-update",
     ]);
 
     const request = buildHealthCheckRequest({
@@ -279,6 +298,45 @@ describe("healthCheckOptions", () => {
       "cloud-relay:target-1",
       null,
       null,
+      "plugin-no-auto-update",
     ]);
+  });
+
+  it("includes plugin auto-update mode in the key and request URL only when enabled", () => {
+    const enabledOptions = healthCheckOptions(
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      {
+        latestVersion: "9.9.9",
+        pluginAutoUpdateEnabled: true,
+        relayTargetId: "target-1",
+      }
+    );
+    const enabledRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: "9.9.9",
+      pluginAutoUpdateEnabled: true,
+      relayTargetId: "target-1",
+    });
+    const disabledRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: "9.9.9",
+      pluginAutoUpdateEnabled: false,
+      relayTargetId: "target-1",
+    });
+
+    expect(enabledOptions.queryKey).toEqual([
+      "health-check",
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      "9.9.9",
+      "plugin-auto-update",
+    ]);
+    expect(enabledRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp&latestVersion=9.9.9&pluginAutoUpdate=1`
+    );
+    expect(disabledRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp&latestVersion=9.9.9`
+    );
   });
 });

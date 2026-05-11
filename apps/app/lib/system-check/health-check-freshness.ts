@@ -22,12 +22,14 @@ export type HealthCheckCacheEntry = {
   checkedAt: CheckedAtInput;
   expectedMcpUrl?: string | null;
   latestVersion?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
 };
 
 type HealthCheckFreshnessInput = {
   entry: HealthCheckCacheEntry;
   expectedMcpUrl: string | null;
   latestVersion?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
   now?: number;
   requiredOnly?: boolean;
 };
@@ -70,11 +72,16 @@ export function isHealthCheckCacheEntryFresh({
   entry,
   expectedMcpUrl,
   latestVersion = null,
+  pluginAutoUpdateEnabled = false,
   now = Date.now(),
   requiredOnly = false,
 }: HealthCheckFreshnessInput): boolean {
   const ageMs = getHealthCheckCacheAgeMs(entry, now);
   if (ageMs === null || ageMs < 0) {
+    return false;
+  }
+
+  if ((entry.pluginAutoUpdateEnabled ?? false) !== pluginAutoUpdateEnabled) {
     return false;
   }
 

@@ -1,13 +1,7 @@
 "use client";
 
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
-import {
-  AlertCircleIcon,
-  CheckCircle2Icon,
-  Loader2Icon,
-  XCircleIcon,
-} from "lucide-react";
+import { AlertCircleIcon, CheckCircle2Icon, Loader2Icon } from "lucide-react";
 import {
   type BootstrapState,
   BootstrapStatus,
@@ -29,17 +23,12 @@ export function BootstrapProgress({
   if (
     state.status === BootstrapStatus.Creating ||
     state.status === BootstrapStatus.Dispatched ||
-    state.status === BootstrapStatus.Running ||
-    state.status === BootstrapStatus.Ingesting
+    state.status === BootstrapStatus.Running
   ) {
-    let message: string;
-    if (state.status === BootstrapStatus.Running) {
-      message = "Generating agents...";
-    } else if (state.status === BootstrapStatus.Ingesting) {
-      message = "Saving agents...";
-    } else {
-      message = "Starting bootstrap...";
-    }
+    const message =
+      state.status === BootstrapStatus.Running
+        ? "Generating agents..."
+        : "Starting bootstrap...";
 
     return (
       <div className="flex items-center gap-3 rounded-md border bg-muted/30 px-4 py-3">
@@ -71,61 +60,19 @@ export function BootstrapProgress({
     );
   }
 
-  const { result } = state;
-  const successRepos = result.repoSummaries.filter((r) => r.success);
-  const failedRepos = result.repoSummaries.filter((r) => !r.success);
-  const totalAgents = result.totalCreated + result.totalUpdated;
-
   return (
     <div className="rounded-md border bg-muted/30 px-4 py-3">
       <div className="flex items-start justify-between">
         <div className="flex items-start gap-3">
           <CheckCircle2Icon className="mt-0.5 h-5 w-5 shrink-0 text-green-500" />
-          <div>
-            <p className="font-medium text-sm">
-              Generated {totalAgents} agent{totalAgents === 1 ? "" : "s"} from{" "}
-              {successRepos.length} repositor
-              {successRepos.length === 1 ? "y" : "ies"}
-            </p>
-            {result.totalCreated > 0 && (
-              <Badge className="mt-1 mr-1" variant="secondary">
-                {result.totalCreated} new
-              </Badge>
-            )}
-            {result.totalUpdated > 0 && (
-              <Badge className="mt-1" variant="outline">
-                {result.totalUpdated} updated
-              </Badge>
-            )}
-          </div>
+          <p className="font-medium text-sm">
+            Bootstrap complete — agents have been created.
+          </p>
         </div>
         <Button onClick={onDismiss} size="sm" variant="ghost">
           Dismiss
         </Button>
       </div>
-
-      {(successRepos.length > 0 || failedRepos.length > 0) && (
-        <ul className="mt-2 space-y-1 pl-8">
-          {successRepos.map((repo) => (
-            <li className="flex items-center gap-2 text-sm" key={repo.fullName}>
-              <CheckCircle2Icon className="h-3.5 w-3.5 text-green-500" />
-              <span>{repo.fullName}</span>
-              <span className="text-muted-foreground">
-                — {repo.agentCount} agent{repo.agentCount === 1 ? "" : "s"}
-              </span>
-            </li>
-          ))}
-          {failedRepos.map((repo) => (
-            <li className="flex items-center gap-2 text-sm" key={repo.fullName}>
-              <XCircleIcon className="h-3.5 w-3.5 text-destructive" />
-              <span>{repo.fullName}</span>
-              {repo.error && (
-                <span className="text-muted-foreground">— {repo.error}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

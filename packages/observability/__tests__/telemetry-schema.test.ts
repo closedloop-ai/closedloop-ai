@@ -374,6 +374,66 @@ describe("desktopTelemetryEventSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts bounded plugin update diagnostics only under diagnostics.pluginUpdate", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.PluginUpdateFailed,
+      diagnostics: {
+        pluginUpdate: {
+          pluginIds: ["code@closedloop-ai"],
+          versionsBefore: { "code@closedloop-ai": "1.0.0" },
+          versionsAfter: { "code@closedloop-ai": "1.0.0" },
+          outcomes: { "code@closedloop-ai": "failed" },
+          durationMs: 123,
+          command: "claude plugin update",
+          scope: "user",
+          exitCode: 1,
+          failureReason: "command_failed",
+          stderrTail: "permission denied",
+          ignored: "stripped",
+        },
+      },
+      pluginUpdate: { pluginIds: ["invalid-top-level"] },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.pluginUpdate).toEqual({
+        pluginIds: ["code@closedloop-ai"],
+        versionsBefore: { "code@closedloop-ai": "1.0.0" },
+        versionsAfter: { "code@closedloop-ai": "1.0.0" },
+        outcomes: { "code@closedloop-ai": "failed" },
+        durationMs: 123,
+        command: "claude plugin update",
+        scope: "user",
+        exitCode: 1,
+        failureReason: "command_failed",
+        stderrTail: "permission denied",
+      });
+      expect("pluginUpdate" in result.data).toBe(false);
+    }
+  });
+
+  it("rejects invalid plugin update outcome values", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.PluginUpdateFailed,
+      diagnostics: {
+        pluginUpdate: {
+          pluginIds: ["code@closedloop-ai"],
+          versionsBefore: { "code@closedloop-ai": "1.0.0" },
+          versionsAfter: { "code@closedloop-ai": "1.0.0" },
+          outcomes: { "code@closedloop-ai": "unknown-outcome" },
+          durationMs: 123,
+          command: "claude plugin update",
+          scope: "user",
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("strips ackLatencyMs from desktop wire payloads (server-only field)", () => {
     // telemetryDiagnosticsSchema (server emission) carries ackLatencyMs, but
     // the desktop wire schema must not — otherwise desktop-origin payloads
@@ -987,6 +1047,27 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     });
     expect(result?.exitCode).toBe(1);
     expect(result?.tokenUsage).toEqual({ inputTokens: 10, outputTokens: 5 });
+  });
+
+  it("sanitizes nested plugin update stderrTail", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      pluginUpdate: {
+        pluginIds: ["code@closedloop-ai"],
+        versionsBefore: { "code@closedloop-ai": "1.0.0" },
+        versionsAfter: { "code@closedloop-ai": "1.0.0" },
+        outcomes: { "code@closedloop-ai": "failed" },
+        durationMs: 321,
+        command: "claude plugin update",
+        scope: "user",
+        failureReason: "command_failed",
+        stderrTail:
+          "\u001b[31mError:\u001b[0m update failed\nAuthorization: Bearer secret-token\nclean line",
+      },
+    });
+
+    expect(result?.pluginUpdate?.stderrTail).toBe(
+      "Error: update failed\nclean line"
+    );
   });
 
   it("keeps only descriptor fields for outbound network diagnostics", () => {

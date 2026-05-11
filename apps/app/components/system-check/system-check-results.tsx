@@ -1,5 +1,6 @@
 "use client";
 
+import { useAnalytics } from "@repo/analytics/client";
 import {
   Tooltip,
   TooltipContent,
@@ -7,7 +8,7 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
-import type { ReactNode } from "react";
+import { type MouseEvent, type ReactNode, useEffect } from "react";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
 
 type CheckCategoryId = "cli" | "plugins" | "apps" | "config" | "mcp" | "other";
@@ -54,6 +55,8 @@ type SystemCheckResultsProps = {
   revealedCount?: number;
   className?: string;
   afterRequired?: ReactNode;
+  pluginAutoUpdateEnabled?: boolean;
+  targetKind?: "local" | "owned_relay" | "shared_relay";
 };
 
 export function SystemCheckResults({
@@ -62,6 +65,8 @@ export function SystemCheckResults({
   revealedCount,
   className,
   afterRequired,
+  pluginAutoUpdateEnabled = false,
+  targetKind = "local",
 }: Readonly<SystemCheckResultsProps>) {
   const requiredChecks = checks?.filter((check) => check.required) ?? [];
   const optionalChecks = checks?.filter((check) => !check.required) ?? [];
@@ -78,7 +83,9 @@ export function SystemCheckResults({
       <SystemCheckSection
         groups={requiredGroups}
         isLoading={isLoading}
+        pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
         skeletonGroups={3}
+        targetKind={targetKind}
         title="Required"
         visibleCount={visibleCount}
       />
@@ -89,7 +96,9 @@ export function SystemCheckResults({
         <SystemCheckSection
           groups={optionalGroups}
           isLoading={isLoading}
+          pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
           skeletonGroups={2}
+          targetKind={targetKind}
           title="Optional"
           visibleCount={visibleCount}
         />
@@ -141,10 +150,14 @@ function SystemCheckSection({
   skeletonGroups,
   title,
   visibleCount,
+  pluginAutoUpdateEnabled,
+  targetKind,
 }: Readonly<{
   groups: CheckCategoryGroup[];
   isLoading: boolean;
+  pluginAutoUpdateEnabled: boolean;
   skeletonGroups: number;
+  targetKind: "local" | "owned_relay" | "shared_relay";
   title: string;
   visibleCount: number;
 }>) {
@@ -156,7 +169,9 @@ function SystemCheckSection({
       <SystemCheckCardGrid
         groups={groups}
         isLoading={isLoading}
+        pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
         skeletonGroups={skeletonGroups}
+        targetKind={targetKind}
         title={title}
         visibleCount={visibleCount}
       />
@@ -170,10 +185,14 @@ function SystemCheckCardGrid({
   skeletonGroups,
   title,
   visibleCount,
+  pluginAutoUpdateEnabled,
+  targetKind,
 }: Readonly<{
   groups: CheckCategoryGroup[];
   isLoading: boolean;
+  pluginAutoUpdateEnabled: boolean;
   skeletonGroups: number;
+  targetKind: "local" | "owned_relay" | "shared_relay";
   title: string;
   visibleCount: number;
 }>) {
@@ -186,6 +205,8 @@ function SystemCheckCardGrid({
         <SystemCheckCategoryCard
           group={group}
           key={group.id}
+          pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
+          targetKind={targetKind}
           visibleCount={visibleCount}
         />
       ))}
@@ -200,7 +221,14 @@ function SystemCheckCardGrid({
 function SystemCheckCategoryCard({
   group,
   visibleCount,
-}: Readonly<{ group: CheckCategoryGroup; visibleCount: number }>) {
+  pluginAutoUpdateEnabled,
+  targetKind,
+}: Readonly<{
+  group: CheckCategoryGroup;
+  visibleCount: number;
+  pluginAutoUpdateEnabled: boolean;
+  targetKind: "local" | "owned_relay" | "shared_relay";
+}>) {
   return (
     <section className="rounded-md border bg-background/55 p-3 shadow-sm">
       <div className="mb-2 flex items-center gap-2">
@@ -211,7 +239,9 @@ function SystemCheckCategoryCard({
           <SystemCheckRow
             check={check}
             key={check.id}
+            pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
             revealed={visibleCount > displayIndex}
+            targetKind={targetKind}
           />
         ))}
       </div>
@@ -221,14 +251,59 @@ function SystemCheckCategoryCard({
 
 function SystemCheckRow({
   check,
+  pluginAutoUpdateEnabled,
   revealed,
-}: Readonly<{ check: CheckResult; revealed: boolean }>) {
+  targetKind,
+}: Readonly<{
+  check: CheckResult;
+  pluginAutoUpdateEnabled: boolean;
+  revealed: boolean;
+  targetKind: "local" | "owned_relay" | "shared_relay";
+}>) {
+  const analytics = useAnalytics();
+  const isAdvisory = check.passed && Boolean(check.error);
+  const value = getSystemCheckValue(check);
+  const updateStatus = getPluginUpdateStatus(check, pluginAutoUpdateEnabled);
+  const showRemediation =
+    (check.error || !check.passed) && Boolean(check.remediation);
+  const remediationLinks = check.remediationLinks ?? [];
+  const showStructuredLinks =
+    revealed &&
+    showRemediation &&
+    pluginAutoUpdateEnabled &&
+    remediationLinks.length > 0;
+
+  useEffect(() => {
+    if (!showStructuredLinks) {
+      return;
+    }
+    analytics.capture("plugin_autoupdate_remediation_viewed", {
+      check_id: check.id,
+      update_outcome: check.updateOutcome,
+      target_kind: targetKind,
+      structured_links_present: true,
+    });
+  }, [
+    analytics,
+    check.id,
+    check.updateOutcome,
+    showStructuredLinks,
+    targetKind,
+  ]);
+
+  const handleRemediationLinkClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    analytics.capture("plugin_autoupdate_docs_link_clicked", {
+      check_id: check.id,
+      link_url: event.currentTarget.href,
+      update_outcome: check.updateOutcome,
+      target_kind: targetKind,
+      structured_links_present: true,
+    });
+  };
+
   if (!revealed) {
     return <SystemCheckRowSkeleton />;
   }
-
-  const isAdvisory = check.passed && Boolean(check.error);
-  const value = getSystemCheckValue(check);
 
   return (
     <div className="fade-in slide-in-from-left-3 animate-in space-y-0.5 duration-300">
@@ -239,20 +314,99 @@ function SystemCheckRow({
           required={check.required}
         />
         <span className="min-w-0 flex-1 truncate">{check.label}</span>
+        {updateStatus}
         {value}
         {check.passed && !check.version && !check.error && (
           <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />
         )}
       </div>
-      {(check.error || !check.passed) && check.remediation && (
+      {showRemediation && (
         <p className="mt-1 ml-6 rounded border border-destructive/20 bg-destructive/10 px-2 py-1 text-xs">
-          <span className="select-all font-mono text-[11px] text-foreground/80">
-            {check.remediation}
+          <span className="text-foreground/80">
+            {showStructuredLinks ? (
+              <span className="mb-1 block">
+                {remediationLinks.map((link) => (
+                  <a
+                    className="font-medium text-primary underline underline-offset-2"
+                    href={link.url}
+                    key={link.url}
+                    onClick={handleRemediationLinkClick}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {link.label}
+                  </a>
+                ))}
+              </span>
+            ) : null}
+            <span className="select-all text-[11px]">
+              {renderRemediationText(check.remediation ?? "")}
+            </span>
           </span>
         </p>
       )}
     </div>
   );
+}
+
+function getPluginUpdateStatus(
+  check: CheckResult,
+  pluginAutoUpdateEnabled: boolean
+): ReactNode {
+  if (!(pluginAutoUpdateEnabled && check.id.startsWith("plugin-"))) {
+    return null;
+  }
+  if (check.updateOutcome === "success") {
+    return <SystemCheckStatusBadge label="Updated" tone="success" />;
+  }
+  if (check.updateOutcome === "timeout") {
+    return <SystemCheckStatusBadge label="Update timed out" tone="warning" />;
+  }
+  if (check.updateOutcome === "failed" || check.updateOutcome === "skipped") {
+    return <SystemCheckStatusBadge label="Update failed" tone="danger" />;
+  }
+  return null;
+}
+
+function SystemCheckStatusBadge({
+  label,
+  tone,
+}: Readonly<{ label: string; tone: "success" | "warning" | "danger" }>) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded border px-1.5 py-0.5 font-medium text-[10px]",
+        tone === "success" &&
+          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
+        tone === "warning" &&
+          "border-amber-500/30 bg-amber-500/10 text-amber-700",
+        tone === "danger" &&
+          "border-destructive/30 bg-destructive/10 text-destructive"
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+function renderRemediationText(remediation: string): ReactNode[] {
+  const parts = remediation.split(/(https:\/\/\S+)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("https://")) {
+      return (
+        <a
+          className="font-medium text-primary underline underline-offset-2"
+          href={part}
+          key={`${part}-${String(index)}`}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {part}
+        </a>
+      );
+    }
+    return <span key={`${part}-${String(index)}`}>{part}</span>;
+  });
 }
 
 function getSystemCheckValue(check: CheckResult): ReactNode {

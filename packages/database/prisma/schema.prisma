@@ -435,6 +435,7 @@ model ComputeTargetHealthCheck {
   checkedAt          DateTime @map("checked_at")
   expectedMcpUrl     String?  @map("expected_mcp_url")
   latestVersion      String?  @map("latest_version")
+  pluginAutoUpdateEnabled Boolean @default(false) @map("plugin_auto_update_enabled")
   result             Json
   allRequiredPassed  Boolean  @map("all_required_passed")
   requiredFailureIds Json     @default("[]") @map("required_failure_ids")

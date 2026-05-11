@@ -202,6 +202,54 @@ describe("Release gating", () => {
   });
 });
 
+describe("target kind classification", () => {
+  it("classifies owned relay targets by ownership even when plugin auto-update is disabled", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          isOwnedTarget
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          pluginAutoUpdateEnabled={false}
+          relayTargetId="target-1"
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      pluginAutoUpdateEnabled: false,
+      targetKind: "owned_relay",
+    });
+  });
+
+  it("classifies shared relay targets separately from disabled owned relays", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          isOwnedTarget={false}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          pluginAutoUpdateEnabled={false}
+          relayTargetId="target-1"
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      pluginAutoUpdateEnabled: false,
+      targetKind: "shared_relay",
+    });
+  });
+});
+
 describe("Dismissal behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();

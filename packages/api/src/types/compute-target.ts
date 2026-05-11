@@ -30,6 +30,20 @@ export type CheckResultDebug = {
   overrideUsed?: string;
 };
 
+export const PluginUpdateOutcome = {
+  Success: "success",
+  Failed: "failed",
+  Timeout: "timeout",
+  Skipped: "skipped",
+} as const;
+export type PluginUpdateOutcome =
+  (typeof PluginUpdateOutcome)[keyof typeof PluginUpdateOutcome];
+
+export type RemediationLink = {
+  label: string;
+  url: string;
+};
+
 export type CheckResult = {
   id: string;
   label: string;
@@ -39,6 +53,10 @@ export type CheckResult = {
   error?: string;
   remediation?: string;
   debug?: CheckResultDebug;
+  updateAttempted?: boolean;
+  updateOutcome?: PluginUpdateOutcome;
+  updatePluginIds?: string[];
+  remediationLinks?: RemediationLink[];
 };
 
 export type NeutralMcpProviderAvailability = {
@@ -74,6 +92,7 @@ export type ComputeTargetHealthCheckSnapshot = {
   checkedAt: Date;
   expectedMcpUrl: string | null;
   latestVersion: string | null;
+  pluginAutoUpdateEnabled: boolean;
   result: HealthCheckResponse;
   allRequiredPassed: boolean;
   requiredFailureIds: string[];
@@ -85,6 +104,7 @@ export type ComputeTargetHealthCheckSnapshot = {
 export type UpsertComputeTargetHealthCheckSnapshotInput = {
   expectedMcpUrl?: string | null;
   latestVersion?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
   result: HealthCheckResponse;
 };
 

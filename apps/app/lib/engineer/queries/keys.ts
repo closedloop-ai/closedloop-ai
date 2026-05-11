@@ -3,6 +3,11 @@
  * Every key used by useQuery / invalidateQueries should reference this object
  * so that typos are caught at compile time and keys stay consistent.
  */
+export const HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT =
+  "plugin-auto-update" as const;
+export const HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT =
+  "plugin-no-auto-update" as const;
+
 export const queryKeys = {
   // Symphony domain
   closedloopStatus: (ticketId: string, repoPath: string | null) =>
@@ -74,9 +79,18 @@ export const queryKeys = {
   healthCheck: (
     targetKey: string,
     expectedMcpUrl: string | null,
-    latestVersion?: string | null
+    latestVersion?: string | null,
+    pluginAutoUpdateEnabled = false
   ) =>
-    ["health-check", targetKey, expectedMcpUrl, latestVersion ?? null] as const,
+    [
+      "health-check",
+      targetKey,
+      expectedMcpUrl,
+      latestVersion ?? null,
+      pluginAutoUpdateEnabled
+        ? HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT
+        : HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT,
+    ] as const,
 
   // Chat session domain
   chatSessionHistory: (chatKey: string) =>

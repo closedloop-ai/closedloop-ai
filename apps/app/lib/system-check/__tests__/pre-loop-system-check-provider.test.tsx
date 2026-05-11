@@ -10,6 +10,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTargetKeys } from "@/hooks/queries/use-compute-targets";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "../plugin-auto-update";
 import { getPreLoopTargetKey, PreLoopCommand } from "../pre-loop-health-check";
 import {
   PreLoopSystemCheckProvider,
@@ -23,6 +24,7 @@ const mockUseComputeTargets = vi.hoisted(() => vi.fn());
 const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
 const mockApiGet = vi.hoisted(() => vi.fn());
 const mockHealthCheckDialogRender = vi.hoisted(() => vi.fn());
+const mockUseFeatureFlag = vi.hoisted(() => vi.fn());
 const mockUseUser = vi.hoisted(() => vi.fn());
 const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
 
@@ -32,6 +34,7 @@ vi.mock("@repo/analytics/client", () => ({
     identify: vi.fn(),
     reset: vi.fn(),
   }),
+  useFeatureFlag: (key: string) => mockUseFeatureFlag(key),
 }));
 
 vi.mock("@repo/auth/client", () => ({
@@ -47,6 +50,7 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_MCP_SERVER_URL: EXPECTED_MCP_URL,
+    NEXT_PUBLIC_POSTHOG_KEY: "test-posthog-key",
   },
 }));
 
@@ -251,6 +255,7 @@ describe("PreLoopSystemCheckProvider", () => {
         error: null,
       }),
     });
+    mockUseFeatureFlag.mockReturnValue({ enabled: false });
     mockApiGet.mockResolvedValue(null);
     vi.stubGlobal("fetch", vi.fn());
   });
@@ -374,7 +379,10 @@ describe("PreLoopSystemCheckProvider", () => {
   it("does not refetch a persisted snapshot when a null snapshot is cached", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
-    queryClient.setQueryData(computeTargetKeys.healthCheck("target-1"), null);
+    queryClient.setQueryData(
+      computeTargetKeys.healthCheckMode("target-1", false),
+      null
+    );
     vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
 
     renderGate({ queryClient, execute, computeTargetId: "target-1" });
@@ -385,6 +393,27 @@ describe("PreLoopSystemCheckProvider", () => {
     });
     expect(mockApiGet).not.toHaveBeenCalled();
     expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("uses the production plugin auto-update flag key before sending auto-update health checks", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    mockUseFeatureFlag.mockImplementation((key: string) => ({
+      enabled: key === PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY,
+    }));
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(mockUseFeatureFlag).toHaveBeenCalledWith(
+      PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY
+    );
+    const [requestUrl] = vi.mocked(globalThis.fetch).mock.calls[0] ?? [];
+    expect(String(requestUrl)).toContain("pluginAutoUpdate=1");
   });
 
   it("does not allow an offline target to pass from a persisted snapshot", async () => {

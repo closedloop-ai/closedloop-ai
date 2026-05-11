@@ -129,6 +129,45 @@ describe("handleTelemetryEvent — origin enrichment overwrites injected origin"
     const meta = infoCall?.[1] as Record<string, unknown>;
     expect(meta.origin).toBe(Origin.Desktop);
   });
+
+  it("preserves plugin update diagnostics into the Datadog-bound log metadata", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    const payload = {
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.PluginUpdateFailed,
+      diagnostics: {
+        pluginUpdate: {
+          pluginIds: ["code@closedloop-ai"],
+          versionsBefore: { "code@closedloop-ai": "1.0.0" },
+          versionsAfter: { "code@closedloop-ai": "1.0.0" },
+          outcomes: { "code@closedloop-ai": "failed" },
+          durationMs: 321,
+          command: "claude plugin update",
+          scope: "user",
+          exitCode: 1,
+          failureReason: "command_failed",
+          stderrTail:
+            "permission denied\nAuthorization: Bearer secret-token\nclean line",
+        },
+      },
+    };
+
+    const result = handleTelemetryEvent(payload, defaultHandlerContext);
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      pluginUpdate: {
+        ...payload.diagnostics.pluginUpdate,
+        stderrTail: "permission denied\nclean line",
+      },
+    });
+    expect(meta.origin).toBe(Origin.Desktop);
+  });
 });
 
 // ---------------------------------------------------------------------------

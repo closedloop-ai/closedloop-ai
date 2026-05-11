@@ -36,7 +36,10 @@ import {
 
 export const maxDuration = 300; // 5 minutes — relay proxies long-running streams (reviews, chat)
 
-function toGatewayPath(request: NextRequest): string {
+function toGatewayPath(
+  request: NextRequest,
+  options?: { stripPluginAutoUpdate?: boolean }
+): string {
   const pathname = request.nextUrl.pathname.startsWith(
     GATEWAY_RELAY_PATH_PREFIX
   )
@@ -45,7 +48,19 @@ function toGatewayPath(request: NextRequest): string {
         GATEWAY_PATH_PREFIX
       )
     : request.nextUrl.pathname;
-  return `${pathname}${request.nextUrl.search}`;
+  const gatewayUrl = new URL(
+    `${pathname}${request.nextUrl.search}`,
+    "http://local"
+  );
+
+  if (
+    options?.stripPluginAutoUpdate &&
+    gatewayUrl.pathname === GATEWAY_HEALTH_CHECK_PATH
+  ) {
+    gatewayUrl.searchParams.delete("pluginAutoUpdate");
+  }
+
+  return `${gatewayUrl.pathname}${gatewayUrl.search}`;
 }
 
 function collectRelayHeaders(request: NextRequest): Record<string, string> {
@@ -229,6 +244,14 @@ function isHealthCheckPath(path: string): boolean {
   return new URL(path, "http://local").pathname === GATEWAY_HEALTH_CHECK_PATH;
 }
 
+function isPluginAutoUpdateEnabledPath(path: string): boolean {
+  const url = new URL(path, "http://local");
+  return (
+    url.pathname === GATEWAY_HEALTH_CHECK_PATH &&
+    url.searchParams.get("pluginAutoUpdate") === "1"
+  );
+}
+
 const healthCheckResponseSchema = z
   .object({
     checks: z.array(z.unknown()),
@@ -241,17 +264,20 @@ async function persistHealthCheckSnapshot({
   authToken,
   targetId,
   request,
+  pluginAutoUpdateEnabled,
   result,
 }: {
   apiOrigin: string;
   authToken: string;
   targetId: string;
   request: NextRequest;
+  pluginAutoUpdateEnabled: boolean;
   result: HealthCheckResponse;
 }): Promise<void> {
   const payload: UpsertComputeTargetHealthCheckSnapshotInput = {
     expectedMcpUrl: request.nextUrl.searchParams.get("expectedMcpUrl"),
     latestVersion: request.nextUrl.searchParams.get("latestVersion"),
+    pluginAutoUpdateEnabled,
     result,
   };
   const response = await fetch(
@@ -285,6 +311,7 @@ function scheduleHealthCheckPersistence({
   targetId,
   request,
   path,
+  pluginAutoUpdateEnabled,
   value,
 }: {
   apiOrigin: string;
@@ -292,6 +319,7 @@ function scheduleHealthCheckPersistence({
   targetId: string;
   request: NextRequest;
   path: string;
+  pluginAutoUpdateEnabled: boolean;
   value: unknown;
 }): void {
   if (!isHealthCheckPath(path)) {
@@ -315,6 +343,7 @@ function scheduleHealthCheckPersistence({
       authToken,
       targetId,
       request,
+      pluginAutoUpdateEnabled,
       result,
     }).catch((error) => {
       log.warn("Failed to persist relay health check snapshot", {
@@ -328,6 +357,7 @@ function scheduleHealthCheckPersistence({
 type TargetOwnershipCheck = {
   id: string;
   isOnline: boolean;
+  ownerName?: string;
   capabilities: Record<string, unknown>;
 };
 
@@ -394,7 +424,10 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   const apiOrigin = resolveApiOrigin(request);
   const target = await ensureTargetOwnedAndOnline(apiOrigin, token, targetId);
 
-  const gatewayPath = toGatewayPath(request);
+  const gatewayPath = toGatewayPath(request, {
+    stripPluginAutoUpdate: Boolean(target.ownerName),
+  });
+  const pluginAutoUpdateEnabled = isPluginAutoUpdateEnabledPath(gatewayPath);
   const path = rewriteDesktopApiPath(
     gatewayPath,
     getDesktopApiNamespaceFromCapabilities(target.capabilities) ??
@@ -465,6 +498,7 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     targetId,
     request,
     path: gatewayPath,
+    pluginAutoUpdateEnabled,
     value,
   });
   return toRelayHttpResponse(value);
