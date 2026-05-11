@@ -33,7 +33,6 @@ vi.mock("@/hooks/queries/use-bootstrap-agents", () => ({
     Creating: "creating",
     Dispatched: "dispatched",
     Running: "running",
-    Ingesting: "ingesting",
     Completed: "completed",
     Error: "error",
   },

@@ -13,6 +13,7 @@ import type {
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
+  BootstrapLoopResultSchema,
   LoopCommand,
   LoopErrorCode,
   LoopStatus,
@@ -24,6 +25,7 @@ import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
+import { agentsService } from "@/app/agents/service";
 import { getCommitterInfo } from "@/app/documents/document-service";
 import { githubService } from "@/app/integrations/github/service";
 import { isInvalidStatusTransitionError } from "@/app/loops/loop-errors";
@@ -844,6 +846,10 @@ async function ingestLoopArtifacts(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string
 ): Promise<void> {
+  if (loop.command === LoopCommand.Bootstrap) {
+    await ingestBootstrapAgents(loop, organizationId);
+    return;
+  }
   if (!loop.documentId) {
     return;
   }
@@ -862,6 +868,62 @@ async function ingestLoopArtifacts(
 
   const provider = resolveProvider(loop);
   await provider.ingestArtifacts(loop, organizationId, handler);
+}
+
+async function ingestBootstrapAgents(
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
+  organizationId: string
+): Promise<void> {
+  const raw = loop.uploadedArtifacts as Record<string, unknown> | null;
+  const bootstrapResult = raw?.bootstrapResult;
+  const parsed = BootstrapLoopResultSchema.safeParse(bootstrapResult);
+  if (!parsed.success) {
+    log.warn("[loop-orchestrator] Bootstrap artifacts missing or malformed", {
+      loopId: loop.id,
+      parseErrors: parsed.error.issues.map((i) => i.message),
+    });
+    return;
+  }
+
+  let totalCreated = 0;
+  let totalUpdated = 0;
+  for (const repo of parsed.data.repos) {
+    if (!repo.success || repo.agents.length === 0) {
+      continue;
+    }
+    try {
+      const result = await agentsService.bulkIngest(
+        organizationId,
+        loop.userId,
+        {
+          agents: repo.agents.map((a) => ({
+            name: a.name,
+            role: a.role,
+            description: a.description,
+            prompt: a.prompt,
+          })),
+          bootstrapRunId: loop.id,
+          sourceRepo: repo.fullName,
+          criticGates: repo.criticGates ?? undefined,
+        }
+      );
+      totalCreated += result.created;
+      totalUpdated += result.updated;
+    } catch (err) {
+      log.error("[loop-orchestrator] Bootstrap agent ingestion failed", {
+        loopId: loop.id,
+        repo: repo.fullName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  log.info("[loop-orchestrator] Bootstrap agents ingested", {
+    loopId: loop.id,
+    totalCreated,
+    totalUpdated,
+    repoCount: parsed.data.repos.filter((r) => r.success).length,
+  });
 }
 
 /**
