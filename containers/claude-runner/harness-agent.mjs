@@ -3909,7 +3909,7 @@ async function reportFinalStatus(
   // Check for a primary marker (intentional user-visible failure) before
   // falling through to the generic exitCode branch.
   const primaryMarker = readUserVisibleLoopFailure({
-    claudeWorkDir: workDir,
+    claudeWorkDir: swDir ?? workDir,
     markerNotBeforeMs: spawnStartedAt,
     signingSecret: userVisibleLoopFailureSecret,
   });
@@ -3946,7 +3946,7 @@ async function reportFinalStatus(
   // LLM-commit Claude CLI native session transcript. This catches auth failures
   // that occur during the post-run commit step and would otherwise be silently
   // swallowed, causing a spurious COMPLETED event when exitCode is 0.
-  const jsonlAuthSignal = detectAuthChallengeFromJsonl(workDir);
+  const jsonlAuthSignal = detectAuthChallengeFromJsonl(swDir ?? workDir);
   const authChallengeSignal = jsonlAuthSignal ?? llmCommitAuthChallenge;
   if (authChallengeSignal != null) {
     const source =
@@ -4149,6 +4149,7 @@ async function main() {
 
     // Step 5: Build environment for the child process
     const userVisibleLoopFailureSecret = randomBytes(32).toString("base64url");
+    registerSecret(userVisibleLoopFailureSecret);
     const childEnv = {
       ...setupEnvVars, // env vars from .closedloop-ai/loops-setup.sh (NODE_OPTIONS, etc.)
       ANTHROPIC_API_KEY: config.anthropicApiKey,
@@ -4321,10 +4322,12 @@ function resetHarnessState({
   contextPackRef: newContextPackRef,
   lastTokenRefreshAt: newLastTokenRefreshAt,
   capturedSessionId: newCapturedSessionId,
+  llmCommitAuthChallenge: newLlmCommitAuthChallenge,
 } = {}) {
   contextPackRef = newContextPackRef ?? null;
   lastTokenRefreshAt = newLastTokenRefreshAt ?? null;
   capturedSessionId = newCapturedSessionId ?? null;
+  llmCommitAuthChallenge = newLlmCommitAuthChallenge ?? null;
 }
 
 // ---------------------------------------------------------------------------

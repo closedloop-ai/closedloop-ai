@@ -10,7 +10,10 @@ import {
   LoopArtifactType,
 } from "@closedloop-ai/loops-api/artifacts";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
+import {
+  LoopErrorCode,
+  RunnerErrorSubcode,
+} from "@closedloop-ai/loops-api/error-codes";
 import { MULTI_REPO_POLICY } from "@closedloop-ai/loops-api/multi-repo-policy";
 
 import {
@@ -3625,7 +3628,7 @@ describe("reportFinalStatus auth-challenge wiring", () => {
     const markerPayload = {
       code: LoopErrorCode.RunnerError,
       message: "Pre-run validation rejected the loop configuration.",
-      result: { subcode: "BAD_PLAN_STATE" },
+      result: { subcode: RunnerErrorSubcode.BadPlanState },
     };
     const signature = signUserVisibleLoopFailure(markerPayload, signingSecret);
     fs.writeFileSync(
