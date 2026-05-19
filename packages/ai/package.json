@@ -10,7 +10,7 @@
     "@ai-sdk/anthropic": "^3.0.75",
     "@ai-sdk/openai": "^3.0.62",
     "@ai-sdk/provider": "^3.0.10",
-    "@ai-sdk/react": "^3.0.177",
+    "@ai-sdk/react": "^3.0.179",
     "@t3-oss/env-nextjs": "^0.13.10",
     "ai": "^6.0.175",
     "react": "19.2.5",
