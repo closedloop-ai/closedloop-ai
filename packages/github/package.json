@@ -21,6 +21,6 @@
     "@repo/typescript-config": "workspace:*",
     "@types/adm-zip": "^0.5.7",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.8"
   }
 }
