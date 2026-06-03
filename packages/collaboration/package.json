@@ -13,7 +13,7 @@
     "@liveblocks/node-prosemirror": "^3.18.5",
     "@liveblocks/react": "^3.18.5",
     "@liveblocks/react-tiptap": "^3.18.5",
-    "@liveblocks/react-ui": "^3.18.5",
+    "@liveblocks/react-ui": "^3.19.4",
     "@liveblocks/yjs": "^3.18.5",
     "@repo/api": "workspace:*",
     "@repo/observability": "workspace:*",
