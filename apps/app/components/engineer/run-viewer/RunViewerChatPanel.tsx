@@ -3,9 +3,9 @@
 import { cn } from "@repo/design-system/lib/utils";
 import { Loader2, Square, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageContent } from "@/components/chat/MessageContent";
-import type { ContentBlock } from "@/components/chat/types";
-import { formatTime } from "@/lib/chat/chat-utils";
+import type { ContentBlock } from "@/components/engineer/chat";
+import { MessageContent } from "@/components/engineer/chat";
+import { formatTime } from "@/lib/engineer/chat-utils";
 import { readTerminalStream } from "@/lib/engineer/terminal-stream";
 
 type RunViewerChatPanelProps = {
@@ -56,7 +56,7 @@ export function RunViewerChatPanel({
   // Fetch chat history from server
   const reloadHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/gateway/run-viewer-chat");
+      const res = await fetch("/api/engineer/run-viewer-chat");
       if (res.ok) {
         const data = await res.json();
         if (data.messages) {
@@ -127,7 +127,7 @@ export function RunViewerChatPanel({
           : undefined;
 
       try {
-        const response = await fetch("/api/gateway/run-viewer-chat", {
+        const response = await fetch("/api/engineer/run-viewer-chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: trimmed, fileContext, runDir }),
@@ -220,7 +220,7 @@ export function RunViewerChatPanel({
 
   const handleClearChat = useCallback(async () => {
     try {
-      await fetch("/api/gateway/run-viewer-chat", { method: "DELETE" });
+      await fetch("/api/engineer/run-viewer-chat", { method: "DELETE" });
       setEntries([]);
     } catch {
       // Best effort
@@ -247,7 +247,6 @@ export function RunViewerChatPanel({
               className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/50 hover:text-destructive"
               onClick={handleClearChat}
               title="Clear chat"
-              type="button"
             >
               <Trash2 className="size-3" />
             </button>
@@ -257,7 +256,6 @@ export function RunViewerChatPanel({
               className="flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
               onClick={onClose}
               title="Close chat"
-              type="button"
             >
               <X className="size-3.5" />
             </button>
@@ -362,7 +360,6 @@ export function RunViewerChatPanel({
                 )}
                 onClick={stopStreaming}
                 title="Stop"
-                type="button"
               >
                 <Square className="size-2 fill-current" />
               </button>
@@ -378,7 +375,6 @@ export function RunViewerChatPanel({
                 disabled={!input.trim()}
                 onClick={handleSend}
                 title="Send"
-                type="button"
               >
                 <span className="font-bold text-[10px]">&#9654;</span>
               </button>

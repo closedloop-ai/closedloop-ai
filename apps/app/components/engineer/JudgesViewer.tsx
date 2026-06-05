@@ -17,10 +17,10 @@ import {
 import { useState } from "react";
 import {
   type CaseScore,
-  closedloopJudgesOptions,
   EvalStatus,
   type EvaluationReport,
-} from "@/lib/engineer/queries/closedloop";
+  symphonyJudgesOptions,
+} from "@/lib/engineer/queries/symphony";
 import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type JudgesViewerProps = {
@@ -46,7 +46,7 @@ export function JudgesViewer({
   onClose,
 }: Readonly<JudgesViewerProps>) {
   const { data, isLoading, isError, error, refetch } = useQuery(
-    closedloopJudgesOptions(ticketId, repoPath)
+    symphonyJudgesOptions(ticketId, repoPath)
   );
 
   const [expandedScoreId, setExpandedScoreId] = useState<string | null>(null);
@@ -345,7 +345,6 @@ function CaseScoreRow({
       <button
         className="flex w-full items-center justify-between rounded-md border p-3 text-left transition-colors hover:bg-muted/50"
         onClick={() => onToggleScore(isExpanded ? null : score.case_id)}
-        type="button"
       >
         <div className="flex items-center gap-3">
           {renderStatusIcon(inferStatusFromScore(score))}
@@ -354,9 +353,9 @@ function CaseScoreRow({
           </span>
         </div>
         <span className="text-muted-foreground text-xs">
-          {getScore(score) === null
-            ? "N/A"
-            : formatScorePercent(getScore(score)!)}
+          {getScore(score) !== null
+            ? formatScorePercent(getScore(score)!)
+            : "N/A"}
         </span>
       </button>
       {isExpanded && (
@@ -387,9 +386,9 @@ function CaseScoreRow({
                     </span>
                     <span className="text-sm">
                       Score:{" "}
-                      {metric.score == null
-                        ? "N/A"
-                        : formatScorePercent(metric.score)}
+                      {metric.score != null
+                        ? formatScorePercent(metric.score)
+                        : "N/A"}
                     </span>
                   </div>
                   {metric.threshold !== null && (

@@ -1,4 +1,3 @@
-import { Result } from "@repo/api/src/types/result";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { POST } from "@/app/internal/relay/socket-event/route";
@@ -56,9 +55,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(computeTargetsService.setOnlineState).mockResolvedValue(true);
-  vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
-    Result.ok(mockTarget)
-  );
+  vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(mockTarget);
   vi.mocked(
     desktopCommandStore.listNonTerminalDispatchCommands
   ).mockResolvedValue([]);
@@ -97,12 +94,10 @@ describe("POST /internal/relay/socket-event — disconnect", () => {
 
 describe("POST /internal/relay/socket-event — reconnect (re-hello with existing targetId)", () => {
   it("returns desktop.hello.ack with resumeFromSequence for pending commands", async () => {
-    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
-      Result.ok({
-        ...mockTarget,
-        id: "target-1",
-      })
-    );
+    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue({
+      ...mockTarget,
+      id: "target-1",
+    });
     vi.mocked(
       desktopCommandStore.listNonTerminalDispatchCommands
     ).mockResolvedValue([
@@ -112,7 +107,7 @@ describe("POST /internal/relay/socket-event — reconnect (re-hello with existin
         operationId: "op-1",
         status: "running",
         method: "POST",
-        path: "/api/gateway/symphony/chat/abc",
+        path: "/api/engineer/symphony/chat/abc",
         createdAt: new Date().toISOString(),
       } as any,
     ]);

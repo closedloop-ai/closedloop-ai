@@ -10,7 +10,7 @@ export function registerGetGithubStatus(
     "get-github-status",
     {
       description:
-        "Check the GitHub integration connection status for the organization.",
+        "Check the GitHub integration connection status for the organization",
     },
     () =>
       withErrorHandling(async () => {

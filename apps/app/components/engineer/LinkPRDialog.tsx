@@ -165,7 +165,6 @@ export function RepoStep({
           )}
           key={repo.path}
           onClick={() => onSelect(repo)}
-          type="button"
         >
           <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0">
@@ -205,7 +204,6 @@ export function PRStep({
               : "text-muted-foreground hover:text-foreground"
           )}
           onClick={() => onStateChange("open")}
-          type="button"
         >
           Open
         </button>
@@ -217,7 +215,6 @@ export function PRStep({
               : "text-muted-foreground hover:text-foreground"
           )}
           onClick={() => onStateChange("merged")}
-          type="button"
         >
           Merged
         </button>
@@ -246,7 +243,6 @@ export function PRStep({
               )}
               key={pr.number}
               onClick={() => onSelect(pr)}
-              type="button"
             >
               {prState === "merged" ? (
                 <GitMerge className="mt-0.5 size-4 shrink-0 text-violet-500" />

@@ -1,25 +1,25 @@
-import {
-  ExecutionResultFileSchema,
-  ExecutionResultV2Schema,
-  parseExecutionResultFile,
-  type RepoExecutionResult,
-} from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import {
+  EvaluationReportType,
+  type JudgesReport,
+} from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
+import { EntityType, withDb } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import type { ExecutionResult } from "@/app/webhooks/github/types";
 import {
-  type IngestionContext,
-  ingestRepoExecutionResults,
-} from "@/lib/loops/ingest-repo-execution-results";
-import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
+  parseJsonArtifact,
+  upsertEvaluationWithJudgeScores,
+} from "@/lib/loops/loop-artifact-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loops/loop-state";
+import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 import { judgesReportSchema } from "../judges-report-schema";
 import { defineHandler } from "./loop-command-handler";
 
@@ -29,7 +29,7 @@ import { defineHandler } from "./loop-command-handler";
 
 /** Parsed artifacts relevant to the EXECUTE command. */
 export type ExecutionArtifacts = {
-  executionResult: RepoExecutionResult[] | null;
+  executionResult: ExecutionResult | null;
   codeJudgesReport: JudgesReport | null;
   promptsSnapshot: PromptsSnapshot | null;
 };
@@ -42,9 +42,8 @@ export type ExecutionArtifacts = {
  * Download and parse artifacts relevant to execute commands from S3.
  * Only fetches execution-result.json, code-judges.json, and prompt snapshots.
  */
-export async function downloadExecutionArtifacts(
-  stateKeyPrefix: string,
-  loop: Loop
+async function downloadExecutionArtifacts(
+  stateKeyPrefix: string
 ): Promise<ExecutionArtifacts> {
   const [executionResultBuf, codeJudgesReportBuf, promptMarkdownEntries] =
     await Promise.all([
@@ -53,44 +52,11 @@ export async function downloadExecutionArtifacts(
       downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
     ]);
 
-  let executionResult: RepoExecutionResult[] | null = null;
-
-  if (executionResultBuf) {
-    let rawData: unknown = null;
-    try {
-      rawData = JSON.parse(executionResultBuf.toString("utf-8"));
-    } catch (err) {
-      log.error(
-        "[loop-document-ingestion] Malformed execution-result.json — skipping execution ingestion",
-        {
-          loopId: loop.id,
-          error: err instanceof Error ? err.message : String(err),
-        }
-      );
-    }
-
-    if (rawData !== null) {
-      const parsed = parseExecutionResultFile(rawData, loop.repo?.fullName);
-
-      if (parsed.ok) {
-        executionResult = parsed.results;
-        log.info("[loop-document-ingestion] Parsed execution result file", {
-          loopId: loop.id,
-          schemaVersion: parsed.schemaVersion,
-          repoCount: parsed.repoCount,
-        });
-      } else {
-        log.error(
-          "[loop-document-ingestion] Failed to parse execution result file",
-          {
-            loopId: loop.id,
-            error: parsed.error,
-            schemaVersion: parsed.schemaVersion,
-          }
-        );
-      }
-    }
-  }
+  const executionResult = parseJsonArtifact<ExecutionResult>(
+    executionResultBuf,
+    "execution-result.json",
+    (p) => p
+  ) as ExecutionResult | null;
 
   const codeJudgesReport = parseJsonArtifact<JudgesReport>(
     codeJudgesReportBuf,
@@ -101,10 +67,65 @@ export async function downloadExecutionArtifacts(
   const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
       promptMarkdownEntries,
-      "[loop-document-ingestion]"
+      "[loop-artifact-ingestion]"
     );
 
   return { executionResult, codeJudgesReport, promptsSnapshot };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Upsert a GitHubPullRequest row, returning the effective row so the caller
+ * always has the correct artifactId for linkage — even if a concurrent
+ * webhook or workflow-completion handler won the insert race.
+ */
+async function upsertPrRow(
+  tx: Parameters<Parameters<typeof withDb.tx>[0]>[0],
+  data: {
+    workstreamId: string;
+    organizationId: string;
+    repositoryId: string;
+    artifactId: string;
+    githubId: string;
+    number: number;
+    title: string;
+    htmlUrl: string;
+    headBranch: string;
+    baseBranch: string;
+  },
+  loopId: string
+): Promise<{ id: string; artifactId: string | null }> {
+  const row = await tx.gitHubPullRequest.upsert({
+    where: {
+      repositoryId_number: {
+        repositoryId: data.repositoryId,
+        number: data.number,
+      },
+    },
+    create: { ...data, state: "OPEN" },
+    // Don't overwrite fields that a concurrent handler may have set
+    // more accurately (e.g. state from a webhook).
+    update: {},
+    select: { id: true, artifactId: true },
+  });
+
+  if (row.artifactId && row.artifactId !== data.artifactId) {
+    log.warn(
+      "[loop-artifact-ingestion] PR row already linked to a different artifact via upsert race",
+      {
+        loopId,
+        repositoryId: data.repositoryId,
+        prNumber: data.number,
+        existingArtifactId: row.artifactId,
+        requestedArtifactId: data.artifactId,
+      }
+    );
+  }
+
+  return row;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,23 +134,32 @@ export async function downloadExecutionArtifacts(
 
 /**
  * Ingest execution artifacts into the platform.
- * Delegates to ingestRepoExecutionResults for all PR creation/dedup logic.
+ * Creates PR record, ExternalLinks, EntityLinks, and WorkstreamEvent.
+ * Mirrors handleExecutionSuccess() in workflow-completion-handler.ts.
  */
 export async function ingestExecutionArtifacts(
   loop: Loop,
-  organizationId: string,
   artifacts: ExecutionArtifacts
 ): Promise<void> {
-  if (!artifacts.executionResult) {
-    log.info("[loop-document-ingestion] No execution result to ingest", {
+  const executionResult = artifacts.executionResult;
+
+  if (!executionResult) {
+    log.info("[loop-artifact-ingestion] No execution result to ingest", {
       loopId: loop.id,
     });
     return;
   }
 
-  if (!(loop.workstreamId && loop.documentId)) {
+  if (!(executionResult.has_changes && executionResult.pr_url)) {
+    log.info("[loop-artifact-ingestion] Execution completed with no changes", {
+      loopId: loop.id,
+    });
+    return;
+  }
+
+  if (!(loop.workstreamId && loop.artifactId)) {
     log.warn(
-      "[loop-document-ingestion] Loop missing workstreamId or artifactId",
+      "[loop-artifact-ingestion] Loop missing workstreamId or artifactId",
       {
         loopId: loop.id,
       }
@@ -137,16 +167,202 @@ export async function ingestExecutionArtifacts(
     return;
   }
 
-  const ctx: IngestionContext = {
-    organizationId,
-    workstreamId: loop.workstreamId,
-    documentId: loop.documentId,
-    loopId: loop.id,
-  };
+  const repoFullName = loop.repo?.fullName;
+  if (!repoFullName) {
+    log.warn("[loop-artifact-ingestion] Loop missing repo.fullName", {
+      loopId: loop.id,
+    });
+    return;
+  }
 
-  await ingestRepoExecutionResults(ctx, artifacts.executionResult, {
-    codeJudgesReport: artifacts.codeJudgesReport,
-    promptsSnapshot: artifacts.promptsSnapshot,
+  // Look up via GitHubInstallationRepository (the canonical repo table).
+  const installationRepo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: { organizationId: loop.organizationId, status: "ACTIVE" },
+      },
+      select: { id: true },
+    })
+  );
+
+  if (!installationRepo) {
+    log.warn(
+      "[loop-artifact-ingestion] GitHubInstallationRepository not found",
+      {
+        loopId: loop.id,
+        repoFullName,
+      }
+    );
+    return;
+  }
+
+  const prNumber =
+    typeof executionResult.pr_number === "string"
+      ? Number.parseInt(executionResult.pr_number, 10)
+      : executionResult.pr_number;
+
+  if (Number.isNaN(prNumber)) {
+    log.warn(
+      "[loop-artifact-ingestion] Invalid pr_number, skipping execution ingestion",
+      { loopId: loop.id, raw: executionResult.pr_number }
+    );
+    return;
+  }
+
+  const prTitle =
+    executionResult.pr_title ||
+    `ClosedLoop: ${executionResult.branch_name || `PR #${prNumber}`}`;
+  const baseBranch =
+    executionResult.base_branch || executionResult.base_ref || "main";
+
+  await upsertFromSnapshot(loop.organizationId, artifacts.promptsSnapshot);
+
+  await withDb.tx(async (tx) => {
+    const artifact = await tx.artifact.findUnique({
+      where: { id: loop.artifactId!, organizationId: loop.organizationId },
+      select: { organizationId: true, projectId: true, slug: true },
+    });
+
+    if (!artifact) {
+      log.warn(
+        "[loop-artifact-ingestion] Artifact not found for PR record creation",
+        {
+          artifactId: loop.artifactId,
+          loopId: loop.id,
+        }
+      );
+      return;
+    }
+
+    if (artifacts.codeJudgesReport) {
+      await upsertEvaluationWithJudgeScores({
+        entityId: loop.artifactId!,
+        entityType: EntityType.ARTIFACT,
+        artifactId: loop.artifactId!,
+        loopId: loop.id,
+        organizationId: loop.organizationId,
+        reportType: EvaluationReportType.Code,
+        report: artifacts.codeJudgesReport,
+        tx,
+      });
+
+      log.info("[loop-artifact-ingestion] Persisted code judges report", {
+        artifactId: loop.artifactId,
+        loopId: loop.id,
+        reportId: artifacts.codeJudgesReport.report_id,
+        judgesCount: artifacts.codeJudgesReport.stats.length,
+      });
+    }
+
+    // Check if a PR record already exists (may have been created by the
+    // pull_request webhook or workflow-completion handler racing with this handler).
+    const existingPr = await tx.gitHubPullRequest.findUnique({
+      where: {
+        repositoryId_number: {
+          repositoryId: installationRepo.id,
+          number: prNumber,
+        },
+      },
+      select: { id: true, artifactId: true },
+    });
+
+    // Determine the effective artifactId for linkage. If the PR row already
+    // exists with a different artifact, respect the existing link to avoid
+    // creating contradictory entity-link edges.
+    let effectiveArtifactId = loop.artifactId!;
+
+    if (existingPr) {
+      if (!existingPr.artifactId) {
+        // PR exists without an artifact link — claim it
+        await tx.gitHubPullRequest.update({
+          where: { id: existingPr.id },
+          data: { artifactId: loop.artifactId! },
+        });
+      } else if (existingPr.artifactId !== loop.artifactId) {
+        // PR is already linked to a different artifact — don't overwrite
+        effectiveArtifactId = existingPr.artifactId;
+        log.warn(
+          "[loop-artifact-ingestion] PR already linked to a different artifact",
+          {
+            existingArtifactId: existingPr.artifactId,
+            requestedArtifactId: loop.artifactId,
+            loopId: loop.id,
+            prNumber,
+          }
+        );
+      }
+      log.info(
+        "[loop-artifact-ingestion] PR already exists; skipping duplicate PR row create",
+        {
+          loopId: loop.id,
+          repositoryId: installationRepo.id,
+          prNumber,
+          pullRequestId: existingPr.id,
+        }
+      );
+    } else {
+      const upsertedPr = await upsertPrRow(
+        tx,
+        {
+          workstreamId: loop.workstreamId!,
+          organizationId: loop.organizationId,
+          repositoryId: installationRepo.id,
+          artifactId: loop.artifactId!,
+          githubId: String(executionResult.github_id ?? prNumber),
+          number: prNumber,
+          title: prTitle,
+          htmlUrl: executionResult.pr_url,
+          headBranch: executionResult.branch_name,
+          baseBranch,
+        },
+        loop.id
+      );
+      // If the row already existed with a different artifact, use that
+      // to avoid contradictory linkage records.
+      if (upsertedPr.artifactId && upsertedPr.artifactId !== loop.artifactId) {
+        effectiveArtifactId = upsertedPr.artifactId;
+      }
+    }
+
+    // Create ExternalLink, EntityLink, and preview deployment records (with dedup)
+    await ensurePrLinkageRecords(tx, {
+      organizationId: artifact.organizationId,
+      workstreamId: loop.workstreamId!,
+      projectId: artifact.projectId!,
+      artifactId: effectiveArtifactId,
+      prUrl: executionResult.pr_url,
+      prTitle,
+      prNumber,
+      githubId: String(executionResult.github_id ?? prNumber),
+      headBranch: executionResult.branch_name,
+      baseBranch,
+      commitSha: executionResult.commit_sha ?? null,
+    });
+
+    // Create workstream event
+    await tx.workstreamEvent.create({
+      data: {
+        workstreamId: loop.workstreamId!,
+        type: "GITHUB_PR_CREATED",
+        actorType: "system",
+        data: {
+          loopId: loop.id,
+          prNumber,
+          prUrl: executionResult.pr_url,
+          prTitle,
+          branch: executionResult.branch_name,
+          artifactId: loop.artifactId!,
+          slug: artifact.slug,
+        },
+      },
+    });
+  });
+
+  log.info("[loop-artifact-ingestion] Execution artifacts ingested", {
+    loopId: loop.id,
+    prUrl: executionResult.pr_url,
+    prNumber,
   });
 }
 
@@ -154,83 +370,33 @@ export async function ingestExecutionArtifacts(
 // Upload-based loading (desktop path)
 // ---------------------------------------------------------------------------
 
-// FEAT-55: validate desktop execute uploads with a strict v1/v2 schema union so
-// malformed payloads fail the command instead of being silently ignored.
-const legacyExecutionUploadSchema = ExecutionResultFileSchema.extend({
-  schemaVersion: z.never().optional(),
+const executionResultSchema = z.object({
+  has_changes: z.boolean(),
+  pr_url: z.string(),
+  pr_number: z.union([z.string(), z.number()]),
+  pr_title: z.string().optional(),
+  branch_name: z.string(),
+  base_ref: z.string().optional(),
+  base_branch: z.string().optional(),
+  github_id: z.number().optional(),
+  commit_sha: z.string().optional(),
 });
 
 const executionUploadSchema = z.object({
-  executionResult: z
-    .union([ExecutionResultV2Schema, legacyExecutionUploadSchema])
-    .optional(),
+  executionResult: executionResultSchema.optional(),
   codeJudges: judgesReportSchema.optional(),
 });
 
-const legacyV1ExecutionUploadSchema = z
-  .object({
-    schemaVersion: z.literal(1).optional(),
-    base_ref: z.string().optional(),
-    base_branch: z.string().optional(),
-  })
-  .passthrough();
-
-export function executionArtifactsFromUpload(
-  uploaded: JsonObject,
-  loop: Loop
+function executionArtifactsFromUpload(
+  uploaded: JsonObject
 ): ExecutionArtifacts {
-  // Apply main's legacy base_ref→base_branch fallback before strict validation
-  // so v1 desktop payloads that only carry base_branch still parse.
-  const normalizedUploaded =
-    uploaded.executionResult === undefined
-      ? uploaded
-      : {
-          ...uploaded,
-          executionResult: withLegacyUploadBaseRefFallback(
-            uploaded.executionResult
-          ),
-        };
-
-  const parsed = executionUploadSchema.parse(normalizedUploaded);
+  const parsed = executionUploadSchema.parse(uploaded);
+  const executionResult = (parsed.executionResult as ExecutionResult) ?? null;
   const codeJudgesReport = (parsed.codeJudges as JudgesReport) ?? null;
-
-  let executionResult: RepoExecutionResult[] | null = null;
-  if (parsed.executionResult !== undefined) {
-    const result = parseExecutionResultFile(
-      parsed.executionResult,
-      loop.repo?.fullName
-    );
-    if (result.ok) {
-      executionResult = result.results;
-    } else {
-      log.error(
-        "[loop-document-ingestion] Failed to parse execution result from upload",
-        {
-          loopId: loop.id,
-          error: result.error,
-          schemaVersion: result.schemaVersion,
-          hasFullName: Boolean(loop.repo?.fullName),
-        }
-      );
-    }
-  }
-
   // Prompt snapshots not available in desktop upload path
   const promptsSnapshot: PromptsSnapshot | null = null;
 
   return { executionResult, codeJudgesReport, promptsSnapshot };
-}
-
-function withLegacyUploadBaseRefFallback(executionResult: unknown): unknown {
-  const legacyUpload = legacyV1ExecutionUploadSchema.safeParse(executionResult);
-  if (!legacyUpload.success || legacyUpload.data.base_ref !== undefined) {
-    return executionResult;
-  }
-
-  return {
-    ...legacyUpload.data,
-    base_ref: legacyUpload.data.base_branch || "main",
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,17 +408,17 @@ export const executeHandler = defineHandler<ExecutionArtifacts>({
   requiresParent: true,
   includePrimaryArtifact: true,
 
-  downloadArtifacts(stateKeyPrefix: string, loop: Loop) {
-    return downloadExecutionArtifacts(stateKeyPrefix, loop);
+  downloadArtifacts(stateKeyPrefix: string) {
+    return downloadExecutionArtifacts(stateKeyPrefix);
   },
 
   downloadFromUpload: executionArtifactsFromUpload,
 
   async ingest(
     loop: Loop,
-    organizationId: string,
+    _organizationId: string,
     artifacts: ExecutionArtifacts
   ) {
-    await ingestExecutionArtifacts(loop, organizationId, artifacts);
+    await ingestExecutionArtifacts(loop, artifacts);
   },
 });

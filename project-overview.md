@@ -1,7 +1,7 @@
 # Product Context Report
 
 Generated: 2026-02-09
-Repository: closedloop-ai (Next.js monorepo on next-forge template)
+Repository: closedloop-ai (Next.js monorepo on closedloop-ai template)
 
 ---
 
@@ -12,8 +12,8 @@ Repository: closedloop-ai (Next.js monorepo on next-forge template)
 | **apps/app** | Main authenticated application - dashboard, artifact editor, team/project management | Frontend SPA | Next.js 16, React 19, TanStack Query, TipTap, Tailwind CSS |
 | **apps/api** | Backend-for-Frontend API server - all database operations, webhook handling, service integrations | Backend API | Next.js 16 (API routes), Prisma, Zod, Svix, adm-zip |
 | **apps/web** | Marketing/public website with home, pricing, and contact pages | Marketing Site | Next.js 16, Tailwind CSS, MDX, i18n |
-| **apps/mcp** | MCP server for Claude Code CLI integration | Infrastructure | Hono, MCP SDK |
-| **apps/relay** | WebSocket relay for desktop compute targets | Infrastructure | Socket.io |
+| **apps/docs** | Documentation site | Documentation | Mintlify |
+| **apps/email** | Email template preview environment | Dev Tooling | React Email |
 | **apps/storybook** | Component library development environment | Dev Tooling | Storybook |
 | **apps/studio** | Prisma Studio for database browsing | Dev Tooling | Prisma Studio |
 | **packages/database** | Prisma ORM client, schema, migrations (PostgreSQL) | Shared Library | Prisma 7, PostgreSQL 16, Neon (prod) |
@@ -22,17 +22,20 @@ Repository: closedloop-ai (Next.js monorepo on next-forge template)
 | **packages/ai** | AI integration - PRD generation agent with Anthropic models | Shared Library | AI SDK, Anthropic (@ai-sdk/anthropic), Claude Opus 4.5 / Sonnet 4.5 |
 | **packages/github** | GitHub App integration - workflow dispatch, webhook verification, repo management | Shared Library | Octokit, GitHub App Auth |
 | **packages/linear** | Linear integration - OAuth, issue sync, task extraction with LLM | Shared Library | Linear SDK, AI |
+| **packages/payments** | Stripe subscription management | Shared Library | Stripe 20 |
 | **packages/design-system** | UI component library (Shadcn/ui) | Shared Library | Radix UI, Tailwind CSS |
 | **packages/rich-text** | Rich text editor for document artifacts | Shared Library | TipTap 3, Mermaid diagrams |
 | **packages/collaboration** | Real-time collaboration on documents | Shared Library | Liveblocks, Yjs |
 | **packages/analytics** | Web and product analytics | Shared Library | PostHog, Google Analytics, Vercel Analytics |
-| **packages/observability** | Structured logging with agentless Datadog export | Shared Library | Custom (Datadog HTTP intake) |
+| **packages/observability** | Error tracking, logging | Shared Library | Custom (BetterStack) |
 | **packages/security** | Application security - security headers | Shared Library | Nosecone |
 | **packages/aws** | AWS S3 operations for artifact storage | Shared Library | AWS SDK v3, S3, pre-signed URLs |
 | **packages/feature-flags** | Feature flag management | Shared Library | Vercel Flags, PostHog |
 | **packages/notifications** | In-app notification system | Shared Library | Knock |
 | **packages/webhooks** | Inbound/outbound webhook handling | Shared Library | Svix |
+| **packages/storage** | File upload and management | Shared Library | Vercel Blob |
 | **packages/email** | Transactional email templates | Shared Library | Resend |
+| **packages/cms** | Content management for marketing site | Shared Library | BaseHub |
 | **packages/seo** | Metadata, sitemaps, JSON-LD | Shared Library | Custom |
 | **packages/internationalization** | Multi-language support | Shared Library | Custom |
 
@@ -148,6 +151,7 @@ The core workflow is: a user creates a PRD or Issue (optionally with AI assistan
 | `/ai/prd` | POST | AI-assisted PRD generation (streaming) |
 | `/webhooks/auth` | POST | Clerk auth webhooks (user/org lifecycle) |
 | `/webhooks/github` | POST | GitHub App webhooks (installation, workflow runs) |
+| `/webhooks/payments` | POST | Stripe payment webhooks |
 | `/collaboration/auth` | POST | Liveblocks authentication |
 | `/cron/keep-alive` | GET | Keep-alive cron job |
 
@@ -170,7 +174,7 @@ The core workflow is: a user creates a PRD or Issue (optionally with AI assistan
 **Purpose:** Public-facing marketing site with home page, pricing, and contact form. Supports internationalization (i18n) with locale-based routing.
 
 **Pages:** Home, Pricing, Contact
-**Deployment:** Self-hosted or managed — see README for setup instructions
+**Live URLs (production):** app.closedloop.ai, marketing.closedloop.ai, api.closedloop.ai
 
 ---
 
@@ -244,6 +248,7 @@ API Server (apps/api)
     |
     |-- GitHub API (Octokit) --> GitHub App Webhooks --> API Server
     |-- Linear API (SDK) <--> Linear OAuth
+    |-- Stripe API (SDK) <--> Stripe Webhooks --> API Server
     |-- Clerk API <--> Clerk Webhooks --> API Server
     |-- Liveblocks API --> Real-time collaboration
     |-- AWS S3 --> Artifact file storage
@@ -258,7 +263,7 @@ API Server (apps/api)
 The most distinctive integration pattern is the GitHub Actions-based execution pipeline:
 
 1. **Trigger:** User clicks "Generate" or "Execute" in `apps/app`
-2. **API dispatches:** `apps/api` calls `triggerWorkflowDispatch()` from `packages/github`, which dispatches to a workflow on the configured dispatch repository
+2. **API dispatches:** `apps/api` calls `triggerWorkflowDispatch()` from `packages/github`, which dispatches to a `symphony-dispatch.yml` workflow on the `closedloop-ai/claude_code` repository
 3. **Execution:** GitHub Actions runs Claude Code agents on the target repository (plan generation, code execution)
 4. **Callback:** GitHub webhook (`workflow_run.completed`) hits `/webhooks/github` on `apps/api`
 5. **Processing:** API downloads workflow artifacts (zip files from GitHub Actions), parses plan content, uploads to S3, updates database
@@ -284,30 +289,31 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 - **Authentication:** Clerk (SSO, social login, email/password, MFA supported via Clerk)
 - **Session management:** Clerk JWT tokens, validated server-side in API via `auth()` from `@repo/auth/server`
 - **Organization isolation:** All database queries are scoped by `organizationId`. The `withAnyAuth()` wrapper extracts orgId from either API key or JWT and enforces this on every API route.
-- **Role-based access:** Clerk organization roles (`org:admin`, `org:member`) gate admin-only features in both frontend (`<Protect role="org:admin">`) and backend (admin-gated API routes for agents, custom fields, compute mode, etc.)
-- **Team roles:** OWNER, ADMIN, MEMBER at the team level (stored in database; enforcement is being expanded)
+- **Role-based access:** Clerk organization roles (`org:admin`, `org:member`) gate admin-only features in the frontend (Settings > Admin tab uses `<Protect role="org:admin">`). Backend does not yet enforce granular role-based permissions beyond org membership.
+- **Team roles:** OWNER, ADMIN, MEMBER at the team level (stored in database, used for display; enforcement is a TODO)
 - **Approver roles:** PM, Designer, Tech Lead, Engineer, Stakeholder (used in approval workflows)
 
 ### Application Security
 
 - **Nosecone** - Security headers (via `@nosecone/next`)
-- **Webhook verification:** GitHub webhook signatures verified with HMAC SHA-256 (timing-safe comparison). Clerk webhooks verified via Svix.
+- **Webhook verification:** GitHub webhook signatures verified with HMAC SHA-256 (timing-safe comparison). Clerk webhooks verified via Svix. Stripe webhooks verified via Stripe SDK.
 - **Environment variable validation:** All env vars validated with Zod schemas via `@t3-oss/env-nextjs` at startup
 - **Server-only code:** Critical packages use `import "server-only"` to prevent accidental client-side inclusion
 
 ### Data Handling
 
 - **Multi-tenant isolation:** Organization-scoped queries throughout
-- **API key storage:** Customer-provided Claude API keys are stored encrypted at rest on `Organization.claudeApiKeyEncrypted` and `User.claudeApiKeyEncrypted` (KMS-encrypted via `apiKeyService`).
+- **API key storage:** Organization `anthropicApiKey` stored in database (used for customer-provided keys)
 - **OAuth tokens:** Linear and Slack access tokens stored in database; refresh token rotation implemented for Linear
 - **GitHub App credentials:** Private key and secrets stored as environment variables, not in database
 - **S3 artifact storage:** Plan artifacts and generated files stored in AWS S3 with presigned URLs for access
 
-### Known Limitations
+### Security Gaps & Technical Debt
 
-- Role sync from auth provider to local DB is in progress
-- Granular backend authorization (beyond org-scoping) is planned
-- Team role enforcement (OWNER/ADMIN/MEMBER) is stored but not yet enforced in API routes
+- **TODO:** "Eventually we'll need to update the user's role and permissions here" (auth-hooks.ts line 243) - Role sync from Clerk to local DB is incomplete
+- **No granular backend authorization:** Beyond org-scoping, there is no role-based permission enforcement on API routes. Admin vs. member access is enforced only in the frontend UI.
+- **Team role enforcement:** Team roles (OWNER/ADMIN/MEMBER) are stored but not enforced in API routes
+- **API key in database:** Organization `anthropicApiKey` is stored as plaintext in the settings JSON field
 - **No explicit PII/GDPR handling:** No data retention policies, deletion workflows, or geographic restrictions documented in code
 - **Cascading deletion:** TODO on team deletion service (teams/service.ts line 150)
 
@@ -330,15 +336,17 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 | **GitHub App** | GitHub | Workflow dispatch, PR creation, repo access, webhook events | REST API + App Auth + Webhooks | Critical |
 | **Anthropic (Claude)** | Anthropic | AI-powered PRD generation, LLM for task extraction | AI SDK | Critical |
 | **AWS S3** | AWS | Artifact storage (plan files, execution logs) | AWS SDK v3 | Critical |
+| **Stripe** | Stripe | Subscription/payment management | SDK + Webhooks | Important |
 | **Linear** | Linear | Project management integration - issue sync, task export | SDK + OAuth | Important |
 | **Liveblocks** | Liveblocks | Real-time document collaboration, live cursors | SDK (Client + Server) | Important |
 | **PostHog** | PostHog | Product analytics, feature flag evaluation | SDK (Client + Server) | Important |
 | **Knock** | Knock | In-app notifications | SDK (Client + Server) | Important |
 | **Resend** | Resend | Transactional email delivery | SDK | Nice-to-have |
 | **Vercel** | Vercel | Hosting, deployment, edge functions | Platform | Critical |
-| **Datadog** | Datadog | Structured log ingestion and observability | HTTP intake API (agentless) | Important |
+| **BetterStack** | BetterStack | Logging and uptime monitoring | API | Nice-to-have |
 | **Google Analytics** | Google | Web analytics | Script tag | Nice-to-have |
 | **Vercel Analytics** | Vercel | Web vitals and analytics | SDK | Nice-to-have |
+| **BaseHub** | BaseHub | CMS for marketing site blog/docs | SDK | Nice-to-have |
 | **Slack** | Slack | Deploy notifications, integration status | Bot API | Nice-to-have |
 | **Svix** | Svix | Outbound webhook delivery infrastructure | SDK | Nice-to-have |
 
@@ -351,6 +359,9 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 **AI/ML Services:**
 - **Anthropic (Claude Opus 4.5 / Sonnet 4.5)** - Powers the PRD generation agent with web search and web fetch tool use. Also used indirectly via Claude Code in GitHub Actions for plan generation and code execution. Failure impact: PRD AI assistant unavailable; plan generation/execution workflows would fail.
 
+**Payment & Financial:**
+- **Stripe** - Subscription management with webhook handling for payment events. Uses Stripe Agent Toolkit. Failure impact: Users cannot subscribe or manage billing.
+
 **Authentication:**
 - **Clerk** - Central identity provider. Handles user registration, login, MFA, organization management, SSO. Webhooks sync user/org lifecycle events to local database. Failure impact: Complete authentication failure; no user can access the platform.
 
@@ -361,7 +372,7 @@ The most distinctive integration pattern is the GitHub Actions-based execution p
 
 **Analytics & Monitoring:**
 - **PostHog** - Product analytics and feature flag evaluation. Used both client-side and server-side. Feature flags currently have only one flag defined (`showBetaFeature`).
-- **Datadog** - Server-side structured logging via agentless HTTP intake (`packages/observability/log.ts`). Batched and shipped when `DD_API_KEY` + `DD_SITE` are set.
+- **BetterStack** - Server-side logging and uptime monitoring.
 - **Google Analytics** - Web analytics via `@next/third-parties`.
 
 ### Dependency Risks
@@ -394,7 +405,7 @@ These constraints should inform product decisions:
 | **Source code never leaves customer infra** | Core differentiator but limits what the control plane can analyze or display. Codebase summaries must be pre-indexed. |
 | **Multi-org user model (1 User record per org)** | Profile updates must sync across all orgs. Role assignments are per-org. |
 | **Artifact versioning via documentSlug** | All versions share a slug; only one is `isLatest`. Deleting an artifact deletes all versions. Version-specific collaboration rooms (Liveblocks) are created per version. |
-| **Expanding backend permissions** | Admin-gated routes exist for agents, custom fields, and compute mode. Remaining routes use org-scoping; granular role enforcement is being expanded. |
+| **No granular backend permissions** | Any org member can currently perform any operation via API. Frontend-only role gating is not secure. Admin features need backend enforcement before expanding. |
 | **Workstream state machine (17 states)** | Complex state transitions need careful handling. Adding new states requires schema migration. |
 | **Template system is per-org** | Templates are stored as artifacts with unique constraint on (organizationId, templateForType). Only one template per type per org. |
 | **No offline support** | Application requires network connectivity for all operations. |
@@ -430,7 +441,7 @@ Key files analyzed during this report:
 | `apps/app/.env.example` | Frontend environment variables |
 | `apps/app/app/(authenticated)/settings/page.tsx` | Settings page with integration management |
 | `apps/api/app/integrations/linear/service.ts` | Linear integration service |
-| `.github/workflows/pr-test.yml` | Pull request validation workflow |
+| `.github/workflows/deploy-production.yml` | Production deployment workflow with health checks |
 | `apps/api/app/webhooks/github/route.ts` | GitHub webhook handler (installation events, workflow completions) |
 | `apps/api/app/webhooks/auth/auth-hooks.ts` | Clerk webhook handlers (user/org lifecycle) |
 | `docs/local_deployment.md` | Local development setup guide |

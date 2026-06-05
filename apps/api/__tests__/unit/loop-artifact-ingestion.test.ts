@@ -7,6 +7,7 @@
  * - ingestExecutionArtifacts: fanOutJudgeScores is called when codeJudgesReport is present
  * - ingestExecutionArtifacts: reportData dual-write is preserved in the upsert
  */
+import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import {
   getMockWithDb,
@@ -14,41 +15,49 @@ import {
   mockWithDbTx,
 } from "../utils/db-helpers";
 
-vi.mock("@repo/database", async () => {
-  const { createDatabaseMockModule } = await import("../fixtures/mock-modules");
-  return createDatabaseMockModule();
-});
+vi.mock("@repo/database", () => ({
+  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  EvaluationReportType: {
+    PLAN: "PLAN",
+    CODE: "CODE",
+  },
+  EntityType: {
+    ARTIFACT: "ARTIFACT",
+    FEATURE: "FEATURE",
+    WORKSTREAM: "WORKSTREAM",
+  },
+}));
 
-vi.mock("@repo/observability/log", async () => {
-  const { createLogMockModule } = await import("../fixtures/mock-modules");
-  return createLogMockModule();
-});
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
-vi.mock("@/app/documents/document-version-service", () => ({
-  documentVersionService: {
+vi.mock("@/app/artifacts/artifact-version-service", () => ({
+  artifactVersionService: {
     createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 2 }),
   },
 }));
 
-vi.mock("@/app/documents/room-utils", () => ({
-  resetDocumentRoom: vi.fn().mockResolvedValue(undefined),
+vi.mock("@/app/artifacts/room-utils", () => ({
+  resetArtifactRoom: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/judge-score-fanout", () => ({
   fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/prompts-service", async () => {
-  const { createPromptsServiceMockModule } = await import(
-    "../fixtures/mock-modules"
-  );
-  return createPromptsServiceMockModule();
-});
+vi.mock("@/lib/prompts-service", () => ({
+  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
 
-vi.mock("@/lib/loops/loop-document-ingestion", async (importOriginal) => {
+vi.mock("@/lib/loops/loop-artifact-ingestion", async (importOriginal) => {
   const actual =
     await importOriginal<
-      typeof import("@/lib/loops/loop-document-ingestion")
+      typeof import("@/lib/loops/loop-artifact-ingestion")
     >();
   return {
     ...actual,
@@ -56,12 +65,9 @@ vi.mock("@/lib/loops/loop-document-ingestion", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/pr-linkage", async () => {
-  const { createPrLinkageMockModule } = await import(
-    "../fixtures/mock-modules"
-  );
-  return createPrLinkageMockModule();
-});
+vi.mock("@/lib/pr-linkage", () => ({
+  ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import type { ExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
@@ -69,10 +75,6 @@ import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-hand
 import type { PlanArtifacts } from "@/lib/loops/loop-commands/plan-handler";
 import { ingestPlanArtifacts } from "@/lib/loops/loop-commands/plan-handler";
 // Imports after mocks
-import {
-  makeCodeJudgesReport,
-  makeJudgesReport,
-} from "../fixtures/ingestion-helpers";
 import { buildLoop } from "../fixtures/loop";
 
 const _mockWithDb = getMockWithDb();
@@ -82,14 +84,45 @@ const mockFanOutJudgeScores = fanOutJudgeScores as ReturnType<typeof vi.fn>;
 // Test fixtures
 // ---------------------------------------------------------------------------
 
-const JUDGES_REPORT = makeJudgesReport({
+const JUDGES_REPORT: JudgesReport = {
   report_id: "report-plan-1",
   timestamp: "2026-02-25T00:00:00Z",
-});
+  stats: [
+    {
+      type: "case_score",
+      case_id: "clarity-judge",
+      final_status: EvalStatus.Passed,
+      metrics: [
+        {
+          metric_name: "clarity",
+          threshold: 0.8,
+          score: 0.92,
+          justification: "Clear and concise.",
+        },
+      ],
+    },
+  ],
+};
 
-const CODE_JUDGES_REPORT = makeCodeJudgesReport({
+const CODE_JUDGES_REPORT: JudgesReport = {
+  report_id: "report-code-1",
   timestamp: "2026-02-25T01:00:00Z",
-});
+  stats: [
+    {
+      type: "case_score",
+      case_id: "security-judge",
+      final_status: EvalStatus.Passed,
+      metrics: [
+        {
+          metric_name: "security",
+          threshold: 0.9,
+          score: 0.95,
+          justification: "No vulnerabilities found.",
+        },
+      ],
+    },
+  ],
+};
 
 function buildPlanArtifacts(
   overrides: Partial<PlanArtifacts> = {}
@@ -107,20 +140,17 @@ function buildExecutionArtifacts(
   overrides: Partial<ExecutionArtifacts> = {}
 ): ExecutionArtifacts {
   return {
-    executionResult: [
-      {
-        status: "success",
-        fullName: "org/repo",
-        prUrl: "https://github.com/org/repo/pull/42",
-        prNumber: 42,
-        prTitle: "ClosedLoop: feature",
-        branchName: "symphony/feature",
-        baseBranch: "main",
-        hasChanges: true,
-        githubId: 999,
-        commitSha: "abc123",
-      },
-    ],
+    executionResult: {
+      has_changes: true,
+      pr_url: "https://github.com/org/repo/pull/42",
+      pr_number: 42,
+      pr_title: "Symphony: feature",
+      branch_name: "symphony/feature",
+      base_branch: "main",
+      base_ref: "main",
+      github_id: 999,
+      commit_sha: "abc123",
+    },
     codeJudgesReport: null,
     promptsSnapshot: null,
     ...overrides,
@@ -146,7 +176,7 @@ describe("ingestPlanArtifacts", () => {
       artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: evaluationId,
-          artifactId: loop.documentId,
+          artifactId: loop.artifactId,
           reportId: JUDGES_REPORT.report_id,
         }),
       },
@@ -160,14 +190,10 @@ describe("ingestPlanArtifacts", () => {
     // withDb (non-transactional) used for artifact.update, entity validation, and workstreamEvent checks
     const mockDb = {
       artifact: {
-        update: vi.fn().mockResolvedValue({
-          id: loop.documentId,
-          organizationId: "org-1",
-          slug: "my-artifact",
-          subtype: "PRD",
-          document: { latestVersion: 2 },
-        }),
-        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
+        update: vi
+          .fn()
+          .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
       workstreamEvent: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -194,7 +220,7 @@ describe("ingestPlanArtifacts", () => {
       artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-plan-2",
-          artifactId: loop.documentId,
+          artifactId: loop.artifactId,
           reportId: JUDGES_REPORT.report_id,
         }),
       },
@@ -203,14 +229,10 @@ describe("ingestPlanArtifacts", () => {
 
     const mockDb = {
       artifact: {
-        update: vi.fn().mockResolvedValue({
-          id: loop.documentId,
-          organizationId: "org-1",
-          slug: "my-artifact",
-          subtype: "PRD",
-          document: { latestVersion: 2 },
-        }),
-        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
+        update: vi
+          .fn()
+          .mockResolvedValue({ slug: "my-artifact", latestVersion: 2 }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
       workstreamEvent: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -250,10 +272,13 @@ describe("ingestExecutionArtifacts", () => {
     });
     const evaluationId = "eval-code-1";
 
-    // withDb (non-transactional) used for entity validation
+    // withDb (non-transactional) used for gitHubInstallationRepository.findFirst and entity validation
     const mockDb = {
+      gitHubInstallationRepository: {
+        findFirst: vi.fn().mockResolvedValue({ id: "install-repo-1" }),
+      },
       artifact: {
-        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
     };
     mockWithDbCall(mockDb);
@@ -270,9 +295,22 @@ describe("ingestExecutionArtifacts", () => {
       artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: evaluationId,
-          artifactId: loop.documentId,
+          artifactId: loop.artifactId,
           reportId: CODE_JUDGES_REPORT.report_id,
         }),
+      },
+      gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: "pr-1" }),
+        upsert: vi
+          .fn()
+          .mockResolvedValue({ id: "pr-1", artifactId: loop.artifactId }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-1" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-1" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-1" }),
@@ -280,7 +318,7 @@ describe("ingestExecutionArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
+    await ingestExecutionArtifacts(loop, artifacts);
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
       evaluationId,
@@ -297,8 +335,11 @@ describe("ingestExecutionArtifacts", () => {
     });
 
     const mockDb = {
+      gitHubInstallationRepository: {
+        findFirst: vi.fn().mockResolvedValue({ id: "install-repo-2" }),
+      },
       artifact: {
-        findFirst: vi.fn().mockResolvedValue({ id: loop.documentId }),
+        findFirst: vi.fn().mockResolvedValue({ id: loop.artifactId }),
       },
     };
     mockWithDbCall(mockDb);
@@ -314,9 +355,22 @@ describe("ingestExecutionArtifacts", () => {
       artifactEvaluation: {
         upsert: vi.fn().mockResolvedValue({
           id: "eval-code-2",
-          artifactId: loop.documentId,
+          artifactId: loop.artifactId,
           reportId: CODE_JUDGES_REPORT.report_id,
         }),
+      },
+      gitHubPullRequest: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: "pr-2" }),
+        upsert: vi
+          .fn()
+          .mockResolvedValue({ id: "pr-2", artifactId: loop.artifactId }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-2" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-2" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-2" }),
@@ -324,7 +378,7 @@ describe("ingestExecutionArtifacts", () => {
     };
     mockWithDbTx(mockTx);
 
-    await ingestExecutionArtifacts(loop, loop.organizationId, artifacts);
+    await ingestExecutionArtifacts(loop, artifacts);
 
     expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({

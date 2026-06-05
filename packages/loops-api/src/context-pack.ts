@@ -25,7 +25,6 @@ export type ContextPackArtifact = {
   type: string;
   title: string;
   content: string;
-  raw?: Record<string, unknown>;
 };
 
 export const ContextPackArtifactSchema = z.object({
@@ -33,41 +32,6 @@ export const ContextPackArtifactSchema = z.object({
   type: z.string(),
   title: z.string(),
   content: z.string(),
-  raw: z.record(z.string(), z.unknown()).optional(),
-});
-
-// Additional repository reference for multi-repo loop execution
-export type AdditionalRepoRef = {
-  fullName: string;
-  branch: string;
-};
-
-// Format constraints mirror the write-path `repoSchema` in
-// apps/api/app/loops/validators.ts so data round-tripped through the DB is
-// held to the same shape it was validated with on write.
-export const AdditionalRepoRefSchema = z.object({
-  fullName: z
-    .string()
-    .min(1)
-    .max(256)
-    .regex(
-      /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/,
-      "Must be in 'owner/repo' format"
-    ),
-  branch: z
-    .string()
-    .min(1)
-    .max(256)
-    .regex(/^[a-zA-Z0-9._/-]+$/, "Branch name contains invalid characters"),
-});
-
-// Additional repository reference with optional GitHub token
-export type AdditionalRepoRefWithToken = AdditionalRepoRef & {
-  githubToken?: string;
-};
-
-export const AdditionalRepoRefWithTokenSchema = AdditionalRepoRefSchema.extend({
-  githubToken: z.string().optional(),
 });
 
 /**
@@ -90,7 +54,6 @@ export type ContextPack = {
   secrets?: { anthropicApiKey?: string; githubToken?: string };
   userContext?: string;
   attachments?: ContextPackAttachment[];
-  additionalRepos?: AdditionalRepoRefWithToken[];
 };
 
 export const ContextPackSchema = z.object({
@@ -126,5 +89,4 @@ export const ContextPackSchema = z.object({
     .optional(),
   userContext: z.string().optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
-  additionalRepos: z.array(AdditionalRepoRefWithTokenSchema).optional(),
 });

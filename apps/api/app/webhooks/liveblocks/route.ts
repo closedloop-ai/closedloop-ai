@@ -5,7 +5,6 @@ import {
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { scheduleLogFlush } from "@/lib/route-utils";
 import {
   handleCommentCreated,
   handleCommentDeleted,
@@ -24,7 +23,6 @@ export async function POST(request: Request): Promise<Response> {
   const webhookHandler = createWebhookHandler();
   if (!webhookHandler) {
     log.warn("[webhook/liveblocks] Webhook secret not configured, rejecting");
-    scheduleLogFlush();
     return NextResponse.json(
       { message: "Liveblocks webhooks not configured", ok: false },
       { status: 200 }
@@ -42,7 +40,6 @@ export async function POST(request: Request): Promise<Response> {
       });
     } catch {
       log.warn("[webhook/liveblocks] Invalid webhook signature");
-      scheduleLogFlush();
       return NextResponse.json(
         { message: "Invalid signature", ok: false },
         { status: 401 }
@@ -86,14 +83,12 @@ export async function POST(request: Request): Promise<Response> {
         break;
     }
 
-    scheduleLogFlush();
     return NextResponse.json({ message: "Event processed", ok: true });
   } catch (error) {
     const message = parseError(error);
     log.error("[webhook/liveblocks] Unhandled error processing webhook", {
       error: message,
     });
-    scheduleLogFlush();
     return NextResponse.json(
       { message: "Something went wrong", ok: false },
       { status: 500 }

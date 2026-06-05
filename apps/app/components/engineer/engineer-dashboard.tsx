@@ -2,7 +2,7 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { Home, LayoutGrid, List, MessageCircle, RefreshCw } from "lucide-react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -23,6 +23,7 @@ import type { EngineerTicket } from "@/types/engineer";
 import { ComputeTargetSelector } from "./compute-target-selector";
 
 export function EngineerDashboard() {
+  const router = useRouter();
   const {
     tickets,
     isLoading,
@@ -78,7 +79,7 @@ export function EngineerDashboard() {
   } | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Listen for the custom event from ClosedLoopChat
+  // Listen for the custom event from SymphonyChat
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as {
@@ -109,7 +110,7 @@ export function EngineerDashboard() {
     const poll = async () => {
       try {
         const res = await fetch(
-          `/api/gateway/symphony/process-learnings?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+          `/api/engineer/symphony/process-learnings?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {
@@ -149,7 +150,7 @@ export function EngineerDashboard() {
 
   const handleProcessPending = useCallback(async () => {
     try {
-      const res = await fetch("/api/gateway/symphony/process-all-learnings", {
+      const res = await fetch("/api/engineer/symphony/process-all-learnings", {
         method: "POST",
       });
       if (!res.ok) {
@@ -204,11 +205,14 @@ export function EngineerDashboard() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <ComputeTargetSelector />
-            <Button asChild className="gap-2" size="sm" variant="outline">
-              <Link href="/">
-                <Home className="size-4" />
-                Home
-              </Link>
+            <Button
+              className="gap-2"
+              onClick={() => router.push("/")}
+              size="sm"
+              variant="outline"
+            >
+              <Home className="size-4" />
+              Home
             </Button>
             <Button
               className="size-10 cursor-pointer rounded-full"

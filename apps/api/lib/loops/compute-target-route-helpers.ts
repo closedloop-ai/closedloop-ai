@@ -1,5 +1,4 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { conflictBody } from "@repo/api/src/types/common";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -85,7 +84,7 @@ function mapComputeTargetResult(
         ),
       };
     case "multiple_targets": {
-      const body: ComputeTargetConflictBody = {
+      const conflictBody: ComputeTargetConflictBody = {
         error: "multiple_targets",
         message:
           "Multiple compute targets are online. Specify a compute target ID.",
@@ -96,9 +95,10 @@ function mapComputeTargetResult(
         })),
       };
       return {
-        errorResponse: NextResponse.json(conflictBody(body.message, body), {
-          status: 409,
-        }) as NextResponse<ApiResult<never>>,
+        errorResponse: NextResponse.json(
+          { success: false, error: conflictBody.message, data: conflictBody },
+          { status: 409 }
+        ),
       };
     }
     case "cloud_resolved":

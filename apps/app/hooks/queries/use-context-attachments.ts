@@ -9,7 +9,7 @@ import {
   useMutation,
   useQueryClient,
 } from "@tanstack/react-query";
-import { artifactLinkKeys } from "@/hooks/queries/use-artifact-links";
+import { entityLinkKeys } from "@/hooks/queries/use-entity-links";
 import { useApiClient } from "@/hooks/use-api-client";
 
 export type CreateContextAttachmentInput = {
@@ -39,11 +39,11 @@ export function useCreateContextAttachment(
     ...options,
     mutationFn: (input: CreateContextAttachmentInput) =>
       apiClient.post<CreateContextAttachmentResponse>(
-        `/documents/${featureId}/context-attachments`,
+        `/features/${featureId}/context-attachments`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {
-      queryClient.invalidateQueries({ queryKey: artifactLinkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
       options?.onSuccess?.(data, variables, onMutateResult, mutationContext);
     },
   });
@@ -64,11 +64,11 @@ export function useImportGDriveContext(
     ...options,
     mutationFn: (input: ImportGDriveContextInput) =>
       apiClient.post<ImportGDriveContextResponse>(
-        `/documents/${featureId}/context-attachments/gdrive`,
+        `/features/${featureId}/context-attachments/gdrive`,
         input
       ),
     onSuccess: (data, variables, onMutateResult, mutationContext) => {
-      queryClient.invalidateQueries({ queryKey: artifactLinkKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: entityLinkKeys.lists() });
       options?.onSuccess?.(data, variables, onMutateResult, mutationContext);
     },
   });

@@ -9,7 +9,7 @@ describe("Health Check", () => {
     expect(text).toBe("OK");
   });
 
-  // GAP-001: symphony-alpha returns plain text, not JSON.
+  // GAP-001: closedloop-ai returns plain text, not JSON.
   // This block documents the contract the smoke suite validates.
   describe("compatibility contract", () => {
     it("Content-Type is not application/json", () => {

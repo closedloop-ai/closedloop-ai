@@ -1,7 +1,7 @@
-import { DocumentType } from "@repo/api/src/types/document";
-import { ArtifactType, withDb } from "@repo/database";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { documentService } from "@/app/documents/document-service";
+import { artifactsService } from "../../artifacts/service";
 import { WHITESPACE_REGEX } from "./webhook-utils";
 
 export type SlackSlashCommandPayload = {
@@ -135,7 +135,7 @@ export async function handleCreateIdea(
   // Step 4: Validate projectId belongs to the org
   {
     const project = await withDb((db) =>
-      db.project.findUnique({
+      db.project.findFirst({
         where: { id: projectId, organizationId },
         select: { id: true },
       })
@@ -151,8 +151,8 @@ export async function handleCreateIdea(
 
   // Step 5: Create the artifact
   try {
-    const artifact = await documentService.create(organizationId, userId, {
-      type: DocumentType.Prd,
+    const artifact = await artifactsService.create(organizationId, userId, {
+      type: ArtifactType.Prd,
       title,
       content: "",
       projectId,
@@ -215,7 +215,7 @@ export async function handleGetStatus(
   }
 
   // Try to find artifact by ID first
-  const artifact = await documentService.findById(identifier, organizationId);
+  const artifact = await artifactsService.findById(identifier, organizationId);
 
   if (artifact) {
     const statusText = [
@@ -238,7 +238,7 @@ export async function handleGetStatus(
 
   // Try to find a project by ID
   const project = await withDb((db) =>
-    db.project.findUnique({
+    db.project.findFirst({
       where: { id: identifier, organizationId },
       select: {
         id: true,
@@ -247,7 +247,7 @@ export async function handleGetStatus(
         _count: {
           select: {
             workstreams: true,
-            artifacts: { where: { type: ArtifactType.DOCUMENT } },
+            artifacts: true,
           },
         },
       },
@@ -259,7 +259,7 @@ export async function handleGetStatus(
       `*${project.name}*`,
       `Priority: ${project.priority}`,
       `Workstreams: ${project._count.workstreams}`,
-      `Documents: ${project._count.artifacts}`,
+      `Artifacts: ${project._count.artifacts}`,
     ].join("\n");
 
     return {

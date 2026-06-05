@@ -38,13 +38,14 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
+vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/documents/attachments-service", () => ({
+vi.mock("@/app/artifacts/attachments-service", () => ({
   attachmentsService: {
-    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
 }));
@@ -65,9 +66,6 @@ vi.mock("@/app/loops/service", () => ({
     updateTokens: vi.fn().mockResolvedValue(undefined),
     persistLaunchInfo: vi.fn(),
   },
-}));
-
-vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: mockIsInvalidStatusTransitionError,
 }));
 
@@ -75,7 +73,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
+vi.mock("@/lib/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 

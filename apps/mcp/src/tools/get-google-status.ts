@@ -10,7 +10,7 @@ export function registerGetGoogleStatus(
     "get-google-status",
     {
       description:
-        "Check the Google integration connection status for the organization.",
+        "Check the Google integration connection status for the organization",
     },
     () =>
       withErrorHandling(async () => {

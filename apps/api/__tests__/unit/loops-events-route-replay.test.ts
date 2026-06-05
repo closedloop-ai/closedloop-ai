@@ -31,17 +31,12 @@ vi.mock("@/app/loops/service", async () => {
   };
 });
 
-import { LoopEventType, LoopStatus } from "@repo/api/src/types/loop";
 import { POST } from "@/app/loops/[id]/events/route";
-import { ReplayDetectedError } from "@/app/loops/loop-errors";
-import { loopsService } from "@/app/loops/service";
+import { loopsService, ReplayDetectedError } from "@/app/loops/service";
 import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 
-function makeAuthOk(
-  loopId = "loop-123",
-  status: LoopStatus = LoopStatus.Running
-) {
+function makeAuthOk(loopId = "loop-123") {
   vi.mocked(authenticateLoopRunner).mockResolvedValue({
     ok: true,
     claims: {
@@ -53,7 +48,7 @@ function makeAuthOk(
   vi.mocked(loopsService.findById).mockResolvedValue({
     id: loopId,
     organizationId: "org-123",
-    status,
+    status: "RUNNING",
   } as any);
   vi.mocked(handleLoopEvent).mockResolvedValue([]);
 }
@@ -250,74 +245,5 @@ describe("POST /api/loops/[id]/events — diagnostic fields", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-  });
-});
-
-describe("POST /api/loops/[id]/events — post-terminal support bundle metadata", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  const supportEventBody = {
-    type: LoopEventType.SupportBundleUploaded,
-    keys: ["org-123/loops/loop-123/run-1/support/claude-output.jsonl"],
-    timestamp: "2026-01-01T00:00:00.000Z",
-  };
-
-  it.each([
-    LoopStatus.Failed,
-    LoopStatus.TimedOut,
-  ])("persists support bundle events after %s", async (status) => {
-    makeAuthOk("loop-123", status);
-
-    const response = await POST(makeErrorRequest(supportEventBody), {
-      params: Promise.resolve({ id: "loop-123" }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(handleLoopEvent).toHaveBeenCalledWith(
-      "loop-123",
-      "org-123",
-      expect.objectContaining({
-        type: LoopEventType.SupportBundleUploaded,
-        keys: supportEventBody.keys,
-      }),
-      expect.objectContaining({
-        tokenJti: "token-123",
-      })
-    );
-  });
-
-  it.each([
-    LoopStatus.Completed,
-    LoopStatus.Cancelled,
-  ])("ignores support bundle events after %s", async (status) => {
-    makeAuthOk("loop-123", status);
-
-    const response = await POST(makeErrorRequest(supportEventBody), {
-      params: Promise.resolve({ id: "loop-123" }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(handleLoopEvent).not.toHaveBeenCalled();
-    expect(await response.json()).toMatchObject({
-      success: true,
-      data: { received: true, ignored: true },
-    });
-  });
-
-  it("continues to ignore ordinary non-terminal events after terminal status", async () => {
-    makeAuthOk("loop-123", LoopStatus.Failed);
-
-    const response = await POST(
-      makeErrorRequest({
-        type: LoopEventType.Output,
-        chunk: "late output",
-      }),
-      { params: Promise.resolve({ id: "loop-123" }) }
-    );
-
-    expect(response.status).toBe(200);
-    expect(handleLoopEvent).not.toHaveBeenCalled();
   });
 });

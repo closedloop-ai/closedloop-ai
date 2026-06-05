@@ -1,15 +1,14 @@
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { DocumentStatus } from "@repo/api/src/types/document";
-import {
-  type CreateProjectInput,
-  ProjectStatus,
-  type ProjectWithDetails,
-  type UpdateProjectInput,
+import type {
+  CreateProjectInput,
+  ProjectWithDetails,
+  UpdateProjectInput,
 } from "@repo/api/src/types/project";
-import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
-import { ArtifactType, type Prisma, withDb } from "@repo/database";
+import type { Prisma } from "@repo/database";
+import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
-import { generateSlug } from "@/lib/slug-generator";
+import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
 
 /**
  * Projects service - handles database operations for project management
@@ -19,17 +18,11 @@ export const projectsService = {
    * Find all projects for an organization
    */
   async findByOrganization(
-    organizationId: string,
-    options?: ProjectListOptions
+    organizationId: string
   ): Promise<ProjectWithDetails[]> {
-    const statusFilter = buildProjectStatusFilter(options);
     const projects = await withDb((db) =>
       db.project.findMany({
-        where: {
-          organizationId,
-          isTemplatesSentinel: false,
-          ...(statusFilter ? { status: statusFilter } : {}),
-        },
+        where: { organizationId },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
       })
@@ -43,18 +36,15 @@ export const projectsService = {
   async findByTeam(
     teamId: string,
     organizationId: string,
-    options?: ProjectListOptions
+    options?: { limit?: number }
   ): Promise<ProjectWithDetails[]> {
-    const statusFilter = buildProjectStatusFilter(options);
     const projects = await withDb((db) =>
       db.project.findMany({
         where: {
-          organizationId,
-          isTemplatesSentinel: false,
           teams: {
             some: { teamId },
           },
-          ...(statusFilter ? { status: statusFilter } : {}),
+          organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
@@ -88,8 +78,8 @@ export const projectsService = {
     organizationId: string
   ): Promise<ProjectWithDetails | null> {
     const project = await withDb((db) =>
-      db.project.findUnique({
-        where: { organizationId_slug: { organizationId, slug } },
+      db.project.findFirst({
+        where: { organizationId, slug },
         include: PROJECT_DETAIL_INCLUDE,
       })
     );
@@ -269,10 +259,7 @@ export const projectsService = {
       db.favoriteProject.findMany({
         where: {
           userId,
-          project: {
-            organizationId,
-            status: { not: ProjectStatus.Archived },
-          },
+          project: { organizationId },
         },
         orderBy: { createdAt: "desc" },
         include: {
@@ -288,24 +275,19 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: string }>): number {
+  calculateStatus(artifacts: Array<{ status: ArtifactStatus }>): number {
     if (artifacts.length === 0) {
       return 0;
     }
 
     const completedCount = artifacts.filter(
       (a) =>
-        a.status === DocumentStatus.Done || a.status === DocumentStatus.Obsolete
+        a.status === ArtifactStatus.Executed ||
+        a.status === ArtifactStatus.Obsolete
     ).length;
 
     return Math.round((completedCount / artifacts.length) * 100);
   },
-};
-
-type ProjectListOptions = {
-  limit?: number;
-  status?: ProjectStatus[];
-  excludeStatus?: ProjectStatus[];
 };
 
 /**
@@ -324,7 +306,6 @@ const PROJECT_DETAIL_INCLUDE = {
     },
   },
   artifacts: {
-    where: { type: ArtifactType.DOCUMENT },
     select: { status: true },
   },
 } as const;
@@ -352,28 +333,5 @@ function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
       id: pt.team.id,
       name: pt.team.name,
     })),
-  };
-}
-
-function buildProjectStatusFilter(
-  options?: ProjectListOptions
-): Prisma.EnumProjectStatusFilter | undefined {
-  const hasStatus = (options?.status?.length ?? 0) > 0;
-  const hasExcludeStatus = (options?.excludeStatus?.length ?? 0) > 0;
-  if (!(hasStatus || hasExcludeStatus)) {
-    return undefined;
-  }
-
-  return {
-    ...(hasStatus
-      ? {
-          in: options?.status,
-        }
-      : {}),
-    ...(hasExcludeStatus
-      ? {
-          notIn: options?.excludeStatus,
-        }
-      : {}),
   };
 }

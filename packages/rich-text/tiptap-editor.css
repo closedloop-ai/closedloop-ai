@@ -1,35 +1,6 @@
 @import "@repo/design-system/styles/globals.css";
 @source "./**/*.{ts,tsx}";
 
-/* Spacing and heading overrides */
-.ProseMirror {
-  line-height: 1.5;
-}
-
-/* Reduce spacing between paragraphs, list items, and block elements */
-.ProseMirror p,
-.ProseMirror ul,
-.ProseMirror ol,
-.ProseMirror blockquote {
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
-}
-
-.ProseMirror.prose h1 {
-  font-size: 1.6rem;
-  font-weight: 600;
-}
-
-.ProseMirror.prose h2 {
-  font-size: 1.3rem;
-  font-weight: 600;
-}
-
-.ProseMirror.prose h3 {
-  font-size: 1.2rem;
-  font-weight: 600;
-}
-
 /* Table styles for Tiptap editor */
 .ProseMirror table {
   border-collapse: collapse;
@@ -112,27 +83,10 @@
 
 /* Required for the placeholder to display.
    Must set --tw-content so Tailwind's preflight `content: var(--tw-content)` picks it up. */
-/* Mermaid: work around text measurement bug where node widths are too narrow.
-   The default "display: table-cell" ignores the foreignObject width constraint,
-   causing text to overflow horizontally. Switching to block with explicit 100%
-   width makes text wrap within the foreignObject width. overflow:visible keeps
-   any wrapped lines that exceed the node height visible below the node. */
-.mermaid-wrapper svg foreignObject {
-  overflow: visible !important;
-}
-
-.mermaid-wrapper svg foreignObject > div {
-  display: block !important;
-  white-space: normal !important;
-  width: 100% !important;
-  line-height: 1.3 !important;
-}
-
 .tiptap p.is-editor-empty:first-child::before {
   --tw-content: attr(data-placeholder);
   content: var(--tw-content);
-  color: var(--foreground);
-  opacity: 0.5;
+  color: var(--muted-foreground);
   float: left;
   height: 0;
   pointer-events: none;

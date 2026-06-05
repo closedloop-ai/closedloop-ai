@@ -1,12 +1,6 @@
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { RelayOperationDispatchRequest } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
-import {
-  emitProtocolMetric,
-  emitQueueMetric,
-} from "@repo/observability/telemetry/metrics";
-import { ORIGIN } from "@repo/observability/telemetry/origin";
-import { safeEmit } from "@/lib/telemetry-utils";
 
 type OperationHandler = (operation: RelayOperationDispatchRequest) => void;
 type ResultHandler = (event: RelayResultEvent) => void;
@@ -67,7 +61,6 @@ export const relayEventBus = {
         } catch (error) {
           log.error("Failed replaying queued relay operation", {
             targetId,
-            computeTargetId: targetId,
             operationId: operation.operationId,
             error,
           });
@@ -77,7 +70,6 @@ export const relayEventBus = {
 
     log.info("Relay operation subscriber added", {
       targetId,
-      computeTargetId: targetId,
       subscriberCount: handlers.size,
     });
 
@@ -88,7 +80,6 @@ export const relayEventBus = {
       }
       log.info("Relay operation subscriber removed", {
         targetId,
-        computeTargetId: targetId,
         subscriberCount: handlers.size,
       });
     };
@@ -105,7 +96,6 @@ export const relayEventBus = {
       if (pending.length > MAX_PENDING_OPERATIONS) {
         log.warn("Relay operation backlog overflow, dropping oldest", {
           targetId,
-          computeTargetId: targetId,
           operationId: operation.operationId,
           backlogSize: pending.length,
         });
@@ -121,7 +111,6 @@ export const relayEventBus = {
       } catch (error) {
         log.error("Failed delivering relay operation", {
           targetId,
-          computeTargetId: targetId,
           operationId: operation.operationId,
           error,
         });
@@ -152,16 +141,6 @@ export const relayEventBus = {
           });
         }
       }
-      // Emit once per replay trigger. `value` reflects events attempted
-      // (not confirmed-delivered) in this replay batch.
-      safeEmit(() =>
-        emitQueueMetric({
-          metric: "replay_frequency",
-          origin: ORIGIN,
-          count: 1,
-          value: replay.events.length,
-        })
-      );
     }
 
     return () => {
@@ -190,14 +169,6 @@ export const relayEventBus = {
       backlog.completed = true;
     }
     resultBacklog.set(operationId, backlog);
-
-    safeEmit(() =>
-      emitProtocolMetric({
-        metric: "replay_window_usage",
-        origin: ORIGIN,
-        value: backlog.events.length / MAX_RESULT_EVENTS,
-      })
-    );
 
     const handlers = resultSubscribers.get(operationId);
     if (!handlers || handlers.size === 0) {
@@ -246,7 +217,6 @@ export const relayEventBus = {
       } catch (error) {
         log.error("Failed closing relay target connection", {
           targetId,
-          computeTargetId: targetId,
           error,
         });
       }

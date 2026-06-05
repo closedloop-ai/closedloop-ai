@@ -7,15 +7,10 @@ import { verifyWebhookSignature } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { scheduleLogFlush } from "@/lib/route-utils";
 import { handleCheckRun } from "./handlers/check-run-handler";
 import { handleDeploymentStatus } from "./handlers/deployment-status-handler";
 import { handleInstallation } from "./handlers/installation-handler";
 import { handleInstallationRepositories } from "./handlers/installation-repositories-handler";
-import {
-  type HandledIssueCommentEvent,
-  handleIssueComment,
-} from "./handlers/issue-comment-handler";
 import {
   type HandledPullRequestEvent,
   handlePullRequest,
@@ -38,12 +33,9 @@ export async function POST(request: Request): Promise<Response> {
 
   if (!isGitHubConfigured()) {
     log.warn("[webhook/github] GitHub not configured, rejecting request");
-    scheduleLogFlush();
     return NextResponse.json({ message: "GitHub not configured", ok: false });
   }
 
-  // finally block below ensures every success branch (all switch cases) and
-  // the error branch flush logs; prevents drops on short-lived invocations.
   try {
     const { body, signature, eventType } = await validateRequest(request);
     log.info("[webhook/github] Validating request", { eventType });
@@ -101,9 +93,6 @@ export async function POST(request: Request): Promise<Response> {
           parsedBody as HandledPullRequestReviewCommentEvent
         );
 
-      case "issue_comment":
-        return await handleIssueComment(parsedBody as HandledIssueCommentEvent);
-
       case "push":
         return await handlePush(parsedBody as PushEvent);
 
@@ -127,7 +116,5 @@ export async function POST(request: Request): Promise<Response> {
       { message: "Something went wrong", ok: false },
       { status: 500 }
     );
-  } finally {
-    scheduleLogFlush();
   }
 }

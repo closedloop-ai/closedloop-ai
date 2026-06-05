@@ -6,27 +6,15 @@ import {
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
   LoopEventOutputSchema,
-  LoopEventSupportBundleUploadedSchema,
-  LoopEventType,
   LoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
-import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
-import { ArtifactType } from "@repo/api/src/types/artifact";
-import type { LoopEvent } from "@repo/api/src/types/loop";
-import {
-  LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
-  LoopStatus,
-  MAX_ADDITIONAL_REPOS,
-  ManualLoopEventType,
-} from "@repo/api/src/types/loop";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 
 function jsonSizeWithinLimit(value: unknown, maxBytes: number): boolean {
   return Buffer.byteLength(JSON.stringify(value), "utf-8") <= maxBytes;
 }
-
-const BRANCH_NAME_ERROR = "Branch name contains invalid characters";
 
 /** Validated repo schema — reuse wherever repo input is accepted. */
 export const repoSchema = z.object({
@@ -38,56 +26,26 @@ export const repoSchema = z.object({
       /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/,
       "Must be in 'owner/repo' format"
     ),
-  branch: z.string().max(256).regex(BRANCH_NAME_REGEX, BRANCH_NAME_ERROR),
+  // Git branch name — no shell metacharacters, no path traversal
+  branch: z
+    .string()
+    .max(256)
+    .regex(/^[a-zA-Z0-9._/-]+$/, "Branch name contains invalid characters"),
 });
-
-/**
- * Validated additionalRepos schema — coerces empty arrays to undefined so
- * downstream consumers receive either a non-empty list or nothing at all.
- */
-const additionalReposArraySchema = z
-  .array(repoSchema)
-  .max(MAX_ADDITIONAL_REPOS)
-  .superRefine((repos, ctx) => {
-    const seen = new Set<string>();
-    for (let i = 0; i < repos.length; i++) {
-      const { fullName } = repos[i];
-      if (seen.has(fullName)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Duplicate repository: "${fullName}"`,
-          path: [i, "fullName"],
-        });
-      } else {
-        seen.add(fullName);
-      }
-    }
-  });
-
-export const additionalReposSchema = additionalReposArraySchema
-  .optional()
-  .transform((value) => (value?.length ? value : undefined));
-
-/**
- * Token refreshes use additionalRepos as an explicit subset selector. Empty
- * arrays mean "refresh only the primary token", so preserve [] instead of
- * normalizing it to an omitted field.
- */
-export const tokenRefreshAdditionalReposSchema =
-  additionalReposArraySchema.optional();
 
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
-  documentId: uuidOrSlug().optional(),
-  workstreamId: uuidOrSlug().optional(),
+  artifactId: z.uuidv7().optional(),
+  workstreamId: z.uuidv7().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
-  additionalRepos: additionalReposSchema,
   contextRefs: z
     .array(
       z.object({
-        sourceId: z.uuid(),
-        sourceType: z.enum([ArtifactType.Document]).optional(),
+        sourceId: z.uuidv7(),
+        sourceType: z
+          .enum([EntityType.Artifact, EntityType.Feature])
+          .optional(),
         include: z.enum(["full", "summary"]),
       })
     )
@@ -105,42 +63,30 @@ export const resumeLoopValidator = z.object({
  */
 const loopEventType = LoopEventTypeSchema;
 
+export const loopEventValidator = z
+  .object({
+    type: loopEventType,
+    data: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict()
+  .refine((val) => jsonSizeWithinLimit(val, 20_000_000), {
+    message: "Event payload too large (max 20MB)",
+  });
+
 /**
- * Build envelope + flattened payload validators for a given event type enum.
- * Avoids duplicating the same structure for runner and manual event validators.
+ * Accepts either envelope format { type, data } or flattened { type, ...fields }.
+ * Shape-level validation only — terminal field enforcement happens post-normalization
+ * via validateNormalizedEvent() so both branches are covered by one check.
  */
-function buildEventPayloadValidators(typeSchema: z.ZodType<string>) {
-  const envelopeValidator = z
-    .object({
-      type: typeSchema,
-      data: z.record(z.string(), z.unknown()).default({}),
-    })
-    .strict()
+export const loopEventPayloadValidator = z.union([
+  loopEventValidator,
+  z
+    .object({ type: loopEventType })
+    .catchall(z.unknown())
     .refine((val) => jsonSizeWithinLimit(val, 20_000_000), {
       message: "Event payload too large (max 20MB)",
-    });
-
-  /**
-   * Accepts either envelope format { type, data } or flattened { type, ...fields }.
-   * Shape-level validation only — terminal field enforcement happens post-normalization
-   * via validateNormalizedEvent() so both branches are covered by one check.
-   */
-  const payloadValidator = z.union([
-    envelopeValidator,
-    z
-      .object({ type: typeSchema })
-      .catchall(z.unknown())
-      .refine((val) => jsonSizeWithinLimit(val, 20_000_000), {
-        message: "Event payload too large (max 20MB)",
-      }),
-  ]);
-
-  return { envelopeValidator, payloadValidator } as const;
-}
-
-const runnerEventValidators = buildEventPayloadValidators(loopEventType);
-export const loopEventValidator = runnerEventValidators.envelopeValidator;
-export const loopEventPayloadValidator = runnerEventValidators.payloadValidator;
+    }),
+]);
 
 /**
  * Format the first Zod issue into a human-readable error string.
@@ -174,14 +120,10 @@ const eventSchemaByType: Record<
     schema: LoopEventErrorSchema.omit({ type: true }),
     fallback: "invalid error event",
   },
-  support_bundle_uploaded: {
-    schema: LoopEventSupportBundleUploadedSchema.omit({ type: true }),
-    fallback: "invalid support bundle uploaded event",
-  },
 };
 
 export function validateNormalizedEvent(
-  event: LoopEvent | Record<string, unknown>
+  event: Record<string, unknown>
 ): string | null {
   const entry = eventSchemaByType[event.type as string];
   if (entry) {
@@ -203,107 +145,12 @@ export const listLoopEventsQueryValidator = z.object({
   sort: z.enum(["asc", "desc"]).default("asc").optional(),
 });
 
-/**
- * Event types accepted by the manual-events route.
- * Manual loops support a subset of event types — no "started" (loop starts
- * in RUNNING) and no "tool_call" / "artifact_created" (those are runner-only).
- */
-const manualEventType = z.enum(ManualLoopEventType);
-
-const manualEventValidators = buildEventPayloadValidators(manualEventType);
-export const manualEventValidator = manualEventValidators.envelopeValidator;
-export const manualEventPayloadValidator =
-  manualEventValidators.payloadValidator;
-
-/**
- * Validator for PATCH /loops/[id] metadata updates.
- * Accepts optional prUrl, branchName, and summary fields.
- */
-export const loopMetadataUpdateValidator = z
-  .object({
-    prUrl: z.string().url().max(2048).optional(),
-    branchName: z
-      .string()
-      .max(256)
-      .regex(BRANCH_NAME_REGEX, BRANCH_NAME_ERROR)
-      .optional(),
-    summary: z.string().max(10_000).optional(),
-  })
-  .strict();
-
 export const listLoopsQueryValidator = z.object({
   status: LoopStatusSchema.optional(),
   command: LoopCommandSchema.optional(),
-  documentId: uuidOrSlug().optional(),
+  artifactId: uuidOrSlug().optional(),
   workstreamId: z.uuid().optional(),
   projectId: z.uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
-});
-
-/** Loop statuses that represent a terminal (finished) state. */
-export const TERMINAL_LOOP_STATUSES = new Set<string>([
-  LoopStatus.Completed,
-  LoopStatus.Failed,
-  LoopStatus.Cancelled,
-  LoopStatus.TimedOut,
-]);
-
-/** Event types that transition a loop to a terminal state. */
-export const TERMINAL_LOOP_EVENTS = new Set<string>([
-  LoopEventType.Completed,
-  LoopEventType.Error,
-  LoopEventType.Cancelled,
-]);
-
-const SUPPORT_EVENT_TERMINAL_STATUSES = new Set<string>([
-  LoopStatus.Failed,
-  LoopStatus.TimedOut,
-]);
-
-/**
- * Return true when a runner event should be ignored because the loop is already
- * terminal. Support bundle metadata is the only non-terminal event accepted
- * after FAILED/TIMED_OUT so Desktop crash recovery can publish support links.
- */
-export function shouldIgnoreEventForTerminalLoop(
-  status: string,
-  eventType: string
-): boolean {
-  if (!TERMINAL_LOOP_STATUSES.has(status)) {
-    return false;
-  }
-  if (TERMINAL_LOOP_EVENTS.has(eventType)) {
-    return false;
-  }
-  return !(
-    eventType === LoopEventType.SupportBundleUploaded &&
-    SUPPORT_EVENT_TERMINAL_STATUSES.has(status)
-  );
-}
-
-/**
- * Normalize a loop event from either envelope { type, data: {...} } or
- * flattened { type, ...fields } format into the canonical flat LoopEvent shape.
- * Shared by both runner and manual event routes.
- */
-export function normalizeLoopEvent(body: unknown): LoopEvent {
-  if (
-    body &&
-    typeof body === "object" &&
-    "data" in body &&
-    typeof (body as { data?: unknown }).data === "object" &&
-    (body as { data?: unknown }).data !== null
-  ) {
-    const b = body as {
-      type: LoopEvent["type"];
-      data: Record<string, unknown>;
-    };
-    return { ...b.data, type: b.type } as LoopEvent;
-  }
-  return body as LoopEvent;
-}
-
-export const loopSummariesBodyValidator = z.object({
-  documentIds: z.array(z.uuid()).min(1).max(LOOP_SUMMARIES_MAX_DOCUMENT_IDS),
 });

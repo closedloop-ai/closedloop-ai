@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/loops-api",
-  "version": "0.2.10",
+  "version": "0.2.3",
   "type": "module",
   "repository": {
     "type": "git",
@@ -13,12 +13,6 @@
       "import": "./dist/artifacts.js",
       "require": "./dist/artifacts.cjs",
       "default": "./dist/artifacts.js"
-    },
-    "./bootstrap-result": {
-      "types": "./src/bootstrap-result.ts",
-      "import": "./dist/bootstrap-result.js",
-      "require": "./dist/bootstrap-result.cjs",
-      "default": "./dist/bootstrap-result.js"
     },
     "./bundles": {
       "types": "./src/bundles.ts",
@@ -74,12 +68,6 @@
       "require": "./dist/execution-result.cjs",
       "default": "./dist/execution-result.js"
     },
-    "./multi-repo-policy": {
-      "types": "./src/multi-repo-policy.ts",
-      "import": "./dist/multi-repo-policy.js",
-      "require": "./dist/multi-repo-policy.cjs",
-      "default": "./dist/multi-repo-policy.js"
-    },
     "./tokens": {
       "types": "./src/tokens.ts",
       "import": "./dist/tokens.js",
@@ -90,6 +78,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "build": "tsup",
     "clean": "git clean -xdf .cache .turbo dist node_modules",

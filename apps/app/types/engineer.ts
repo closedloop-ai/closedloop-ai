@@ -3,8 +3,9 @@
  * Maps Symphony FeatureWithWorkstream to the shape closedloop-dev components expect.
  */
 
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 
 export type TicketStatusType =
   | "triage"
@@ -58,6 +59,44 @@ export type EngineerTicketsResult = {
   refetch: () => Promise<unknown>;
 };
 
+/** Map Symphony FeatureStatus to closedloop-dev status type */
+export function mapFeatureStatusToType(
+  status: FeatureStatus
+): TicketStatusType {
+  switch (status) {
+    case FeatureStatus.NotStarted:
+      return "unstarted";
+    case FeatureStatus.InProgress:
+      return "started";
+    case FeatureStatus.InReview:
+      return "started";
+    case FeatureStatus.Completed:
+      return "completed";
+    case FeatureStatus.Obsolete:
+      return "canceled";
+    default:
+      return "unstarted";
+  }
+}
+
+/** Map Symphony FeatureStatus to display name */
+export function statusDisplayName(status: FeatureStatus): string {
+  switch (status) {
+    case FeatureStatus.NotStarted:
+      return "Not Started";
+    case FeatureStatus.InProgress:
+      return "In Progress";
+    case FeatureStatus.InReview:
+      return "In Review";
+    case FeatureStatus.Completed:
+      return "Done";
+    case FeatureStatus.Obsolete:
+      return "Obsolete";
+    default:
+      return status;
+  }
+}
+
 /** Map Symphony FeaturePriority to numeric value (higher = more urgent) */
 export function priorityToNumber(priority: Priority): number {
   switch (priority) {
@@ -90,60 +129,56 @@ export function priorityToLabel(priority: Priority): string {
   }
 }
 
-/** Map DocumentStatus to closedloop-dev status type */
-export function mapDocumentStatusToType(
-  status: DocumentStatus
+/** Map ArtifactStatus to closedloop-dev status type */
+export function mapArtifactStatusToType(
+  status: ArtifactStatus
 ): TicketStatusType {
   switch (status) {
-    case DocumentStatus.Draft:
+    case ArtifactStatus.Draft:
       return "started";
-    case DocumentStatus.InProgress:
+    case ArtifactStatus.InReview:
       return "started";
-    case DocumentStatus.InReview:
+    case ArtifactStatus.Approved:
       return "started";
-    case DocumentStatus.Approved:
-      return "started";
-    case DocumentStatus.Executed:
-      return "started";
-    case DocumentStatus.Done:
-      return "completed";
-    case DocumentStatus.Obsolete:
+    case ArtifactStatus.Obsolete:
       return "canceled";
+    case ArtifactStatus.ReadyForReview:
+      return "started";
+    case ArtifactStatus.Executed:
+      return "completed";
     default:
       return "unstarted";
   }
 }
 
-/** Map DocumentStatus to display name */
-export function artifactStatusDisplayName(status: DocumentStatus): string {
+/** Map ArtifactStatus to display name */
+export function artifactStatusDisplayName(status: ArtifactStatus): string {
   switch (status) {
-    case DocumentStatus.Draft:
+    case ArtifactStatus.Draft:
       return "Draft";
-    case DocumentStatus.InProgress:
-      return "In Progress";
-    case DocumentStatus.InReview:
+    case ArtifactStatus.InReview:
       return "In Review";
-    case DocumentStatus.Approved:
+    case ArtifactStatus.Approved:
       return "Approved";
-    case DocumentStatus.Executed:
-      return "Executed";
-    case DocumentStatus.Done:
-      return "Done";
-    case DocumentStatus.Obsolete:
+    case ArtifactStatus.Obsolete:
       return "Obsolete";
+    case ArtifactStatus.ReadyForReview:
+      return "Ready for Review";
+    case ArtifactStatus.Executed:
+      return "Executed";
     default:
       return status;
   }
 }
 
-/** Map document type string to display label */
-export function documentTypeToSourceType(type: DocumentType): TicketSourceType {
+/** Map artifact type string to display label */
+export function artifactTypeToSourceType(type: ArtifactType): TicketSourceType {
   switch (type) {
-    case DocumentType.Prd:
+    case ArtifactType.Prd:
       return TicketSourceType.Prd;
-    case DocumentType.ImplementationPlan:
+    case ArtifactType.ImplementationPlan:
       return TicketSourceType.ImplementationPlan;
-    case DocumentType.Template:
+    case ArtifactType.Template:
       return TicketSourceType.Template;
     default:
       return TicketSourceType.Prd;

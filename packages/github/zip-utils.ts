@@ -2,7 +2,7 @@ import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
 
 /**
- * GitHub Actions artifact name prefixes that contain ClosedLoop run data
+ * GitHub Actions artifact name prefixes that contain Symphony run data
  * (conversation logs, plans, execution results).
  *
  * - symphony-run-{issue_number}: uploaded by symphony-artifact action

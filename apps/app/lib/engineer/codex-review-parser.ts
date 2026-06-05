@@ -23,10 +23,6 @@ export type ReviewFinding = {
   line?: number;
   message: string;
   suggestion?: string;
-  // Natural-voice PR comment body generated during extraction.
-  // Rendered in the chat UI in place of the structured description/suggestion.
-  // Also used by buildCommentBody when posting as a PR comment.
-  humanizedBody?: string;
 };
 
 export type ReviewFindings = {
@@ -244,7 +240,7 @@ function collectIndentedBody(allLines: string[], startIndex: number): string {
     if (
       !next.trim() ||
       /^[-*]\s+\[?[Pp]\d/.exec(next.trim()) ||
-      /^[-*]\s+(?:❌|⚠️|ℹ️|✓|✅|🔴|🟡|🟠|🔵|🟢)/.exec(next.trim())
+      /^[-*]\s+[❌⚠️ℹ️✓✅🔴🟡🟠🔵🟢]/.exec(next.trim())
     ) {
       break;
     }

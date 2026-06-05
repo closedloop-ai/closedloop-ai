@@ -126,20 +126,6 @@ export class ApiClient {
     return unwrapApiResult<T>(responseBody);
   }
 
-  async patch<T>(path: string, body: unknown): Promise<T> {
-    const url = new URL(path, this.baseUrl);
-    const response = await fetch(url.toString(), {
-      method: "PATCH",
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
-    }
-    const responseBody = (await response.json()) as unknown;
-    return unwrapApiResult<T>(responseBody);
-  }
-
   async delete<T>(path: string): Promise<T> {
     const url = new URL(path, this.baseUrl);
     const response = await fetch(url.toString(), {

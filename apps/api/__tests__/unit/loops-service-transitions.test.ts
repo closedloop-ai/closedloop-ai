@@ -19,7 +19,7 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
+vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
@@ -31,7 +31,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
+vi.mock("@/lib/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 
@@ -56,8 +56,10 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
-import { InvalidStatusTransitionError } from "@/app/loops/loop-errors";
-import { loopsService } from "@/app/loops/service";
+import {
+  InvalidStatusTransitionError,
+  loopsService,
+} from "@/app/loops/service";
 import { buildLoop } from "../fixtures/loop";
 
 const mockWithDb = withDb as unknown as Mock;

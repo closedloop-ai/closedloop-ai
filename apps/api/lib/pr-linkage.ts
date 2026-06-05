@@ -1,22 +1,18 @@
-import { LinkType } from "@repo/api/src/types/artifact";
-import {
-  ArtifactType,
-  GitHubInstallationStatus,
-  GitHubPRState,
-  type TransactionClient,
-} from "@repo/database";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import { GitHubPRState, type TransactionClient } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
  * Input for creating or deduplicating PR linkage records.
  * Used by both the workflow-completion handler and the loop execute handler
- * to ensure idempotent PR artifact + ArtifactLink creation.
+ * to ensure idempotent ExternalLink, EntityLink, and preview deployment creation.
  */
 type PrLinkageInput = {
   organizationId: string;
   workstreamId: string;
   projectId: string;
-  documentId: string;
+  artifactId: string;
   prUrl: string;
   prTitle: string;
   prNumber: number;
@@ -26,41 +22,9 @@ type PrLinkageInput = {
   commitSha: string | null;
 };
 
-const PR_URL_REGEX = /github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/;
-
 /**
- * Resolve the `github_installation_repositories.id` for the repo encoded in
- * `prUrl`, scoped to `organizationId`. Returns null when no active
- * installation covers that repo.
- */
-async function resolveRepositoryId(
-  tx: TransactionClient,
-  prUrl: string,
-  organizationId: string
-): Promise<string | null> {
-  const match = PR_URL_REGEX.exec(prUrl);
-  if (!match) {
-    return null;
-  }
-  const [, owner, repo] = match;
-  const fullName = `${owner}/${repo}`;
-  const row = await tx.gitHubInstallationRepository.findFirst({
-    where: {
-      fullName,
-      installation: {
-        organizationId,
-        status: GitHubInstallationStatus.ACTIVE,
-      },
-    },
-    select: { id: true },
-  });
-  return row?.id ?? null;
-}
-
-/**
- * Create the PR Artifact (+ PullRequestDetail) and ArtifactLink records for a
- * PR, deduplicating against records that may already exist from a racing
- * handler.
+ * Create ExternalLink, EntityLink, and preview deployment records for a PR,
+ * deduplicating against records that may already exist from a racing handler.
  *
  * Three code paths can create these records for the same PR:
  * - workflow-completion-handler (handleExecutionSuccess)
@@ -73,90 +37,69 @@ export async function ensurePrLinkageRecords(
   tx: TransactionClient,
   input: PrLinkageInput
 ): Promise<void> {
-  // Dedup PR artifact: find by githubId (unique on PullRequestDetail).
-  const existingDetail = await tx.pullRequestDetail.findUnique({
-    where: { githubId: input.githubId },
-    select: { artifactId: true },
-  });
-
-  let pullRequestArtifactId: string;
-
-  if (existingDetail) {
-    pullRequestArtifactId = existingDetail.artifactId;
-  } else {
-    // Resolve repositoryId from PR URL + org. PullRequestDetail.repositoryId
-    // is required, so if we can't resolve it we skip artifact creation and
-    // rely on the pr-read-repair / webhook paths to backfill later.
-    const repositoryId = await resolveRepositoryId(
-      tx,
-      input.prUrl,
-      input.organizationId
-    );
-    if (!repositoryId) {
-      log.warn(
-        "[pr-linkage] Skipping PR artifact creation — no active installation for repo",
-        {
-          organizationId: input.organizationId,
-          prUrl: input.prUrl,
-          prNumber: input.prNumber,
-          githubId: input.githubId,
-        }
-      );
-      return;
-    }
-
-    const created = await tx.artifact.create({
-      data: {
-        type: ArtifactType.PULL_REQUEST,
-        organizationId: input.organizationId,
-        projectId: input.projectId,
-        workstreamId: input.workstreamId,
-        name: input.prTitle,
-        status: GitHubPRState.OPEN,
-        externalUrl: input.prUrl,
-        pullRequest: {
-          create: {
-            repositoryId,
-            githubId: input.githubId,
-            number: input.prNumber,
-            headBranch: input.headBranch,
-            baseBranch: input.baseBranch,
-            headSha: input.commitSha,
-            prState: GitHubPRState.OPEN,
-          },
-        },
-      },
-      select: { id: true },
-    });
-    pullRequestArtifactId = created.id;
-  }
-
-  // Dedup ArtifactLink: source artifact → PRODUCES → PR artifact.
-  const existingLink = await tx.artifactLink.findFirst({
+  // Dedup ExternalLink: check for existing PR link by URL
+  const existingExternalLink = await tx.externalLink.findFirst({
     where: {
       organizationId: input.organizationId,
-      sourceId: input.documentId,
-      targetId: pullRequestArtifactId,
+      type: ExternalLinkType.PullRequest,
+      externalUrl: input.prUrl,
+    },
+    select: { id: true },
+  });
+
+  let externalLinkId: string;
+
+  if (existingExternalLink) {
+    externalLinkId = existingExternalLink.id;
+  } else {
+    const prLink = await tx.externalLink.create({
+      data: {
+        organizationId: input.organizationId,
+        workstreamId: input.workstreamId,
+        projectId: input.projectId,
+        type: ExternalLinkType.PullRequest,
+        title: input.prTitle,
+        externalUrl: input.prUrl,
+        metadata: {
+          number: input.prNumber,
+          githubId: input.githubId,
+          headBranch: input.headBranch,
+          baseBranch: input.baseBranch,
+          state: GitHubPRState.OPEN,
+        },
+      },
+    });
+    externalLinkId = prLink.id;
+  }
+
+  // Dedup EntityLink: artifact → PRODUCES → PR external link
+  const existingEntityLink = await tx.entityLink.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      sourceId: input.artifactId,
+      targetId: externalLinkId,
       linkType: LinkType.Produces,
     },
     select: { id: true },
   });
 
-  if (!existingLink) {
-    await tx.artifactLink.create({
+  if (!existingEntityLink) {
+    await tx.entityLink.create({
       data: {
         organizationId: input.organizationId,
-        sourceId: input.documentId,
-        targetId: pullRequestArtifactId,
+        sourceId: input.artifactId,
+        sourceType: EntityType.Artifact,
+        targetId: externalLinkId,
+        targetType: EntityType.ExternalLink,
         linkType: LinkType.Produces,
       },
     });
   }
 
   log.info("[pr-linkage] Ensured PR linkage records", {
-    documentId: input.documentId,
+    artifactId: input.artifactId,
     prUrl: input.prUrl,
     prNumber: input.prNumber,
-    pullRequestArtifactId,
+    externalLinkId,
   });
 }

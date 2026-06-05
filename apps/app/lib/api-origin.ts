@@ -1,3 +1,4 @@
+import type { NextRequest } from "next/server";
 import { env } from "@/env";
 
 const LOCAL_API_FALLBACK = "http://localhost:3002";
@@ -15,11 +16,9 @@ function rewritePreviewHostname(hostname: string): string | null {
   return null;
 }
 
-type ApiOriginRequest = {
-  nextUrl: Pick<URL, "hostname" | "protocol">;
-};
-
-export function resolveApiOrigin(request?: ApiOriginRequest): string {
+export function resolveApiOrigin(
+  request?: Pick<NextRequest, "nextUrl">
+): string {
   if (request) {
     const rewrittenHostname = rewritePreviewHostname(request.nextUrl.hostname);
     if (rewrittenHostname) {

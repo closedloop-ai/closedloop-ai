@@ -6,7 +6,6 @@ import {
   badRequestResponse,
   errorResponse,
   forbiddenResponse,
-  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { loopsService } from "../service";
@@ -23,7 +22,6 @@ export const GET = withAuth<LoopUsageSummary, "/loops/usage">(
           method: "GET",
           route: "/loops/usage",
         });
-        scheduleLogFlush();
         return forbiddenResponse();
       }
 

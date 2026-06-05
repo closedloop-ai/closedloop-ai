@@ -7,8 +7,7 @@ type LogViewerProps = {
   data: Uint8Array;
 };
 
-const ANSI_ESCAPE_PREFIX = String.fromCharCode(0x1b);
-const ANSI_RE = new RegExp(`${ANSI_ESCAPE_PREFIX}\\[[0-9;]*m`, "g");
+const ANSI_RE = /\u001b\[[0-9;]*m/g; // NOSONAR — must reference ESC control char to strip ANSI codes
 
 export function LogViewer({ data }: Readonly<LogViewerProps>) {
   const lines = useMemo(() => {

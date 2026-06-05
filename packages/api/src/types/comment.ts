@@ -1,4 +1,5 @@
 import type { JsonObject } from "./common";
+import type { EntityType } from "./entity-link";
 import type { BasicUser } from "./user";
 
 export const ThreadSource = {
@@ -19,7 +20,8 @@ export type CommentThread = {
   source: ThreadSource;
   externalId: string | null;
   roomId: string | null;
-  artifactId: string | null;
+  entityId: string | null;
+  entityType: EntityType | null;
   status: ThreadStatus;
   metadata: JsonObject | null;
   resolvedAt: Date | null;
@@ -71,7 +73,8 @@ export type CommentAttachment = {
 };
 
 export type CreateThreadInput = {
-  artifactId?: string;
+  entityId?: string;
+  entityType?: EntityType;
   source?: ThreadSource;
   externalId?: string;
   roomId?: string;
@@ -94,7 +97,8 @@ export type UpdateCommentInput = {
 };
 
 export type FindThreadsOptions = {
-  artifactId?: string;
+  entityId?: string;
+  entityType?: EntityType;
   status?: ThreadStatus;
   roomId?: string;
 };

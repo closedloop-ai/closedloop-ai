@@ -1,4 +1,4 @@
-# Contributing to ClosedLoop.AI
+# Contributing to Symphony
 
 We welcome contributions! This guide covers everything you need to get started.
 
@@ -8,6 +8,7 @@ We welcome contributions! This guide covers everything you need to get started.
 
 - Node.js 20+
 - [pnpm](https://pnpm.io)
+- [Stripe CLI](https://docs.stripe.com/stripe-cli) for local webhook testing
 - Docker (for local PostgreSQL)
 
 ### Setup
@@ -36,7 +37,7 @@ cd packages/database && pnpm prisma migrate dev && cd ../..
 pnpm dev
 ```
 
-See [docs/local_deployment.md](docs/local_deployment.md) for the full setup guide including service account configuration (Clerk, GitHub App, etc.).
+See [docs/local_deployment.md](docs/local_deployment.md) for the full setup guide including service account configuration (Clerk, Stripe, GitHub App, etc.).
 
 ### Verify
 

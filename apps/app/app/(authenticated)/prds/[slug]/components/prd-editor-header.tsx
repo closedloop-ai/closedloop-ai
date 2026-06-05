@@ -2,10 +2,9 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
-  DocumentType,
-  type DocumentWithWorkstream,
-  type GenerationStatus,
-} from "@repo/api/src/types/document";
+  ArtifactType,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -31,11 +30,11 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
-import { isCommandDisabled } from "@/lib/generation-status-utils";
-import { DOCUMENT_TYPE_ICONS } from "@/lib/project-constants";
+import { ARTIFACT_TYPE_ICONS } from "@/lib/project-constants";
 
 type PRDEditorHeaderProps = {
-  prd: DocumentWithWorkstream;
+  prd: ArtifactWithWorkstream;
+  showMetadataPanel: boolean;
   canShowPanel?: boolean;
   onToggleMetadataPanel: () => void;
   onDecomposeFeatures: () => void;
@@ -46,8 +45,6 @@ type PRDEditorHeaderProps = {
   isGenerating?: boolean;
   isEvaluating?: boolean;
   isRequestingChanges?: boolean;
-  generationStatus?: GenerationStatus;
-  generationStatusLoading?: boolean;
   onRename: () => void;
   onExport: () => void;
   onMove: () => void;
@@ -59,6 +56,7 @@ type PRDEditorHeaderProps = {
 
 export function PRDEditorHeader({
   prd,
+  showMetadataPanel,
   canShowPanel = true,
   onToggleMetadataPanel,
   onDecomposeFeatures,
@@ -69,8 +67,6 @@ export function PRDEditorHeader({
   isGenerating = false,
   isEvaluating = false,
   isRequestingChanges = false,
-  generationStatus,
-  generationStatusLoading = false,
   onRename,
   onExport,
   onMove,
@@ -91,9 +87,12 @@ export function PRDEditorHeader({
           label: prd.project.name,
           href: `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`,
         },
-        { label: prd.title },
+        { label: prd.fileName ?? prd.title },
       ]
-    : [{ label: "Library", href: "/prds" }, { label: prd.title }];
+    : [
+        { label: "Library", href: "/prds" },
+        { label: prd.fileName ?? prd.title },
+      ];
 
   const overflowMenu = (
     <DropdownMenu>
@@ -103,26 +102,26 @@ export function PRDEditorHeader({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[160px]">
-        <DropdownMenuItem onClick={() => onRename()}>
+        <DropdownMenuItem onClick={onRename}>
           <PencilIcon className="h-4 w-4" />
           Rename
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => onExport()}>
+        <DropdownMenuItem onClick={onExport}>
           <DownloadIcon className="h-4 w-4" />
           Export .md
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => onMove()}>
+        <DropdownMenuItem onClick={onMove}>
           <FolderIcon className="h-4 w-4" />
           Move...
         </DropdownMenuItem>
         {showRestore ? (
-          <DropdownMenuItem onClick={() => onRestoreVersion?.()}>
+          <DropdownMenuItem onClick={onRestoreVersion}>
             <RotateCcwIcon className="h-4 w-4" />
             Restore Version
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => onDelete()} variant="destructive">
+        <DropdownMenuItem onClick={onDelete} variant="destructive">
           <TrashIcon className="h-4 w-4" />
           Delete
         </DropdownMenuItem>
@@ -130,8 +129,8 @@ export function PRDEditorHeader({
     </DropdownMenu>
   );
 
-  const PrdIcon = DOCUMENT_TYPE_ICONS[DocumentType.Prd];
-  const PlanIcon = DOCUMENT_TYPE_ICONS[DocumentType.ImplementationPlan];
+  const PrdIcon = ARTIFACT_TYPE_ICONS[ArtifactType.Prd];
+  const PlanIcon = ARTIFACT_TYPE_ICONS[ArtifactType.ImplementationPlan];
 
   return (
     <Header breadcrumbs={breadcrumbs}>
@@ -143,47 +142,26 @@ export function PRDEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            disabled={isCommandDisabled({
-              generationStatus,
-              isLoading: generationStatusLoading,
-              targetCommand: "generate_prd",
-              localMutationPending: isGenerating,
-            })}
-            onClick={() => onGeneratePrd()}
-          >
+          <DropdownMenuItem disabled={isGenerating} onClick={onGeneratePrd}>
             <PrdIcon className="h-4 w-4" />
             {isGenerating ? "Generating PRD..." : "Generate PRD"}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onDecomposeFeatures()}>
+          <DropdownMenuItem onClick={onDecomposeFeatures}>
             <BoxIcon className="h-4 w-4" />
             Decompose into Features
           </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={isCommandDisabled({
-              generationStatus,
-              isLoading: generationStatusLoading,
-              targetCommand: "evaluate_prd",
-              localMutationPending: isEvaluating,
-            })}
-            onClick={() => onEvaluatePrd()}
-          >
-            <GaugeIcon className="h-4 w-4" />
+          <DropdownMenuItem disabled={isEvaluating} onClick={onEvaluatePrd}>
+            <GaugeIcon className="mr-2 h-4 w-4" />
             {isEvaluating ? "Evaluating PRD..." : "Evaluate PRD"}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onGeneratePlan()}>
+          <DropdownMenuItem onClick={onGeneratePlan}>
             <PlanIcon className="h-4 w-4" />
             Generate Implementation Plan
           </DropdownMenuItem>
           {requestChangesFlag?.enabled && (
             <DropdownMenuItem
-              disabled={isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "request_prd_changes",
-                localMutationPending: isGenerating || isRequestingChanges,
-              })}
-              onClick={() => onRequestChanges()}
+              disabled={isGenerating || isRequestingChanges}
+              onClick={onRequestChanges}
             >
               <MessageSquareIcon className="h-4 w-4" />
               {isRequestingChanges ? "Amending PRD..." : "Amend PRD"}
@@ -197,10 +175,10 @@ export function PRDEditorHeader({
       {canShowPanel && (
         <Button
           aria-label="Toggle chat panel"
-          onClick={() => onToggleMetadataPanel()}
+          onClick={onToggleMetadataPanel}
           size="icon"
           title="Toggle chat panel"
-          variant="ghost"
+          variant={showMetadataPanel ? "secondary" : "ghost"}
         >
           <PanelRightIcon className="h-4 w-4" />
         </Button>

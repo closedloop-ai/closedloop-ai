@@ -1,18 +1,5 @@
 import type { ReviewFinding, ReviewFindings } from "./codex-review-parser";
 
-function formatFindingLocation(
-  file: string | undefined,
-  line: number | undefined
-): string {
-  if (!file) {
-    return "";
-  }
-  if (line) {
-    return `${file}:${line}`;
-  }
-  return file;
-}
-
 /**
  * Format the initial prompt sent to Claude when discussing review findings.
  * Review data is wrapped in <context> blocks (hidden in the UI) so the
@@ -34,7 +21,11 @@ export function formatReviewContextForChat(
   if (findings.findings.length > 0) {
     parts.push("\n## Parsed Findings\n");
     for (const finding of findings.findings) {
-      const location = formatFindingLocation(finding.file, finding.line);
+      const location = finding.file
+        ? finding.line
+          ? `${finding.file}:${finding.line}`
+          : finding.file
+        : "";
       const severity = finding.severity.toUpperCase();
       parts.push(
         `- **[${severity}]** ${location ? `(${location}) ` : ""}${finding.message}`
@@ -87,7 +78,11 @@ export function formatFindingContextForChat(
   parts.push(`Review performed by model: ${modelName}`);
   parts.push(`Finding #${findingIndex + 1}`);
 
-  const location = formatFindingLocation(finding.file, finding.line);
+  const location = finding.file
+    ? finding.line
+      ? `${finding.file}:${finding.line}`
+      : finding.file
+    : "";
   const severity = finding.severity.toUpperCase();
   const priority = finding.priority || "";
 
@@ -158,7 +153,7 @@ export function formatReviewContextForCodex(
   if (findings.findings.length > 0) {
     parts.push("### Parsed Findings");
     for (const f of findings.findings) {
-      const loc = formatFindingLocation(f.file, f.line);
+      const loc = f.file ? (f.line ? `${f.file}:${f.line}` : f.file) : "";
       parts.push(
         `- **[${f.severity.toUpperCase()}]** ${loc ? `(${loc}) ` : ""}${f.message}`
       );

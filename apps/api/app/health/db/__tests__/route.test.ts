@@ -10,8 +10,6 @@ import { GET } from "../route";
 const mockWithDb = withDb as unknown as Mock;
 
 const TEST_TOKEN = "test-db-health-token";
-const HAD_DB_HEALTH_TOKEN = Object.hasOwn(process.env, "DB_HEALTH_TOKEN");
-const ORIGINAL_DB_HEALTH_TOKEN = process.env.DB_HEALTH_TOKEN;
 
 function makeRequest({
   token = TEST_TOKEN,
@@ -39,11 +37,8 @@ describe("GET /health/db", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    if (HAD_DB_HEALTH_TOKEN) {
-      process.env.DB_HEALTH_TOKEN = ORIGINAL_DB_HEALTH_TOKEN;
-    } else {
-      Reflect.deleteProperty(process.env, "DB_HEALTH_TOKEN");
-    }
+    // biome-ignore lint/performance/noDelete: test cleanup must remove env var (not set string "undefined")
+    delete process.env.DB_HEALTH_TOKEN;
   });
 
   it("returns 401 when token is missing", async () => {

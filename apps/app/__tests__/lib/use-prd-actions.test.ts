@@ -2,16 +2,16 @@
  * Unit tests for usePrdActions hook.
  *
  * Covers:
- * - success path: handleRequestChanges returns true and calls mutate correctly
+ * - success path: handleRequestChanges returns true and calls mutateAsync correctly
  * - conflict error routing: 409 multiple_targets error sets multiTargetState
- * - null documentId guard: returns false without calling mutate
+ * - null artifactId guard: returns false without calling mutateAsync
  */
 
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { usePrdActions } from "@/hooks/document-editing/use-prd-actions";
+import { usePrdActions } from "@/hooks/artifact-editing/use-prd-actions";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
 import { ApiError } from "@/lib/api-error";
 
@@ -19,11 +19,11 @@ import { ApiError } from "@/lib/api-error";
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const mockMutate = vi.fn();
+const mockMutateAsync = vi.fn();
 
 vi.mock("@/hooks/queries/use-loops", () => ({
   useRunLoop: () => ({
-    mutate: mockMutate,
+    mutateAsync: mockMutateAsync,
     isPending: false,
   }),
 }));
@@ -49,19 +49,6 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
     success: vi.fn(),
     error: vi.fn(),
   },
-}));
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    refresh: vi.fn(),
-    prefetch: vi.fn(),
-  }),
-  usePathname: () => "/",
-  useSearchParams: () => new URLSearchParams(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -101,13 +88,14 @@ describe("usePrdActions", () => {
   });
 
   describe("handleRequestChanges — success path", () => {
-    test("returns true and calls mutate with correct arguments", async () => {
-      mockMutate.mockImplementationOnce((_params, options) => {
-        options?.onSuccess?.({ loopId: "loop-123", status: "running" });
+    test("returns true and calls mutateAsync with correct arguments", async () => {
+      mockMutateAsync.mockResolvedValueOnce({
+        loopId: "loop-123",
+        status: "running",
       });
 
       const { result } = renderHook(
-        () => usePrdActions({ documentId: "test-id" }),
+        () => usePrdActions({ artifactId: "test-id" }),
         { wrapper: createWrapperWithClient(queryClient) }
       );
 
@@ -118,10 +106,10 @@ describe("usePrdActions", () => {
       });
 
       expect(returnValue).toBe(true);
-      expect(mockMutate).toHaveBeenCalledOnce();
-      expect(mockMutate).toHaveBeenCalledWith(
+      expect(mockMutateAsync).toHaveBeenCalledOnce();
+      expect(mockMutateAsync).toHaveBeenCalledWith(
         {
-          documentId: "test-id",
+          artifactId: "test-id",
           command: RunLoopCommand.RequestPrdChanges,
           prompt: "add error handling",
         },
@@ -131,7 +119,7 @@ describe("usePrdActions", () => {
   });
 
   describe("handleRequestChanges — conflict error routing", () => {
-    test("sets multiTargetState when mutate reports ApiError with multiple_targets body", async () => {
+    test("sets multiTargetState when mutateAsync throws ApiError with multiple_targets body", async () => {
       const conflict = makeMultipleTargetsConflict();
       const apiError = new ApiError(
         "Conflict",
@@ -139,9 +127,7 @@ describe("usePrdActions", () => {
         undefined,
         wrapInApiResult(conflict)
       );
-      mockMutate.mockImplementationOnce((_params, options) => {
-        options?.onError?.(apiError);
-      });
+      mockMutateAsync.mockRejectedValueOnce(apiError);
 
       // Simulate routeConflictError invoking onMultipleTargets to set multiTargetState
       mockHandleRunLoopResponse.mockImplementationOnce(
@@ -158,7 +144,7 @@ describe("usePrdActions", () => {
       );
 
       const { result } = renderHook(
-        () => usePrdActions({ documentId: "test-id" }),
+        () => usePrdActions({ artifactId: "test-id" }),
         { wrapper: createWrapperWithClient(queryClient) }
       );
 
@@ -171,6 +157,23 @@ describe("usePrdActions", () => {
           availableTargets: conflict.availableTargets,
         });
       });
+    });
+  });
+
+  describe("handleRequestChanges — null artifactId guard", () => {
+    test("returns false without calling mutateAsync when artifactId is null", async () => {
+      const { result } = renderHook(() => usePrdActions({ artifactId: null }), {
+        wrapper: createWrapperWithClient(queryClient),
+      });
+
+      let returnValue: boolean | undefined;
+      await act(async () => {
+        returnValue =
+          await result.current.handleRequestChanges("add error handling");
+      });
+
+      expect(returnValue).toBe(false);
+      expect(mockMutateAsync).not.toHaveBeenCalled();
     });
   });
 });

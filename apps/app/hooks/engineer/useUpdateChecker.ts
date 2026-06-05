@@ -33,7 +33,7 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
 
   const check = useCallback(async () => {
     try {
-      const res = await fetch("/api/gateway/git", {
+      const res = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "sync-status" }),
@@ -65,7 +65,7 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
   }> => {
     setPulling(true);
     try {
-      const res = await fetch("/api/gateway/git", {
+      const res = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "pull" }),

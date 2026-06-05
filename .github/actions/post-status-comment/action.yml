@@ -1,0 +1,64 @@
+name: 'Post Status Comment'
+description: 'Post or update a status comment on a GitHub issue'
+inputs:
+  issue_number:
+    description: 'GitHub issue number'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  message:
+    description: 'Message to post'
+    required: true
+  github_token:
+    description: 'GitHub token for API calls'
+    required: true
+  update_comment_url:
+    description: 'URL of existing comment to update (optional)'
+    required: false
+    default: ''
+outputs:
+  comment_url:
+    description: 'URL of the created/updated comment'
+    value: ${{ steps.post.outputs.comment_url }}
+  comment_id:
+    description: 'ID of the created/updated comment'
+    value: ${{ steps.post.outputs.comment_id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Post or Update Comment
+      id: post
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        MESSAGE: ${{ inputs.message }}
+      run: |
+        UPDATE_URL="${{ inputs.update_comment_url }}"
+
+        if [ -n "$UPDATE_URL" ]; then
+          # Update existing comment
+          COMMENT_ID=$(echo "$UPDATE_URL" | grep -oE '[0-9]+$')
+          if [ -n "$COMMENT_ID" ]; then
+            RESPONSE=$(gh api -X PATCH "repos/${{ inputs.repository }}/issues/comments/$COMMENT_ID" \
+              -f body="$MESSAGE")
+            echo "comment_url=$UPDATE_URL" >> "$GITHUB_OUTPUT"
+            echo "comment_id=$COMMENT_ID" >> "$GITHUB_OUTPUT"
+            echo "Updated comment: $UPDATE_URL"
+          else
+            echo "::error::Could not extract comment ID from URL: $UPDATE_URL"
+            exit 1
+          fi
+        else
+          # Create new comment
+          RESPONSE=$(gh api "repos/${{ inputs.repository }}/issues/${{ inputs.issue_number }}/comments" \
+            -f body="$MESSAGE")
+
+          COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+          COMMENT_ID=$(echo "$RESPONSE" | jq -r '.id')
+
+          echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+          echo "comment_id=$COMMENT_ID" >> "$GITHUB_OUTPUT"
+          echo "Created comment: $COMMENT_URL"
+        fi

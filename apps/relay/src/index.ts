@@ -1,21 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   createServer,
-  type IncomingHttpHeaders,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import {
-  DESKTOP_POP_HEADER_NAMES,
-  type DesktopPopHeaderName,
-} from "@repo/api/src/types/api-key";
 import { log } from "@repo/observability/log";
-import {
-  ConnectionState,
-  emitProtocolMetric,
-  type ProtocolMetric,
-} from "@repo/observability/telemetry/metrics";
-import { ORIGIN } from "@repo/observability/telemetry/origin";
+import { emitProtocolMetric } from "@repo/observability/telemetry/metrics";
 import {
   ErrorClass,
   TelemetryCategory,
@@ -37,7 +27,6 @@ const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
   process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS ??
     String(HEARTBEAT_INTERVAL_MS * 2)
 );
-const SHUTDOWN_FLUSH_DEADLINE_MS = 5000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
 
 if (!INTERNAL_API_SECRET) {
@@ -61,84 +50,12 @@ type WorkerContext = {
   userId: string;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   degradedTimer: ReturnType<typeof setTimeout> | null;
-  wasDegraded: boolean;
   gatewaySessionId?: string;
   pluginVersion?: string;
 };
 
-type DesktopPopHeaders = Partial<Record<DesktopPopHeaderName, string>>;
-
 const workersByTargetId = new Map<string, WorkerContext>();
 const socketToTarget = new Map<string, string>();
-
-function safeEmitConnectionStateCount(
-  metric: Extract<ProtocolMetric, { metric: "connection_state_count" }>
-): void {
-  try {
-    emitProtocolMetric(metric);
-  } catch (error) {
-    log.warn("ConnectionStateCountEmitFailed", {
-      targetId: metric.computeTargetId,
-      state: metric.state,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-function emitConnectionState(
-  state: ConnectionState,
-  targetId: string,
-  gatewaySessionId: string | null | undefined
-): void {
-  safeEmitConnectionStateCount({
-    metric: "connection_state_count",
-    state,
-    count: 1,
-    computeTargetId: targetId,
-    gatewaySessionId: gatewaySessionId ?? undefined,
-    timestamp: new Date().toISOString(),
-  });
-}
-
-function extractDesktopPopHeaders(
-  headers: IncomingHttpHeaders
-): DesktopPopHeaders {
-  const result: DesktopPopHeaders = {};
-  for (const headerName of DESKTOP_POP_HEADER_NAMES) {
-    const value = getHeaderValue(headers, headerName);
-    if (value) {
-      result[headerName] = value;
-    }
-  }
-  return result;
-}
-
-function toDesktopPopHeaders(value: unknown): DesktopPopHeaders | undefined {
-  if (!(typeof value === "object" && value !== null)) {
-    return undefined;
-  }
-
-  const result: DesktopPopHeaders = {};
-  for (const headerName of DESKTOP_POP_HEADER_NAMES) {
-    const headerValue = (value as Record<string, unknown>)[headerName];
-    if (typeof headerValue === "string" && headerValue.trim().length > 0) {
-      result[headerName] = headerValue;
-    }
-  }
-
-  return result;
-}
-
-function getHeaderValue(
-  headers: IncomingHttpHeaders,
-  headerName: string
-): string | undefined {
-  const headerValue = headers[headerName] ?? headers[headerName.toLowerCase()];
-  const value = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Connection churn / reconnect / heartbeat-freshness counters
@@ -158,8 +75,7 @@ const lastHeartbeatAckAt = new Map<string, number>();
 
 async function callVercel<T = Record<string, unknown>>(
   path: string,
-  body: unknown,
-  extraHeaders?: DesktopPopHeaders
+  body: unknown
 ): Promise<{
   ok: boolean;
   status: number;
@@ -173,7 +89,6 @@ async function callVercel<T = Record<string, unknown>>(
     headers: {
       "Content-Type": "application/json",
       "x-internal-secret": INTERNAL_API_SECRET as string,
-      ...(extraHeaders ?? {}),
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
@@ -197,30 +112,19 @@ async function callVercel<T = Record<string, unknown>>(
   };
 }
 
-async function validateApiKeyViaApi(
-  apiKey: string,
-  desktopPopHeaders?: DesktopPopHeaders
-): Promise<{
+async function validateApiKeyViaApi(apiKey: string): Promise<{
   ok: boolean;
   context?: { organizationId: string; userId: string };
 }> {
   log.info("validateApiKeyViaApi: calling API", {
-    hasApiKey: Boolean(apiKey),
+    keyPrefix: `${apiKey.slice(0, 8)}...`,
     url: `${VERCEL_API_URL}/internal/api-keys/verify`,
-    hasDesktopPopHeaders:
-      Object.keys(desktopPopHeaders ?? {}).length ===
-      DESKTOP_POP_HEADER_NAMES.length,
   });
 
   const { ok, data, status, responseUrl, contentType, rawBody } =
-    await callVercel(
-      "/internal/api-keys/verify",
-      {
-        key: apiKey,
-        desktopPopRequired: true,
-      },
-      desktopPopHeaders
-    );
+    await callVercel("/internal/api-keys/verify", {
+      key: apiKey,
+    });
 
   log.info("validateApiKeyViaApi: API response", {
     ok,
@@ -228,6 +132,7 @@ async function validateApiKeyViaApi(
     contentType,
     responseUrl,
     hasData: data !== null,
+    rawBodyPreview: rawBody.slice(0, 300),
   });
 
   if (!(ok && data)) {
@@ -235,7 +140,7 @@ async function validateApiKeyViaApi(
       status,
       responseUrl,
       contentType,
-      responseLength: rawBody.length,
+      response: data ?? rawBody.slice(0, 500),
       errorClass: ErrorClass.Connection,
     });
     return { ok: false };
@@ -312,18 +217,12 @@ async function forwardSocketEvent(
       typeof (payload as Record<string, unknown>).apiKey === "string"
         ? ((payload as Record<string, unknown>).apiKey as string)
         : null;
-    const desktopPopHeaders =
-      typeof payload === "object" && payload !== null
-        ? toDesktopPopHeaders(
-            (payload as Record<string, unknown>).desktopPopHeaders
-          )
-        : undefined;
 
     if (!apiKey) {
       return { emit: [], disconnect: true };
     }
 
-    const result = await validateApiKeyViaApi(apiKey, desktopPopHeaders);
+    const result = await validateApiKeyViaApi(apiKey);
     if (!(result.ok && result.context)) {
       return { emit: [], disconnect: true };
     }
@@ -354,7 +253,7 @@ async function forwardSocketEvent(
       status,
       responseUrl,
       contentType,
-      responseLength: rawBody.length,
+      response: data ?? rawBody.slice(0, 500),
       errorClass: ErrorClass.Protocol,
     });
     return { emit: [] };
@@ -551,15 +450,12 @@ namespace.use((socket, next) => {
 
   log.info("Socket auth middleware: extracted API key, validating via API", {
     socketId: socket.id,
-    hasApiKey: Boolean(apiKey),
+    keyPrefix: `${apiKey.slice(0, 8)}...`,
     vercelUrl: VERCEL_API_URL,
   });
 
   // Validate via Vercel
-  forwardSocketEvent("_relay.validate", {
-    apiKey,
-    desktopPopHeaders: extractDesktopPopHeaders(socket.handshake.headers),
-  })
+  forwardSocketEvent("_relay.validate", { apiKey })
     .then((result) => {
       log.info("Socket auth middleware: validation response", {
         socketId: socket.id,
@@ -610,72 +506,6 @@ namespace.use((socket, next) => {
     });
 });
 
-// Clean up if this socket was previously registered for a different target
-function cleanupOldWorker(socket: Socket, newTargetId: string): void {
-  const oldTargetId = socketToTarget.get(socket.id);
-  if (!oldTargetId || oldTargetId === newTargetId) {
-    return;
-  }
-
-  const oldWorker = workersByTargetId.get(oldTargetId);
-  if (oldWorker?.socket.id !== socket.id) {
-    return;
-  }
-
-  if (oldWorker.heartbeatTimer !== null) {
-    clearInterval(oldWorker.heartbeatTimer);
-  }
-  if (oldWorker.degradedTimer !== null) {
-    clearTimeout(oldWorker.degradedTimer);
-  }
-  workersByTargetId.delete(oldTargetId);
-}
-
-// Clean up if a different socket was previously registered for this target
-function cleanupExistingWorker(
-  targetId: string,
-  socket: Socket,
-  gatewaySessionId?: string
-): void {
-  const existingWorker = workersByTargetId.get(targetId);
-  if (!existingWorker || existingWorker.socket.id === socket.id) {
-    return;
-  }
-
-  if (existingWorker.heartbeatTimer !== null) {
-    clearInterval(existingWorker.heartbeatTimer);
-  }
-  if (existingWorker.degradedTimer !== null) {
-    clearTimeout(existingWorker.degradedTimer);
-  }
-  emitConnectionState(
-    ConnectionState.Disconnected,
-    targetId,
-    existingWorker.gatewaySessionId
-  );
-  socketToTarget.delete(existingWorker.socket.id);
-  // Emit reconnecting event — a new socket is taking over for an existing target
-  log.info(
-    JSON.stringify({
-      category: TelemetryCategory.ConnectionReconnecting,
-      timestamp: new Date().toISOString(),
-      computeTargetId: targetId,
-      gatewaySessionId: gatewaySessionId ?? null,
-      socketId: socket.id,
-      previousSocketId: existingWorker.socket.id,
-    })
-  );
-  reconnectCount += 1;
-  emitProtocolMetric({
-    metric: "reconnect_frequency",
-    origin: ORIGIN,
-    count: reconnectCount,
-    computeTargetId: targetId,
-    gatewaySessionId: gatewaySessionId ?? undefined,
-    timestamp: new Date().toISOString(),
-  });
-}
-
 function registerWorker(
   socket: Socket,
   targetId: string,
@@ -683,8 +513,51 @@ function registerWorker(
   gatewaySessionId?: string,
   pluginVersion?: string
 ): void {
-  cleanupOldWorker(socket, targetId);
-  cleanupExistingWorker(targetId, socket, gatewaySessionId);
+  // Clean up if this socket was previously registered for a different target
+  const oldTargetId = socketToTarget.get(socket.id);
+  if (oldTargetId && oldTargetId !== targetId) {
+    const oldWorker = workersByTargetId.get(oldTargetId);
+    if (oldWorker?.socket.id === socket.id) {
+      if (oldWorker.heartbeatTimer !== null) {
+        clearInterval(oldWorker.heartbeatTimer);
+      }
+      if (oldWorker.degradedTimer !== null) {
+        clearTimeout(oldWorker.degradedTimer);
+      }
+      workersByTargetId.delete(oldTargetId);
+    }
+  }
+
+  // Clean up if a different socket was previously registered for this target
+  const existingWorker = workersByTargetId.get(targetId);
+  if (existingWorker && existingWorker.socket.id !== socket.id) {
+    if (existingWorker.heartbeatTimer !== null) {
+      clearInterval(existingWorker.heartbeatTimer);
+    }
+    if (existingWorker.degradedTimer !== null) {
+      clearTimeout(existingWorker.degradedTimer);
+    }
+    socketToTarget.delete(existingWorker.socket.id);
+    // Emit reconnecting event — a new socket is taking over for an existing target
+    log.info(
+      JSON.stringify({
+        category: TelemetryCategory.ConnectionReconnecting,
+        timestamp: new Date().toISOString(),
+        computeTargetId: targetId,
+        gatewaySessionId: gatewaySessionId ?? null,
+        socketId: socket.id,
+        previousSocketId: existingWorker.socket.id,
+      })
+    );
+    reconnectCount += 1;
+    emitProtocolMetric({
+      metric: "reconnect_frequency",
+      count: reconnectCount,
+      computeTargetId: targetId,
+      gatewaySessionId: gatewaySessionId ?? undefined,
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   // Worker context object created first so heartbeat closure can reference it
   const workerContext: WorkerContext = {
@@ -694,7 +567,6 @@ function registerWorker(
     userId: auth.userId,
     heartbeatTimer: null,
     degradedTimer: null,
-    wasDegraded: false,
     gatewaySessionId,
     pluginVersion,
   };
@@ -720,7 +592,6 @@ function registerWorker(
         if (prev !== undefined) {
           emitProtocolMetric({
             metric: "heartbeat_freshness",
-            origin: ORIGIN,
             value: now - prev,
             computeTargetId: targetId,
             gatewaySessionId: gatewaySessionId ?? undefined,
@@ -731,15 +602,6 @@ function registerWorker(
         if (workerContext.degradedTimer !== null) {
           clearTimeout(workerContext.degradedTimer);
           workerContext.degradedTimer = null;
-        }
-        // Emit recovery if connection was previously degraded
-        if (workerContext.wasDegraded) {
-          emitConnectionState(
-            ConnectionState.Online,
-            targetId,
-            gatewaySessionId
-          );
-          workerContext.wasDegraded = false;
         }
       })
       .catch((error) => {
@@ -767,30 +629,14 @@ function registerWorker(
               heartbeatFreshness: freshness,
             })
           );
-          emitConnectionState(
-            ConnectionState.Degraded,
-            targetId,
-            gatewaySessionId
-          );
-          workerContext.wasDegraded = true;
         }, HEARTBEAT_DEGRADED_THRESHOLD_MS);
       });
   }, HEARTBEAT_INTERVAL_MS);
 
   workerContext.heartbeatTimer = heartbeatTimer;
 
-  // Treat takeover (different socket displacing an existing worker) as a first
-  // registration so that an `online` metric is emitted for the new connection.
-  const isTakeover =
-    workersByTargetId.has(targetId) &&
-    workersByTargetId.get(targetId)?.socket.id !== socket.id;
-  const isFirstRegistration = !workersByTargetId.has(targetId) || isTakeover;
   workersByTargetId.set(targetId, workerContext);
   socketToTarget.set(socket.id, targetId);
-
-  if (isFirstRegistration) {
-    emitConnectionState(ConnectionState.Online, targetId, gatewaySessionId);
-  }
 
   log.info("Worker registered", {
     socketId: socket.id,
@@ -825,7 +671,6 @@ namespace.on("connection", (socket) => {
   connectCount += 1;
   emitProtocolMetric({
     metric: "connection_churn_rate",
-    origin: ORIGIN,
     count: connectCount,
     timestamp: new Date().toISOString(),
   });
@@ -1111,18 +956,11 @@ namespace.on("connection", (socket) => {
         disconnectCount += 1;
         emitProtocolMetric({
           metric: "connection_churn_rate",
-          origin: ORIGIN,
           count: disconnectCount,
           computeTargetId: targetId,
           gatewaySessionId: gatewaySessionId ?? undefined,
           timestamp: new Date().toISOString(),
         });
-
-        emitConnectionState(
-          ConnectionState.Disconnected,
-          targetId,
-          gatewaySessionId
-        );
 
         // Only notify Vercel of disconnect if this socket is still the owner.
         // If another socket has taken over, Vercel already knows via its hello.
@@ -1220,44 +1058,9 @@ export async function stopRelayServer(): Promise<void> {
   relayServerStarted = false;
 }
 
-async function handleShutdown(): Promise<void> {
-  try {
-    for (const [targetId, ctx] of workersByTargetId) {
-      emitConnectionState(
-        ConnectionState.Disconnected,
-        targetId,
-        ctx.gatewaySessionId
-      );
-    }
-    // Clear the map BEFORE awaiting the flush. If a socket disconnect fires
-    // during the await window (e.g., a natural disconnect or io.close() from
-    // an external stop), its handler would otherwise look up the worker, find
-    // it still registered, and re-emit `disconnected` — producing a duplicate
-    // transition for the same logical event. Clearing here makes the handler's
-    // `isCurrentOwner` check fail-closed and skip the duplicate emission.
-    workersByTargetId.clear();
-
-    // Drain the observability buffer within a 5-second wall-clock deadline.
-    // log.flush() calls flushToDatadog(), which chains subsequent batches via
-    // its .finally() handler, so one awaited call drains all pending entries.
-    await Promise.race([
-      log.flush(),
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, SHUTDOWN_FLUSH_DEADLINE_MS).unref?.();
-      }),
-    ]);
-  } catch {
-    // swallow — must still exit
-  }
-  process.exit(0);
-}
-
 if (process.env.NODE_ENV !== "test") {
   startRelayServer().catch((error) => {
     log.error("Failed to start relay server", { error });
     process.exit(1);
   });
-
-  process.once("SIGTERM", handleShutdown);
-  process.once("SIGINT", handleShutdown);
 }

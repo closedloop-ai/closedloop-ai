@@ -15,7 +15,6 @@ import { ConnectGitHubStep } from "./connect-github-step";
 import { ConnectOptionalIntegrationsStep } from "./connect-optional-integrations-step";
 import { CreateProjectStep } from "./create-project-step";
 import { CreateTeamStep } from "./create-team-step";
-import { DownloadElectronAppStep } from "./download-electron-app-step";
 import { WelcomeStep } from "./welcome-step";
 import { WizardShell } from "./wizard-shell";
 
@@ -76,15 +75,7 @@ export function OnboardingWizard() {
   return (
     <WizardShell currentStep={state.currentStep} onBack={goBack}>
       {state.currentStep === OnboardingStep.Welcome && (
-        <WelcomeStep
-          onNext={() => goToStep(OnboardingStep.DownloadElectronApp)}
-        />
-      )}
-
-      {state.currentStep === OnboardingStep.DownloadElectronApp && (
-        <DownloadElectronAppStep
-          onNext={() => goToStep(OnboardingStep.CreateTeam)}
-        />
+        <WelcomeStep onNext={() => goToStep(OnboardingStep.CreateTeam)} />
       )}
 
       {state.currentStep === OnboardingStep.CreateTeam && (

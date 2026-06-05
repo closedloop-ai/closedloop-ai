@@ -29,7 +29,7 @@ export function CompleteStep({
       createdProjectId: createdProjectId ?? undefined,
     });
     onComplete?.();
-    router.push("/my-tasks?from=onboarding");
+    router.push("/my-tasks");
   };
 
   return (

@@ -1,15 +1,8 @@
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { auth, getAuth, verifyToken } from "@repo/auth/server";
-import { ApiKeySource } from "@repo/database";
-import { waitUntil } from "@vercel/functions";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
-import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
-import {
-  getDesktopManagedPopRequestFailure,
-  resolveDesktopManagedPopMode,
-} from "./desktop-managed-pop";
 
 type ResolvedAuthContext = {
   organizationId: string;
@@ -31,10 +24,10 @@ export async function resolveAnyAuthContext(
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (token?.startsWith("sk_live_")) {
-    return resolveApiKeyTokenContext(token, {
-      request,
-      requiredScopes: options?.requiredScopes ?? ["read"],
-    });
+    return resolveApiKeyTokenContext(
+      token,
+      options?.requiredScopes ?? ["read"]
+    );
   }
 
   const requestContext = await resolveClerkRequestContext(request);
@@ -59,20 +52,9 @@ export async function resolveAnyAuthContext(
  */
 export async function resolveApiKeyTokenContext(
   token: string,
-  options:
-    | ApiKeyScope[]
-    | {
-        request?: Request;
-        requiredScopes?: ApiKeyScope[];
-      } = {}
+  requiredScopes: ApiKeyScope[] = ["read"]
 ): Promise<ResolvedAuthContext | null> {
-  const resolvedOptions = Array.isArray(options)
-    ? { requiredScopes: options }
-    : options;
-  const requiredScopes = resolvedOptions.requiredScopes ?? ["read"];
-  const keyContext = await apiKeysService.verifyKeyWithMetadata(token, {
-    updateLastUsedAt: false,
-  });
+  const keyContext = await apiKeysService.verifyKey(token);
   if (!keyContext) {
     return null;
   }
@@ -89,14 +71,6 @@ export async function resolveApiKeyTokenContext(
     return null;
   }
 
-  const popAccepted = await isDesktopManagedPopAccepted(
-    { ...keyContext, clerkUserId: user.clerkId },
-    resolvedOptions.request
-  );
-  if (!popAccepted) {
-    return null;
-  }
-
   const organization = await organizationsService.findById(
     keyContext.organizationId
   );
@@ -108,41 +82,6 @@ export async function resolveApiKeyTokenContext(
     organizationId: keyContext.organizationId,
     userId: keyContext.userId,
   };
-}
-
-async function isDesktopManagedPopAccepted(
-  keyContext: VerifiedApiKeyContextWithMetadata & {
-    clerkUserId?: string | null;
-  },
-  request: Request | undefined
-): Promise<boolean> {
-  if (
-    keyContext.source !== ApiKeySource.DESKTOP_MANAGED ||
-    !(keyContext.boundPublicKey && keyContext.gatewayId)
-  ) {
-    waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
-    return true;
-  }
-
-  if (request) {
-    const popFailure = await getDesktopManagedPopRequestFailure({
-      keyContext,
-      request,
-    });
-    if (popFailure) {
-      return false;
-    }
-    waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
-    return true;
-  }
-
-  const mode = await resolveDesktopManagedPopMode(keyContext);
-  if (mode !== "enforce") {
-    waitUntil(apiKeysService.touchLastUsedAt(keyContext.apiKeyId));
-    return true;
-  }
-
-  return false;
 }
 
 function resolveClerkRequestContext(

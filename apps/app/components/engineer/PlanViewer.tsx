@@ -18,7 +18,7 @@ import Image from "next/image";
 import { type ReactNode, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { closedloopPlanOptions } from "@/lib/engineer/queries/closedloop";
+import { symphonyPlanOptions } from "@/lib/engineer/queries/symphony";
 import { getTextContent } from "@/lib/engineer/utils";
 
 type PlanViewerProps = {
@@ -31,7 +31,7 @@ type PlanViewerProps = {
 };
 
 /**
- * PlanViewer component displays the ClosedLoop implementation plan.
+ * PlanViewer component displays the Symphony implementation plan.
  * Polls for plan.json availability and renders the markdown content.
  */
 export function PlanViewer({
@@ -48,7 +48,7 @@ export function PlanViewer({
     error,
     refetch,
   } = useQuery({
-    ...closedloopPlanOptions(ticketId, repoPath),
+    ...symphonyPlanOptions(ticketId, repoPath),
     refetchInterval: (query) => {
       const data = query.state.data;
       if (data?.planExists) {
@@ -196,7 +196,7 @@ export function PlanViewer({
 /**
  * Transform local file paths to API URLs for attachments
  * Input: /Users/.../repoName-ticketId/.closedloop-ai/work/attachments/image-1.png
- * Output: /api/gateway/symphony/attachments/ticketId/image-1.png?repo=repoPath
+ * Output: /api/engineer/symphony/attachments/ticketId/image-1.png?repo=~/Source/repoName
  */
 function transformImageSrc(
   src: string,
@@ -208,7 +208,7 @@ function transformImageSrc(
     /(?:\.closedloop-ai\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
-    return `/api/gateway/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
+    return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
   }
   return src;
 }

@@ -1,24 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
-import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { emitConnectionStateEvent } from "@repo/observability/telemetry/emitter";
-import {
-  emitProtocolMetric,
-  emitQueueMetric,
-} from "@repo/observability/telemetry/metrics";
-import { ORIGIN } from "@repo/observability/telemetry/origin";
+import { emitProtocolMetric } from "@repo/observability/telemetry/metrics";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
 import {
   ErrorClass,
   TelemetryCategory,
 } from "@repo/observability/telemetry/schema";
-import { waitUntil } from "@vercel/functions";
-import {
-  computeTargetsService,
-  isComputeTargetGatewayConflictResult,
-} from "@/app/compute-targets/service";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   PROTOCOL_VERSION,
@@ -109,8 +100,7 @@ export async function dispatchSocketEvent(
           payload,
           targetId,
           correlation,
-          pluginVersion,
-          auth
+          pluginVersion
         ),
       };
 
@@ -126,7 +116,6 @@ export async function dispatchSocketEvent(
     default:
       log.warn("Unknown relay socket event", {
         event,
-        computeTargetId: targetId ?? correlation.computeTargetId ?? null,
         errorClass: ErrorClass.Protocol,
       });
       return { ok: true, response: { emit: [] } };
@@ -170,116 +159,6 @@ function wireCommand(command: WireCommandPayload): EmitInstruction {
   return { event: "desktop.command", payload: envelope(command) };
 }
 
-type RelayHelloInput = {
-  machineName: string;
-  platform: string;
-  capabilities: JsonObject;
-  supportedOperations: string[];
-  computeTargetId?: string;
-  pluginVersion?: string;
-  gatewayId?: string;
-  desktopSecurityUpgradeProtocolVersion?: 1;
-  maxInFlightCommands?: number;
-};
-
-function parseRelayHelloInput(payload: unknown): RelayHelloInput | null {
-  if (!isRecord(payload)) {
-    return null;
-  }
-  if (
-    typeof payload.machineName !== "string" ||
-    typeof payload.platform !== "string"
-  ) {
-    return null;
-  }
-
-  const desktopSecurityUpgradeProtocolVersion =
-    payload.desktopSecurityUpgradeProtocolVersion === 1 ? 1 : undefined;
-  return {
-    machineName: payload.machineName,
-    platform: payload.platform,
-    capabilities: {
-      ...(isRecord(payload.capabilities)
-        ? (payload.capabilities as JsonObject)
-        : {}),
-      maxInFlightCommands: (payload.maxInFlightCommands as JsonValue) ?? null,
-      allowedDirectoriesHash:
-        (payload.allowedDirectoriesHash as JsonValue) ?? null,
-      socketProtocolVersion: PROTOCOL_VERSION,
-      pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
-      desktopSecurityUpgradeProtocolVersion:
-        desktopSecurityUpgradeProtocolVersion ?? null,
-    },
-    supportedOperations: Array.isArray(payload.supportedOperations)
-      ? payload.supportedOperations.filter(
-          (operation): operation is string => typeof operation === "string"
-        )
-      : [],
-    computeTargetId:
-      typeof payload.computeTargetId === "string"
-        ? payload.computeTargetId
-        : undefined,
-    pluginVersion:
-      typeof payload.pluginVersion === "string"
-        ? payload.pluginVersion
-        : undefined,
-    gatewayId:
-      typeof payload.gatewayId === "string" ? payload.gatewayId : undefined,
-    desktopSecurityUpgradeProtocolVersion,
-    maxInFlightCommands:
-      typeof payload.maxInFlightCommands === "number"
-        ? payload.maxInFlightCommands
-        : undefined,
-  };
-}
-
-async function resolveRelayHelloTarget(
-  input: RelayHelloInput,
-  auth: { organizationId: string; userId: string }
-): Promise<{ targetId: string; targetCreated: boolean }> {
-  if (input.computeTargetId) {
-    const updated = await computeTargetsService.updateOwned(
-      input.computeTargetId,
-      auth.organizationId,
-      auth.userId,
-      {
-        machineName: input.machineName,
-        platform: input.platform,
-        capabilities: input.capabilities,
-        supportedOperations: input.supportedOperations,
-        gatewayId: input.gatewayId,
-        desktopSecurityUpgradeProtocolVersion:
-          input.desktopSecurityUpgradeProtocolVersion,
-      }
-    );
-    if (isComputeTargetGatewayConflictResult(updated)) {
-      return { targetId: "", targetCreated: false };
-    }
-    if (updated.value) {
-      return { targetId: input.computeTargetId, targetCreated: false };
-    }
-  }
-
-  const target = await computeTargetsService.register(
-    auth.organizationId,
-    auth.userId,
-    {
-      machineName: input.machineName,
-      platform: input.platform,
-      capabilities: input.capabilities,
-      supportedOperations: input.supportedOperations,
-      pluginVersion: input.pluginVersion,
-      gatewayId: input.gatewayId,
-      desktopSecurityUpgradeProtocolVersion:
-        input.desktopSecurityUpgradeProtocolVersion,
-    }
-  );
-  if (isComputeTargetGatewayConflictResult(target)) {
-    return { targetId: "", targetCreated: false };
-  }
-  return { targetId: target.value.id, targetCreated: true };
-}
-
 // ---------------------------------------------------------------------------
 // Event handlers — each returns what the relay should emit back to the worker
 // ---------------------------------------------------------------------------
@@ -288,20 +167,66 @@ async function handleHello(
   payload: unknown,
   auth: { organizationId: string; userId: string }
 ): Promise<SocketEventResponse> {
-  const input = parseRelayHelloInput(payload);
-  if (!input) {
+  if (!isRecord(payload)) {
     return { emit: [], disconnect: true };
   }
 
-  const resolvedTarget = await resolveRelayHelloTarget(input, auth);
-  if (!resolvedTarget.targetId) {
-    log.warn("Relay hello rejected due to gateway conflict", {
-      gatewayId: input.gatewayId,
-      errorClass: ErrorClass.Protocol,
-    });
+  if (
+    typeof payload.machineName !== "string" ||
+    typeof payload.platform !== "string"
+  ) {
     return { emit: [], disconnect: true };
   }
-  const { targetId, targetCreated } = resolvedTarget;
+
+  const machineName = payload.machineName;
+  const platform = payload.platform;
+  const capabilities: JsonObject = {
+    ...(isRecord(payload.capabilities)
+      ? (payload.capabilities as JsonObject)
+      : {}),
+    maxInFlightCommands: (payload.maxInFlightCommands as JsonValue) ?? null,
+    allowedDirectoriesHash:
+      (payload.allowedDirectoriesHash as JsonValue) ?? null,
+    socketProtocolVersion: PROTOCOL_VERSION,
+    pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
+  };
+  const supportedOperations = Array.isArray(payload.supportedOperations)
+    ? (payload.supportedOperations as string[])
+    : [];
+
+  let targetId = payload.computeTargetId as string | undefined;
+  let targetCreated = false;
+
+  if (targetId) {
+    const updated = await computeTargetsService.updateOwned(
+      targetId,
+      auth.organizationId,
+      auth.userId,
+      { machineName, platform, capabilities, supportedOperations }
+    );
+    if (!updated) {
+      targetId = undefined;
+    }
+  }
+
+  if (!targetId) {
+    const target = await computeTargetsService.register(
+      auth.organizationId,
+      auth.userId,
+      {
+        machineName,
+        platform,
+        capabilities,
+        supportedOperations,
+        pluginVersion:
+          typeof payload.pluginVersion === "string"
+            ? payload.pluginVersion
+            : undefined,
+      }
+    );
+    targetId = target.id;
+    targetCreated = true;
+  }
 
   const [pendingCommands] = await Promise.all([
     desktopCommandStore.listNonTerminalDispatchCommands(targetId),
@@ -352,13 +277,6 @@ async function handleHello(
   for (const command of pendingCommands) {
     emit.push(wireCommand(toWireCommandFromStore(command)));
   }
-
-  waitUntil(
-    emitFleetCapacityMetrics({
-      targetId,
-      maxInFlightCommands: input.maxInFlightCommands,
-    })
-  );
 
   return { targetId, gatewaySessionId: sessionId, emit };
 }
@@ -430,7 +348,6 @@ async function handleCommandEvent(
           const latencyMs = Date.now() - new Date(command.createdAt).getTime();
           emitProtocolMetric({
             metric: "terminal_event_latency",
-            origin: ORIGIN,
             value: latencyMs,
             computeTargetId: targetId,
             gatewaySessionId: ctx.gatewaySessionId,
@@ -520,15 +437,13 @@ async function handleCommandAck(
     commandId,
     accepted,
     reason,
-    targetId,
-    ctx
+    targetId
   );
 
   if (acknowledged) {
     const latencyMs = Date.now() - new Date(acknowledged.createdAt).getTime();
     emitProtocolMetric({
       metric: "ack_latency",
-      origin: ORIGIN,
       value: latencyMs,
       computeTargetId: targetId,
       gatewaySessionId: ctx.gatewaySessionId,
@@ -598,7 +513,6 @@ async function handlePresence(
 
   emitProtocolMetric({
     metric: "presence_received_latency",
-    origin: ORIGIN,
     value: Date.now() - requestArrivedAt,
     computeTargetId: auth.targetId,
     gatewaySessionId: ctx.gatewaySessionId,
@@ -649,15 +563,12 @@ function handleRelayTelemetry(
   payload: unknown,
   targetId: string,
   correlation: Partial<CorrelationContext>,
-  pluginVersion: string | undefined,
-  auth: { organizationId: string; userId: string } | null
+  pluginVersion: string | undefined
 ): SocketEventResponse {
   const result = handleTelemetryEvent(payload, {
     authenticatedTargetId: targetId,
     pluginVersion,
     gatewaySessionId: correlation.gatewaySessionId,
-    organizationId: auth?.organizationId,
-    userId: auth?.userId,
   });
 
   if (!result.ok) {
@@ -665,73 +576,6 @@ function handleRelayTelemetry(
   }
 
   return { emit: [] };
-}
-
-export async function emitFleetCapacityMetrics({
-  targetId,
-  maxInFlightCommands,
-}: {
-  targetId: string;
-  maxInFlightCommands: number | undefined;
-}): Promise<void> {
-  let queuedCount: number;
-  let inFlightCount: number;
-
-  try {
-    [queuedCount, inFlightCount] = await Promise.all([
-      desktopCommandStore.countCommandsForTarget(
-        targetId,
-        DesktopCommandStatus.Queued
-      ),
-      desktopCommandStore.countCommandsForTarget(targetId, [
-        DesktopCommandStatus.Accepted,
-        DesktopCommandStatus.Running,
-      ]),
-    ]);
-  } catch (error) {
-    log.warn("fleet_capacity_metrics_query_failed", {
-      event: "fleet_capacity_metrics_query_failed",
-      computeTargetId: targetId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return;
-  }
-
-  emitQueueMetric({
-    metric: "queued_command_count",
-    value: queuedCount,
-    computeTargetId: targetId,
-    origin: ORIGIN,
-  });
-  emitQueueMetric({
-    metric: "in_flight_command_count",
-    value: inFlightCount,
-    computeTargetId: targetId,
-    origin: ORIGIN,
-  });
-
-  if (
-    typeof maxInFlightCommands !== "number" ||
-    maxInFlightCommands <= 0 ||
-    !Number.isFinite(maxInFlightCommands)
-  ) {
-    log.warn("executor_saturation_skipped", {
-      event: "executor_saturation_skipped",
-      reason: "maxInFlightCommands_invalid",
-      computeTargetId: targetId,
-      maxInFlightCommands,
-    });
-    return;
-  }
-
-  // Intentionally unclamped: >1.0 signals overload (e.g. maxInFlightCommands lowered mid-flight).
-  const value = inFlightCount / maxInFlightCommands;
-  emitQueueMetric({
-    metric: "executor_saturation",
-    value,
-    computeTargetId: targetId,
-    origin: ORIGIN,
-  });
 }
 
 export function extractCorrelationContext(

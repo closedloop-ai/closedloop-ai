@@ -29,12 +29,12 @@ type JudgeAnalyticsTableProps = {
 };
 
 function formatOrDash(value: number | null): string {
-  return value === null ? "\u2014" : formatScorePercent(value);
+  return value !== null ? formatScorePercent(value) : "\u2014";
 }
 
 const JUDGE_SORT_COLUMNS = [
   "judgeName",
-  "documentsEvaluated",
+  "artifactsEvaluated",
   "min",
   "mean",
   "max",
@@ -48,7 +48,7 @@ const JUDGE_SORT_CONFIGS: Record<
   SortConfig<JudgeAggregateStats>
 > = {
   judgeName: { key: "judgeName", columnType: "string" },
-  documentsEvaluated: { key: "documentsEvaluated", columnType: "number" },
+  artifactsEvaluated: { key: "artifactsEvaluated", columnType: "number" },
   min: { key: "min", columnType: "number" },
   mean: { key: "mean", columnType: "number" },
   max: { key: "max", columnType: "number" },
@@ -124,7 +124,7 @@ export function JudgeAnalyticsTable({
                 );
               })()}
             </TableCell>
-            <TableCell>{judge.documentsEvaluated}</TableCell>
+            <TableCell>{judge.artifactsEvaluated}</TableCell>
             <TableCell>{formatScorePercent(judge.min)}</TableCell>
             <TableCell>{formatScorePercent(judge.max)}</TableCell>
             <TableCell>{formatScorePercent(judge.mean)}</TableCell>

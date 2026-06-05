@@ -36,7 +36,7 @@ export function PathAutocomplete({
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Get the parent directory path to query
-  // For a partially typed path, query the parent directory.
+  // For "~/Source/cla" we query "~/Source"
   const getQueryPath = useCallback(() => {
     if (!value) {
       return "~";
@@ -153,8 +153,6 @@ export function PathAutocomplete({
         e.preventDefault();
         setIsOpen(false);
         break;
-      default:
-        break;
     }
   };
 
@@ -263,7 +261,6 @@ export function PathAutocomplete({
                     ref={(el) => {
                       itemRefs.current[index] = el;
                     }}
-                    type="button"
                   >
                     <Icon
                       className={cn(

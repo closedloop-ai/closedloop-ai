@@ -1,7 +1,5 @@
 # Engineer Namespace — Complete Analysis
 
-> **HISTORICAL (pre-PLN-252).** This document captures the `/api/engineer/*` namespace as it existed before it was renamed to `/api/gateway/*` and the 62 Next.js route handlers under `apps/app/app/api/engineer/` were deleted in favor of native gateway operations in `closedloop-electron`. URLs, file paths, and architecture diagrams below reflect that prior state. Preserved as a historical record of the analysis that motivated the rename; do not treat it as current reference material.
-
 ## Table of Contents
 
 1. [Overview](#overview)

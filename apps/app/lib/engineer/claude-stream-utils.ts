@@ -3,23 +3,8 @@
  * Used by the review route (streaming to client) and the review-extract endpoint.
  */
 
-type ClaudeContentBlock = {
-  type?: string;
-  text?: string;
-};
-
-type ClaudeEvent = {
-  type?: string;
-  sessionId?: string;
-  session_id?: string;
-  subtype?: string;
-  delta?: { type?: string; text?: string };
-  message?: { content?: ClaudeContentBlock[] };
-  result?: string | ClaudeContentBlock[] | null;
-  content_block?: { type?: string };
-};
-
-export function extractClaudeText(event: ClaudeEvent): string | null {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractClaudeText(event: any): string | null {
   // assistant message with content blocks — append newline to separate turns
   if (event.type === "assistant" && event.message?.content) {
     const texts: string[] = [];
@@ -66,11 +51,10 @@ export function extractClaudeText(event: ClaudeEvent): string | null {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function describeClaudeEvent(event: ClaudeEvent): string {
+export function describeClaudeEvent(event: any): string {
   if (event.type === "assistant" && event.message?.content) {
-    const blockTypes = event.message.content
-      .map((block) => block.type ?? "?")
-      .join(", ");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const blockTypes = event.message.content.map((b: any) => b.type).join(", ");
     return `assistant [${blockTypes}]`;
   }
   if (event.type === "user") {
@@ -95,10 +79,11 @@ export function describeClaudeEvent(event: ClaudeEvent): string {
     }
     return `result (subtype=${event.subtype ?? "?"})`;
   }
-  return event.type ?? "unknown";
+  return event.type;
 }
 
-export function extractClaudeSessionId(event: ClaudeEvent): string | null {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractClaudeSessionId(event: any): string | null {
   if (event.type === "init" && event.sessionId) {
     return event.sessionId;
   }

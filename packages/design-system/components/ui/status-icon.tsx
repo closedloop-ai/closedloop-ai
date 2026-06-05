@@ -17,13 +17,10 @@ import {
 type StatusIconStatus =
   | "backlog"
   | "todo"
-  | "started"
   | "in-progress"
   | "in-review"
-  | "executed"
   | "complete"
-  | "wont-do"
-  | "decorative";
+  | "wont-do";
 
 interface StatusIconProps
   extends React.SVGAttributes<SVGSVGElement> {
@@ -38,13 +35,10 @@ interface StatusIconProps
 const STATUS_LABELS: Record<StatusIconStatus, string> = {
   backlog: "Backlog",
   todo: "To do",
-  started: "In Progress",
   "in-progress": "In progress",
   "in-review": "In review",
-  executed: "Executed",
   complete: "Complete",
   "wont-do": "Won't do",
-  decorative: "Status",
 };
 
 type StatusConfig = {
@@ -53,10 +47,6 @@ type StatusConfig = {
   dashed: boolean;
   filled: boolean;
   icon: "check" | "x" | null;
-  /** Override the track (background circle) color. Defaults to var(--progress). */
-  trackColor?: string;
-  /** Override the stroke width for the track and arc. Defaults to STROKE_WIDTH (2). */
-  strokeWidth?: number;
 };
 
 function getStatusConfig(status: StatusIconStatus): StatusConfig {
@@ -67,29 +57,17 @@ function getStatusConfig(status: StatusIconStatus): StatusConfig {
     case "todo": {
       return { percentage: 0, color: "var(--progress)", dashed: false, filled: false, icon: null };
     }
-    case "started": {
-      return { percentage: 25, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
-    }
     case "in-progress": {
       return { percentage: 48.5, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
     }
     case "in-review": {
-      return { percentage: 73.5, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
-    }
-    case "executed": {
-      return { percentage: 100, color: "var(--progress-foreground)", dashed: false, filled: false, icon: null };
+      return { percentage: 73.5, color: "var(--warning)", dashed: false, filled: false, icon: null };
     }
     case "complete": {
       return { percentage: 100, color: "var(--success)", dashed: false, filled: true, icon: "check" };
     }
     case "wont-do": {
       return { percentage: 100, color: "var(--foreground)", dashed: false, filled: true, icon: "x" };
-    }
-    default: {
-      // "decorative" plus the unknown-status fallback. Matches the visual
-      // for decorative icons so that an unrecognized status renders as a
-      // muted neutral marker rather than an empty "todo" circle.
-      return { percentage: 48.5, color: "var(--muted-foreground)", dashed: false, filled: false, icon: null, trackColor: "var(--muted-foreground)", strokeWidth: 1.5 };
     }
   }
 }
@@ -124,7 +102,6 @@ function StatusIcon({
     );
   }
 
-  const sw = config.strokeWidth ?? STROKE_WIDTH;
   const outerOffset = CIRCUMFERENCE * (1 - config.percentage / 100);
   const innerOffset = INNER_CIRCUMFERENCE * (1 - config.percentage / 100);
   const spinnerDash = CIRCUMFERENCE * 0.25;
@@ -148,8 +125,8 @@ function StatusIcon({
         cx={CENTER}
         cy={CENTER}
         r={RADIUS}
-        stroke={config.trackColor ?? "var(--progress)"}
-        strokeWidth={sw}
+        stroke="var(--progress)"
+        strokeWidth={STROKE_WIDTH}
         fill="none"
         strokeDasharray={config.dashed ? "3 3" : undefined}
       />
@@ -160,7 +137,7 @@ function StatusIcon({
           cy={CENTER}
           r={RADIUS}
           stroke={config.color}
-          strokeWidth={sw}
+          strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           fill="none"
           strokeDasharray={CIRCUMFERENCE}
@@ -176,7 +153,7 @@ function StatusIcon({
           cy={CENTER}
           r={RADIUS}
           stroke="var(--thinking)"
-          strokeWidth={sw}
+          strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           fill="none"
           strokeDasharray={`${spinnerDash} ${spinnerGap}`}

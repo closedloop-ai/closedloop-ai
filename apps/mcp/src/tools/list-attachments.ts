@@ -1,16 +1,18 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { EntityType } from "@repo/api/src/types/entity-link.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import {
-  describeIdOrSlug,
-  encodePathSegment,
-  withErrorHandling,
-} from "./tool-utils.js";
+import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+
+const ATTACHMENT_ENTITY_TYPE_OPTIONS = [
+  EntityType.Artifact,
+  EntityType.Feature,
+] as [string, ...string[]];
 
 /**
  * Register the list-attachments tool on the given MCP server.
- * Calls GET /documents/:entityId/attachments. Features are documents
- * (type=FEATURE), so feature IDs/slugs resolve through the same endpoint.
+ * Calls GET /artifacts/:entityId/attachments or /features/:entityId/attachments
+ * based on the entityType parameter.
  */
 export function registerListAttachments(
   server: McpServer,
@@ -20,18 +22,19 @@ export function registerListAttachments(
     "list-attachments",
     {
       description:
-        "List file attachments for a document (PRD, implementation plan, feature, or template) by UUID or slug. Returns attachment metadata including id, filename, mimeType, and sizeBytes. Pass the user's slug verbatim.",
+        "List file attachments for an artifact or feature. Returns attachment metadata including id, filename, mimeType, and sizeBytes.",
       inputSchema: {
-        entityId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        entityType: z
+          .enum(ATTACHMENT_ENTITY_TYPE_OPTIONS)
+          .describe("Entity type: ARTIFACT or FEATURE"),
+        entityId: z.string().describe("Artifact or feature ID"),
       },
     },
-    ({ entityId }) =>
+    ({ entityType, entityId }) =>
       withErrorHandling(async () => {
-        const path = `/documents/${encodePathSegment(entityId)}/attachments`;
+        const basePath =
+          entityType === EntityType.Feature ? "features" : "artifacts";
+        const path = `/${basePath}/${encodePathSegment(entityId)}/attachments`;
         const attachments = await apiClient.get<unknown>(path);
         return {
           content: [

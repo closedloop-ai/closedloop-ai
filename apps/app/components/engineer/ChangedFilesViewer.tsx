@@ -13,7 +13,6 @@ import {
   GitCommitHorizontal,
   Loader2,
 } from "lucide-react";
-import Image from "next/image";
 import { type ComponentType, useState } from "react";
 import ReactDiffViewerBase, {
   DiffMethod,
@@ -21,8 +20,7 @@ import ReactDiffViewerBase, {
 } from "react-diff-viewer-continued";
 import { CommitDialog } from "@/components/engineer/CommitDialog";
 import { useThemeContext } from "@/components/engineer/ThemeProvider";
-import { getWorktreePath } from "@/lib/chat/chat-utils";
-import { diffViewerStyles } from "@/lib/diff-viewer-theme";
+import { getWorktreePath } from "@/lib/engineer/chat-utils";
 import {
   type FileDiff,
   gitBranchDiffOptions,
@@ -36,8 +34,6 @@ import { reposOptions } from "@/lib/engineer/queries/repos";
 // lets TypeScript treat it as a standard React component in JSX.
 const ReactDiffViewer =
   ReactDiffViewerBase as unknown as ComponentType<ReactDiffViewerProps>;
-const DIFF_IMAGE_PREVIEW_WIDTH = 1600;
-const DIFF_IMAGE_PREVIEW_HEIGHT = 900;
 
 type DiffMode = "working" | "branch";
 
@@ -46,6 +42,68 @@ type ChangedFilesViewerProps = {
   repoPath: string;
   hideCommitButton?: boolean;
   onSelectedFileChange?: (file: string | null) => void;
+};
+
+/**
+ * Custom styles for the diff viewer to match our dark theme
+ */
+const diffViewerStyles = {
+  variables: {
+    light: {
+      diffViewerBackground: "hsl(var(--background))",
+      diffViewerColor: "hsl(var(--foreground))",
+      addedBackground: "rgba(46, 160, 67, 0.12)",
+      addedColor: "hsl(var(--foreground))",
+      removedBackground: "rgba(248, 81, 73, 0.12)",
+      removedColor: "hsl(var(--foreground))",
+      wordAddedBackground: "rgba(46, 160, 67, 0.30)",
+      wordRemovedBackground: "rgba(248, 81, 73, 0.30)",
+      addedGutterBackground: "rgba(46, 160, 67, 0.25)",
+      removedGutterBackground: "rgba(248, 81, 73, 0.25)",
+      gutterBackground: "hsl(var(--muted))",
+      gutterBackgroundDark: "hsl(var(--muted))",
+      highlightBackground: "rgba(0, 0, 0, 0.05)",
+      highlightGutterBackground: "rgba(0, 0, 0, 0.05)",
+      codeFoldGutterBackground: "hsl(var(--muted))",
+      codeFoldBackground: "hsl(var(--muted))",
+      emptyLineBackground: "hsl(var(--muted))",
+      codeFoldContentColor: "hsl(var(--muted-foreground))",
+    },
+    dark: {
+      diffViewerBackground: "hsl(var(--background))",
+      diffViewerColor: "hsl(var(--foreground))",
+      addedBackground: "rgba(46, 160, 67, 0.15)",
+      addedColor: "hsl(var(--foreground))",
+      removedBackground: "rgba(248, 81, 73, 0.15)",
+      removedColor: "hsl(var(--foreground))",
+      wordAddedBackground: "rgba(46, 160, 67, 0.4)",
+      wordRemovedBackground: "rgba(248, 81, 73, 0.4)",
+      addedGutterBackground: "rgba(46, 160, 67, 0.2)",
+      removedGutterBackground: "rgba(248, 81, 73, 0.2)",
+      gutterBackground: "hsl(var(--muted))",
+      gutterBackgroundDark: "hsl(var(--muted))",
+      highlightBackground: "rgba(255, 255, 255, 0.1)",
+      highlightGutterBackground: "rgba(255, 255, 255, 0.1)",
+      codeFoldGutterBackground: "hsl(var(--muted))",
+      codeFoldBackground: "hsl(var(--muted))",
+      emptyLineBackground: "hsl(var(--muted))",
+      codeFoldContentColor: "hsl(var(--muted-foreground))",
+    },
+  },
+  line: {
+    padding: "4px 8px",
+    fontSize: "12px",
+    fontFamily: "var(--font-mono), monospace",
+  },
+  gutter: {
+    padding: "4px 8px",
+    fontSize: "11px",
+    minWidth: "40px",
+  },
+  contentText: {
+    fontSize: "12px",
+    fontFamily: "var(--font-mono), monospace",
+  },
 };
 
 export function ChangedFilesViewer({
@@ -157,7 +215,6 @@ export function ChangedFilesViewer({
                 : "text-muted-foreground hover:text-foreground"
             )}
             onClick={() => setDiffMode("working")}
-            type="button"
           >
             <FileCode className="size-3.5" />
             Working
@@ -170,7 +227,6 @@ export function ChangedFilesViewer({
                 : "text-muted-foreground hover:text-foreground"
             )}
             onClick={() => setDiffMode("branch")}
-            type="button"
           >
             <GitBranch className="size-3.5" />
             Branch
@@ -253,14 +309,8 @@ function ImageDiffViewer({ diff }: Readonly<{ diff: FileDiff }>) {
       <div className="space-y-2 p-4">
         <span className="font-medium text-emerald-500 text-xs">New file</span>
         <div className="inline-block rounded border border-border bg-muted/30 p-2">
-          <Image
-            alt="New"
-            className="h-auto w-auto max-w-full"
-            height={DIFF_IMAGE_PREVIEW_HEIGHT}
-            src={src(diff.newContent)}
-            unoptimized
-            width={DIFF_IMAGE_PREVIEW_WIDTH}
-          />
+          {/* eslint-disable-next-line @next/next/no-img-element -- data URI; next/image cannot optimize base64 */}
+          <img alt="New" className="max-w-full" src={src(diff.newContent)} />
         </div>
       </div>
     );
@@ -271,13 +321,11 @@ function ImageDiffViewer({ diff }: Readonly<{ diff: FileDiff }>) {
       <div className="space-y-2 p-4">
         <span className="font-medium text-red-500 text-xs">Deleted</span>
         <div className="inline-block rounded border border-border bg-muted/30 p-2">
-          <Image
+          {/* eslint-disable-next-line @next/next/no-img-element -- data URI; next/image cannot optimize base64 */}
+          <img
             alt="Deleted"
-            className="h-auto w-auto max-w-full opacity-60"
-            height={DIFF_IMAGE_PREVIEW_HEIGHT}
+            className="max-w-full opacity-60"
             src={src(diff.oldContent)}
-            unoptimized
-            width={DIFF_IMAGE_PREVIEW_WIDTH}
           />
         </div>
       </div>
@@ -291,27 +339,15 @@ function ImageDiffViewer({ diff }: Readonly<{ diff: FileDiff }>) {
           Before
         </span>
         <div className="rounded border border-border bg-muted/30 p-2">
-          <Image
-            alt="Before"
-            className="h-auto w-auto max-w-full"
-            height={DIFF_IMAGE_PREVIEW_HEIGHT}
-            src={src(diff.oldContent)}
-            unoptimized
-            width={DIFF_IMAGE_PREVIEW_WIDTH}
-          />
+          {/* eslint-disable-next-line @next/next/no-img-element -- data URI; next/image cannot optimize base64 */}
+          <img alt="Before" className="max-w-full" src={src(diff.oldContent)} />
         </div>
       </div>
       <div className="space-y-2">
         <span className="font-medium text-muted-foreground text-xs">After</span>
         <div className="rounded border border-border bg-muted/30 p-2">
-          <Image
-            alt="After"
-            className="h-auto w-auto max-w-full"
-            height={DIFF_IMAGE_PREVIEW_HEIGHT}
-            src={src(diff.newContent)}
-            unoptimized
-            width={DIFF_IMAGE_PREVIEW_WIDTH}
-          />
+          {/* eslint-disable-next-line @next/next/no-img-element -- data URI; next/image cannot optimize base64 */}
+          <img alt="After" className="max-w-full" src={src(diff.newContent)} />
         </div>
       </div>
     </div>
@@ -340,7 +376,7 @@ function FileListItem({ file, type, onClick }: Readonly<FileListItemProps>) {
   const iconColor = fileTypeColors[type];
 
   return (
-    <button
+    <div
       className={cn(
         "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left",
         "cursor-pointer transition-colors hover:bg-muted/50",
@@ -353,13 +389,19 @@ function FileListItem({ file, type, onClick }: Readonly<FileListItemProps>) {
         }
         onClick();
       }}
-      type="button"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          onClick();
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
       <Icon className={cn("size-4 shrink-0", iconColor)} />
       <span className="truncate font-mono text-xs" title={file}>
         {file}
       </span>
-    </button>
+    </div>
   );
 }
 

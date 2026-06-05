@@ -61,6 +61,7 @@ export const onboardingService = {
         select: {
           settings: true,
           claudeApiKeyEncrypted: true,
+          anthropicApiKey: true,
         },
       })
     );
@@ -73,18 +74,25 @@ export const onboardingService = {
       teamCount,
       projectCount,
       githubInstallation,
+      linearIntegration,
       googleIntegration,
       userCount,
     ] = await Promise.all([
       withDb((db) => db.team.count({ where: { organizationId } })),
       withDb((db) =>
         db.project.count({
-          where: { organizationId, isTemplatesSentinel: false },
+          where: { organizationId },
         })
       ),
       withDb((db) =>
         db.gitHubInstallation.findFirst({
           where: { organizationId, status: { in: ["ACTIVE", "SUSPENDED"] } },
+          select: { id: true },
+        })
+      ),
+      withDb((db) =>
+        db.linearIntegration.findUnique({
+          where: { organizationId },
           select: { id: true },
         })
       ),
@@ -99,7 +107,8 @@ export const onboardingService = {
       ),
     ]);
 
-    const hasAnthropicKey = !!org?.claudeApiKeyEncrypted;
+    const hasAnthropicKey =
+      !!org?.claudeApiKeyEncrypted || !!org?.anthropicApiKey;
 
     // Legacy orgs: if no wizard record but org already has teams+projects, treat as completed
     const wizardCompleted =
@@ -131,6 +140,13 @@ export const onboardingService = {
         label: "Add Anthropic API key",
         description: "Required for AI-powered workflows",
         completed: hasAnthropicKey,
+        href: "/settings?tab=integrations",
+      },
+      {
+        id: ChecklistItemId.ConnectLinear,
+        label: "Connect Linear",
+        description: "Sync issues and project tracking",
+        completed: linearIntegration !== null,
         href: "/settings?tab=integrations",
       },
       {

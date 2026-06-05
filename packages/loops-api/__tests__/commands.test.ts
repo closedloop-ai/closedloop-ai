@@ -80,20 +80,6 @@ describe("validateCommandInputs", () => {
     ).toContain("artifacts");
   });
 
-  // --- EVALUATE_FEATURE: requires artifacts ---
-
-  it("EVALUATE_FEATURE: accepts with artifacts", () => {
-    expect(
-      validateCommandInputs(LoopCommand.EvaluateFeature, false, true)
-    ).toBeNull();
-  });
-
-  it("EVALUATE_FEATURE: rejects without artifacts", () => {
-    expect(
-      validateCommandInputs(LoopCommand.EvaluateFeature, false, false)
-    ).toContain("artifacts");
-  });
-
   // --- GENERATE_PRD: requires prompt ---
 
   it("GENERATE_PRD: accepts with prompt", () => {

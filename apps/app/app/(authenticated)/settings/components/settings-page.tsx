@@ -5,7 +5,7 @@ import { APPROVER_ROLE_OPTIONS, ApproverRole } from "@repo/api/src/types/user";
 import {
   OrganizationProfile,
   OrganizationSwitcher,
-  Show,
+  Protect,
   UserProfile,
 } from "@repo/auth/client";
 import {
@@ -130,7 +130,12 @@ export function SettingsPage({
         </TabsContent>
 
         <TabsContent className="mt-3 space-y-6" value="admin">
-          <Show
+          <Protect
+            condition={(
+              has: (
+                params: { role: string } | { permission: string }
+              ) => boolean
+            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
             fallback={
               <Card>
                 <CardHeader>
@@ -142,11 +147,6 @@ export function SettingsPage({
                 </CardHeader>
               </Card>
             }
-            when={(
-              has: (
-                params: { role: string } | { permission: string }
-              ) => boolean
-            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
           >
             <Card>
               <CardHeader>
@@ -168,11 +168,16 @@ export function SettingsPage({
             </Card>
 
             <PublicDashboardCard />
-          </Show>
+          </Protect>
         </TabsContent>
 
         <TabsContent className="mt-3 space-y-6" value="custom-fields">
-          <Show
+          <Protect
+            condition={(
+              has: (
+                params: { role: string } | { permission: string }
+              ) => boolean
+            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
             fallback={
               <Card>
                 <CardHeader>
@@ -184,14 +189,9 @@ export function SettingsPage({
                 </CardHeader>
               </Card>
             }
-            when={(
-              has: (
-                params: { role: string } | { permission: string }
-              ) => boolean
-            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
           >
             <CustomFieldsSettingsTab />
-          </Show>
+          </Protect>
         </TabsContent>
 
         <TabsContent className="mt-3 space-y-6" value="integrations">

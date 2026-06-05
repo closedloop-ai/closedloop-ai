@@ -349,41 +349,6 @@ function parseWorktreeListLocal(
 }
 
 /**
- * Find the checkout currently on branchName, preferring the base repo when its
- * HEAD already matches and otherwise reusing an existing worktree.
- */
-export function findExistingWorktreeForBranch(
-  repoPath: string,
-  branchName: string
-): string | null {
-  const headResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: repoPath,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: LOCAL_GIT_TIMEOUT,
-  });
-  if (headResult.status === 0 && headResult.stdout.trim() === branchName) {
-    return repoPath;
-  }
-
-  const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
-    cwd: repoPath,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: LOCAL_GIT_TIMEOUT,
-  });
-  if (listResult.status !== 0) {
-    return null;
-  }
-
-  const entries = parseWorktreeListLocal(listResult.stdout);
-  const match = entries.find((entry) => {
-    return entry.branch === `refs/heads/${branchName}`;
-  });
-  return match?.path ?? null;
-}
-
-/**
  * Resolve the effective working directory for a PR branch.
  *
  * 1. If the base repo HEAD matches branchName, return repoPath (no worktree needed).
@@ -396,9 +361,30 @@ export function resolveWorktreeForPR(
   prNumber: number,
   worktreeParentDir: string
 ): string {
-  const existingWorktree = findExistingWorktreeForBranch(repoPath, branchName);
-  if (existingWorktree) {
-    return existingWorktree;
+  // 1. Check if the base repo is already on the PR branch
+  const headResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: LOCAL_GIT_TIMEOUT,
+  });
+  if (headResult.status === 0 && headResult.stdout.trim() === branchName) {
+    return repoPath;
+  }
+
+  // 2. Scan existing worktrees for one checked out on this branch
+  const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: LOCAL_GIT_TIMEOUT,
+  });
+  if (listResult.status === 0) {
+    const entries = parseWorktreeListLocal(listResult.stdout);
+    const match = entries.find((e) => e.branch === `refs/heads/${branchName}`);
+    if (match) {
+      return match.path;
+    }
   }
 
   // 3. Create a new worktree

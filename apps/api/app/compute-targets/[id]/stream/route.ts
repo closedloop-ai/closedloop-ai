@@ -2,7 +2,6 @@ import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { relayEventBus } from "@/lib/relay-event-bus";
-import { scheduleLogFlush } from "@/lib/route-utils";
 import {
   createSseResponse,
   createSseStream,
@@ -57,15 +56,11 @@ export async function GET(
             targetId,
             error,
           });
-          return log.flush().catch(() => {});
         })
     );
   };
 
   let unsubscribeConnection: (() => void) | null = null;
-
-  log.info("Compute target SSE stream opened", { targetId });
-  scheduleLogFlush();
 
   const stream = createSseStream(
     ({ send, close }) => {

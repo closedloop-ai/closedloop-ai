@@ -5,7 +5,6 @@ import { log } from "@repo/observability/log";
 import { loopsService } from "@/app/loops/service";
 import { stopLoopTask } from "@/lib/loops/loop-ecs";
 import { scrubContextPackSecrets } from "@/lib/loops/loop-state";
-import { scheduleLogFlush } from "@/lib/route-utils";
 
 type StuckLoop = {
   id: string;
@@ -162,7 +161,7 @@ async function warnGhostLoopAnomalies(now: Date): Promise<void> {
         loopId: loop.id,
         computeTargetId: loop.computeTargetId,
         durationMs: now.getTime() - loop.startedAt.getTime(),
-        documentId: loop.artifactId,
+        artifactId: loop.artifactId,
       }
     );
   }
@@ -190,7 +189,6 @@ export const GET = async (request: Request): Promise<Response> => {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {
     log.error("[timeout-loops] CRON_SECRET is not configured");
-    scheduleLogFlush();
     return new Response("Internal Server Error", { status: 500 });
   }
 
@@ -282,7 +280,6 @@ export const GET = async (request: Request): Promise<Response> => {
   }
 
   if (stuckLoops.length === 0) {
-    scheduleLogFlush();
     return new Response("OK: no stuck loops", { status: 200 });
   }
 
@@ -299,6 +296,5 @@ export const GET = async (request: Request): Promise<Response> => {
     }
   }
 
-  scheduleLogFlush();
   return new Response(`OK: timed out ${timedOutCount} loops`, { status: 200 });
 };

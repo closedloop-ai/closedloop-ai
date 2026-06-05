@@ -1,5 +1,5 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { type InferAgentUIMessage, ToolLoopAgent, type ToolSet } from "ai";
+import { type InferAgentUIMessage, ToolLoopAgent } from "ai";
 import { models } from "./models";
 
 const PRD_AGENT_INSTRUCTIONS = `You are an expert product manager assistant that helps create comprehensive Product Requirements Documents (PRDs).
@@ -21,23 +21,15 @@ When creating a PRD, include these sections as appropriate:
 
 Be conversational and collaborative. Ask clarifying questions to ensure the PRD captures all necessary details. Use web search to gather relevant market data, competitor information, or technical context when it would strengthen the document.`;
 
-function asAgentToolSet<TOOLS extends Record<string, unknown>>(
-  tools: TOOLS
-): TOOLS & ToolSet {
-  return tools as TOOLS & ToolSet;
-}
-
-const prdAgentTools = asAgentToolSet({
-  webFetch: anthropic.tools.webFetch_20250910(),
-  webSearch: anthropic.tools.webSearch_20250305(),
-});
-
-const generatePRD = new ToolLoopAgent({
-  model: models.opus,
-  instructions: PRD_AGENT_INSTRUCTIONS,
-  tools: prdAgentTools,
-});
-
-export const agents = { generatePRD } as const;
+export const agents = {
+  generatePRD: new ToolLoopAgent({
+    model: models.opus,
+    instructions: PRD_AGENT_INSTRUCTIONS,
+    tools: {
+      webFetch: anthropic.tools.webFetch_20250910(),
+      webSearch: anthropic.tools.webSearch_20250305(),
+    },
+  }),
+} as const;
 
 export type PRDAgentUIMessage = InferAgentUIMessage<typeof agents.generatePRD>;

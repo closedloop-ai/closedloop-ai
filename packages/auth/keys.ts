@@ -3,9 +3,7 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
-    emptyStringAsUndefined: true,
     server: {
-      AUTH_MODE: z.enum(["clerk", "local_trusted"]).default("clerk").optional(),
       CLERK_SECRET_KEY: z.string().startsWith("sk_").optional(),
       CLERK_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),
     },
@@ -27,7 +25,6 @@ export const keys = () =>
       NEXT_PUBLIC_LOGO_URL: z.string().url().optional(),
     },
     runtimeEnv: {
-      AUTH_MODE: process.env.AUTH_MODE,
       CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
       CLERK_WEBHOOK_SECRET: process.env.CLERK_WEBHOOK_SECRET,
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:

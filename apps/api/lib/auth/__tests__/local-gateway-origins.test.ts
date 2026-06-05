@@ -8,7 +8,7 @@ describe("local-gateway-origins", () => {
 
   beforeEach(() => {
     env.NODE_ENV = "production";
-    env.NEXT_PUBLIC_PREVIEW_DOMAIN = "preview.closedloop-stage.ai";
+    env.NEXT_PUBLIC_PREVIEW_DOMAIN = "preview.localhost";
   });
 
   afterEach(() => {
@@ -18,22 +18,22 @@ describe("local-gateway-origins", () => {
 
   it("allows exact preview suffix hosts and their subdomains", () => {
     expect(
-      isLocalGatewayOriginAllowed("https://preview.closedloop-stage.ai")
+      isLocalGatewayOriginAllowed("https://preview.localhost")
     ).toBe(true);
     expect(
-      isLocalGatewayOriginAllowed("https://app.preview.closedloop-stage.ai")
+      isLocalGatewayOriginAllowed("https://app.preview.localhost")
     ).toBe(true);
   });
 
   it("rejects partial-match preview suffix hosts without a dot boundary", () => {
     expect(
-      isLocalGatewayOriginAllowed("https://evilpreview.closedloop-stage.ai")
+      isLocalGatewayOriginAllowed("https://evilpreview.localhost")
     ).toBe(false);
   });
 
   it("rejects origin strings that include a path", () => {
     expect(
-      isLocalGatewayOriginAllowed("https://preview.closedloop-stage.ai/path")
+      isLocalGatewayOriginAllowed("https://preview.localhost/path")
     ).toBe(false);
   });
 });

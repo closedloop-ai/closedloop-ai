@@ -1,11 +1,7 @@
 "use client";
 
-import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/api/src/types/loop";
-import {
-  getProjectSettings,
-  resolveProjectRepoDefaults,
-} from "@repo/api/src/types/project";
+import { EntityType } from "@repo/api/src/types/entity-link";
+import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -21,44 +17,22 @@ import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  useCreateAndGenerateDocument,
-  useCreateDocument,
-  useDocuments,
-} from "@/hooks/queries/use-documents";
-import { useInheritedAdditionalRepos } from "@/hooks/queries/use-loops";
+  useArtifacts,
+  useCreateAndGenerateArtifact,
+  useCreateArtifact,
+} from "@/hooks/queries/use-artifacts";
 import { useProject, useProjects } from "@/hooks/queries/use-projects";
-import { useMultiRepoConfigEnabled } from "@/hooks/use-multi-repo-config-enabled";
-import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
-import {
-  toResolverTeamRepo,
-  useTeamRepositoriesUnion,
-} from "@/hooks/use-team-repositories-union";
-import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
-import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
-import { AdditionalReposPicker } from "./additional-repos-picker";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
-import {
-  buildCreateInput,
-  type FormState,
-  normalizeAdditionalRepos,
-  useModalOpenState,
-} from "./plan-form-utils";
+import { buildCreateInput, useModalOpenState } from "./plan-form-utils";
 import {
   generateFileNameFromTitle,
   generatePlanFileName,
   getFinalFileName,
   type PlanSource,
 } from "./plan-source";
-import { RepoBranchSelector } from "./repo-branch-selector";
+import { RepositoryBranchFields } from "./repository-branch-fields";
 
 type NewPlanModalProps = {
   source?: PlanSource;
@@ -66,93 +40,21 @@ type NewPlanModalProps = {
   onOpenChange?: (open: boolean) => void;
 };
 
+function validateMissingRepo(
+  isLoadingProject: boolean,
+  targetRepo: string,
+  defaultRepoFullName: string | undefined
+): boolean {
+  return !(isLoadingProject || targetRepo || defaultRepoFullName);
+}
+
 function isCreateSubmitDisabled(
   isSubmitting: boolean,
   titleTrimmed: boolean,
   selectedSource: PlanSource | undefined,
-  missingRepo: boolean,
-  incompleteAdditionalRepos: boolean
+  missingRepo: boolean
 ): boolean {
-  return (
-    isSubmitting ||
-    !titleTrimmed ||
-    (!!selectedSource && (missingRepo || incompleteAdditionalRepos))
-  );
-}
-
-function isPreLoopPendingForOwner({
-  enabled,
-  ownerKey,
-  preLoopGate,
-}: {
-  enabled: boolean;
-  ownerKey: string;
-  preLoopGate: ReturnType<typeof useOptionalPreLoopSystemCheckGate>;
-}): boolean {
-  return Boolean(enabled && preLoopGate?.pendingOwnerKey === ownerKey);
-}
-
-type SubmitCreatePlanArgs = {
-  formState: FormState;
-  selectedSource: PlanSource | undefined;
-  showPicker: boolean;
-  additionalRepos: AdditionalRepoRef[];
-  createPlan: ReturnType<typeof useCreateDocument>;
-  createAndGeneratePlan: ReturnType<typeof useCreateAndGenerateDocument>;
-  preLoopGate: ReturnType<typeof useOptionalPreLoopSystemCheckGate>;
-  preLoopOwnerKey: string;
-  onSuccess: (document: { slug: string }) => void;
-};
-
-function submitCreatePlan({
-  formState,
-  selectedSource,
-  showPicker,
-  additionalRepos,
-  createPlan,
-  createAndGeneratePlan,
-  preLoopGate,
-  preLoopOwnerKey,
-  onSuccess,
-}: SubmitCreatePlanArgs): void {
-  const finalFileName = getFinalFileName(
-    formState.fileName,
-    formState.title,
-    selectedSource
-  );
-  const createConfig = buildCreateInput(
-    formState,
-    finalFileName,
-    selectedSource
-  );
-
-  if (createConfig.type === "createAndGenerate") {
-    const submitAdditionalRepos = showPicker
-      ? normalizeAdditionalRepos(additionalRepos)
-      : undefined;
-    const executeCreateAndGenerate = () => {
-      createAndGeneratePlan.mutate(
-        { input: createConfig.input, additionalRepos: submitAdditionalRepos },
-        { onSuccess }
-      );
-    };
-    if (preLoopGate) {
-      preLoopGate
-        .runWithPreLoopSystemCheck(
-          {
-            command: PreLoopCommand.GeneratePlan,
-            documentType: "implementation_plan",
-            ownerKey: preLoopOwnerKey,
-          },
-          executeCreateAndGenerate
-        )
-        .catch(() => undefined);
-      return;
-    }
-    executeCreateAndGenerate();
-    return;
-  }
-  createPlan.mutate(createConfig.input, { onSuccess });
+  return isSubmitting || !titleTrimmed || (!!selectedSource && missingRepo);
 }
 
 export function NewPlanModal({
@@ -161,16 +63,13 @@ export function NewPlanModal({
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
   const router = useRouter();
-  const preLoopOwnerKey = `new-plan:${useId()}`;
-  const preLoopGate = useOptionalPreLoopSystemCheckGate();
-  const createPlan = useCreateDocument();
-  const createAndGeneratePlan = useCreateAndGenerateDocument();
+  const createPlan = useCreateArtifact();
+  const createAndGeneratePlan = useCreateAndGenerateArtifact();
   const { open, setOpen, isControlled } = useModalOpenState(
     controlledOpen,
     controlledOnOpenChange
   );
   const [error, setError] = useState<string | null>(null);
-  const showPicker = useMultiRepoExecuteEnabled();
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");
@@ -187,30 +86,22 @@ export function NewPlanModal({
     () => source?.targetBranch ?? ""
   );
   const [selectedRepoId, setSelectedRepoId] = useState("");
-  const [additionalRepos, setAdditionalRepos] = useState<AdditionalRepoRef[]>(
-    []
-  );
-  const [incompleteAdditionalRepos, setIncompleteAdditionalRepos] =
-    useState(false);
   const hasPrePopulated = useRef(false);
 
-  // Fetch project details and resolve the project's primary repo (override →
-  // single-team inheritance → legacy fallback) in one hook so the launch
-  // dialog stays at a single integration point. When `multi-repo-config` is
-  // off the resolver collapses to legacy `defaultRepository` only — team
-  // repos are not even fetched.
-  const multiRepoConfigEnabled = useMultiRepoConfigEnabled();
+  // Fetch project details for default repository
   const effectiveProjectId = source?.projectId ?? selectedProjectId;
-  const { primaryRepoId, primaryFullName, missingRepo, isLoadingResolved } =
-    useNewPlanRepoState({
-      open,
-      effectiveProjectId,
-      targetRepo,
-      teamReposEnabled: multiRepoConfigEnabled,
-    });
+  const { data: projectData, isLoading: isLoadingProject } = useProject(
+    effectiveProjectId ?? ""
+  );
+  const projectSettings = getProjectSettings(projectData?.settings ?? {});
+  const missingRepo = validateMissingRepo(
+    isLoadingProject,
+    targetRepo,
+    projectSettings.defaultRepository?.repoFullName
+  );
 
   // Fetch PRDs when modal opens (skip if we have a source)
-  const { data: prds = [], isLoading: loadingPrds } = useDocuments(
+  const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
     { type: "PRD", projectId: selectedProjectId },
     {
       enabled: open && !!selectedProjectId && !source,
@@ -226,25 +117,16 @@ export function NewPlanModal({
   // Get the selected source (either from prop or from dropdown PRD)
   const selectedPrd = prds.find((p) => p.id === selectedSourceId);
   const selectedSource: PlanSource | undefined = useMemo(() => {
-    return source ?? selectedPrd ?? undefined;
+    return (
+      source ??
+      (selectedPrd
+        ? {
+            ...selectedPrd,
+            sourceType: EntityType.Artifact,
+          }
+        : undefined)
+    );
   }, [source, selectedPrd]);
-
-  // Inherit additionalRepos from the source PRD's most recent loop
-  const inheritedRepos = useInheritAdditionalReposFromSource({
-    open,
-    showPicker,
-    sourceId: selectedSource?.id,
-    onSeed: setAdditionalRepos,
-  });
-  // Mark the picker as user-edited as soon as onChange fires, so a
-  // late-arriving query result does not clobber the edit.
-  const onAdditionalReposChange = useCallback(
-    (repos: AdditionalRepoRef[]) => {
-      inheritedRepos.markUserEdited();
-      setAdditionalRepos(repos);
-    },
-    [inheritedRepos.markUserEdited]
-  );
 
   // Update title, filename, and repo/branch when source is selected from dropdown
   useEffect(() => {
@@ -260,18 +142,21 @@ export function NewPlanModal({
     }
   }, [selectedSource, source]);
 
-  // Pre-populate from the resolved project primary when the modal opens.
-  useResolvedPrimaryPrepopulation({
-    open,
-    sourceTargetRepo: source?.targetRepo,
-    targetRepo,
-    primaryRepoId,
-    primaryFullName,
-    isLoadingResolved,
-    hasPrePopulatedRef: hasPrePopulated,
-    setSelectedRepoId,
-    setTargetRepo,
-  });
+  // Pre-populate from project default repository when modal opens
+  useEffect(() => {
+    const defaultRepo = projectSettings.defaultRepository;
+    if (
+      open &&
+      !(source?.targetRepo || targetRepo) &&
+      defaultRepo &&
+      !hasPrePopulated.current
+    ) {
+      setSelectedRepoId(defaultRepo.repoId);
+      setTargetRepo(defaultRepo.repoFullName);
+      setTargetBranch(defaultRepo.branch);
+      hasPrePopulated.current = true;
+    }
+  }, [open, projectSettings.defaultRepository, source?.targetRepo, targetRepo]);
 
   const handleTitleChange = (value: string): void => {
     setTitle(value);
@@ -282,6 +167,19 @@ export function NewPlanModal({
     }
   };
 
+  const resetForm = () => {
+    setSelectedSourceId(source?.id ?? "");
+    setSelectedProjectId("");
+    setTitle("");
+    setFileName("");
+    setContent("");
+    setTargetRepo(source?.targetRepo ?? "");
+    setTargetBranch(source?.targetBranch ?? "");
+    setSelectedRepoId("");
+    setError(null);
+    hasPrePopulated.current = false;
+  };
+
   const handleSubmit = () => {
     setError(null);
 
@@ -290,53 +188,49 @@ export function NewPlanModal({
       return;
     }
 
-    submitCreatePlan({
-      formState: {
-        selectedSourceId,
-        selectedProjectId,
-        title,
-        fileName,
-        content,
-        targetRepo,
-        targetBranch,
-      },
-      selectedSource,
-      showPicker,
-      additionalRepos,
-      createPlan,
-      createAndGeneratePlan,
-      preLoopGate,
-      preLoopOwnerKey,
-      onSuccess: (document) => {
-        setOpen(false);
-        router.push(`/implementation-plans/${document.slug}`);
-      },
-    });
+    const formState = {
+      selectedSourceId,
+      selectedProjectId,
+      title,
+      fileName,
+      content,
+      targetRepo,
+      targetBranch,
+    };
+
+    const finalFileName = getFinalFileName(
+      formState.fileName,
+      formState.title,
+      selectedSource
+    );
+    const createConfig = buildCreateInput(
+      formState,
+      finalFileName,
+      selectedSource
+    );
+
+    const onSuccess = (artifact: { slug: string }) => {
+      setOpen(false);
+      resetForm();
+      router.push(`/implementation-plans/${artifact.slug}`);
+    };
+
+    if (createConfig.type === "createAndGenerate") {
+      createAndGeneratePlan.mutate(createConfig.input, { onSuccess });
+    } else {
+      createPlan.mutate(createConfig.input, { onSuccess });
+    }
   };
 
   const handleOpenChange = (newOpen: boolean) => {
     setOpen(newOpen);
     if (!newOpen) {
-      preLoopGate?.cancelPendingPreLoopAttempt(preLoopOwnerKey);
+      resetForm();
     }
   };
 
-  const handleRepositoryChange = (repoId: string, fullName: string) => {
-    setSelectedRepoId(repoId);
-    setTargetRepo(fullName);
-    setTargetBranch("");
-  };
-
   const showProjectSelector = !selectedSource?.projectId;
-  const isPreLoopPendingForThisModal = isPreLoopPendingForOwner({
-    enabled: Boolean(selectedSource),
-    ownerKey: preLoopOwnerKey,
-    preLoopGate,
-  });
-  const isSubmitting =
-    createPlan.isPending ||
-    createAndGeneratePlan.isPending ||
-    isPreLoopPendingForThisModal;
+  const isSubmitting = createPlan.isPending || createAndGeneratePlan.isPending;
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
@@ -430,27 +324,16 @@ export function NewPlanModal({
             </div>
           ) : null}
 
-          <TargetRepoBranchFields
+          <RepositoryBranchFields
             onBranchChange={setTargetBranch}
-            onRepoChange={handleRepositoryChange}
-            selectedBranch={targetBranch}
+            onRepositoryChange={(repoId, fullName) => {
+              setSelectedRepoId(repoId);
+              setTargetRepo(fullName);
+              setTargetBranch("");
+            }}
             selectedRepoId={selectedRepoId}
-            targetRepo={targetRepo}
+            targetBranch={targetBranch}
           />
-
-          {showPicker ? (
-            <AdditionalReposPicker
-              // Remount once the inherited peers from PRD-244 loops resolve so
-              // the picker re-seeds via `initialValue`. Without the key change
-              // the picker keeps its mount-time seed (empty array) and the
-              // late-arriving inherited repos would never appear.
-              initialValue={additionalRepos}
-              key={inheritedRepos.pickerKey}
-              onChange={onAdditionalReposChange}
-              onIncompleteChange={setIncompleteAdditionalRepos}
-              targetRepo={targetRepo}
-            />
-          ) : null}
 
           {selectedSource ? (
             <PlanPreview
@@ -472,11 +355,12 @@ export function NewPlanModal({
             />
           </div>
 
-          <PlanSubmitValidationMessages
-            incompleteAdditionalRepos={incompleteAdditionalRepos}
-            missingRepo={missingRepo}
-            selectedSource={selectedSource}
-          />
+          {missingRepo && selectedSource ? (
+            <p className="text-destructive text-sm">
+              No repository configured for this project. Select a repository
+              above or add a default repository in project settings.
+            </p>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -488,15 +372,14 @@ export function NewPlanModal({
               isSubmitting,
               title.trim().length > 0,
               selectedSource,
-              missingRepo,
-              incompleteAdditionalRepos
+              missingRepo
             )}
             onClick={handleSubmit}
           >
             {isSubmitting ? (
               <>
                 <LoaderIcon className="h-4 w-4 animate-spin" />
-                {isPreLoopPendingForThisModal ? "Checking..." : "Creating..."}
+                Creating...
               </>
             ) : (
               <>
@@ -509,331 +392,4 @@ export function NewPlanModal({
       </DialogContent>
     </Dialog>
   );
-}
-
-function TargetRepoBranchFields({
-  targetRepo,
-  selectedRepoId,
-  selectedBranch,
-  onRepoChange,
-  onBranchChange,
-}: Readonly<{
-  targetRepo: string;
-  selectedRepoId: string;
-  selectedBranch: string;
-  onRepoChange: (repoId: string, fullName: string) => void;
-  onBranchChange: (branch: string) => void;
-}>) {
-  return (
-    <RepoBranchSelector
-      branchInputId="target-branch"
-      branchLabel="Target Branch"
-      onBranchChange={onBranchChange}
-      onRepoChange={onRepoChange}
-      repoInputId="target-repo"
-      repoLabel={
-        <>
-          Target Repository{" "}
-          <span className="text-muted-foreground text-xs">(owner/repo)</span>
-        </>
-      }
-      repoTriggerFallback={targetRepo ? <span>{targetRepo}</span> : null}
-      selectedBranch={selectedBranch}
-      selectedRepoId={selectedRepoId}
-    />
-  );
-}
-
-function PlanSubmitValidationMessages({
-  selectedSource,
-  missingRepo,
-  incompleteAdditionalRepos,
-}: Readonly<{
-  selectedSource: PlanSource | undefined;
-  missingRepo: boolean;
-  incompleteAdditionalRepos: boolean;
-}>) {
-  if (!selectedSource) {
-    return null;
-  }
-  return (
-    <>
-      {missingRepo ? (
-        <p className="text-destructive text-sm">
-          No repository configured for this project. Select a repository above
-          or add a default repository in project settings.
-        </p>
-      ) : null}
-      {incompleteAdditionalRepos ? (
-        <p className="text-destructive text-sm">
-          Complete or remove every additional repository row before generating.
-        </p>
-      ) : null}
-    </>
-  );
-}
-
-type UseInheritAdditionalReposArgs = {
-  open: boolean;
-  showPicker: boolean;
-  sourceId: string | undefined;
-  onSeed: (initial: AdditionalRepoRef[]) => void;
-};
-
-type UseInheritAdditionalReposResult = {
-  pickerKey: number;
-  markUserEdited: () => void;
-};
-
-// Sentinel for the seed-once guard: the source whose peers are already
-// reflected in the picker. The guard re-arms automatically when `sourceId`
-// changes — switching PRDs in the dropdown re-seeds from the new source
-// instead of being silently blocked.
-const SEED_NOT_APPLIED = Symbol("seed-not-applied");
-type SeededSource = string | undefined | typeof SEED_NOT_APPLIED;
-
-function useInheritAdditionalReposFromSource({
-  open,
-  showPicker,
-  sourceId,
-  onSeed,
-}: UseInheritAdditionalReposArgs): UseInheritAdditionalReposResult {
-  const [pickerKey, setPickerKey] = useState(0);
-  // The sourceId whose peer set is currently reflected in the picker, or
-  // the sentinel when nothing has been seeded yet. The seed effect bails
-  // when this matches the live `sourceId` (already seeded for this source
-  // OR the user has typed and we don't want to clobber their edit).
-  const seededSourceRef = useRef<SeededSource>(SEED_NOT_APPLIED);
-  // Flagging the current source as seeded prevents a late query response
-  // from overwriting an edit the user made before the query resolved.
-  const markUserEdited = useCallback(() => {
-    seededSourceRef.current = sourceId;
-  }, [sourceId]);
-
-  const enabled = open && showPicker;
-  const lookupId = enabled ? sourceId : null;
-  // Target command is PLAN — the modal is launching a new PLAN loop on the
-  // soon-to-be-created Plan document. The backend's PLAN precedence chain
-  // resolves "GENERATE_PRD on the source PRD" for this case.
-  const { data: inherited, isFetched } = useInheritedAdditionalRepos(
-    lookupId,
-    LoopCommand.Plan,
-    { enabled: !!lookupId }
-  );
-
-  // sourceId changed since we last seeded → drop stale peers immediately
-  // (don't wait for the new query) and re-arm the seed guard.
-  useEffect(() => {
-    const seeded = seededSourceRef.current;
-    if (seeded !== SEED_NOT_APPLIED && seeded !== sourceId) {
-      seededSourceRef.current = SEED_NOT_APPLIED;
-      onSeed([]);
-      setPickerKey((k) => k + 1);
-    }
-  }, [sourceId, onSeed]);
-
-  // Seed when fresh data arrives for a source we haven't seeded yet.
-  useEffect(() => {
-    if (!(isFetched && inherited)) {
-      return;
-    }
-    if (seededSourceRef.current === sourceId) {
-      return;
-    }
-    seededSourceRef.current = sourceId;
-    if (inherited.additionalRepos.length === 0) {
-      return;
-    }
-    onSeed(inherited.additionalRepos);
-    setPickerKey((k) => k + 1);
-  }, [isFetched, inherited, sourceId, onSeed]);
-
-  return { pickerKey, markUserEdited };
-}
-
-type UseResolvedPrimaryPrepopulationArgs = {
-  open: boolean;
-  sourceTargetRepo: string | null | undefined;
-  targetRepo: string;
-  primaryRepoId: string | undefined;
-  primaryFullName: string | undefined;
-  // True while the team-repo union is still loading. The effect must not fire
-  // during this window because the resolver would otherwise return the legacy
-  // `defaultRepository` fallback and `hasPrePopulatedRef` would short-circuit
-  // any later correction once the override pool finishes loading (P1 review
-  // finding on PR #1115).
-  isLoadingResolved: boolean;
-  hasPrePopulatedRef: { current: boolean };
-  setSelectedRepoId: (id: string) => void;
-  setTargetRepo: (name: string) => void;
-};
-
-// Pre-populates the launch dialog's primary repo from the project resolution
-// chain (override → single-team inheritance → legacy fallback). Branch is left
-// empty so `RepoBranchSelector` picks the GitHub default branch on its own —
-// branches are never stored at team or project level (Q-002 of PLN-237). When
-// the project is multi-team without an override, `primaryRepoId` is undefined
-// here and the user is forced to pick — see T-3.2.
-function useResolvedPrimaryPrepopulation({
-  open,
-  sourceTargetRepo,
-  targetRepo,
-  primaryRepoId,
-  primaryFullName,
-  isLoadingResolved,
-  hasPrePopulatedRef,
-  setSelectedRepoId,
-  setTargetRepo,
-}: UseResolvedPrimaryPrepopulationArgs): void {
-  useEffect(() => {
-    if (
-      !open ||
-      hasPrePopulatedRef.current ||
-      isLoadingResolved ||
-      sourceTargetRepo ||
-      targetRepo ||
-      !primaryRepoId ||
-      !primaryFullName
-    ) {
-      return;
-    }
-    setSelectedRepoId(primaryRepoId);
-    setTargetRepo(primaryFullName);
-    hasPrePopulatedRef.current = true;
-  }, [
-    open,
-    sourceTargetRepo,
-    targetRepo,
-    primaryRepoId,
-    primaryFullName,
-    isLoadingResolved,
-    hasPrePopulatedRef,
-    setSelectedRepoId,
-    setTargetRepo,
-  ]);
-}
-
-type UseResolvedProjectRepoDefaultsArgs = {
-  projectData: ReturnType<typeof useProject>["data"];
-  projectSettings: ReturnType<typeof getProjectSettings>;
-  enabled: boolean;
-};
-
-type UseResolvedProjectRepoDefaultsResult = {
-  resolved: ReturnType<typeof resolveProjectRepoDefaults>;
-  primaryRepoId: string | undefined;
-  primaryFullName: string | undefined;
-  isLoading: boolean;
-};
-
-// Composes the resolution chain (project override → single-team inheritance
-// → legacy fallback) with team-repo data fetched per project team. Returns the
-// pool-resolved primary so callers can pre-populate the launch dialog without
-// re-implementing the chain. The legacy `defaultRepository.repoFullName` is
-// surfaced as `primaryFullName` only when the legacy id matches the resolved
-// primary (pre-migration projects whose legacy repo isn't in any team pool).
-type UseNewPlanRepoStateArgs = {
-  open: boolean;
-  effectiveProjectId: string | undefined;
-  targetRepo: string;
-  // Off → resolver runs without team repos, falling back to the legacy
-  // `defaultRepository` only. Avoids fetching the team-repo union when the
-  // multi-repo project config flag is not enabled.
-  teamReposEnabled: boolean;
-};
-
-type UseNewPlanRepoStateResult = {
-  primaryRepoId: string | undefined;
-  primaryFullName: string | undefined;
-  missingRepo: boolean;
-  // Surfaces `useResolvedProjectRepoDefaults`'s loading flag (which folds in
-  // the team-repo union fetch) so callers can gate the prepopulation effect
-  // until the override pool has actually finished loading.
-  isLoadingResolved: boolean;
-};
-
-// Wraps `useProject` + `useResolvedProjectRepoDefaults` + the launch-dialog's
-// missing-repo gate so the modal body has a single integration point. Loading
-// states are folded into `missingRepo` (false while loading) so the user can't
-// see a transient "no repo" error before the resolver finishes.
-function useNewPlanRepoState({
-  open,
-  effectiveProjectId,
-  targetRepo,
-  teamReposEnabled,
-}: UseNewPlanRepoStateArgs): UseNewPlanRepoStateResult {
-  const { data: projectData, isLoading: isLoadingProject } = useProject(
-    effectiveProjectId ?? ""
-  );
-  const projectSettings = getProjectSettings(projectData?.settings ?? {});
-  const {
-    primaryRepoId,
-    primaryFullName,
-    isLoading: isLoadingResolved,
-  } = useResolvedProjectRepoDefaults({
-    projectData,
-    projectSettings,
-    enabled: open && teamReposEnabled,
-  });
-  const missingRepo = !(
-    isLoadingProject ||
-    isLoadingResolved ||
-    targetRepo ||
-    primaryFullName
-  );
-  return {
-    primaryRepoId,
-    primaryFullName,
-    missingRepo,
-    isLoadingResolved: isLoadingProject || isLoadingResolved,
-  };
-}
-
-function useResolvedProjectRepoDefaults({
-  projectData,
-  projectSettings,
-  enabled,
-}: UseResolvedProjectRepoDefaultsArgs): UseResolvedProjectRepoDefaultsResult {
-  const teamIds = useMemo(
-    () => projectData?.teams.map((t) => t.id) ?? [],
-    [projectData?.teams]
-  );
-  const { repositories, isLoading } = useTeamRepositoriesUnion({
-    teamIds,
-    enabled: enabled && teamIds.length > 0,
-  });
-  const resolved = useMemo(() => {
-    if (!projectData) {
-      return null;
-    }
-    return resolveProjectRepoDefaults({
-      projectSettings,
-      teamRepos: repositories.map(toResolverTeamRepo),
-      teamCount: teamIds.length,
-    });
-  }, [projectData, projectSettings, repositories, teamIds.length]);
-
-  if (!resolved) {
-    return {
-      resolved: null,
-      primaryRepoId: undefined,
-      primaryFullName: undefined,
-      isLoading,
-    };
-  }
-  const primaryFromPool = repositories.find(
-    (r) => r.installationRepositoryId === resolved.primaryRepoId
-  );
-  const legacy = projectSettings.defaultRepository;
-  const primaryFullName =
-    primaryFromPool?.repository.fullName ??
-    (legacy?.repoId === resolved.primaryRepoId
-      ? legacy.repoFullName
-      : undefined);
-  return {
-    resolved,
-    primaryRepoId: resolved.primaryRepoId,
-    primaryFullName,
-    isLoading,
-  };
 }

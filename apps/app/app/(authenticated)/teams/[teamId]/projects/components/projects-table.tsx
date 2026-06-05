@@ -1,24 +1,21 @@
 "use client";
 
 import { Priority } from "@repo/api/src/types/common";
-import type {
-  ProjectStatus,
-  ProjectWithDetails,
-} from "@repo/api/src/types/project";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
 import { FolderIcon } from "lucide-react";
 import { useMemo } from "react";
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import type {
-  DocumentRowItem,
+  ArtifactRowItem,
   RowEditHandlers,
-} from "@/components/document-table/document-row";
-import { DocumentRow } from "@/components/document-table/document-row";
-import { DocumentTableHeader } from "@/components/document-table/table-header";
+} from "@/components/artifact-table/artifact-row";
+import { ArtifactRow } from "@/components/artifact-table/artifact-row";
+import { ArtifactTableHeader } from "@/components/artifact-table/table-header";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
-import type { DocumentColumn } from "@/hooks/use-column-visibility";
+import type { ArtifactColumn } from "@/hooks/use-column-visibility";
 import { PROJECT_DEFAULT_COLUMNS } from "@/hooks/use-column-visibility";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
@@ -30,19 +27,12 @@ import { ProjectRowActions } from "./project-row-actions";
 type ProjectsTableProps = {
   projects: ProjectWithDetails[];
   teamId: string;
-  visibleColumns?: DocumentColumn[];
+  visibleColumns?: ArtifactColumn[];
   onUpdateAssignee?: (projectId: string, assigneeId: string | null) => void;
   onUpdateTargetDate?: (projectId: string, date: Date | null) => void;
   onUpdatePriority?: (projectId: string, priority: Priority) => void;
-  onUpdateStatus?: (
-    projectId: string,
-    status: ProjectStatus,
-    previousStatus: ProjectStatus
-  ) => void;
   onDelete?: (projectId: string) => Promise<boolean>;
   onCreateProject?: () => void;
-  emptyStateTitle?: string;
-  emptyStateDescription?: string;
 };
 
 const PROJECT_SORT_COLUMNS = [
@@ -89,11 +79,8 @@ export function ProjectsTable({
   onUpdateAssignee,
   onUpdateTargetDate,
   onUpdatePriority,
-  onUpdateStatus,
   onDelete,
   onCreateProject,
-  emptyStateTitle = "No projects yet",
-  emptyStateDescription = "Create your first project to get started.",
 }: ProjectsTableProps) {
   const { data: usersResult } = useOrganizationUsers();
   const { sortBy, sortDir, setSort } = useSortParams<ProjectSortColumn>({
@@ -149,9 +136,9 @@ export function ProjectsTable({
             <Button onClick={onCreateProject}>Create Project</Button>
           ) : undefined
         }
-        description={emptyStateDescription}
+        description="Create your first project to get started."
         icon={FolderIcon}
-        title={emptyStateTitle}
+        title="No projects yet"
       />
     );
   }
@@ -159,7 +146,7 @@ export function ProjectsTable({
   return (
     <>
       <div className="min-w-fit">
-        <DocumentTableHeader
+        <ArtifactTableHeader
           onSort={(column, dir: SortDirection) =>
             setSort(column as ProjectSortColumn, dir)
           }
@@ -168,20 +155,16 @@ export function ProjectsTable({
           visibleColumns={visibleColumns}
         />
         {sortedProjects.map((project) => {
-          const item: DocumentRowItem = { kind: "project", data: project };
+          const item: ArtifactRowItem = { kind: "project", data: project };
           return (
-            <DocumentRow
+            <ArtifactRow
               editHandlers={editHandlers}
               item={item}
               key={project.id}
               moreMenuContent={
                 <ProjectRowActions
                   onDelete={() => deleteConfirmation.requestDelete(project)}
-                  onUpdateStatus={(nextStatus, previousStatus) =>
-                    onUpdateStatus?.(project.id, nextStatus, previousStatus)
-                  }
                   projectId={project.id}
-                  status={project.status}
                 />
               }
               visibleColumns={visibleColumns}

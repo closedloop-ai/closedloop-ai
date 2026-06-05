@@ -1,8 +1,6 @@
 // Team types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
-import type { BasicUser } from "./user";
-
 export const TeamRole = {
   Owner: "OWNER",
   Admin: "ADMIN",
@@ -30,7 +28,13 @@ export type TeamMember = {
   userId: string;
   role: TeamRole;
   createdAt: Date;
-  user: BasicUser;
+  user: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    email: string;
+    avatarUrl: string | null;
+  };
 };
 
 export type CreateTeamInput = {
@@ -54,36 +58,4 @@ export type UpdateTeamMemberInput = {
   teamId: string;
   userId: string;
   role: TeamRole;
-};
-
-export type TeamRepositoryRepoSummary = {
-  id: string;
-  installationId: string;
-  githubRepoId: string;
-  fullName: string;
-  name: string;
-  owner: string;
-  private: boolean;
-};
-
-export type TeamRepository = {
-  id: string;
-  teamId: string;
-  installationRepositoryId: string;
-  isDefaultSelected: boolean;
-  isPrimary: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  repository: TeamRepositoryRepoSummary;
-};
-
-export type AddTeamRepositoryInput = {
-  installationRepositoryId: string;
-  isDefaultSelected?: boolean;
-  isPrimary?: boolean;
-};
-
-export type UpdateTeamRepositoryInput = {
-  isDefaultSelected?: boolean;
-  isPrimary?: boolean;
 };

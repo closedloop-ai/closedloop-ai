@@ -1,47 +1,41 @@
 /**
- * Unit tests for pr-read-repair module (post-artifact-cutover).
+ * Unit tests for pr-read-repair module.
  *
- * schedulePrReadRepair — eligibility filtering over `PrReadRepairInput[]`:
- * - Returns early when inputs array is empty
- * - Skips inputs already in MERGED state (when verified)
- * - Skips inputs verified within the 24h staleness threshold
- * - Skips inputs with a refresh attempt within the 1h debounce window
- * - Schedules via waitUntil for merged-but-never-verified PRs
- * - Schedules via waitUntil for stale open PRs
+ * schedulePrReadRepair — eligibility filtering:
+ * - Returns early when externalLinks array is empty
+ * - Filters out non-PullRequest type links
+ * - Skips links already in MERGED state (terminal — no further refresh needed)
+ * - Skips links verified within the 24h staleness threshold
+ * - Skips links with a refresh attempt within the 1h debounce window
+ * - Schedules via waitUntil for links with missing metadata (need state resolution)
+ * - Schedules via waitUntil for non-merged links past the staleness threshold
  *
- * repairSinglePrLink (invoked via captured waitUntil promise):
- * - Stamps lastRefreshAttemptAt on the PullRequestDetail
- * - Skips when PR URL cannot be parsed
- * - Skips when installationId cannot be resolved
- * - Skips when getSinglePullRequest returns null
+ * runPrReadRepair (invoked via captured waitUntil promise) — repair logic:
+ * - Stamps lastRefreshAttemptAt before calling GitHub API
+ * - Skips link when PR URL cannot be parsed
+ * - Skips link when installationId cannot be resolved
+ * - Skips link when getSinglePullRequest returns null
+ * - Updates externalLink metadata with fresh state/title/timestamps on success
+ * - Updates GitHubPullRequest row with fresh state data when githubId present
+ * - Logs warning when GitHubPullRequest updateMany matches 0 rows
+ * - Skips GitHubPullRequest update when githubId is absent from metadata
  */
 
 import { vi } from "vitest";
 
-// --- Module-level mocks ---
+// --- Module-level mocks (factories cannot reference outer variables — use vi.fn() inline) ---
 
 vi.mock("@vercel/functions", () => ({
   waitUntil: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
   GitHubInstallationStatus: {
     PENDING_CLAIM: "PENDING_CLAIM",
     ACTIVE: "ACTIVE",
     SUSPENDED: "SUSPENDED",
   },
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  withDb: vi.fn(),
 }));
 
 vi.mock("@repo/github", () => ({
@@ -56,42 +50,73 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+import type { JsonObject } from "@repo/api/src/types/common";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
-import { log } from "@repo/observability/log";
+// Import after mocks
 import { waitUntil } from "@vercel/functions";
-import {
-  type PrReadRepairInput,
-  schedulePrReadRepair,
-} from "@/lib/pr-read-repair";
+import { schedulePrReadRepair } from "@/lib/pr-read-repair";
 
+// Typed mock references
 const mockWaitUntil = vi.mocked(waitUntil);
-const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn> & {
-  tx: ReturnType<typeof vi.fn>;
-};
+const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn>;
 const mockGetSinglePullRequest = vi.mocked(getSinglePullRequest);
-const mockLog = vi.mocked(log);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const ORG_ID = "org-uuid-test";
 
 /** 24 hours + 1ms — past the staleness threshold */
 const STALE_MS = 24 * 60 * 60 * 1000 + 1;
 
-function msAgo(ms: number): Date {
-  return new Date(Date.now() - ms);
+function msAgo(ms: number): string {
+  return new Date(Date.now() - ms).toISOString();
 }
 
-function makeInput(
-  overrides: Partial<PrReadRepairInput> = {}
-): PrReadRepairInput {
+type ExternalLinkOverride = {
+  id?: string;
+  type?: ExternalLinkType;
+  externalUrl?: string;
+  metadata?: JsonObject | null;
+};
+
+function makeExternalLink(overrides: ExternalLinkOverride = {}) {
   return {
     id: "link-uuid-1",
-    externalUrl: "https://github.com/acme/my-repo/pull/42",
+    organizationId: ORG_ID,
     workstreamId: "ws-uuid-1",
     projectId: "proj-uuid-1",
-    organizationId: ORG_ID,
-    prState: GitHubPRState.Open,
+    type: ExternalLinkType.PullRequest,
+    title: "My PR",
+    externalUrl: "https://github.com/acme/my-repo/pull/42",
+    metadata: null as JsonObject | null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function makePrMetadata(
+  overrides: Partial<{
+    number: number;
+    githubId: string;
+    headBranch: string;
+    baseBranch: string;
+    state: string;
+    lastVerifiedAt: string | null;
+    lastRefreshAttemptAt: string | null;
+  }> = {}
+): JsonObject {
+  return {
+    number: 42,
+    githubId: "gh-pr-111",
+    headBranch: "feature-x",
+    baseBranch: "main",
+    state: GitHubPRState.Open,
     lastVerifiedAt: null,
     lastRefreshAttemptAt: null,
     ...overrides,
@@ -107,203 +132,199 @@ describe("schedulePrReadRepair — eligibility filtering", () => {
     vi.clearAllMocks();
   });
 
-  it("returns early and does not call waitUntil when inputs is empty", () => {
+  it("returns early and does not call waitUntil when externalLinks is empty", () => {
     schedulePrReadRepair([], ORG_ID);
+
     expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
-  it("does not call waitUntil when the PR is merged and has been verified", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Merged,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
-    });
-    schedulePrReadRepair([input], ORG_ID);
+  it("does not call waitUntil when all links are non-PullRequest type", () => {
+    const links = [
+      makeExternalLink({ type: ExternalLinkType.FigmaDesign, metadata: null }),
+      makeExternalLink({
+        type: ExternalLinkType.PreviewDeployment,
+        metadata: null,
+      }),
+    ];
+
+    schedulePrReadRepair(links, ORG_ID);
+
     expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
-  it("calls waitUntil for a merged PR that was never verified", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Merged,
-      lastVerifiedAt: null,
+  it("does not call waitUntil when the PR is already in MERGED state", () => {
+    const link = makeExternalLink({
+      metadata: makePrMetadata({ state: GitHubPRState.Merged }),
     });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
+
+    schedulePrReadRepair([link], ORG_ID);
+
+    expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
-  it("does not call waitUntil when verified within the 24h staleness threshold", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
-      lastRefreshAttemptAt: null,
+  it("does not call waitUntil when link was verified within the 24h staleness threshold", () => {
+    // Verified 1 hour ago — still fresh
+    const recentlyVerified = msAgo(60 * 60 * 1000);
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        state: GitHubPRState.Open,
+        lastVerifiedAt: recentlyVerified,
+        lastRefreshAttemptAt: null,
+      }),
     });
-    schedulePrReadRepair([input], ORG_ID);
+
+    schedulePrReadRepair([link], ORG_ID);
+
     expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
   it("does not call waitUntil when a refresh attempt was made within the 1h debounce window", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
-      lastRefreshAttemptAt: msAgo(30 * 60 * 1000),
+    // Attempted 30 minutes ago — within the 1h debounce
+    const recentAttempt = msAgo(30 * 60 * 1000);
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        state: GitHubPRState.Open,
+        lastVerifiedAt: null,
+        lastRefreshAttemptAt: recentAttempt,
+      }),
     });
-    schedulePrReadRepair([input], ORG_ID);
+
+    schedulePrReadRepair([link], ORG_ID);
+
     expect(mockWaitUntil).not.toHaveBeenCalled();
   });
 
-  it("calls waitUntil for an open PR never verified before", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
-      lastRefreshAttemptAt: null,
-    });
-    schedulePrReadRepair([input], ORG_ID);
+  it("calls waitUntil for a link with null metadata (never checked before)", () => {
+    const link = makeExternalLink({ metadata: null });
+
+    schedulePrReadRepair([link], ORG_ID);
+
     expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 
   it("calls waitUntil for an open PR whose lastVerifiedAt is past the 24h staleness threshold", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: msAgo(STALE_MS),
-      lastRefreshAttemptAt: null,
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        state: GitHubPRState.Open,
+        lastVerifiedAt: msAgo(STALE_MS),
+        lastRefreshAttemptAt: null,
+      }),
     });
-    schedulePrReadRepair([input], ORG_ID);
+
+    schedulePrReadRepair([link], ORG_ID);
+
     expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 
   it("calls waitUntil for a closed (non-merged) PR past the staleness threshold", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Closed,
-      lastVerifiedAt: msAgo(STALE_MS),
-      lastRefreshAttemptAt: null,
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        state: GitHubPRState.Closed,
+        lastVerifiedAt: msAgo(STALE_MS),
+        lastRefreshAttemptAt: null,
+      }),
     });
-    schedulePrReadRepair([input], ORG_ID);
+
+    schedulePrReadRepair([link], ORG_ID);
+
     expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 
-  it("calls waitUntil only for eligible inputs when list is mixed", () => {
-    const mergedVerified = makeInput({
-      id: "input-merged",
-      prState: GitHubPRState.Merged,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
+  it("calls waitUntil only for eligible links when list is mixed", () => {
+    const mergedLink = makeExternalLink({
+      id: "link-merged",
+      metadata: makePrMetadata({ state: GitHubPRState.Merged }),
     });
-    const fresh = makeInput({
-      id: "input-fresh",
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
+    const freshLink = makeExternalLink({
+      id: "link-fresh",
+      metadata: makePrMetadata({
+        state: GitHubPRState.Open,
+        lastVerifiedAt: msAgo(60 * 60 * 1000), // 1h ago — still within threshold
+      }),
     });
-    const eligible = makeInput({
-      id: "input-stale",
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
+    const eligibleLink = makeExternalLink({
+      id: "link-stale",
+      metadata: null, // null = needs check
     });
-    schedulePrReadRepair([mergedVerified, fresh, eligible], ORG_ID);
+
+    schedulePrReadRepair([mergedLink, freshLink, eligibleLink], ORG_ID);
+
     expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 });
 
 // ---------------------------------------------------------------------------
-// repairSinglePrLink — repair logic (invoked via captured waitUntil promise)
+// runPrReadRepair — repair logic (exercised via waitUntil capture)
 // ---------------------------------------------------------------------------
 
-/** Run the scheduled repair and await the captured waitUntil promise. */
-async function runRepair(inputs: PrReadRepairInput[]): Promise<void> {
-  schedulePrReadRepair(inputs, ORG_ID);
-  const capturedPromise = mockWaitUntil.mock.calls[0]?.[0] as
-    | Promise<void>
-    | undefined;
-  if (capturedPromise) {
-    await capturedPromise;
+describe("runPrReadRepair — repair logic", () => {
+  /**
+   * Run schedulePrReadRepair with the given links and capture the waitUntil
+   * promise, then await it so we can assert on DB/GitHub calls synchronously.
+   */
+  async function runRepair(links: ReturnType<typeof makeExternalLink>[]) {
+    schedulePrReadRepair(links, ORG_ID);
+
+    const capturedPromise = mockWaitUntil.mock.calls[0]?.[0] as
+      | Promise<void>
+      | undefined;
+    if (capturedPromise) {
+      await capturedPromise;
+    }
   }
-}
 
-function makeFreshPr(
-  overrides: Partial<{
-    githubId: string;
-    number: number;
-    title: string;
-    state: GitHubPRState;
-    mergedAt: string | null;
-    closedAt: string | null;
-    authorLogin: string | null;
-    isDraft: boolean;
-    headSha: string;
-    baseSha: string;
-  }> = {}
-) {
-  return {
-    githubId: "gh-pr-new",
-    number: 42,
-    title: "New PR",
-    htmlUrl: "https://github.com/acme/my-repo/pull/42",
-    headBranch: "feature-x",
-    baseBranch: "main",
-    state: GitHubPRState.Open,
-    mergedAt: null,
-    closedAt: null,
-    authorLogin: null,
-    isDraft: false,
-    headSha: "abc123",
-    baseSha: "def456",
-    ...overrides,
-  };
-}
-
-describe("repairSinglePrLink — stamp + parse guards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockWithDb.tx = vi.fn();
   });
 
-  it("stamps lastRefreshAttemptAt before calling GitHub API", async () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
-    });
-    const mockDetailUpdate = vi.fn().mockResolvedValue({});
+  it("stamps lastRefreshAttemptAt on the externalLink before calling GitHub API", async () => {
+    const link = makeExternalLink({ metadata: null });
 
-    // Call 1: pullRequestDetail.update (stamp)
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: mockDetailUpdate } })
-    );
-    // Call 2: resolveRepositoryId — returns null (no match)
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+    // update → stamps attempt; findFirst + findMany for installation fallback
+    mockWithDb.mockImplementation((cb: any) =>
       cb({
-        gitHubInstallationRepository: {
+        externalLink: {
+          update: vi.fn().mockResolvedValue({ metadata: {} }),
+        },
+        gitHubPullRequest: {
           findFirst: vi.fn().mockResolvedValue(null),
+        },
+        gitHubInstallation: {
+          findMany: vi.fn().mockResolvedValue([]),
         },
       })
     );
-    // Call 3: resolveInstallationId primary: no detail → fallback
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        pullRequestDetail: { findUnique: vi.fn().mockResolvedValue(null) },
-      })
-    );
-    // Call 4: resolveInstallationId fallback: 0 installations
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        gitHubInstallation: { findMany: vi.fn().mockResolvedValue([]) },
-      })
-    );
 
-    await runRepair([input]);
+    await runRepair([link]);
 
-    expect(mockDetailUpdate).toHaveBeenCalledWith(
+    // withDb should have been called to stamp lastRefreshAttemptAt
+    expect(mockWithDb).toHaveBeenCalled();
+    const firstCallArg = mockWithDb.mock.calls[0][0];
+    const mockDb = {
+      externalLink: {
+        update: vi.fn().mockResolvedValue({ metadata: {} }),
+      },
+    };
+    await firstCallArg(mockDb);
+    expect(mockDb.externalLink.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { artifactId: input.id },
+        where: { id: link.id },
         data: expect.objectContaining({
-          lastRefreshAttemptAt: expect.any(Date),
+          metadata: expect.objectContaining({
+            lastRefreshAttemptAt: expect.any(String),
+          }),
         }),
       })
     );
   });
 
-  it("skips the input when the PR URL cannot be parsed (no GitHub match)", async () => {
-    const input = makeInput({
+  it("skips the link when the PR URL cannot be parsed (no GitHub domain match)", async () => {
+    const link = makeExternalLink({
       externalUrl: "https://not-github.com/some/page",
+      metadata: null,
     });
 
-    await runRepair([input]);
+    await runRepair([link]);
 
     // Should not attempt to stamp or call GitHub
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -311,172 +332,236 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
   });
 
   it("skips the GitHub API call when no installationId can be resolved", async () => {
-    const input = makeInput();
+    const link = makeExternalLink({ metadata: null });
 
-    // Call 1: stamp
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
-    );
-    // Call 2: resolveRepositoryId → null
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-      })
-    );
-    // Call 3: resolveInstallationId primary → no detail
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        pullRequestDetail: { findUnique: vi.fn().mockResolvedValue(null) },
-      })
-    );
-    // Call 4: resolveInstallationId fallback → 0 installations
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        gitHubInstallation: { findMany: vi.fn().mockResolvedValue([]) },
-      })
-    );
+    // externalLink.update stamps attempt; then both resolution paths fail
+    mockWithDb
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          externalLink: {
+            update: vi.fn().mockResolvedValue({ metadata: {} }),
+          },
+        })
+      )
+      // gitHubPullRequest.findFirst — no githubId in metadata so skip primary
+      // gitHubInstallation.findMany — returns 0 installations (cannot resolve)
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          gitHubInstallation: {
+            findMany: vi.fn().mockResolvedValue([]),
+          },
+        })
+      );
 
-    await runRepair([input]);
+    await runRepair([link]);
 
     expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
   });
 
-  it("skips update when getSinglePullRequest returns null", async () => {
-    const input = makeInput();
-    const mockDetailUpdate = vi.fn().mockResolvedValue({});
+  it("skips externalLink update when getSinglePullRequest returns null", async () => {
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        githubId: undefined as any,
+        state: GitHubPRState.Open,
+      }),
+    });
+    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
 
-    // Call 1: stamp
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: mockDetailUpdate } })
-    );
-    // Call 2: resolveRepositoryId → valid
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "repo-uuid-99",
-            installation: { installationId: "install-99" },
-          }),
-        },
-      })
-    );
+    mockWithDb
+      // stamp lastRefreshAttemptAt
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          externalLink: { update: mockExternalLinkUpdate },
+        })
+      )
+      // installationId fallback — returns exactly 1 installation
+      .mockImplementationOnce((cb: any) =>
+        cb({
+          gitHubInstallation: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ installationId: "install-99" }]),
+          },
+        })
+      );
 
     mockGetSinglePullRequest.mockResolvedValueOnce(null);
 
-    await runRepair([input]);
+    await runRepair([link]);
 
-    // Only the stamp call; tx never entered
-    expect(mockDetailUpdate).toHaveBeenCalledTimes(1);
-    expect(mockWithDb.tx).not.toHaveBeenCalled();
-    expect(mockLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining("getSinglePullRequest returned null"),
-      expect.any(Object)
-    );
+    // Only one withDb call (the stamp) + one installation lookup
+    // No second externalLink.update to write fresh state
+    expect(mockExternalLinkUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it("resolveRepositoryId queries by fullName scoped to org", async () => {
-    const input = makeInput({
-      externalUrl: "https://github.com/acme/target-repo/pull/7",
-    });
-    const mockRepoFindFirst = vi.fn().mockResolvedValue({
-      id: "repo-uuid-target",
-      installation: { installationId: "install-target" },
-    });
-
-    // Call 1: stamp
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
-    );
-    // Call 2: resolveRepositoryId
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({
-        gitHubInstallationRepository: { findFirst: mockRepoFindFirst },
-      })
-    );
-
-    mockGetSinglePullRequest.mockResolvedValueOnce(
-      makeFreshPr({ githubId: "gh-pr-target", number: 7 })
-    );
-
-    // tx: detail exists → apply update
-    mockWithDb.tx.mockImplementationOnce((cb: (tx: unknown) => unknown) =>
-      cb({
-        pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: input.id }),
-          update: vi.fn().mockResolvedValue({}),
-        },
-        artifact: { update: vi.fn().mockResolvedValue({}) },
-      })
-    );
-
-    await runRepair([input]);
-
-    expect(mockRepoFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          fullName: "acme/target-repo",
-          installation: { organizationId: ORG_ID },
-        },
-      })
-    );
-  });
-
-  it("memoizes repositoryId across two inputs for the same repo (only one DB lookup)", async () => {
-    const inputA = makeInput({
-      id: "input-a",
-      externalUrl: "https://github.com/acme/shared-repo/pull/10",
-    });
-    const inputB = makeInput({
-      id: "input-b",
-      externalUrl: "https://github.com/acme/shared-repo/pull/11",
+  it("updates externalLink metadata with fresh state, title, and timestamps on success", async () => {
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        githubId: "gh-pr-999",
+        state: GitHubPRState.Open,
+        lastVerifiedAt: null,
+        lastRefreshAttemptAt: null,
+      }),
     });
 
-    const mockRepoFindFirst = vi.fn().mockResolvedValue({
-      id: "repo-uuid-shared",
-      installation: { installationId: "install-shared" },
-    });
+    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
+    const mockPrFindFirst = vi.fn().mockResolvedValue(null);
+    const mockInstallationFindMany = vi
+      .fn()
+      .mockResolvedValue([{ installationId: "install-77" }]);
+    const mockPrUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
 
-    // Input A: stamp + resolveRepositoryId (DB hit)
     mockWithDb
-      .mockImplementationOnce((cb: (db: unknown) => unknown) =>
-        cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
+      // Call 1: stamp lastRefreshAttemptAt
+      .mockImplementationOnce((cb: any) =>
+        cb({ externalLink: { update: mockExternalLinkUpdate } })
       )
-      .mockImplementationOnce((cb: (db: unknown) => unknown) =>
-        cb({ gitHubInstallationRepository: { findFirst: mockRepoFindFirst } })
+      // Call 2: gitHubPullRequest.findFirst (primary installationId lookup)
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubPullRequest: { findFirst: mockPrFindFirst } })
+      )
+      // Call 3: gitHubInstallation.findMany (fallback)
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubInstallation: { findMany: mockInstallationFindMany } })
+      )
+      // Call 4: write fresh metadata to externalLink
+      .mockImplementationOnce((cb: any) =>
+        cb({ externalLink: { update: mockExternalLinkUpdate } })
+      )
+      // Call 5: gitHubPullRequest.updateMany
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubPullRequest: { updateMany: mockPrUpdateMany } })
       );
 
-    // Input B: stamp only — resolveRepositoryId uses cache
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
-    );
+    mockGetSinglePullRequest.mockResolvedValueOnce({
+      githubId: "gh-pr-999",
+      number: 42,
+      title: "Fresh title",
+      htmlUrl: "https://github.com/acme/my-repo/pull/42",
+      headBranch: "feature-x",
+      baseBranch: "main",
+      state: GitHubPRState.Merged,
+      mergedAt: "2026-04-01T10:00:00Z",
+      closedAt: "2026-04-01T10:00:00Z",
+    });
 
-    mockGetSinglePullRequest
-      .mockResolvedValueOnce(makeFreshPr({ githubId: "gh-pr-10", number: 10 }))
-      .mockResolvedValueOnce(makeFreshPr({ githubId: "gh-pr-11", number: 11 }));
+    await runRepair([link]);
 
-    // tx for inputs A and B
-    mockWithDb.tx
-      .mockImplementationOnce((cb: (tx: unknown) => unknown) =>
-        cb({
-          pullRequestDetail: {
-            findUnique: vi.fn().mockResolvedValue(null),
-          },
-          artifact: { create: vi.fn().mockResolvedValue({}) },
-        })
+    // Second externalLink.update should include fresh state/title/timestamps
+    expect(mockExternalLinkUpdate).toHaveBeenCalledTimes(2);
+    const secondUpdateCall = mockExternalLinkUpdate.mock.calls[1][0];
+    expect(secondUpdateCall.data.title).toBe("Fresh title");
+    expect(secondUpdateCall.data.metadata).toMatchObject({
+      githubId: "gh-pr-999",
+      number: 42,
+      headBranch: "feature-x",
+      baseBranch: "main",
+      state: GitHubPRState.Merged,
+      lastVerifiedAt: expect.any(String),
+      lastRefreshAttemptAt: expect.any(String),
+    });
+  });
+
+  it("updates GitHubPullRequest row when githubId is present in metadata", async () => {
+    const link = makeExternalLink({
+      metadata: makePrMetadata({
+        githubId: "gh-pr-888",
+        state: GitHubPRState.Open,
+      }),
+    });
+
+    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
+    const mockPrFindFirst = vi.fn().mockResolvedValue(null);
+    const mockInstallationFindMany = vi
+      .fn()
+      .mockResolvedValue([{ installationId: "install-55" }]);
+    const mockPrUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    mockWithDb
+      .mockImplementationOnce((cb: any) =>
+        cb({ externalLink: { update: mockExternalLinkUpdate } })
       )
-      .mockImplementationOnce((cb: (tx: unknown) => unknown) =>
-        cb({
-          pullRequestDetail: {
-            findUnique: vi.fn().mockResolvedValue(null),
-          },
-          artifact: { create: vi.fn().mockResolvedValue({}) },
-        })
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubPullRequest: { findFirst: mockPrFindFirst } })
+      )
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubInstallation: { findMany: mockInstallationFindMany } })
+      )
+      .mockImplementationOnce((cb: any) =>
+        cb({ externalLink: { update: mockExternalLinkUpdate } })
+      )
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubPullRequest: { updateMany: mockPrUpdateMany } })
       );
 
-    await runRepair([inputA, inputB]);
+    mockGetSinglePullRequest.mockResolvedValueOnce({
+      githubId: "gh-pr-888",
+      number: 42,
+      title: "Updated title",
+      htmlUrl: "https://github.com/acme/my-repo/pull/42",
+      headBranch: "feature-x",
+      baseBranch: "main",
+      state: GitHubPRState.Merged,
+      mergedAt: "2026-04-02T10:00:00Z",
+      closedAt: "2026-04-02T10:00:00Z",
+    });
 
-    expect(mockRepoFindFirst).toHaveBeenCalledOnce();
+    await runRepair([link]);
+
+    expect(mockPrUpdateMany).toHaveBeenCalledWith({
+      where: { githubId: "gh-pr-888", organizationId: ORG_ID },
+      data: {
+        state: GitHubPRState.Merged,
+        title: "Updated title",
+        mergedAt: new Date("2026-04-02T10:00:00Z"),
+        closedAt: new Date("2026-04-02T10:00:00Z"),
+      },
+    });
+  });
+
+  it("skips GitHubPullRequest updateMany when githubId is absent from metadata", async () => {
+    // metadata with no githubId field
+    const link = makeExternalLink({
+      metadata: {
+        number: 42,
+        headBranch: "feat",
+        baseBranch: "main",
+        state: GitHubPRState.Open,
+        // githubId deliberately absent
+      },
+    });
+
+    const mockExternalLinkUpdate = vi.fn().mockResolvedValue({ metadata: {} });
+    const mockInstallationFindMany = vi
+      .fn()
+      .mockResolvedValue([{ installationId: "install-33" }]);
+    const mockPrUpdateMany = vi.fn();
+
+    mockWithDb
+      .mockImplementationOnce((cb: any) =>
+        cb({ externalLink: { update: mockExternalLinkUpdate } })
+      )
+      .mockImplementationOnce((cb: any) =>
+        cb({ gitHubInstallation: { findMany: mockInstallationFindMany } })
+      )
+      .mockImplementationOnce((cb: any) =>
+        cb({ externalLink: { update: mockExternalLinkUpdate } })
+      );
+
+    mockGetSinglePullRequest.mockResolvedValueOnce({
+      githubId: "gh-pr-000",
+      number: 42,
+      title: "PR title",
+      htmlUrl: "https://github.com/acme/my-repo/pull/42",
+      headBranch: "feat",
+      baseBranch: "main",
+      state: GitHubPRState.Merged,
+      mergedAt: "2026-04-03T00:00:00Z",
+      closedAt: "2026-04-03T00:00:00Z",
+    });
+
+    await runRepair([link]);
+
+    expect(mockPrUpdateMany).not.toHaveBeenCalled();
   });
 });

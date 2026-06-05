@@ -4,21 +4,14 @@ import type {
   CreateDesktopCommandInput,
   DesktopCommandEvent,
   DesktopCommandEventType,
+  DesktopCommandStatus,
   DesktopCommandSummary,
   RelayOperationDispatchRequest,
-} from "@repo/api/src/types/compute-target";
-import {
-  DesktopCommandStatus,
-  isTerminalStatus,
 } from "@repo/api/src/types/compute-target";
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
-import {
-  emitProtocolMetric,
-  emitQueueMetric,
-} from "@repo/observability/telemetry/metrics";
-import { ORIGIN } from "@repo/observability/telemetry/origin";
+import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
 import {
   ErrorClass,
@@ -26,7 +19,6 @@ import {
   TelemetrySeverity,
 } from "@repo/observability/telemetry/schema";
 import { BoundedCache } from "@/lib/bounded-cache";
-import { safeEmit } from "@/lib/telemetry-utils";
 import { isRecord } from "@/lib/type-guards";
 
 type StoredCommand = {
@@ -156,18 +148,27 @@ function fingerprintCommand(input: CreateDesktopCommandInput): string {
 
 function isDesktopCommandStatus(value: string): value is DesktopCommandStatus {
   return (
-    value === DesktopCommandStatus.Queued ||
-    value === DesktopCommandStatus.Accepted ||
-    value === DesktopCommandStatus.Running ||
-    value === DesktopCommandStatus.Done ||
-    value === DesktopCommandStatus.Failed ||
-    value === DesktopCommandStatus.Cancelled ||
-    value === DesktopCommandStatus.Expired
+    value === "queued" ||
+    value === "accepted" ||
+    value === "running" ||
+    value === "done" ||
+    value === "failed" ||
+    value === "cancelled" ||
+    value === "expired"
   );
 }
 
 function toDesktopCommandStatus(value: string): DesktopCommandStatus {
-  return isDesktopCommandStatus(value) ? value : DesktopCommandStatus.Failed;
+  return isDesktopCommandStatus(value) ? value : "failed";
+}
+
+function isTerminalStatus(status: DesktopCommandStatus): boolean {
+  return (
+    status === "done" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "expired"
+  );
 }
 
 function toStoredCommand(row: StoredCommandRow): StoredCommand {
@@ -176,7 +177,7 @@ function toStoredCommand(row: StoredCommandRow): StoredCommand {
     : ({
         operationId: row.operationId,
         method: "POST",
-        path: "/api/gateway",
+        path: "/api/engineer",
       } as CreateDesktopCommandInput);
 
   return {
@@ -249,7 +250,8 @@ function mapRelayPayloadToCommandInput(
       )
     : {};
   const method = typeof request.method === "string" ? request.method : "POST";
-  const path = typeof request.path === "string" ? request.path : "/api/gateway";
+  const path =
+    typeof request.path === "string" ? request.path : "/api/engineer";
   const timeoutMs =
     typeof params.timeoutMs === "number" ? params.timeoutMs : undefined;
   const lockKey =
@@ -317,16 +319,14 @@ function resolveCommandUpdate(
   if (eventType === "done") {
     const cancelled = isRecord(data) && data.cancelled === true;
     return {
-      status: cancelled
-        ? DesktopCommandStatus.Cancelled
-        : DesktopCommandStatus.Done,
+      status: cancelled ? "cancelled" : "done",
       finishedAt: new Date(),
     };
   }
 
   if (eventType === "error" && isRecord(data) && data.terminal === true) {
     return {
-      status: DesktopCommandStatus.Failed,
+      status: "failed",
       finishedAt: new Date(),
       error: typeof data.error === "string" ? data.error : "Command failed",
     };
@@ -335,19 +335,14 @@ function resolveCommandUpdate(
   if (eventType === "result" && isRecord(data) && data.terminal === true) {
     const cancelled = data.cancelled === true;
     return {
-      status: cancelled
-        ? DesktopCommandStatus.Cancelled
-        : DesktopCommandStatus.Done,
+      status: cancelled ? "cancelled" : "done",
       finishedAt: new Date(),
     };
   }
 
-  if (
-    command.status === DesktopCommandStatus.Queued ||
-    command.status === DesktopCommandStatus.Accepted
-  ) {
+  if (command.status === "queued" || command.status === "accepted") {
     return {
-      status: DesktopCommandStatus.Running,
+      status: "running",
       startedAt: command.startedAt ?? new Date(),
     };
   }
@@ -524,20 +519,6 @@ function emitCommandLifecycleEventForStatus(
   }
 }
 
-function emitSequenceGapMetric(
-  gapDelta: number,
-  computeTargetId?: string
-): void {
-  safeEmit(() =>
-    emitProtocolMetric({
-      metric: "event_ordering_gaps",
-      origin: ORIGIN,
-      value: gapDelta,
-      ...(computeTargetId ? { computeTargetId } : {}),
-    })
-  );
-}
-
 export const desktopCommandStore = {
   async createCommand(
     computeTargetId: string,
@@ -574,7 +555,7 @@ export const desktopCommandStore = {
             idempotencyKey: idempotencyKey ?? null,
             requestFingerprint: fingerprint,
             requestPayload: input as unknown as Prisma.InputJsonValue,
-            status: DesktopCommandStatus.Queued,
+            status: "queued",
             lastSequenceAcked: 0,
           },
         })
@@ -624,24 +605,11 @@ export const desktopCommandStore = {
     return this.createCommand(computeTargetId, input, context);
   },
 
-  /**
-   * Acknowledges a queued command as either accepted or rejected.
-   *
-   * @param context - Optional telemetry trace context. Note: `gatewaySessionId`
-   *   being set does not guarantee a registered gateway session —
-   *   `buildTelemetryTraceContext` defaults it to the zero-UUID sentinel
-   *   "00000000-0000-0000-0000-000000000000" when no session is registered.
-   */
   async acknowledgeCommand(
     commandId: string,
     accepted: boolean,
     reason?: string,
-    computeTargetId?: string,
-    context?: Pick<
-      TelemetryTraceContext,
-      "gatewaySessionId" | "schemaVersion"
-    > &
-      Partial<TelemetryTraceContext>
+    computeTargetId?: string
   ): Promise<DesktopCommandSummary | null> {
     const command = await findCommandByIdScoped(commandId, computeTargetId);
     if (!command) {
@@ -661,12 +629,12 @@ export const desktopCommandStore = {
       | Record<string, never>;
     if (!accepted) {
       data = {
-        status: DesktopCommandStatus.Failed,
+        status: "failed",
         error: reason || "Command rejected",
         finishedAt: now,
       };
-    } else if (command.status === DesktopCommandStatus.Queued) {
-      data = { status: DesktopCommandStatus.Accepted };
+    } else if (command.status === "queued") {
+      data = { status: "accepted" };
     } else {
       data = {};
     }
@@ -674,18 +642,10 @@ export const desktopCommandStore = {
     // Use conditional update to prevent overwriting a concurrent terminal transition.
     // When accepting a queued command, narrow the guard to "queued" to prevent
     // regressing a command that has already progressed to "running".
-    const terminalStatuses = [
-      DesktopCommandStatus.Done,
-      DesktopCommandStatus.Failed,
-      DesktopCommandStatus.Cancelled,
-      DesktopCommandStatus.Expired,
-    ];
-    const statusGuard:
-      | DesktopCommandStatus
-      | { notIn: DesktopCommandStatus[] } =
-      accepted && command.status === DesktopCommandStatus.Queued
-        ? DesktopCommandStatus.Queued
-        : { notIn: terminalStatuses };
+    const statusGuard: string | { notIn: string[] } =
+      accepted && command.status === "queued"
+        ? "queued"
+        : { notIn: ["done", "failed", "cancelled", "expired"] };
 
     const { count } = await withDb((db) =>
       db.desktopCommand.updateMany({
@@ -698,33 +658,6 @@ export const desktopCommandStore = {
       })
     );
 
-    const ackLatencyMs = Date.now() - command.createdAt.getTime();
-
-    // Emit CommandAcknowledged independently of the DB state transition.
-    // The ack and desktop.command.event travel independent paths, so a fast
-    // command can flip to `running` before this block runs — in that case
-    // `toStatus` would be undefined (or count === 0 from the queued→running
-    // race) and the ack-latency signal would be lost. Emitting per-call gives
-    // at-least-once semantics; downstream dedupes on (commandId, timestamp).
-    try {
-      emitCommandLifecycleEvent(
-        TelemetryCategory.CommandAcknowledged,
-        {
-          ...context,
-          commandId,
-          operationId: command.operationId,
-          computeTargetId: computeTargetId ?? command.computeTargetId,
-        },
-        { diagnostics: { ackLatencyMs } }
-      );
-    } catch (emitError) {
-      log.warn("CommandAcknowledged lifecycle emit failed", {
-        commandId,
-        computeTargetId: computeTargetId ?? command.computeTargetId,
-        error: emitError,
-      });
-    }
-
     // If no rows updated, re-fetch to return current state
     if (count === 0) {
       const current = await findCommandByIdScoped(commandId, computeTargetId);
@@ -735,7 +668,6 @@ export const desktopCommandStore = {
     if (toStatus) {
       emitQueueMetric({
         metric: "command_state_transition",
-        origin: ORIGIN,
         fromStatus: command.status,
         toStatus,
         commandId,
@@ -788,7 +720,6 @@ export const desktopCommandStore = {
           expected,
           errorClass: ErrorClass.Protocol,
         });
-        emitSequenceGapMetric(sequence - expected, input.computeTargetId);
         return {
           accepted: false,
           reason: "sequence_gap",
@@ -814,7 +745,7 @@ export const desktopCommandStore = {
           ...(nextState.status ? { status: nextState.status } : {}),
           ...(nextState.startedAt ? { startedAt: nextState.startedAt } : {}),
           ...(nextState.finishedAt ? { finishedAt: nextState.finishedAt } : {}),
-          ...(nextState.error === undefined ? {} : { error: nextState.error }),
+          ...(nextState.error !== undefined ? { error: nextState.error } : {}),
         },
       });
 
@@ -844,7 +775,6 @@ export const desktopCommandStore = {
       if (result.nextStatus) {
         emitQueueMetric({
           metric: "command_state_transition",
-          origin: ORIGIN,
           fromStatus: result.prevStatus,
           toStatus: result.nextStatus,
           commandId: input.commandId,
@@ -930,9 +860,9 @@ export const desktopCommandStore = {
       db.desktopCommandEvent.findMany({
         where: {
           commandId,
-          ...(options?.afterSequence == null
-            ? {}
-            : { sequence: { gt: options.afterSequence } }),
+          ...(options?.afterSequence != null
+            ? { sequence: { gt: options.afterSequence } }
+            : {}),
         },
         orderBy: { sequence: "asc" },
       })
@@ -1039,20 +969,6 @@ export const desktopCommandStore = {
     return command.id;
   },
 
-  countCommandsForTarget(
-    computeTargetId: string,
-    statuses: DesktopCommandStatus | DesktopCommandStatus[]
-  ): Promise<number> {
-    return withDb((db) =>
-      db.desktopCommand.count({
-        where: {
-          computeTargetId,
-          status: Array.isArray(statuses) ? { in: statuses } : statuses,
-        },
-      })
-    );
-  },
-
   async listNonTerminalDispatchCommands(
     computeTargetId: string
   ): Promise<DispatchableCommand[]> {
@@ -1074,23 +990,20 @@ export const desktopCommandStore = {
   async markCommandExpired(
     commandId: string,
     reason?: string,
-    context?: Partial<TelemetryTraceContext>
+    context?: Pick<
+      TelemetryTraceContext,
+      "gatewaySessionId" | "schemaVersion"
+    > &
+      Partial<TelemetryTraceContext>
   ): Promise<void> {
     const { count } = await withDb((db) =>
       db.desktopCommand.updateMany({
         where: {
           id: commandId,
-          status: {
-            notIn: [
-              DesktopCommandStatus.Done,
-              DesktopCommandStatus.Failed,
-              DesktopCommandStatus.Cancelled,
-              DesktopCommandStatus.Expired,
-            ],
-          },
+          status: { notIn: ["done", "failed", "cancelled", "expired"] },
         },
         data: {
-          status: DesktopCommandStatus.Expired,
+          status: "expired",
           finishedAt: new Date(),
           error: reason || "Command expired",
         },
@@ -1100,21 +1013,9 @@ export const desktopCommandStore = {
     if (count > 0) {
       emitQueueMetric({
         metric: "command_state_transition",
-        origin: ORIGIN,
-        toStatus: DesktopCommandStatus.Expired,
+        toStatus: "expired",
         commandId,
       });
-
-      safeEmit(() =>
-        emitQueueMetric({
-          metric: "dropped_expired_work_items",
-          origin: ORIGIN,
-          count,
-          ...(context?.computeTargetId
-            ? { computeTargetId: context.computeTargetId }
-            : {}),
-        })
-      );
 
       if (context) {
         emitCommandLifecycleEvent(

@@ -12,7 +12,7 @@ import {
   type CaseScore,
   EvalStatus,
   type EvaluationReport,
-} from "@/lib/engineer/queries/closedloop";
+} from "@/lib/engineer/queries/symphony";
 import { decodeText, getFileType } from "@/lib/engineer/run-viewer-utils";
 import type { RunData } from "@/types/run-viewer";
 

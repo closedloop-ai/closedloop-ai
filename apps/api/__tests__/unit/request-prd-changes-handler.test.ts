@@ -22,29 +22,20 @@ vi.mock("@repo/database", () => ({
       tx: vi.fn((fn: () => Promise<unknown>) => fn()),
     }
   ),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
 }));
 
 vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/document-version-service", () => ({
-  documentVersionService: {
+vi.mock("@/app/artifacts/artifact-version-service", () => ({
+  artifactVersionService: {
     createVersion: vi.fn(),
   },
 }));
 
-vi.mock("@vercel/functions", () => ({
-  waitUntil: vi.fn(),
-}));
-
-vi.mock("@/app/documents/room-utils", () => ({
-  resetDocumentRoom: vi.fn(),
+vi.mock("@/app/artifacts/room-utils", () => ({
+  resetArtifactRoom: vi.fn(),
 }));
 
 vi.mock("@/lib/loops/loop-state", () => ({
@@ -53,19 +44,19 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 // --- Imports (after mocks) ---
 
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it } from "vitest";
-import { documentVersionService } from "@/app/documents/document-version-service";
-import { resetDocumentRoom } from "@/app/documents/room-utils";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { resetArtifactRoom } from "@/app/artifacts/room-utils";
 import { requestPrdChangesHandler } from "@/lib/loops/loop-commands/generate-prd-handler";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockCreateVersion = documentVersionService.createVersion as MockFn;
-const mockResetArtifactRoom = resetDocumentRoom as MockFn;
+const mockCreateVersion = artifactVersionService.createVersion as MockFn;
+const mockResetArtifactRoom = resetArtifactRoom as MockFn;
 const mockDownloadArtifactFile = downloadArtifactFile as MockFn;
 
 // ---------------------------------------------------------------------------
@@ -75,26 +66,24 @@ const mockDownloadArtifactFile = downloadArtifactFile as MockFn;
 function buildRequestPrdChangesLoop() {
   return buildLoop({
     command: LoopCommand.RequestPrdChanges,
-    documentId: "artifact-123",
+    artifactId: "artifact-123",
     s3StateKey: "org/loops/loop-1/run-1",
   });
 }
 
 function mockDbCalls(
-  artifactSubtype: string | null = DocumentType.Prd,
+  artifactType: string | null = ArtifactType.Prd,
   slug: string | null = "test-slug"
 ) {
   const mockFindUnique = vi
     .fn()
-    .mockResolvedValue(
-      artifactSubtype === null ? null : { subtype: artifactSubtype }
-    );
+    .mockResolvedValue(artifactType !== null ? { type: artifactType } : null);
   const mockUpdate = vi.fn().mockResolvedValue({
     id: "artifact-123",
     organizationId: "org-1",
     slug,
-    subtype: DocumentType.Prd,
-    document: { latestVersion: 2 },
+    type: ArtifactType.Prd,
+    latestVersion: 2,
   });
   const mockFindFirst = vi.fn().mockResolvedValue(null);
   const mockCreate = vi.fn().mockResolvedValue({ id: "event-1" });
@@ -149,19 +138,18 @@ describe("requestPrdChangesHandler ingestion", () => {
     );
     expect(mockCreateVersion).toHaveBeenCalledWith(
       "artifact-123",
-      "org-1",
       null,
       prdContent
     );
     expect(mockUpdate).toHaveBeenCalledWith({
-      where: { id: "artifact-123", organizationId: "org-1", type: "DOCUMENT" },
-      data: { status: DocumentStatus.Draft },
+      where: { id: "artifact-123", organizationId: "org-1" },
+      data: { status: ArtifactStatus.Draft },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        subtype: true,
-        document: { select: { latestVersion: true } },
+        type: true,
+        latestVersion: true,
       },
     });
   });
@@ -169,7 +157,7 @@ describe("requestPrdChangesHandler ingestion", () => {
   it("updates artifact status to DRAFT and resets room when slug is present", async () => {
     const loop = buildRequestPrdChangesLoop();
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    const { mockUpdate } = mockDbCalls(DocumentType.Prd, "my-prd-slug");
+    const { mockUpdate } = mockDbCalls(ArtifactType.Prd, "my-prd-slug");
     mockCreateVersion.mockResolvedValue({ id: "version-1" });
 
     await requestPrdChangesHandler.downloadAndIngest(
@@ -180,7 +168,7 @@ describe("requestPrdChangesHandler ingestion", () => {
 
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { status: DocumentStatus.Draft },
+        data: { status: ArtifactStatus.Draft },
       })
     );
     expect(mockResetArtifactRoom).toHaveBeenCalledWith(
@@ -191,7 +179,7 @@ describe("requestPrdChangesHandler ingestion", () => {
   it("does not reset room when artifact has no slug", async () => {
     const loop = buildRequestPrdChangesLoop();
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    mockDbCalls(DocumentType.Prd, null);
+    mockDbCalls(ArtifactType.Prd, null);
     mockCreateVersion.mockResolvedValue({ id: "version-1" });
 
     await requestPrdChangesHandler.downloadAndIngest(
@@ -206,7 +194,7 @@ describe("requestPrdChangesHandler ingestion", () => {
   it("throws when invoked with a non-PRD artifact type", async () => {
     const loop = buildRequestPrdChangesLoop();
     mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    mockDbCalls(DocumentType.ImplementationPlan);
+    mockDbCalls(ArtifactType.ImplementationPlan);
     mockCreateVersion.mockResolvedValue({ id: "version-1" });
 
     await expect(
@@ -216,7 +204,7 @@ describe("requestPrdChangesHandler ingestion", () => {
         "org-1"
       )
     ).rejects.toThrow(
-      `[request-prd-changes] Expected artifact type ${DocumentType.Prd}`
+      `[request-prd-changes] Expected artifact type ${ArtifactType.Prd}`
     );
   });
 });

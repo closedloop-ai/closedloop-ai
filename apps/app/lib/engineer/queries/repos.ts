@@ -1,15 +1,37 @@
-import {
-  type ReposResponse as ReposResponseBase,
-  reposOptions as reposOptionsBase,
-} from "@/lib/git/repos";
+import { queryOptions } from "@tanstack/react-query";
+import type { ConfiguredRepo, RepoSettings } from "@/types/repos";
+import { queryKeys } from "./keys";
 
-export type ReposResponse = ReposResponseBase;
-export const reposOptions = reposOptionsBase;
+/* ---------- Response types ---------- */
+
+export type ReposResponse = {
+  repos: ConfiguredRepo[];
+  settings: RepoSettings;
+  error?: string;
+};
+
+/* ---------- Query option factories ---------- */
+
+export function reposOptions() {
+  return queryOptions<ReposResponse>({
+    queryKey: queryKeys.repos(),
+    queryFn: async () => {
+      const response = await fetch("/api/engineer/repos");
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(
+          data?.error || `Failed to fetch repos: ${response.status}`
+        );
+      }
+      return response.json();
+    },
+  });
+}
 
 /* ---------- Mutation helpers ---------- */
 
 export async function addRepo(path: string) {
-  const response = await fetch("/api/gateway/repos", {
+  const response = await fetch("/api/engineer/repos", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -23,7 +45,7 @@ export async function addRepo(path: string) {
 
 export async function removeRepo(path: string) {
   const response = await fetch(
-    `/api/gateway/repos?path=${encodeURIComponent(path)}`,
+    `/api/engineer/repos?path=${encodeURIComponent(path)}`,
     {
       method: "DELETE",
     }
@@ -39,7 +61,7 @@ export async function updateRepoSettings(settings: {
   worktreeParentDir?: string;
   worktreeParentDirConfirmed?: boolean;
 }) {
-  const response = await fetch("/api/gateway/repos", {
+  const response = await fetch("/api/engineer/repos", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),

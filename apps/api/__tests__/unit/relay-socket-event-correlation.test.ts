@@ -153,8 +153,7 @@ describe("POST /internal/relay/socket-event — correlation context propagation"
       "cmd-ack-1",
       true,
       undefined,
-      "target-1",
-      expect.anything()
+      "target-1"
     );
   });
 });

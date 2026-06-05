@@ -2,67 +2,61 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import {
-  type DocumentDetail,
-  DocumentStatus,
-  DocumentType,
+  type ArtifactDetail,
+  ArtifactStatus,
+  ArtifactType,
   PullRequestState,
-  pickPullRequestForRepo,
-} from "@repo/api/src/types/document";
-import { LoopCommand } from "@repo/api/src/types/loop";
-import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
-import {
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@repo/design-system/components/ui/resizable";
-import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
+} from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
+import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Loader2Icon } from "lucide-react";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { ArtifactChatPanel } from "@/components/artifact-editor/artifact-chat-panel";
+import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
+import { EditorToolbarActions } from "@/components/artifact-editor/editor-toolbar-actions";
+import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
+import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
+import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
+import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import { AttachmentsRow } from "@/components/document-editor/attachments-row";
-import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
-import { DocumentChatPanel } from "@/components/document-editor/document-chat-panel";
-import { DocumentEditorDetails } from "@/components/document-editor/document-editor-details";
-import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
-import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
-import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
-import { EvaluationSection } from "@/components/document-editor/evaluation-section";
-import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
-import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
-import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
-import { FloatingTargetPicker } from "@/components/engineer/floating-target-picker";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
-import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
-import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
-import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
-import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
-import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
-import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
+import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
+import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
+import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
+import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
-  useDismissDocumentGenerationStatus,
-  useDocumentGenerationStatus,
-  useDocumentPullRequest,
-} from "@/hooks/queries/use-documents";
+  useArtifactGenerationStatus,
+  useArtifactPullRequest,
+} from "@/hooks/queries/use-artifacts";
+import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import {
   useCodeJudgesFeedback,
   usePlanJudgesFeedback,
 } from "@/hooks/queries/use-judges";
-import { useInitialAdditionalRepos } from "@/hooks/queries/use-loops";
-import { useMultiRepoExecuteEnabled } from "@/hooks/use-multi-repo-execute-enabled";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
 import { LinearExportDialog } from "./components/linear-export-dialog";
-import { PlanContextSection } from "./components/plan-context-section";
 import { PlanEditorHeader } from "./components/plan-editor-header";
-import { PlanMetadataBar } from "./components/plan-metadata-bar";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
-import { RegeneratePlanModal } from "./components/regenerate-plan-modal";
 
 type PlanEditorProps = {
-  plan: DocumentDetail;
+  plan: ArtifactDetail;
   currentVersion: number;
   onVersionChange: (version: number) => void;
   showHeader?: boolean;
@@ -74,42 +68,48 @@ export function PlanEditor({
   onVersionChange,
   showHeader = true,
 }: Readonly<PlanEditorProps>) {
-  const chatFlag = useFeatureFlag("interactive-chat");
-  const multiRepoEnabled = useMultiRepoExecuteEnabled();
+  const chatFlag = useFeatureFlag("the-one-flag");
 
-  const [showMoveDialog, setShowMoveDialog] = useState(false);
-  const [showRegenerateModal, setShowRegenerateModal] = useState(false);
-  const [showComments, setShowComments] = useState(true);
+  const contentController = useArtifactContent({
+    artifact: plan,
+    onVersionCreated: () => {
+      if (currentVersion !== plan.latestVersion) {
+        onVersionChange(plan.latestVersion);
+      }
+    },
+  });
 
   const session = useEditorSession({
     artifact: plan,
     currentVersion,
+    contentCallbacks: contentController,
     onVersionChange,
   });
-  const contentController = useDocumentContent({
-    artifact: plan,
-    isLatestVersion: currentVersion === plan.latestVersion,
-    setEditorContent: session.setEditorContent,
-    onVersionCreated: (updatedArtifact) =>
-      onVersionChange(updatedArtifact.version.version),
-  });
-  const metadata = useDocumentMetadata({
+
+  const metadata = useArtifactMetadata({
     artifact: plan,
   });
-  const actions = useDocumentActions({
+
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
+  const actions = useArtifactActions({
     artifact: plan,
-    redirectPath: getPlanRedirectPath(plan),
+    redirectPath: plan.project?.teams?.[0]?.id
+      ? `/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`
+      : "/implementation-plans",
   });
+
   const planActions = usePlanActions({
-    documentId: plan.id,
+    artifactId: plan.id,
     slug: plan.slug,
   });
-  const uiState = useDocumentUIState({
-    documentType: DocumentType.ImplementationPlan,
-  });
-  const editMode = useInlineEditMode({
-    readOnly: session.isViewingHistorical,
-    editor: session.editor,
+
+  const uiState = useArtifactUIState({
+    artifactType: ArtifactType.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state
@@ -125,9 +125,14 @@ export function PlanEditor({
     openExecuteModal,
   } = uiState;
 
-  // Auto-reveal comments when threads reappear after being fully resolved.
-  // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+
+  // Comments panel toggle state
+  const [showComments, setShowComments] = useState(true);
   const prevThreadCount = useRef(session.openThreadCount);
+
+  // Auto-reveal comments when threads reappear after being fully resolved
   useEffect(() => {
     if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
       setShowComments(true);
@@ -135,41 +140,40 @@ export function PlanEditor({
     prevThreadCount.current = session.openThreadCount;
   }, [session.openThreadCount]);
 
-  // Comments are only visible while editing — they're meaningless in read-only view.
-  const commentsVisible = resolveCommentsVisible(
-    editMode.isEditing,
-    showComments
-  );
-  const shellExpanded = resolveShellExpanded(
-    editMode.isEditing,
-    session.isViewingHistorical
-  );
-
   // Fetch generation status with adaptive polling (stops when terminal)
-  const {
-    data: generationStatus,
-    isLoading: generationStatusLoading,
-    invalidateCache: invalidateArtifactCache,
-  } = useDocumentGenerationStatus(plan.id, { polling: true });
-  const dismissGenerationStatus = useDismissDocumentGenerationStatus();
-
-  // Pre-fill additionalRepos for the regenerate-plan flow from the PLAN
-  // precedence chain on this Plan document. The backend selects the right
-  // source loop (latest PLAN > GENERATE_PRD on this doc id), skipping
-  // intervening non-PLAN loops (EVALUATE_PLAN, EXECUTE, etc.) that
-  // intentionally omit plan-specific state.
-  const { initialAdditionalRepos, isLoadingInitialAdditionalRepos } =
-    useInitialAdditionalRepos(plan.id, LoopCommand.Plan);
-
-  const { data: pullRequestsData } = useDocumentPullRequest(plan.id);
-  const pullRequests = pullRequestsData ?? [];
-  const primaryPr = pickPullRequestForRepo(pullRequests, plan.targetRepo);
+  const { data: generationStatus, invalidateCache: invalidateArtifactCache } =
+    useArtifactGenerationStatus(plan.id, { polling: true });
+  const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
+  // Preview deployment via ExternalLink
+  const workstreamId = plan.workstreamId ?? "";
+  const {
+    previewDeployment,
+    refetch: refetchPreviewLinks,
+    isRefetching: isRefreshingPreviewDeployment,
+  } = useWorkstreamPreviewDeployment(workstreamId);
+
+  // Adaptive polling for preview deployment status
+  const isGenerationRunning = !!(
+    generationStatus?.status &&
+    ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
+      generationStatus.status.toUpperCase()
+    )
+  );
+  usePreviewDeploymentPolling({
+    previewState: previewDeployment?.state ?? null,
+    hasPreviewRef: !!previewDeployment?.ref,
+    pullRequestNumber: pullRequest?.number,
+    isGenerationRunning,
+    refetch: refetchPreviewLinks,
+  });
+
   // Derived state
-  const isDraft = metadata.status === DocumentStatus.Draft;
-  const isApproved = metadata.status === DocumentStatus.Approved;
+  const isDraft = metadata.status === ArtifactStatus.Draft;
+  const isApproved = metadata.status === ArtifactStatus.Approved;
+  const isReadOnly = session.isEditing || session.isViewingHistorical;
   const isPending =
     contentController.isSaving ||
     metadata.isUpdating ||
@@ -181,76 +185,69 @@ export function PlanEditor({
     planActions.isEvaluatingCode;
 
   const canEvaluateCode =
-    primaryPr?.state === PullRequestState.Open &&
-    primaryPr.headBranch.length > 0 &&
-    Boolean(primaryPr.repoFullName);
+    pullRequest !== undefined &&
+    pullRequest !== null &&
+    pullRequest.state === PullRequestState.Open &&
+    pullRequest.headBranch.length > 0;
   const evaluateCodeHandler = useCallback(() => {
-    if (!(canEvaluateCode && primaryPr?.repoFullName)) {
+    if (!canEvaluateCode || pullRequest === undefined || pullRequest === null) {
       return;
     }
-    planActions.handleEvaluateCode(
-      primaryPr.headBranch,
-      primaryPr.repoFullName
-    );
-  }, [canEvaluateCode, primaryPr, planActions.handleEvaluateCode]);
-
-  const handleRegenerate = useCallback(() => {
-    if (multiRepoEnabled) {
-      setShowRegenerateModal(true);
-      return;
-    }
-    planActions.handleRegenerate(undefined);
-  }, [multiRepoEnabled, planActions.handleRegenerate]);
+    planActions.handleEvaluateCode(pullRequest.headBranch, plan.targetRepo);
+  }, [
+    canEvaluateCode,
+    pullRequest,
+    plan.targetRepo,
+    planActions.handleEvaluateCode,
+  ]);
 
   // Create version display component for header
   const versionDisplay = (
     <VersionSelector
       currentVersion={currentVersion}
       latestVersion={plan.latestVersion}
-      onVersionChange={onVersionChange}
+      onVersionChange={(version) => {
+        session.exitEditMode();
+        onVersionChange(version);
+      }}
     />
   );
+
+  const editClickHandler = isReadOnly ? undefined : session.handleEdit;
 
   const toolbarLeftContent = (
-    <RichTextToolbar
-      className="border-0 bg-transparent p-0"
-      editor={session.editor}
-      hasLiveblocksExtension={!!session.liveblocksRoomId}
-      onPasteMarkdown={session.setEditorContent}
-      readOnly={!editMode.isEditing}
-    />
-  );
-
-  const toolbarRightContent = (
     <>
-      {session.liveblocksRoomId && (
+      {session.isEditing && session.liveblocksRoomId && (
         <Suspense fallback={null}>
           <InlinePresence />
         </Suspense>
       )}
       {versionDisplay}
-      <EditorToolbarActions
-        canRestoreVersion={true}
-        canSaveVersion={currentVersion === plan.latestVersion}
-        hasUnsavedChanges={contentController.hasUnsavedChanges}
-        isRestoring={isPending}
+      <SaveIndicator
         isSaving={contentController.isSaving}
-        onRestoreVersion={contentController.restoreVersion}
-        onSaveVersion={() =>
-          contentController.saveContent(undefined, false, editMode.exitEditMode)
-        }
-        onToggleComments={setShowComments}
-        openThreadCount={session.openThreadCount}
-        showComments={showComments}
+        lastSaved={contentController.lastSaved}
       />
     </>
   );
 
+  const toolbarRightContent = (
+    <EditorToolbarActions
+      isEditing={session.isEditing}
+      isPending={isPending}
+      isSaving={contentController.isSaving}
+      isViewingHistorical={session.isViewingHistorical}
+      onDiscard={session.handleDiscard}
+      onEdit={session.handleEdit}
+      onPublish={session.handlePublish}
+      onToggleComments={setShowComments}
+      openThreadCount={session.openThreadCount}
+      showComments={showComments}
+    />
+  );
+
   const header = showHeader ? (
     <PlanEditorHeader
-      canShowPanel={chatFlag?.enabled === true}
-      generationStatus={generationStatus}
-      generationStatusLoading={generationStatusLoading}
+      canShowPanel={chatFlag?.enabled}
       isApproved={isApproved}
       isDraft={isDraft}
       isExecuting={planActions.isExecuting}
@@ -264,12 +261,13 @@ export function PlanEditor({
       onExportMarkdown={actions.handleDownload}
       onExportToLinear={openLinearExportDialog}
       onMove={() => setShowMoveDialog(true)}
-      onRegenerate={handleRegenerate}
+      onRegenerate={planActions.handleRegenerate}
       onRequestChanges={openRequestChangesModal}
-      onRestoreVersion={contentController.restoreVersion}
+      onRestoreVersion={session.handleRestoreVersion}
       onToggleMetadataPanel={uiState.toggleMetadataPanel}
       plan={plan}
-      pullRequests={pullRequests}
+      pullRequest={pullRequest ?? null}
+      showMetadataPanel={uiState.showMetadataPanel}
       showRestore={session.isViewingHistorical}
     />
   ) : null;
@@ -278,120 +276,114 @@ export function PlanEditor({
     <>
       {header}
 
-      {/* Content area: main content + chat panel on right */}
-      <ResizablePanelGroup autoSaveId="plan-editor" direction="horizontal">
-        <ResizablePanel defaultSize={75} minSize={50}>
-          <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalDocumentRoom roomId={session.liveblocksRoomId}>
-              {/* Loading spinner — visible until editor content is fully loaded */}
-              <div
-                className={
-                  session.isEditorReady
-                    ? "hidden"
-                    : "flex flex-1 items-center justify-center py-24"
-                }
-              >
-                <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-
-              {/* Content wrapper — hidden until Liveblocks Y.Doc sync completes */}
-              <div
-                className={
-                  session.isEditorReady
-                    ? undefined
-                    : "invisible h-0 overflow-hidden"
-                }
-              >
-                {/* Generation Status Banner */}
-                <GenerationStatusBanner
-                  generationStatus={generationStatus}
-                  isDismissFailurePending={dismissGenerationStatus.isPending}
-                  onDismissFailure={async (runKey) => {
-                    await dismissGenerationStatus.mutateAsync({
-                      documentId: plan.id,
-                      runKey,
-                    });
-                  }}
-                  onGenerationComplete={invalidateArtifactCache}
-                />
-
-                <InlineEditEditorShell
-                  expanded={shellExpanded}
-                  toolbar={
-                    <EditorToolbarRow
-                      leftContent={toolbarLeftContent}
-                      rightContent={toolbarRightContent}
-                    />
-                  }
-                >
-                  <CollaborativeEditor
-                    externalToolbar
-                    headerContent={
-                      <div className="space-y-4 px-5 pt-10">
-                        <EditableDocumentTitle
-                          documentId={plan.id}
-                          initialTitle={plan.title}
-                        />
-                        <PlanMetadataBar
-                          documentId={plan.id}
-                          metadata={metadata}
-                        />
-                        <AttachmentsRow documentId={plan.id} />
-                      </div>
-                    }
-                    key={currentVersion}
-                    liveblocksRoomId={session.liveblocksRoomId}
-                    onBodyClick={editMode.enterEditMode}
-                    onChange={contentController.updateContent}
-                    onContentReady={session.handleEditorReady}
-                    onEditorInstance={session.handleEditorInstance}
-                    onOpenThreadCountChange={session.handleThreadCountChange}
-                    placeholder="Add description..."
-                    readOnly={!editMode.isEditing}
-                    showComments={commentsVisible}
-                    value={contentController.content}
-                  />
-                </InlineEditEditorShell>
-
-                <DocumentEditorDetails
-                  createdAt={plan.version.createdAt}
-                  documentId={plan.id}
-                  updatedAt={plan.updatedAt}
-                >
-                  <EvaluationSection
-                    documentId={plan.id}
-                    judgeItems={judgesReport ?? null}
-                    title="Agent Evaluation"
-                  />
-                  <PlanContextSection
-                    planId={plan.id}
-                    projectId={plan.projectId}
-                  />
-                  <BranchesSection
-                    documentId={plan.id}
-                    generationStatus={generationStatus}
-                    onStartBuild={openExecuteModal}
-                    planId={plan.id}
-                    projectId={plan.projectId ?? ""}
-                  />
-                  <PreviewSection documentId={plan.id} />
-                  <PlanMetadataPanel
-                    additionalRepos={initialAdditionalRepos}
-                    codeJudgeItems={codeJudgesReport ?? null}
-                    generationStatus={generationStatus ?? null}
-                    plan={plan}
-                  />
-                </DocumentEditorDetails>
-              </div>
-            </OptionalDocumentRoom>
-          </div>
-        </ResizablePanel>
-
-        <DocumentChatPanel
-          document={plan}
-          visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
+      {/* Metadata bar below header */}
+      <MetadataPanel className="pl-4" variant="bar">
+        <StatusMetadataSection
+          approver={metadata.approver}
+          assignee={metadata.assignee}
+          layout="horizontal"
+          onApproverSelect={metadata.handleApproverSelect}
+          onAssigneeChange={metadata.handleAssigneeChange}
+          onStatusChange={metadata.handleStatusChange}
+          orgUsers={transformedOrgUsers}
+          status={metadata.status}
+          teamMembers={metadata.teamMembers}
         />
-      </ResizablePanelGroup>
+      </MetadataPanel>
+
+      {/* Content area: main content + chat panel on right */}
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-background">
+          <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            {/* Loading spinner — visible until editor content is fully loaded */}
+            <div
+              className={
+                session.isContentReady
+                  ? "hidden"
+                  : "flex flex-1 items-center justify-center py-24"
+              }
+            >
+              <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+
+            {/* Content wrapper — hidden until Liveblocks Y.Doc sync completes */}
+            <div
+              className={
+                session.isContentReady
+                  ? undefined
+                  : "invisible h-0 overflow-hidden"
+              }
+            >
+              {/* Toolbar Row */}
+              <EditorToolbarRow
+                leftContent={toolbarLeftContent}
+                rightContent={toolbarRightContent}
+              />
+
+              {/* Generation Status Banner */}
+              <GenerationStatusBanner
+                generationStatus={generationStatus}
+                onGenerationComplete={invalidateArtifactCache}
+              />
+
+              {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+              <div
+                className="flex min-h-[200px] flex-col"
+                onClick={editClickHandler}
+                onKeyDown={editClickHandler}
+              >
+                <CollaborativeEditor
+                  contentResetKey={session.contentResetKey}
+                  contentResetValue={session.contentResetValue}
+                  key={currentVersion}
+                  liveblocksRoomId={session.liveblocksRoomId}
+                  onChange={contentController.updateContent}
+                  onContentReady={session.handleContentReady}
+                  onEditorInstance={session.handleEditorInstance}
+                  onOpenThreadCountChange={session.handleThreadCountChange}
+                  readOnly={!session.isEditing}
+                  showComments={showComments}
+                  value={contentController.content}
+                />
+              </div>
+
+              {/* Details section */}
+              <div className="border-t px-4 py-4">
+                <PlanMetadataPanel
+                  approver={metadata.approver}
+                  assignee={metadata.assignee}
+                  codeJudgeItems={codeJudgesReport ?? null}
+                  generationStatus={generationStatus ?? null}
+                  isPreviewRefreshing={isRefreshingPreviewDeployment}
+                  judgeItems={judgesReport ?? null}
+                  onApproverSelect={metadata.handleApproverSelect}
+                  onAssigneeChange={metadata.handleAssigneeChange}
+                  onPreviewRefresh={refetchPreviewLinks}
+                  onStatusChange={metadata.handleStatusChange}
+                  onTargetBranchBlur={metadata.handleTargetBranchBlur}
+                  onTargetBranchChange={metadata.handleTargetBranchChange}
+                  onTargetRepoBlur={metadata.handleTargetRepoBlur}
+                  onTargetRepoChange={metadata.handleTargetRepoChange}
+                  plan={plan}
+                  previewDeployment={previewDeployment}
+                  pullRequest={pullRequest ?? null}
+                  status={metadata.status}
+                  targetBranch={metadata.targetBranch}
+                  targetRepo={metadata.targetRepo}
+                  teamMembers={metadata.teamMembers}
+                  variant="detailsOnly"
+                />
+              </div>
+            </div>
+          </OptionalArtifactRoom>
+        </div>
+
+        {/* Chat panel (replaces metadata sidebar) */}
+        {chatFlag?.enabled !== false && uiState.showMetadataPanel && (
+          <ArtifactChatPanel artifactId={plan.id} artifactType="plan" />
+        )}
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
@@ -413,7 +405,7 @@ export function PlanEditor({
 
       {/* Linear Export Dialog */}
       <LinearExportDialog
-        documentId={plan.id}
+        artifactId={plan.id}
         onOpenChange={setShowLinearExportDialog}
         open={showLinearExportDialog}
       />
@@ -422,41 +414,20 @@ export function PlanEditor({
       <MoveEntityDialog
         entity={{
           id: plan.id,
+          entityType: EntityType.Artifact,
           projectId: plan.projectId,
         }}
         onOpenChange={setShowMoveDialog}
         open={showMoveDialog}
       />
 
-      {/* Execute Plan Modal — conditionally mounted so each open is a fresh
-          instance (no need to reset internal state on close). */}
-      {showExecuteModal && (
-        <ExecutePlanModal
-          isLoading={planActions.isExecuting}
-          onConfirm={planActions.handleExecute}
-          onOpenChange={setShowExecuteModal}
-          open={showExecuteModal}
-          planId={plan.id}
-        />
-      )}
-
-      {/* Regenerate Plan Modal — prompts the user to confirm the additional
-          repos selection before regeneration, avoiding the race where a
-          still-loading useLoop silently drops the repos. Only mounted when the
-          multi-repo flag is on; otherwise onRegenerate calls handleRegenerate
-          directly. */}
-      {multiRepoEnabled && (
-        <RegeneratePlanModal
-          initialAdditionalRepos={initialAdditionalRepos}
-          isLoadingInitialRepos={isLoadingInitialAdditionalRepos}
-          isSubmitting={planActions.isRegenerating}
-          key={plan.id}
-          onConfirm={planActions.handleRegenerate}
-          onOpenChange={setShowRegenerateModal}
-          open={showRegenerateModal}
-          targetRepo={plan.targetRepo ?? ""}
-        />
-      )}
+      {/* Execute Plan Modal */}
+      <ExecutePlanModal
+        isLoading={planActions.isExecuting}
+        onConfirm={planActions.handleExecute}
+        onOpenChange={setShowExecuteModal}
+        open={showExecuteModal}
+      />
 
       <FloatingTargetPicker
         multiTargetState={planActions.multiTargetState}
@@ -478,24 +449,27 @@ export function PlanEditor({
   );
 }
 
-function getPlanRedirectPath(plan: DocumentDetail): string {
-  const teamId = plan.project?.teams?.[0]?.id;
-  if (teamId) {
-    return `/teams/${teamId}/projects/${plan.project?.id ?? ""}`;
+function FloatingTargetPicker({
+  multiTargetState,
+  onSelect,
+}: {
+  multiTargetState: {
+    availableTargets: { id: string; machineName: string; status: string }[];
+  } | null;
+  onSelect: (targetId: string) => void;
+}) {
+  if (!multiTargetState) {
+    return null;
   }
-  return "/implementation-plans";
-}
-
-function resolveCommentsVisible(
-  isEditing: boolean,
-  userToggledOn: boolean
-): boolean {
-  return isEditing && userToggledOn;
-}
-
-function resolveShellExpanded(
-  isEditing: boolean,
-  isViewingHistorical: boolean
-): boolean {
-  return isEditing || isViewingHistorical;
+  return (
+    <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
+      <p className="mb-2 text-muted-foreground text-sm">
+        Multiple compute targets are online. Select one:
+      </p>
+      <LoopDispatchTargetSelector
+        availableTargets={multiTargetState.availableTargets}
+        onSelect={onSelect}
+      />
+    </div>
+  );
 }

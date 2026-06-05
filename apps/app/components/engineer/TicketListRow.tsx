@@ -94,9 +94,9 @@ export function TicketListRow({
   hasWorkDirectory,
   worktreePath,
   onDeleteWorktree,
-  closedloopCompleted,
-  closedloopExecuting,
-  closedloopAwaitingUser,
+  symphonyCompleted,
+  symphonyExecuting,
+  symphonyAwaitingUser,
   hasPushed,
   prInfo,
   onAskClaude,
@@ -112,15 +112,15 @@ export function TicketListRow({
   parentTicketId,
   onParentClick,
 }: Readonly<TicketCardProps>) {
-  const isClosedLoopActive = !!(isRunning || isLaunching);
+  const isSymphonyActive = !!(isRunning || isLaunching);
   const workflowProgress = getWorkflowProgress({
     hasWorkDirectory: hasWorkDirectory ?? false,
-    closedloopCompleted: closedloopCompleted ?? false,
+    symphonyCompleted: symphonyCompleted ?? false,
     hasPushed: hasPushed ?? false,
     hasPR: !!prInfo,
-    closedloopExecuting,
+    symphonyExecuting,
     isRunning,
-    closedloopAwaitingUser,
+    symphonyAwaitingUser,
     taskProgress,
   });
 
@@ -134,7 +134,7 @@ export function TicketListRow({
 
   // Primary action button
   const showPlanningButton =
-    !isClosedLoopActive &&
+    !isSymphonyActive &&
     shouldShowPlanningButton(ticket.status.type, hasWorkDirectory ?? false);
 
   return (
@@ -241,7 +241,6 @@ export function TicketListRow({
                 onLearningsClick(ticket, pendingClaudeMdPath);
               }
             }}
-            type="button"
           >
             <BookMarked className="size-2.5 shrink-0" />
             Learnings
@@ -301,7 +300,6 @@ export function TicketListRow({
                   onTeardown(ticket.identifier);
                 }}
                 title="Stop dev server"
-                type="button"
               >
                 <Square className="size-2.5 text-muted-foreground transition-colors hover:text-destructive" />
               </button>
@@ -335,7 +333,6 @@ export function TicketListRow({
                 onToggleStar(ticket.identifier);
               }}
               title={isStarred ? "Remove from Next Up" : "Add to Next Up"}
-              type="button"
             >
               <Star className={cn("size-3.5", isStarred && "fill-current")} />
             </button>
@@ -348,7 +345,6 @@ export function TicketListRow({
                 onAskClaude(ticket);
               }}
               title="Ask Claude"
-              type="button"
             >
               <Sparkles className="size-3.5" />
             </button>
@@ -356,7 +352,7 @@ export function TicketListRow({
           {hasWorkDirectory &&
             worktreePath &&
             onDeleteWorktree &&
-            !isClosedLoopActive && (
+            !isSymphonyActive && (
               <button
                 className="cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:text-destructive"
                 onClick={(e) => {
@@ -364,7 +360,6 @@ export function TicketListRow({
                   onDeleteWorktree(ticket.identifier, worktreePath);
                 }}
                 title="Delete worktree"
-                type="button"
               >
                 <Trash2 className="size-3.5" />
               </button>

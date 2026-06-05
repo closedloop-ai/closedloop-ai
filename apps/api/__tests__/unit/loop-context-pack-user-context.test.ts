@@ -21,31 +21,33 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/document-version-service", () => ({
-  documentVersionService: {
+vi.mock("@/app/artifacts/artifact-version-service", () => ({
+  artifactVersionService: {
     getLatest: vi.fn(),
     getByVersion: vi.fn(),
   },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
-  documentService: {
+vi.mock("@/app/artifacts/service", () => ({
+  artifactsService: {
     findByIdSimple: vi.fn(),
-  },
-}));
-
-vi.mock("@/app/templates/service", () => ({
-  documentTemplatesService: {
     findOrgTemplate: vi.fn(),
     ensureDefaultTemplates: vi.fn(),
   },
 }));
 
-vi.mock("@/app/documents/attachments-service", () => ({
+vi.mock("@/app/artifacts/attachments-service", () => ({
   attachmentsService: {
-    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
+}));
+
+vi.mock("@/app/features/service", () => ({
+  featuresService: {
+    findById: vi.fn(),
+  },
 }));
 
 vi.mock("@/app/loops/service", () => ({
@@ -66,13 +68,13 @@ vi.mock("@/lib/loops/loop-state", () => ({
 // --- Imports (after mocks) ---
 
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { documentVersionService } from "@/app/documents/document-version-service";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { buildContextPackInMemory } from "@/lib/loops/loop-context-pack";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockGetByVersion = documentVersionService.getByVersion as MockFn;
-const mockGetLatest = documentVersionService.getLatest as MockFn;
+const mockGetByVersion = artifactVersionService.getByVersion as MockFn;
+const mockGetLatest = artifactVersionService.getLatest as MockFn;
 const mockGetCommandHandler = getCommandHandler as MockFn;
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -85,7 +87,7 @@ const BASE_LOOP = {
   parentLoopId: null,
   repo: null,
   contextRefs: null,
-  documentVersion: null,
+  artifactVersion: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +110,7 @@ describe("buildContextPackInMemory — userContext", () => {
     const loop = {
       ...BASE_LOOP,
       command: LoopCommand.Plan,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -121,7 +123,7 @@ describe("buildContextPackInMemory — userContext", () => {
     const loop = {
       ...BASE_LOOP,
       command: LoopCommand.Execute,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -136,7 +138,7 @@ describe("buildContextPackInMemory — userContext", () => {
     const loop = {
       ...BASE_LOOP,
       command: LoopCommand.Plan,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -150,7 +152,7 @@ describe("buildContextPackInMemory — userContext", () => {
     const loop = {
       ...BASE_LOOP,
       command: LoopCommand.Plan,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -164,7 +166,7 @@ describe("buildContextPackInMemory — userContext", () => {
     const loop = {
       ...BASE_LOOP,
       command: LoopCommand.Plan,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -179,7 +181,7 @@ describe("buildContextPackInMemory — userContext", () => {
     const loop = {
       ...BASE_LOOP,
       command: LoopCommand.Plan,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");

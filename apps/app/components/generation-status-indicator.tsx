@@ -3,7 +3,7 @@
 import {
   type GenerationStatus,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/document";
+} from "@repo/api/src/types/artifact";
 import { cn } from "@repo/design-system/lib/utils";
 import { CheckCircle, LoaderIcon, XCircleIcon } from "lucide-react";
 import Link from "next/link";

@@ -11,12 +11,9 @@ import {
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
-import { documentService } from "@/app/documents/document-service";
+import sanitizeHtml from "sanitize-html";
+import { artifactsService } from "@/app/artifacts/service";
 import { projectsService } from "@/app/projects/service";
-import {
-  encryptTokenPair,
-  resolveIntegrationToken,
-} from "@/lib/integration-encryption";
 
 /**
  * Result types for service operations
@@ -66,33 +63,14 @@ export async function ensureValidAccessToken(
   const needsRefresh =
     integration.tokenExpiresAt &&
     integration.tokenExpiresAt < new Date() &&
-    (integration.refreshTokenEncrypted ?? integration.refreshToken);
+    integration.refreshToken;
 
   if (!needsRefresh) {
-    // Prefer encrypted token on read, fall back to plaintext
-    let accessToken: string | null;
-    try {
-      accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
-      );
-    } catch (error) {
-      log.warn(`${logPrefix} Decryption failed, falling back to plaintext`, {
-        organizationId,
-        error: parseError(error),
-      });
-      accessToken = integration.accessToken;
-    }
-    return { success: true, accessToken: accessToken as string };
+    return { success: true, accessToken: integration.accessToken };
   }
 
   try {
-    const rawRefreshToken = await resolveIntegrationToken(
-      integration.refreshTokenEncrypted,
-      integration.refreshToken as string
-    );
-
-    const tokens = await refreshAccessToken(rawRefreshToken as string);
+    const tokens = await refreshAccessToken(integration.refreshToken as string);
 
     const tokenExpiresAt = tokens.expiresIn
       ? new Date(Date.now() + tokens.expiresIn * 1000)
@@ -107,33 +85,12 @@ export async function ensureValidAccessToken(
       );
     }
 
-    let encryptedAccessToken: string | null = null;
-    let encryptedRefreshToken: string | null = null;
-    try {
-      const encrypted = await encryptTokenPair(
-        tokens.accessToken,
-        tokens.refreshToken
-      );
-      encryptedAccessToken = encrypted.encryptedAccessToken;
-      encryptedRefreshToken = encrypted.encryptedRefreshToken;
-    } catch (error) {
-      log.warn(
-        `${logPrefix} Failed to encrypt refreshed tokens, storing plaintext only`,
-        {
-          organizationId,
-          error: parseError(error),
-        }
-      );
-    }
-
     await withDb((db) =>
       db.googleIntegration.update({
         where: { organizationId },
         data: {
           accessToken: tokens.accessToken,
           refreshToken: tokens.refreshToken,
-          accessTokenEncrypted: encryptedAccessToken ?? undefined,
-          refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
           tokenExpiresAt,
           lastUsedAt: new Date(),
         },
@@ -214,6 +171,24 @@ export const googleService = {
         redirectUri
       );
 
+      // Get user info for display (email)
+      let googleEmail: string | null = null;
+      let googleUserId = "unknown"; // Fallback if userinfo fails
+
+      try {
+        const userInfo = await getUserInfo(tokens.accessToken);
+        googleEmail = userInfo.email;
+        googleUserId = userInfo.email; // Use email as stable user ID
+      } catch (error) {
+        log.warn(
+          "[google/oauth] Failed to get user info, continuing without email",
+          {
+            organizationId,
+            error: parseError(error),
+          }
+        );
+      }
+
       // Calculate token expiration with fallback
       const tokenExpiresAt = tokens.expiresIn
         ? new Date(Date.now() + tokens.expiresIn * 1000)
@@ -225,45 +200,8 @@ export const googleService = {
         });
       }
 
-      // Get user info and encrypt tokens in parallel (independent operations)
-      let googleEmail: string | null = null;
-      let googleUserId = "unknown"; // Fallback if userinfo fails
-
-      const [userInfoResult, { encryptedAccessToken, encryptedRefreshToken }] =
-        await Promise.all([
-          getUserInfo(tokens.accessToken).catch((error) => {
-            log.warn(
-              "[google/oauth] Failed to get user info, continuing without email",
-              {
-                organizationId,
-                error: parseError(error),
-              }
-            );
-            return null;
-          }),
-          encryptTokenPair(tokens.accessToken, tokens.refreshToken).catch(
-            (error) => {
-              log.warn(
-                "[google/oauth] Failed to encrypt tokens, storing plaintext only",
-                {
-                  organizationId,
-                  error: parseError(error),
-                }
-              );
-              return {
-                encryptedAccessToken: null,
-                encryptedRefreshToken: null,
-              };
-            }
-          ),
-        ]);
-
-      if (userInfoResult) {
-        googleEmail = userInfoResult.email;
-        googleUserId = userInfoResult.email; // Use email as stable user ID
-      }
-
       // Upsert the integration record
+      // TODO: Encrypt tokens at rest before storing (follow-up PR)
       await withDb((db) =>
         db.googleIntegration.upsert({
           where: { organizationId },
@@ -273,8 +211,6 @@ export const googleService = {
             googleEmail,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
           },
           update: {
@@ -282,8 +218,6 @@ export const googleService = {
             googleEmail,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
             lastUsedAt: new Date(),
           },
@@ -353,13 +287,7 @@ export const googleService = {
 
     // Revoke the token (best effort - don't fail if this errors)
     try {
-      // Prefer decrypted token; fall back to plaintext for backward compatibility
-      // accessToken is non-null: integration.accessToken is always a non-null DB field
-      const accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
-      );
-      await revokeToken(accessToken as string);
+      await revokeToken(integration.accessToken);
     } catch (error) {
       log.warn("[google] Failed to revoke token during disconnect", {
         organizationId,
@@ -513,25 +441,57 @@ export const googleService = {
             return;
           }
 
-          // Markdown is stored verbatim; the renderer sanitizes at render
-          // time (markdown → HTML). HTML-sanitizing raw markdown corrupts URL
-          // query strings (`&` → `&amp;`), strips `<https://…>` autolinks, and
-          // mangles code blocks that legitimately contain angle brackets.
+          // Sanitize markdown (remove scripts, limit tags)
+          const sanitized = sanitizeHtml(markdown, {
+            allowedTags: [
+              "b",
+              "i",
+              "em",
+              "strong",
+              "p",
+              "ul",
+              "ol",
+              "li",
+              "h1",
+              "h2",
+              "h3",
+              "h4",
+              "h5",
+              "h6",
+              "a",
+              "code",
+              "pre",
+              "blockquote",
+              "br",
+              "hr",
+              "table",
+              "thead",
+              "tbody",
+              "tr",
+              "th",
+              "td",
+            ],
+            allowedAttributes: {
+              a: ["href"],
+            },
+            allowedSchemes: ["http", "https"],
+          });
+
+          // Enforce size limit (1MB)
           const MAX_SIZE = 1024 * 1024; // 1MB
-          let content = markdown;
+          let content = sanitized;
           if (content.length > MAX_SIZE) {
             content = content.substring(0, MAX_SIZE);
             log.warn("[google/import] Truncated doc to 1MB", {
               organizationId,
               docId: doc.id,
               docTitle: doc.name,
-              originalSize: markdown.length,
-              truncatedSize: content.length,
+              originalSize: sanitized.length,
             });
           }
 
           // Create artifact
-          const artifact = await documentService.create(
+          const artifact = await artifactsService.create(
             organizationId,
             userId,
             {
@@ -552,7 +512,7 @@ export const googleService = {
             organizationId,
             docId: doc.id,
             docTitle: doc.name,
-            documentId: artifact.id,
+            artifactId: artifact.id,
           });
 
           artifacts.push({

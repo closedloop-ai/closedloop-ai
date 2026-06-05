@@ -1,29 +1,29 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
-import type { DeploymentArtifact } from "@repo/api/src/types/artifact";
+import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useQueries } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
-import { documentKeys } from "@/hooks/queries/use-documents";
+import { artifactKeys } from "@/hooks/queries/use-artifacts";
 import { useApiClient } from "@/hooks/use-api-client";
 
 type MergeMetadata = {
   prTitle?: string;
   slug?: string;
-  documentId?: string;
+  artifactId?: string;
 };
 
 function showMergeToast(
   activity: ActivityResponse["activities"][number],
-  previewDeploymentMap: Map<string, DeploymentArtifact>,
+  previewDeploymentMap: Map<string, ExternalLink>,
   projectId: string,
   teamId: string
 ): void {
   const {
     prTitle,
     slug,
-    documentId: eventArtifactId,
+    artifactId: eventArtifactId,
   } = activity.metadata as MergeMetadata;
 
   const fallbackRoute = `/teams/${teamId}/projects/${projectId}`;
@@ -44,7 +44,7 @@ function showMergeToast(
       label: hasPreview ? "View Preview" : "View Artifact",
       onClick: (event: React.MouseEvent) => {
         event.preventDefault();
-        if (hasPreview && previewDeployment?.externalUrl) {
+        if (hasPreview) {
           window.open(previewDeployment.externalUrl, "_blank");
         } else {
           window.open(artifactRoute, "_blank");
@@ -67,7 +67,7 @@ export function useMergeNotification(
   const initialized = useRef(false);
   const apiClient = useApiClient();
 
-  // Extract documentIds from ALL unseen GITHUB_PR_MERGED events
+  // Extract artifactIds from ALL unseen GITHUB_PR_MERGED events
   const unseenArtifactIds = useMemo(() => {
     if (!activityData?.activities) {
       return [];
@@ -79,9 +79,9 @@ export function useMergeNotification(
         activity.type === "GITHUB_PR_MERGED" &&
         !seenEventIds.current.has(activity.id)
       ) {
-        const documentId = (activity.metadata as MergeMetadata)?.documentId;
-        if (documentId) {
-          ids.push(documentId);
+        const artifactId = (activity.metadata as MergeMetadata)?.artifactId;
+        if (artifactId) {
+          ids.push(artifactId);
         }
       }
     }
@@ -90,26 +90,26 @@ export function useMergeNotification(
 
   // Fetch preview deployments for all unseen merge events
   const previewDeploymentQueries = useQueries({
-    queries: unseenArtifactIds.map((documentId) => ({
-      queryKey: documentKeys.previewDeployment(documentId),
+    queries: unseenArtifactIds.map((artifactId) => ({
+      queryKey: artifactKeys.previewDeployment(artifactId),
       queryFn: () =>
-        apiClient.get<DeploymentArtifact | null>(
-          `/documents/${documentId}/preview-deployment`
+        apiClient.get<ExternalLink | null>(
+          `/artifacts/${artifactId}/preview-deployment`
         ),
-      enabled: !!documentId,
+      enabled: !!artifactId,
       staleTime: 0, // Always fetch fresh
     })),
   });
 
-  // Build documentId → previewDeployment map
+  // Build artifactId → previewDeployment map
   const queryData = previewDeploymentQueries.map((q) => q.data);
   const previewDeploymentMap = useMemo(() => {
-    const map = new Map<string, DeploymentArtifact>();
+    const map = new Map<string, ExternalLink>();
     for (let i = 0; i < unseenArtifactIds.length; i++) {
-      const documentId = unseenArtifactIds[i];
+      const artifactId = unseenArtifactIds[i];
       const data = queryData[i];
       if (data?.externalUrl) {
-        map.set(documentId, data);
+        map.set(artifactId, data);
       }
     }
     return map;

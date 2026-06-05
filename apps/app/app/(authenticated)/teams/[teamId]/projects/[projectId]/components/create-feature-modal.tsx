@@ -1,13 +1,12 @@
 "use client";
 
-import { LinkType } from "@repo/api/src/types/artifact";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import {
-  DOCUMENT_STATUS_OPTIONS,
-  DocumentStatus,
-  DocumentType,
-  type DocumentWithWorkstream,
-} from "@repo/api/src/types/document";
+  FEATURE_STATUS_OPTIONS,
+  FeatureStatus,
+} from "@repo/api/src/types/feature";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -52,20 +51,17 @@ import {
   featurePriorityLabels,
   featureStatusLabels,
 } from "@/components/status-badge";
-import { useCreateArtifactLink } from "@/hooks/queries/use-artifact-links";
-import {
-  useCreateDocument,
-  useDocumentsByProject,
-} from "@/hooks/queries/use-documents";
-import { useProjectsByTeam } from "@/hooks/queries/use-projects";
+import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
+import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
+import { useCreateFeature } from "@/hooks/queries/use-features";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
-import { DOCUMENT_TYPE_LABELS } from "@/lib/project-constants";
+import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type CreateFeatureModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  projectId?: string;
+  projectId: string;
   teamId: string;
 };
 
@@ -77,20 +73,14 @@ export function CreateFeatureModal({
 }: CreateFeatureModalProps) {
   const router = useRouter();
 
-  // Project selection (when projectId prop is not provided)
-  const showProjectSelector = !projectId;
-  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? "");
-  const { data: teamProjects = [], isLoading: isLoadingProjects } =
-    useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
-
   // Form state
   const [title, setTitle] = useState("");
   const [selectedArtifacts, setSelectedArtifacts] = useState<
-    DocumentWithWorkstream[]
+    ArtifactWithWorkstream[]
   >([]);
   const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
   const [priority, setPriority] = useState<Priority>(Priority.Medium);
-  const [status, setStatus] = useState<DocumentStatus>(DocumentStatus.Draft);
+  const [status, setStatus] = useState<FeatureStatus>(FeatureStatus.NotStarted);
   const [error, setError] = useState<string | null>(null);
   const [relationshipsOpen, setRelationshipsOpen] = useState(false);
 
@@ -104,8 +94,8 @@ export function CreateFeatureModal({
     [teamMembers]
   );
 
-  const { data: artifacts = [] } = useDocumentsByProject(selectedProjectId, {
-    enabled: open && !!selectedProjectId,
+  const { data: artifacts = [] } = useArtifactsByProject(projectId, {
+    enabled: open,
   });
   // Filter out already-selected artifacts
   const availableArtifacts = useMemo(() => {
@@ -114,25 +104,19 @@ export function CreateFeatureModal({
   }, [artifacts, selectedArtifacts]);
 
   // Mutations
-  const createFeatureMutation = useCreateDocument();
-  const createArtifactLinkMutation = useCreateArtifactLink();
+  const createFeatureMutation = useCreateFeature();
+  const createEntityLinkMutation = useCreateEntityLink();
 
   const isSubmitting =
-    createFeatureMutation.isPending || createArtifactLinkMutation.isPending;
+    createFeatureMutation.isPending || createEntityLinkMutation.isPending;
 
-  const handleAddArtifact = (artifact: DocumentWithWorkstream) => {
+  const handleAddArtifact = (artifact: ArtifactWithWorkstream) => {
     setSelectedArtifacts((prev) => [...prev, artifact]);
     setRelationshipsOpen(false);
   };
 
-  const handleRemoveArtifact = (documentId: string) => {
-    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== documentId));
-  };
-
-  const handleProjectChange = (newProjectId: string) => {
-    setSelectedProjectId(newProjectId);
-    // Clear project-scoped state so stale selections don't carry over
-    setSelectedArtifacts([]);
+  const handleRemoveArtifact = (artifactId: string) => {
+    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== artifactId));
   };
 
   const resetForm = () => {
@@ -140,12 +124,9 @@ export function CreateFeatureModal({
     setSelectedArtifacts([]);
     setSelectedAssignee(null);
     setPriority(Priority.Medium);
-    setStatus(DocumentStatus.Draft);
+    setStatus(FeatureStatus.NotStarted);
     setError(null);
     setRelationshipsOpen(false);
-    if (showProjectSelector) {
-      setSelectedProjectId("");
-    }
   };
 
   const handleClose = () => {
@@ -155,10 +136,6 @@ export function CreateFeatureModal({
 
   const handleSubmit = () => {
     setError(null);
-    if (!selectedProjectId) {
-      setError("Please select a project");
-      return;
-    }
     if (!title.trim()) {
       setError("Please enter a title");
       return;
@@ -166,10 +143,8 @@ export function CreateFeatureModal({
 
     createFeatureMutation.mutate(
       {
-        type: DocumentType.Feature,
-        projectId: selectedProjectId,
+        projectId,
         title: title.trim(),
-        content: "",
         status,
         priority,
         assigneeId: selectedAssignee?.id,
@@ -180,9 +155,11 @@ export function CreateFeatureModal({
             try {
               await Promise.all(
                 selectedArtifacts.map((artifact) =>
-                  createArtifactLinkMutation.mutateAsync({
+                  createEntityLinkMutation.mutateAsync({
                     sourceId: artifact.id,
+                    sourceType: EntityType.Artifact,
                     targetId: feature.id,
+                    targetType: EntityType.Feature,
                     linkType: LinkType.Produces,
                   })
                 )
@@ -226,39 +203,6 @@ export function CreateFeatureModal({
           {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
-            </div>
-          ) : null}
-
-          {showProjectSelector ? (
-            <div className="space-y-2">
-              <Label
-                className="font-normal text-muted-foreground text-xs"
-                htmlFor="feature-project"
-              >
-                Project<span className="text-destructive">*</span>
-              </Label>
-              <Select
-                disabled={isLoadingProjects}
-                onValueChange={handleProjectChange}
-                value={selectedProjectId}
-              >
-                <SelectTrigger id="feature-project">
-                  <SelectValue
-                    placeholder={
-                      isLoadingProjects
-                        ? "Loading projects..."
-                        : "Select a project..."
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {teamProjects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           ) : null}
 
@@ -310,7 +254,7 @@ export function CreateFeatureModal({
                             {artifact.title}
                           </span>
                           <span className="ml-2 text-muted-foreground text-xs">
-                            {DOCUMENT_TYPE_LABELS[artifact.type] ??
+                            {ARTIFACT_TYPE_LABELS[artifact.type] ??
                               artifact.type}
                           </span>
                         </CommandItem>
@@ -385,14 +329,14 @@ export function CreateFeatureModal({
               Status
             </Label>
             <Select
-              onValueChange={(v: DocumentStatus) => setStatus(v)}
+              onValueChange={(v: FeatureStatus) => setStatus(v)}
               value={status}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {DOCUMENT_STATUS_OPTIONS.map((s) => (
+                {FEATURE_STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>
                     {featureStatusLabels[s]}
                   </SelectItem>
@@ -407,7 +351,7 @@ export function CreateFeatureModal({
             Cancel
           </Button>
           <Button
-            disabled={!(title.trim() && selectedProjectId) || isSubmitting}
+            disabled={!title.trim() || isSubmitting}
             onClick={handleSubmit}
           >
             {isSubmitting ? (

@@ -1,8 +1,8 @@
 import type { Priority } from "@repo/api/src/types/common";
-import type { DocumentStatus } from "@repo/api/src/types/document";
+import type { FeatureStatus } from "@repo/api/src/types/feature";
 
-export type MyTasksArtifactFilters = {
+export type MyTasksFeatureFilters = {
   priorities: Priority[];
   projectIds: string[];
-  statuses: DocumentStatus[];
+  statuses: FeatureStatus[];
 };

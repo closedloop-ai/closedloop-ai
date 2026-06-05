@@ -206,13 +206,11 @@ export function GoogleImportModal({
               </div>
               {importMutation.data.artifacts.length > 0 && (
                 <ul className="ml-6 space-y-1 text-sm">
-                  {importMutation.data.artifacts.map(
-                    (doc: { id: string; slug: string; title: string }) => (
-                      <li className="text-muted-foreground" key={doc.id}>
-                        {doc.title}
-                      </li>
-                    )
-                  )}
+                  {importMutation.data.artifacts.map((artifact) => (
+                    <li className="text-muted-foreground" key={artifact.id}>
+                      {artifact.title}
+                    </li>
+                  ))}
                 </ul>
               )}
               {importMutation.data.failures.length > 0 && (

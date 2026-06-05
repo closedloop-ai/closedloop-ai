@@ -47,7 +47,7 @@ describe("fetchBatchMeta", () => {
       await fetchBatchMeta(["prd-abc", "plan-xyz"], getToken);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:3002/documents/batch-meta?slugs=prd-abc,plan-xyz",
+        "http://localhost:3002/artifacts/batch-meta?slugs=prd-abc,plan-xyz",
         expect.any(Object)
       );
     });

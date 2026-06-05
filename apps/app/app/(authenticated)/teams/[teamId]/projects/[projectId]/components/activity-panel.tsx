@@ -15,11 +15,19 @@ import { formatDistanceToNow } from "date-fns";
 import { ChevronDownIcon, ChevronUpIcon, ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
 import { UserLink } from "@/components/user-link";
-import { getInitials } from "@/lib/user-utils";
 
 type ActivityPanelProps = {
   activities: ActivityItem[];
 };
+
+function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
 
 function formatActivityTimestamp(timestamp: Date | string): string {
   try {

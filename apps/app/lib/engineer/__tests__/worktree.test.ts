@@ -7,7 +7,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -15,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addWorktree, findExistingWorktreeForBranch } from "../worktree";
+import { addWorktree } from "../worktree";
 
 /**
  * Tests for saveWorktreeState / restoreWorktreeState logic.
@@ -394,88 +393,5 @@ describe("addWorktree", () => {
         "utf-8"
       )
     ).toBe('{"messages":[]}');
-  });
-});
-
-describe("findExistingWorktreeForBranch", () => {
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = mkdtempSync(join(tmpdir(), "worktree-find-test-"));
-  });
-
-  afterEach(() => {
-    rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it("returns the base repo when its HEAD already matches the branch", () => {
-    const repoPath = join(testDir, "repo");
-    mkdirSync(repoPath, { recursive: true });
-    writeFileSync(join(repoPath, "README.md"), "# repo\n");
-
-    execSync("git init", { cwd: repoPath, stdio: "pipe" });
-    execSync('git config user.email "test@example.com"', {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-    execSync('git config user.name "Test User"', {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-    execSync("git add .", { cwd: repoPath, stdio: "pipe" });
-    execSync('git commit -m "init"', { cwd: repoPath, stdio: "pipe" });
-    execSync("git checkout -b feat/pr-42", { cwd: repoPath, stdio: "pipe" });
-
-    expect(findExistingWorktreeForBranch(repoPath, "feat/pr-42")).toBe(
-      repoPath
-    );
-  });
-
-  it("returns an existing worktree when the branch is checked out there", () => {
-    const repoPath = join(testDir, "repo");
-    const worktreePath = join(testDir, "repo-pr-42");
-    mkdirSync(repoPath, { recursive: true });
-    writeFileSync(join(repoPath, "README.md"), "# repo\n");
-
-    execSync("git init", { cwd: repoPath, stdio: "pipe" });
-    execSync('git config user.email "test@example.com"', {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-    execSync('git config user.name "Test User"', {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-    execSync("git add .", { cwd: repoPath, stdio: "pipe" });
-    execSync('git commit -m "init"', { cwd: repoPath, stdio: "pipe" });
-    execSync("git branch feat/pr-42", { cwd: repoPath, stdio: "pipe" });
-    execSync(`git worktree add "${worktreePath}" feat/pr-42`, {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-
-    expect(findExistingWorktreeForBranch(repoPath, "feat/pr-42")).toBe(
-      realpathSync(worktreePath)
-    );
-  });
-
-  it("returns null when no checkout matches the branch", () => {
-    const repoPath = join(testDir, "repo");
-    mkdirSync(repoPath, { recursive: true });
-    writeFileSync(join(repoPath, "README.md"), "# repo\n");
-
-    execSync("git init", { cwd: repoPath, stdio: "pipe" });
-    execSync('git config user.email "test@example.com"', {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-    execSync('git config user.name "Test User"', {
-      cwd: repoPath,
-      stdio: "pipe",
-    });
-    execSync("git add .", { cwd: repoPath, stdio: "pipe" });
-    execSync('git commit -m "init"', { cwd: repoPath, stdio: "pipe" });
-
-    expect(findExistingWorktreeForBranch(repoPath, "feat/missing")).toBeNull();
   });
 });

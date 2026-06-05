@@ -31,7 +31,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
-  BotIcon,
   Boxes,
   CodeIcon,
   InboxIcon,
@@ -58,44 +57,33 @@ const orgSwitcherAppearance = {
     organizationSwitcherTrigger: {
       display: "flex",
       alignItems: "center",
-      justifyContent: "flex-start",
       gap: "0.5rem",
       width: "100%",
       padding: "0.5rem",
       borderRadius: "0.375rem",
-      color: "var(--sidebar-foreground)",
+      color: "hsl(var(--sidebar-foreground))",
       backgroundColor: "transparent",
       "&:hover": {
-        backgroundColor: "var(--sidebar-accent)",
-        color: "var(--sidebar-accent-foreground)",
+        backgroundColor: "hsl(var(--sidebar-accent))",
+        color: "hsl(var(--sidebar-accent-foreground))",
       },
       "&:focus-visible": {
-        outline: "2px solid var(--sidebar-ring)",
+        outline: "2px solid hsl(var(--sidebar-ring))",
         outlineOffset: "2px",
       },
     },
     organizationSwitcherTriggerIcon: {
-      color: "var(--sidebar-foreground)",
+      color: "hsl(var(--sidebar-foreground))",
       opacity: "0.7",
-      marginLeft: "auto",
-      flexShrink: "0",
-    },
-    organizationPreview: {
-      minWidth: "0",
-      overflow: "hidden",
     },
     organizationPreviewMainIdentifier: {
       fontSize: "0.875rem",
       fontWeight: "500",
-      color: "var(--sidebar-foreground)",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
+      color: "hsl(var(--sidebar-foreground))",
     },
     organizationPreviewAvatarContainer: {
       width: "1.75rem",
       height: "1.75rem",
-      flexShrink: "0",
     },
     organizationPreviewAvatarBox: {
       width: "1.75rem",
@@ -136,13 +124,6 @@ const baseWorkspaceItems: NavItem[] = [
     icon: RotateCcwIcon,
     disabled: false,
   },
-  {
-    title: "Agents",
-    url: "/agents",
-    icon: BotIcon,
-    disabled: false,
-    featureFlag: "agents",
-  },
 ];
 
 const engineerNavItem: NavItem = {
@@ -150,7 +131,6 @@ const engineerNavItem: NavItem = {
   url: "/engineer",
   icon: CodeIcon,
   disabled: false,
-  featureFlag: "engineer-view",
 };
 
 const workspaceItems: NavItem[] = [...baseWorkspaceItems, engineerNavItem];
@@ -213,9 +193,10 @@ export function GlobalSidebar({
                 className={cn(
                   "flex overflow-hidden transition-all",
                   sidebar.open && envBadge
-                    ? "flex-col items-start gap-1 py-1"
+                    ? "flex-col items-start gap-1 px-2 py-1"
                     : "h-[36px] items-center gap-2",
-                  !sidebar.open && "justify-center"
+                  !sidebar.open && "justify-center px-0",
+                  sidebar.open && !envBadge && "px-2"
                 )}
               >
                 {sidebar.open && (
@@ -357,14 +338,9 @@ export function GlobalSidebar({
                   <UserButton
                     appearance={{
                       elements: {
-                        rootBox:
-                          "flex overflow-hidden w-full text-sidebar-foreground",
-                        userButtonBox:
-                          "flex-row-reverse text-sidebar-foreground",
-                        userButtonOuterIdentifier:
-                          "truncate pl-0 text-sidebar-foreground",
-                        userButtonTrigger:
-                          "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground rounded-md",
+                        rootBox: "flex overflow-hidden w-full",
+                        userButtonBox: "flex-row-reverse",
+                        userButtonOuterIdentifier: "truncate pl-0",
                       },
                     }}
                     showName
@@ -374,7 +350,7 @@ export function GlobalSidebar({
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-px">
-                <ModeToggle className="text-sidebar-foreground" />
+                <ModeToggle />
               </div>
             </SidebarMenuItem>
           </SidebarMenu>

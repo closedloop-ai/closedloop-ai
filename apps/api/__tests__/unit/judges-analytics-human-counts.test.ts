@@ -1,28 +1,13 @@
 /**
  * Unit tests for getHumanCountsByType and getHumanRatingsByArtifact.
  *
- * After artifact cutover:
- * - document → artifact (with `subtype` instead of `type`)
- * - documentRating → artifactRating (field: artifactId)
- * - pullRequestRating → artifactRating (merged, same table, rows for PR-typed artifacts)
- * - gitHubPullRequest → artifact (type=PULL_REQUEST) linked via ArtifactLink
+ * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
 }));
 
 import { withDb } from "@repo/database";
@@ -37,8 +22,7 @@ import {
 // Helper types
 // ---------------------------------------------------------------------------
 
-// Artifact rows are stored with `subtype` after the cutover
-type ArtifactRow = { id: string; subtype: DocumentType };
+type ArtifactRow = { id: string; type: ArtifactType };
 type RatingRow = { artifactId: string; comment: string | null };
 
 type CountScenarioConfig = {
@@ -47,7 +31,7 @@ type CountScenarioConfig = {
   organizationId: string;
   startDate: Date;
   endDate: Date;
-  types: DocumentType[];
+  types: ArtifactType[];
   artifacts: ArtifactRow[];
   ratings: RatingRow[];
   expectedRatings: Record<string, number>;
@@ -82,11 +66,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [DocumentType.Prd],
+    types: [ArtifactType.Prd],
     artifacts: [],
     ratings: [],
-    expectedRatings: { [DocumentType.Prd]: 0 },
-    expectedComments: { [DocumentType.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 0 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "artifacts_exist_no_ratings_in_range",
@@ -94,11 +78,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [DocumentType.Prd],
-    artifacts: [{ id: "a1", subtype: DocumentType.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [],
-    expectedRatings: { [DocumentType.Prd]: 0 },
-    expectedComments: { [DocumentType.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 0 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "single_rating_with_comment",
@@ -106,11 +90,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [DocumentType.Prd],
-    artifacts: [{ id: "a1", subtype: DocumentType.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [{ artifactId: "a1", comment: "Looks good" }],
-    expectedRatings: { [DocumentType.Prd]: 1 },
-    expectedComments: { [DocumentType.Prd]: 1 },
+    expectedRatings: { [ArtifactType.Prd]: 1 },
+    expectedComments: { [ArtifactType.Prd]: 1 },
   },
   {
     name: "rating_without_comment",
@@ -118,11 +102,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [DocumentType.Prd],
-    artifacts: [{ id: "a1", subtype: DocumentType.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [{ artifactId: "a1", comment: null }],
-    expectedRatings: { [DocumentType.Prd]: 1 },
-    expectedComments: { [DocumentType.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 1 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "rating_with_empty_comment",
@@ -131,11 +115,11 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [DocumentType.Prd],
-    artifacts: [{ id: "a1", subtype: DocumentType.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [{ artifactId: "a1", comment: "   " }],
-    expectedRatings: { [DocumentType.Prd]: 1 },
-    expectedComments: { [DocumentType.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 1 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "multiple_types_partitioned",
@@ -143,10 +127,10 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    types: [DocumentType.Prd, DocumentType.ImplementationPlan],
+    types: [ArtifactType.Prd, ArtifactType.ImplementationPlan],
     artifacts: [
-      { id: "a1", subtype: DocumentType.Prd },
-      { id: "a2", subtype: DocumentType.ImplementationPlan },
+      { id: "a1", type: ArtifactType.Prd },
+      { id: "a2", type: ArtifactType.ImplementationPlan },
     ],
     ratings: [
       { artifactId: "a1", comment: "PRD feedback" },
@@ -154,12 +138,12 @@ const COUNT_SCENARIOS: CountScenarioConfig[] = [
       { artifactId: "a1", comment: "Another PRD comment" },
     ],
     expectedRatings: {
-      [DocumentType.Prd]: 2,
-      [DocumentType.ImplementationPlan]: 1,
+      [ArtifactType.Prd]: 2,
+      [ArtifactType.ImplementationPlan]: 1,
     },
     expectedComments: {
-      [DocumentType.Prd]: 2,
-      [DocumentType.ImplementationPlan]: 1,
+      [ArtifactType.Prd]: 2,
+      [ArtifactType.ImplementationPlan]: 1,
     },
   },
 ];
@@ -320,29 +304,26 @@ describe("getCodeHumanCountsByType", () => {
     vi.clearAllMocks();
   });
 
-  it("counts pull request ratings/comments per artifact type via ArtifactLink → PR artifact → ArtifactRating", async () => {
-    // After cutover: artifacts are queried with `subtype`, PR artifacts are
-    // linked via ArtifactLink (source = plan, target = PR), and PR ratings
-    // are rows in ArtifactRating keyed by the PR artifact id.
+  it("counts pull request ratings/comments per artifact type", async () => {
     const mockDb = {
       artifact: {
         findMany: vi.fn().mockResolvedValue([
-          { id: "a1", subtype: DocumentType.ImplementationPlan },
-          { id: "a2", subtype: DocumentType.Prd },
+          { id: "a1", type: ArtifactType.ImplementationPlan },
+          { id: "a2", type: ArtifactType.Prd },
         ]),
       },
-      artifactLink: {
+      gitHubPullRequest: {
         findMany: vi.fn().mockResolvedValue([
-          { sourceId: "a1", targetId: "pr-1" },
-          { sourceId: "a1", targetId: "pr-2" },
-          { sourceId: "a2", targetId: "pr-3" },
+          { id: "pr-1", artifactId: "a1" },
+          { id: "pr-2", artifactId: "a1" },
+          { id: "pr-3", artifactId: "a2" },
         ]),
       },
-      artifactRating: {
+      pullRequestRating: {
         findMany: vi.fn().mockResolvedValue([
-          { artifactId: "pr-1", comment: "looks good" },
-          { artifactId: "pr-2", comment: " " },
-          { artifactId: "pr-3", comment: "great" },
+          { pullRequestId: "pr-1", comment: "looks good" },
+          { pullRequestId: "pr-2", comment: " " },
+          { pullRequestId: "pr-3", comment: "great" },
         ]),
       },
     };
@@ -359,20 +340,20 @@ describe("getCodeHumanCountsByType", () => {
       "org-1",
       new Date("2026-01-01"),
       new Date("2026-01-31"),
-      [DocumentType.ImplementationPlan, DocumentType.Prd]
+      [ArtifactType.ImplementationPlan, ArtifactType.Prd]
     );
 
     expect(
       mapToObject(result.humanRatingsByType as Map<string, number>)
     ).toEqual({
-      [DocumentType.ImplementationPlan]: 2,
-      [DocumentType.Prd]: 1,
+      [ArtifactType.ImplementationPlan]: 2,
+      [ArtifactType.Prd]: 1,
     });
     expect(
       mapToObject(result.humanCommentsByType as Map<string, number>)
     ).toEqual({
-      [DocumentType.ImplementationPlan]: 1,
-      [DocumentType.Prd]: 1,
+      [ArtifactType.ImplementationPlan]: 1,
+      [ArtifactType.Prd]: 1,
     });
   });
 });
@@ -382,20 +363,20 @@ describe("getCodeHumanRatingsByArtifact", () => {
     vi.clearAllMocks();
   });
 
-  it("normalizes PR ratings (via ArtifactLink) and maps them back to source artifacts", async () => {
+  it("normalizes pull request scores and maps them back to artifacts", async () => {
     const mockDb = {
-      artifactLink: {
+      gitHubPullRequest: {
         findMany: vi.fn().mockResolvedValue([
-          { sourceId: "a1", targetId: "pr-1" },
-          { sourceId: "a1", targetId: "pr-2" },
-          { sourceId: "a2", targetId: "pr-3" },
+          { id: "pr-1", artifactId: "a1" },
+          { id: "pr-2", artifactId: "a1" },
+          { id: "pr-3", artifactId: "a2" },
         ]),
       },
-      artifactRating: {
+      pullRequestRating: {
         findMany: vi.fn().mockResolvedValue([
-          { artifactId: "pr-1", score: 5 },
-          { artifactId: "pr-2", score: 3 },
-          { artifactId: "pr-3", score: 1 },
+          { pullRequestId: "pr-1", score: 5 },
+          { pullRequestId: "pr-2", score: 3 },
+          { pullRequestId: "pr-3", score: 1 },
         ]),
       },
     };

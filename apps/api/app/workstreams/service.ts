@@ -1,4 +1,3 @@
-import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import type {
   CreateWorkstreamInput,
   UpdateWorkstreamInput,
@@ -9,7 +8,7 @@ import type {
 import { withDb } from "@repo/database";
 import type { WorkstreamUpdateInput } from "@repo/database/generated/models";
 import { basicUserSelect } from "@/lib/db-utils";
-import { generateSlug } from "@/lib/slug-generator";
+import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
 
 export type FindWorkstreamsOptions = {
   organizationId: string;

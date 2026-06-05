@@ -10,7 +10,7 @@ export function registerGetDashboardStats(
     "get-dashboard-stats",
     {
       description:
-        "Get organization-level counts for documents (PRDs, plans, features, templates) and workstreams.",
+        "Get organization-level counts for artifacts and workstreams.",
     },
     () =>
       withErrorHandling(async () => {

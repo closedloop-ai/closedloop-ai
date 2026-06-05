@@ -1,7 +1,7 @@
 "use client";
 
+import type { Artifact } from "@repo/api/src/types/artifact";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
-import type { Document } from "@repo/api/src/types/document";
 import type { Workstream } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -19,11 +19,11 @@ import {
   WorkstreamTypeBadge,
 } from "@/components/status-badge";
 import { formatRelativeTime } from "@/lib/date-utils";
-import { DOCUMENT_TYPE_LABELS } from "@/lib/project-constants";
+import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 
 type WorkstreamDetailProps = {
   workstream: Workstream;
-  artifacts: Document[];
+  artifacts: Artifact[];
 };
 
 export function WorkstreamDetail({
@@ -76,10 +76,10 @@ export function WorkstreamDetail({
         </CardContent>
       </Card>
 
-      {/* Documents */}
+      {/* Artifacts */}
       <Card>
         <CardHeader>
-          <CardTitle>Documents</CardTitle>
+          <CardTitle>Artifacts</CardTitle>
           <CardDescription>
             Documents and reports for this workstream
           </CardDescription>
@@ -101,7 +101,7 @@ export function WorkstreamDetail({
                     <div>
                       <p className="font-medium">{artifact.title}</p>
                       <p className="text-muted-foreground text-sm">
-                        {DOCUMENT_TYPE_LABELS[artifact.type] ?? artifact.type} ·
+                        {ARTIFACT_TYPE_LABELS[artifact.type] ?? artifact.type} ·
                         v{artifact.latestVersion}
                       </p>
                     </div>

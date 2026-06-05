@@ -7,26 +7,24 @@
  */
 
 import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
-import type { ArtifactType } from "@repo/api/src/types/artifact";
-import { DocumentType } from "@repo/api/src/types/document";
-import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import {
   ATTACHMENT_SIGNED_URL_MAX_FILES,
   attachmentsService,
-} from "@/app/documents/attachments-service";
-import { documentService } from "@/app/documents/document-service";
-import { documentVersionService } from "@/app/documents/document-version-service";
+} from "@/app/artifacts/attachments-service";
+import { artifactsService } from "@/app/artifacts/service";
+import { featuresService } from "@/app/features/service";
 import { loopsService } from "@/app/loops/service";
-import { documentTemplatesService } from "@/app/templates/service";
 import { getCommandHandler } from "./loop-commands";
 import {
   type ContextPack,
   downloadMetadata,
   uploadContextPack,
 } from "./loop-state";
-import { extractUploadedPlanRaw } from "./uploaded-plan-artifacts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,13 +35,13 @@ export type LoopForContextPack = {
   userId: string;
   command: LoopCommand;
   prompt: string | null;
-  documentId: string | null;
-  documentVersion: number | null;
+  artifactId: string | null;
+  artifactVersion: number | null;
   parentLoopId: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
     sourceId: string;
-    sourceType?: ArtifactType;
+    sourceType?: EntityType;
     include: "full" | "summary";
   }> | null;
 };
@@ -52,101 +50,11 @@ export type LoopForContextPack = {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-type ParentLoopForContextPack = Awaited<
-  ReturnType<typeof loopsService.findById>
->;
-
-function fetchDesktopExecuteRawPlanState(
-  loop: LoopForContextPack,
-  artifactType: string,
-  parentLoop: ParentLoopForContextPack
-): Record<string, unknown> | undefined {
-  if (
-    loop.command !== LoopCommand.Execute ||
-    artifactType !== DocumentType.ImplementationPlan ||
-    !parentLoop?.computeTargetId
-  ) {
-    return undefined;
-  }
-
-  return extractUploadedPlanRaw(parentLoop.uploadedArtifacts);
-}
-
-function getDesktopExecuteRawPlanOmissionReason(
-  loop: LoopForContextPack,
-  artifactType: string,
-  parentLoop: ParentLoopForContextPack
-): string | null {
-  if (loop.command !== LoopCommand.Execute) {
-    return "non_execute_command";
-  }
-  if (artifactType !== DocumentType.ImplementationPlan) {
-    return "non_implementation_plan";
-  }
-  if (!parentLoop) {
-    return "missing_parent_loop";
-  }
-  if (!parentLoop.computeTargetId) {
-    return "parent_not_desktop";
-  }
-  if (!parentLoop.uploadedArtifacts) {
-    return "parent_uploaded_artifacts_missing";
-  }
-  if (!extractUploadedPlanRaw(parentLoop.uploadedArtifacts)) {
-    return "parent_uploaded_plan_raw_missing";
-  }
-  return null;
-}
-
-function logDesktopExecuteRawPlanDecision({
-  loop,
-  artifactType,
-  artifactContent,
-  parentLoop,
-  rawPlan,
-}: {
-  loop: LoopForContextPack;
-  artifactType: string;
-  artifactContent: string;
-  parentLoop: ParentLoopForContextPack;
-  rawPlan: Record<string, unknown> | undefined;
-}): void {
-  if (
-    loop.command !== LoopCommand.Execute ||
-    artifactType !== DocumentType.ImplementationPlan
-  ) {
-    return;
-  }
-
-  const rawPlanContent =
-    typeof rawPlan?.content === "string" ? rawPlan.content : undefined;
-
-  log.info("[loop-context-pack] Desktop EXECUTE plan raw state decision", {
-    loopId: loop.id,
-    documentId: loop.documentId,
-    parentLoopId: parentLoop?.id ?? null,
-    parentLoopStatus: parentLoop?.status ?? null,
-    parentComputeTargetId: parentLoop?.computeTargetId ?? null,
-    parentUploadedArtifactsPresent: Boolean(parentLoop?.uploadedArtifacts),
-    rawPlanRecordAttached: rawPlan !== undefined,
-    rawPlanContentPresent: rawPlanContent !== undefined,
-    rawPlanContentMatchesArtifact:
-      rawPlanContent === undefined ? null : rawPlanContent === artifactContent,
-    rawPlanContentLength: rawPlanContent?.length ?? null,
-    artifactContentLength: artifactContent.length,
-    omissionReason:
-      rawPlan === undefined
-        ? getDesktopExecuteRawPlanOmissionReason(loop, artifactType, parentLoop)
-        : null,
-  });
-}
-
 async function fetchPrimaryArtifact(
   loop: LoopForContextPack,
-  organizationId: string,
-  parentLoop: ParentLoopForContextPack
+  organizationId: string
 ): Promise<ContextPack["artifacts"]> {
-  if (!loop.documentId) {
+  if (!loop.artifactId) {
     return [];
   }
 
@@ -157,14 +65,14 @@ async function fetchPrimaryArtifact(
     return [];
   }
 
-  const artifact = await documentService.findByIdSimple(
-    loop.documentId,
+  const artifact = await artifactsService.findByIdSimple(
+    loop.artifactId,
     organizationId
   );
   if (!artifact) {
     log.warn("[loop-context-pack] Primary artifact not found", {
       loopId: loop.id,
-      documentId: loop.documentId,
+      artifactId: loop.artifactId,
     });
     return [];
   }
@@ -175,33 +83,19 @@ async function fetchPrimaryArtifact(
   // the version the loop was created for, so the stale-write guard in the
   // ingest handler can accurately compare versions.
   const artifactVersion =
-    loop.documentVersion == null
-      ? await documentVersionService.getLatest(artifact.id)
-      : await documentVersionService.getByVersion(
+    loop.artifactVersion != null
+      ? await artifactVersionService.getByVersion(
           artifact.id,
-          loop.documentVersion
-        );
-  const rawPlan = await fetchDesktopExecuteRawPlanState(
-    loop,
-    String(artifact.type),
-    parentLoop
-  );
-  const artifactContent = artifactVersion?.content ?? "";
-  logDesktopExecuteRawPlanDecision({
-    loop,
-    artifactType: String(artifact.type),
-    artifactContent,
-    parentLoop,
-    rawPlan,
-  });
+          loop.artifactVersion
+        )
+      : await artifactVersionService.getLatest(artifact.id);
 
   return [
     {
       id: artifact.id,
       type: String(artifact.type),
       title: artifact.title,
-      content: artifactContent,
-      ...(rawPlan ? { raw: rawPlan } : {}),
+      content: artifactVersion?.content ?? "",
     },
   ];
 }
@@ -216,11 +110,17 @@ async function fetchContextRefArtifacts(
 
   // Exclude the primary artifact from context refs to avoid duplication
   const refs = loop.contextRefs.filter(
-    (ref) => ref.sourceId !== loop.documentId
+    (ref) =>
+      ref.sourceId !== loop.artifactId || ref.sourceType === EntityType.Feature
   );
 
   const results = await Promise.all(
-    refs.map((ref) => fetchArtifactRef(ref, organizationId, loop.id))
+    refs.map((ref) => {
+      if (ref.sourceType === EntityType.Feature) {
+        return fetchFeatureRef(ref, organizationId, loop.id);
+      }
+      return fetchArtifactRef(ref, organizationId, loop.id);
+    })
   );
 
   return results.filter((item): item is NonNullable<typeof item> =>
@@ -228,24 +128,48 @@ async function fetchContextRefArtifacts(
   );
 }
 
+async function fetchFeatureRef(
+  ref: { sourceId: string; include: "full" | "summary" },
+  organizationId: string,
+  loopId: string
+): Promise<ContextPack["artifacts"][number] | null> {
+  const feature = await featuresService.findById(ref.sourceId, organizationId);
+  if (!feature) {
+    log.warn("[loop-context-pack] Feature not found for context ref", {
+      loopId,
+      featureId: ref.sourceId,
+    });
+    return null;
+  }
+
+  const content = feature.description ?? "";
+
+  return {
+    id: feature.id,
+    type: "FEATURE",
+    title: feature.title,
+    content: ref.include === "summary" ? truncateForSummary(content) : content,
+  };
+}
+
 async function fetchArtifactRef(
   ref: { sourceId: string; include: "full" | "summary" },
   organizationId: string,
   loopId: string
 ): Promise<ContextPack["artifacts"][number] | null> {
-  const artifact = await documentService.findByIdSimple(
+  const artifact = await artifactsService.findByIdSimple(
     ref.sourceId,
     organizationId
   );
   if (!artifact) {
     log.warn("[loop-context-pack] Artifact not found for context ref", {
       loopId,
-      documentId: ref.sourceId,
+      artifactId: ref.sourceId,
     });
     return null;
   }
 
-  const latestVersion = await documentVersionService.getLatest(artifact.id);
+  const latestVersion = await artifactVersionService.getLatest(artifact.id);
   const content = latestVersion?.content ?? "";
 
   return {
@@ -257,9 +181,17 @@ async function fetchArtifactRef(
 }
 
 async function fetchParentLoopSummary(
-  _loop: LoopForContextPack,
-  parentLoop: ParentLoopForContextPack
+  loop: LoopForContextPack,
+  organizationId: string
 ): Promise<NonNullable<ContextPack["priorLoopSummaries"]>> {
+  if (!loop.parentLoopId) {
+    return [];
+  }
+
+  const parentLoop = await loopsService.findById(
+    loop.parentLoopId,
+    organizationId
+  );
   if (!parentLoop) {
     return [];
   }
@@ -292,18 +224,15 @@ async function fetchTemplateForCommand(
     return [];
   }
 
-  let template = await documentTemplatesService.findOrgTemplate(
+  let template = await artifactsService.findOrgTemplate(
     organizationId,
-    DocumentType.Prd
+    ArtifactType.Prd
   );
   if (!template) {
-    await documentTemplatesService.ensureDefaultTemplates(
+    await artifactsService.ensureDefaultTemplates(organizationId, loop.userId);
+    template = await artifactsService.findOrgTemplate(
       organizationId,
-      loop.userId
-    );
-    template = await documentTemplatesService.findOrgTemplate(
-      organizationId,
-      DocumentType.Prd
+      ArtifactType.Prd
     );
   }
   if (!template) {
@@ -314,11 +243,11 @@ async function fetchTemplateForCommand(
     return [];
   }
 
-  const version = await documentVersionService.getLatest(template.id);
+  const version = await artifactVersionService.getLatest(template.id);
   return [
     {
       id: template.id,
-      type: DocumentType.Template,
+      type: ArtifactType.Template,
       title: template.title,
       content: version?.content ?? "",
     },
@@ -343,7 +272,7 @@ function truncateForSummary(content: string, maxLength = 2000): string {
 async function fetchUserContext(
   loop: LoopForContextPack
 ): Promise<string | undefined> {
-  if (loop.command !== LoopCommand.Plan || !loop.documentId) {
+  if (loop.command !== LoopCommand.Plan || !loop.artifactId) {
     return undefined;
   }
 
@@ -352,7 +281,7 @@ async function fetchUserContext(
   // (`/plans/start-loop-from-local`), version 1 is created with empty content
   // because that flow does not yet collect additional instructions — in that case
   // this returns undefined and userContext is omitted from the context pack.
-  const version = await documentVersionService.getByVersion(loop.documentId, 1);
+  const version = await artifactVersionService.getByVersion(loop.artifactId, 1);
   const content = version?.content;
 
   if (!content?.trim()) {
@@ -362,7 +291,7 @@ async function fetchUserContext(
   const USER_CONTEXT_MAX_LENGTH = 16_000;
   if (content.length > USER_CONTEXT_MAX_LENGTH) {
     log.warn("[loop-context-pack] User context truncated", {
-      documentId: loop.documentId,
+      artifactId: loop.artifactId,
       originalLength: content.length,
     });
     return content.slice(0, USER_CONTEXT_MAX_LENGTH);
@@ -393,13 +322,13 @@ export async function fetchAttachmentsForContextPack(
   // Path 1: primary artifact attachments
   let primaryAttachments: ContextPackAttachment[] = [];
   if (
-    loop.documentId &&
+    loop.artifactId &&
     getCommandHandler(loop.command)?.includePrimaryArtifact
   ) {
     try {
       primaryAttachments =
-        await attachmentsService.listWithSignedUrlsByDocument(
-          loop.documentId,
+        await attachmentsService.listWithSignedUrlsByArtifact(
+          loop.artifactId,
           organizationId
         );
     } catch (error) {
@@ -443,11 +372,18 @@ async function collectContextRefAttachments(
   const result: ContextPackAttachment[] = [];
   for (const ref of contextRefs) {
     try {
-      const refAttachments =
-        await attachmentsService.listWithSignedUrlsByDocument(
+      let refAttachments: ContextPackAttachment[];
+      if (ref.sourceType === EntityType.Feature) {
+        refAttachments = await attachmentsService.listWithSignedUrlsByFeature(
           ref.sourceId,
           organizationId
         );
+      } else {
+        refAttachments = await attachmentsService.listWithSignedUrlsByArtifact(
+          ref.sourceId,
+          organizationId
+        );
+      }
       result.push(...refAttachments);
     } catch (error) {
       log.warn("[loop-context-pack] Failed to fetch context ref attachments", {
@@ -529,12 +465,8 @@ export async function buildContextPackInMemory(
   loop: LoopForContextPack,
   organizationId: string,
   secrets?: { anthropicApiKey?: string; githubToken?: string },
-  committer?: { name: string; email: string },
-  additionalRepos?: AdditionalRepoRefWithToken[]
+  committer?: { name: string; email: string }
 ): Promise<ContextPack> {
-  const parentLoop = loop.parentLoopId
-    ? await loopsService.findById(loop.parentLoopId, organizationId)
-    : null;
   const [
     primaryArtifacts,
     refArtifacts,
@@ -543,10 +475,10 @@ export async function buildContextPackInMemory(
     userContext,
     attachments,
   ] = await Promise.all([
-    fetchPrimaryArtifact(loop, organizationId, parentLoop),
+    fetchPrimaryArtifact(loop, organizationId),
     fetchContextRefArtifacts(loop, organizationId),
     fetchTemplateForCommand(loop, organizationId),
-    fetchParentLoopSummary(loop, parentLoop),
+    fetchParentLoopSummary(loop, organizationId),
     fetchUserContext(loop),
     fetchAttachmentsForContextPack(loop, organizationId).catch((error) => {
       log.warn("[loop-context-pack] Failed to fetch attachments", {
@@ -575,7 +507,6 @@ export async function buildContextPackInMemory(
     secrets,
     userContext,
     attachments: attachments.length > 0 ? attachments : undefined,
-    additionalRepos: additionalRepos?.length ? additionalRepos : undefined,
   };
 }
 
@@ -595,16 +526,15 @@ export async function buildContextPack(
   organizationId: string,
   stateKeyPrefix: string,
   secrets?: { anthropicApiKey?: string; githubToken?: string },
-  committer?: { name: string; email: string },
-  additionalRepos?: AdditionalRepoRefWithToken[]
+  committer?: { name: string; email: string }
 ): Promise<string> {
   const contextPack = await buildContextPackInMemory(
     loop,
     organizationId,
     secrets,
-    committer,
-    additionalRepos
+    committer
   );
 
-  return uploadContextPack(stateKeyPrefix, contextPack);
+  const s3Key = await uploadContextPack(stateKeyPrefix, contextPack);
+  return s3Key;
 }

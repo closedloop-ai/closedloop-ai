@@ -1,17 +1,7 @@
 import { randomUUID } from "node:crypto";
-import {
-  isDesktopApiPath,
-  normalizeDesktopApiPath,
-} from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
-import { z } from "zod";
-import {
-  jsonValueSchema,
-  parseJsonObject,
-  stringRecordSchema,
-} from "@/lib/json-schema";
 import { isRecord } from "@/lib/type-guards";
 import {
   type DesktopCommandAckPayload,
@@ -23,47 +13,22 @@ import {
   type WithCorrelation,
 } from "./desktop-gateway-types";
 
-const stringArraySchema = z.array(z.string());
-const desktopCommandEventTypeSchema = z.enum([
-  "status",
-  "chunk",
-  "result",
-  "error",
-  "done",
-]);
-const commandMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]);
-const helloPayloadSchema = z.object({
-  computeTargetId: z.string().optional(),
-  gatewayId: z.string().optional(),
-  desktopSecurityUpgradeProtocolVersion: z.unknown().optional(),
-  machineName: z.string(),
-  platform: z.string(),
-  pluginVersion: z.string(),
-  supportedOperations: stringArraySchema,
-  maxInFlightCommands: z.number().finite().min(1),
-  allowedDirectoriesHash: z.string().optional(),
-  capabilities: z.unknown().optional(),
-});
-const commandAckPayloadSchema = z.object({
-  commandId: z.string(),
-  accepted: z.boolean(),
-  reason: z.string().optional(),
-});
-const commandEventPayloadSchema = z.object({
-  commandId: z.string(),
-  sequence: z.number().int().min(1),
-  eventType: desktopCommandEventTypeSchema,
-  data: jsonValueSchema.optional(),
-});
-
 export function isStringArray(value: unknown): value is string[] {
-  return stringArraySchema.safeParse(value).success;
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === "string")
+  );
 }
 
 export function isDesktopCommandEventType(
   value: unknown
 ): value is DesktopCommandEventType {
-  return desktopCommandEventTypeSchema.safeParse(value).success;
+  return (
+    value === "status" ||
+    value === "chunk" ||
+    value === "result" ||
+    value === "error" ||
+    value === "done"
+  );
 }
 
 export function isTerminalEventData(data: JsonValue): boolean {
@@ -84,62 +49,111 @@ export function toEnvelope<T extends Record<string, unknown>>(
 export function parseHelloPayload(
   payload: unknown
 ): DesktopHelloPayload | null {
-  const parsed = helloPayloadSchema.safeParse(payload);
-  if (!parsed.success) {
+  if (!isRecord(payload)) {
     return null;
   }
-  const hello = parsed.data;
+  if (
+    typeof payload.machineName !== "string" ||
+    typeof payload.platform !== "string" ||
+    typeof payload.pluginVersion !== "string" ||
+    !isStringArray(payload.supportedOperations) ||
+    typeof payload.maxInFlightCommands !== "number" ||
+    !Number.isFinite(payload.maxInFlightCommands) ||
+    payload.maxInFlightCommands < 1
+  ) {
+    return null;
+  }
 
   return {
-    computeTargetId: hello.computeTargetId,
-    gatewayId: hello.gatewayId,
-    desktopSecurityUpgradeProtocolVersion:
-      hello.desktopSecurityUpgradeProtocolVersion === 1 ? 1 : undefined,
-    machineName: hello.machineName,
-    platform: hello.platform,
-    pluginVersion: hello.pluginVersion,
-    supportedOperations: hello.supportedOperations,
-    maxInFlightCommands: Math.floor(hello.maxInFlightCommands),
-    allowedDirectoriesHash: hello.allowedDirectoriesHash,
-    capabilities: parseJsonObject(hello.capabilities) ?? undefined,
+    computeTargetId:
+      typeof payload.computeTargetId === "string"
+        ? payload.computeTargetId
+        : undefined,
+    machineName: payload.machineName,
+    platform: payload.platform,
+    pluginVersion: payload.pluginVersion,
+    supportedOperations: payload.supportedOperations,
+    maxInFlightCommands: Math.floor(payload.maxInFlightCommands),
+    allowedDirectoriesHash:
+      typeof payload.allowedDirectoriesHash === "string"
+        ? payload.allowedDirectoriesHash
+        : undefined,
+    capabilities: isRecord(payload.capabilities)
+      ? payload.capabilities
+      : undefined,
   };
 }
 
 export function parseCommandAckPayload(
   payload: unknown
 ): DesktopCommandAckPayload | null {
-  const parsed = commandAckPayloadSchema.safeParse(payload);
-  return parsed.success ? parsed.data : null;
+  if (!isRecord(payload)) {
+    return null;
+  }
+  if (
+    typeof payload.commandId !== "string" ||
+    typeof payload.accepted !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    commandId: payload.commandId,
+    accepted: payload.accepted,
+    reason: typeof payload.reason === "string" ? payload.reason : undefined,
+  };
 }
 
 export function parseCommandEventPayload(
   payload: unknown
 ): DesktopCommandEventPayload | null {
-  const parsed = commandEventPayloadSchema.safeParse(payload);
-  if (!parsed.success) {
+  if (!isRecord(payload)) {
     return null;
   }
-  const event = parsed.data;
+  if (
+    typeof payload.commandId !== "string" ||
+    typeof payload.sequence !== "number" ||
+    payload.sequence < 1 ||
+    !Number.isInteger(payload.sequence) ||
+    !isDesktopCommandEventType(payload.eventType)
+  ) {
+    return null;
+  }
   return {
-    commandId: event.commandId,
-    sequence: event.sequence,
-    eventType: event.eventType,
-    data: event.data ?? null,
+    commandId: payload.commandId,
+    sequence: payload.sequence,
+    eventType: payload.eventType,
+    data: (payload.data as JsonValue | undefined) ?? null,
   };
 }
 
 export function normalizeMethod(
   value: unknown
 ): WireCommandPayload["method"] | null {
-  const parsed = commandMethodSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
+  if (
+    value === "GET" ||
+    value === "POST" ||
+    value === "PUT" ||
+    value === "PATCH" ||
+    value === "DELETE"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 export function toStringRecord(
   value: unknown
 ): Record<string, string> | undefined {
-  const parsed = stringRecordSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string"
+  );
+  if (entries.length === 0) {
+    return undefined;
+  }
+  return Object.fromEntries(entries);
 }
 
 export function splitPathAndQuery(pathWithQuery: string): {
@@ -206,8 +220,8 @@ export function toWireCommandFromRelayOperation(operation: {
   params: JsonValue;
   streaming?: boolean;
 }): WireCommandPayload | null {
-  const params = parseJsonObject(operation.params) ?? {};
-  const request = parseJsonObject(params.request) ?? {};
+  const params = isRecord(operation.params) ? operation.params : {};
+  const request = isRecord(params.request) ? params.request : {};
   const rawPath = typeof request.path === "string" ? request.path : null;
   const method = normalizeMethod(request.method);
   const commandId =
@@ -218,7 +232,7 @@ export function toWireCommandFromRelayOperation(operation: {
   }
 
   const { path, query } = splitPathAndQuery(rawPath);
-  if (!isDesktopApiPath(path)) {
+  if (!path.startsWith("/api/engineer/")) {
     return null;
   }
 
@@ -234,7 +248,7 @@ export function toWireCommandFromRelayOperation(operation: {
     path,
     headers: toStringRecord(request.headers),
     query,
-    body: jsonValueSchema.safeParse(request.body).data ?? null,
+    body: ("body" in request ? (request.body as JsonValue) : null) as JsonValue,
     timeoutMs:
       typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
     lockKey: typeof params.lockKey === "string" ? params.lockKey : undefined,
@@ -263,24 +277,20 @@ export function emitCommand(
  * `apps/desktop/src/main/app.ts`.
  */
 export const EXACT_OPERATION_IDS: Record<string, string> = {
-  "/api/gateway/symphony/launch": "symphony_launch",
-  "/api/gateway/symphony/kill": "symphony_kill",
-  "/api/gateway/symphony/loop": "symphony_loop",
-  "/api/gateway/symphony/loop/kill": "symphony_loop_kill",
-  "/api/gateway/symphony/status": "symphony_status",
-  "/api/gateway/symphony/sessions": "symphony_sessions",
-  "/api/gateway/symphony/record-learning-use": "learnings",
-  "/api/gateway/terminal-chat": "terminal_chat",
-  "/api/gateway/ticket-chat": "ticket_chat",
-  "/api/gateway/run-viewer-chat": "run_viewer_chat",
-  "/api/gateway/health-check": "health_check",
-  "/api/gateway/version": "health_check",
-  "/api/gateway/repos": "repos_config",
-  "/api/gateway/learnings": "learnings",
-  "/api/gateway/directories": "filesystem",
-  "/api/gateway/files/search": "filesystem",
-  "/api/gateway/git/user": "git_pr",
-  "/api/gateway/git/branch-worktree": "git_branch_worktree",
+  "/api/engineer/symphony/launch": "symphony_launch",
+  "/api/engineer/symphony/kill": "symphony_kill",
+  "/api/engineer/symphony/loop": "symphony_loop",
+  "/api/engineer/symphony/loop/kill": "symphony_loop_kill",
+  "/api/engineer/symphony/sessions": "symphony_sessions",
+  "/api/engineer/terminal-chat": "terminal_chat",
+  "/api/engineer/ticket-chat": "ticket_chat",
+  "/api/engineer/run-viewer-chat": "run_viewer_chat",
+  "/api/engineer/health-check": "health_check",
+  "/api/engineer/repos": "repos_config",
+  "/api/engineer/learnings": "learnings",
+  "/api/engineer/directories": "filesystem",
+  "/api/engineer/files/search": "filesystem",
+  "/api/engineer/git/user": "git_pr",
 };
 
 /**
@@ -288,50 +298,42 @@ export const EXACT_OPERATION_IDS: Record<string, string> = {
  * Order matters: more-specific prefixes must come before less-specific ones.
  */
 export const PREFIX_OPERATION_IDS: [string, string][] = [
-  ["/api/gateway/symphony/status/", "symphony_status"],
-  ["/api/gateway/symphony/plan-loop/", "symphony_plan_loop"],
-  ["/api/gateway/symphony/chat-history/", "symphony_chat_history"],
-  ["/api/gateway/symphony/chat/", "symphony_chat"],
-  ["/api/gateway/symphony/comment-chat/", "symphony_comment_chat"],
-  ["/api/gateway/symphony/commit-message/", "symphony_commit_message"],
-  ["/api/gateway/symphony/plan/", "symphony_plan"],
-  ["/api/gateway/symphony/judges/", "symphony_judges"],
-  ["/api/gateway/symphony/logs/", "symphony_logs"],
-  ["/api/gateway/symphony/sessions/", "symphony_sessions"],
-  ["/api/gateway/symphony/attachments/", "filesystem"],
-  ["/api/gateway/symphony/upload/", "filesystem"],
-  ["/api/gateway/symphony/pending-learnings", "learnings"],
-  ["/api/gateway/symphony/process-all-learnings", "learnings"],
-  ["/api/gateway/symphony/process-learnings", "learnings"],
-  ["/api/gateway/symphony/extract-learnings", "learnings"],
-  ["/api/gateway/symphony/learnings-status/", "learnings"],
-  ["/api/gateway/codex/argue/", "codex_argue"],
-  ["/api/gateway/codex/", "codex_review"],
-  ["/api/gateway/work-directory/", "filesystem"],
-  ["/api/gateway/git/pr", "git_pr"],
-  ["/api/gateway/git", "git_action"],
-  ["/api/gateway/deploy", "deploy"],
-  ["/api/gateway/run-viewer-extract", "filesystem"],
+  ["/api/engineer/symphony/status/", "symphony_status"],
+  ["/api/engineer/symphony/chat-history/", "symphony_chat_history"],
+  ["/api/engineer/symphony/chat/", "symphony_chat"],
+  ["/api/engineer/symphony/comment-chat/", "symphony_comment_chat"],
+  ["/api/engineer/symphony/commit-message/", "symphony_commit_message"],
+  ["/api/engineer/symphony/plan/", "symphony_plan"],
+  ["/api/engineer/symphony/judges/", "symphony_judges"],
+  ["/api/engineer/symphony/logs/", "symphony_logs"],
+  ["/api/engineer/symphony/pending-learnings", "learnings"],
+  ["/api/engineer/symphony/process-all-learnings", "learnings"],
+  ["/api/engineer/symphony/process-learnings", "learnings"],
+  ["/api/engineer/codex/argue/", "codex_argue"],
+  ["/api/engineer/codex/", "codex_review"],
+  ["/api/engineer/git/pr", "git_pr"],
+  ["/api/engineer/git", "git_action"],
+  ["/api/engineer/deploy", "deploy"],
+  ["/api/engineer/run-viewer-extract", "filesystem"],
 ];
 
 /**
  * Resolve the semantic operationId that Electron expects for a given
- * desktop API path. This must stay in sync with the Electron
+ * `/api/engineer/*` path.  This must stay in sync with the Electron
  * desktop app's `resolveOperationId()` in `apps/desktop/src/main/app.ts`.
  */
 export function resolveOperationId(pathname: string): string | null {
-  const normalizedPath = normalizeDesktopApiPath(pathname);
-  if (!normalizedPath) {
+  if (!pathname.startsWith("/api/engineer/")) {
     return null;
   }
 
-  const exact = EXACT_OPERATION_IDS[normalizedPath];
+  const exact = EXACT_OPERATION_IDS[pathname];
   if (exact) {
     return exact;
   }
 
   for (const [prefix, operationId] of PREFIX_OPERATION_IDS) {
-    if (normalizedPath.startsWith(prefix)) {
+    if (pathname.startsWith(prefix)) {
       return operationId;
     }
   }

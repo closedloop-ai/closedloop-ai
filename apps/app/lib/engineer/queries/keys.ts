@@ -5,20 +5,19 @@
  */
 export const queryKeys = {
   // Symphony domain
-  closedloopStatus: (ticketId: string, repoPath: string | null) =>
-    ["closedloop-status", ticketId, repoPath] as const,
-  closedloopPlan: (ticketId: string, repoPath: string) =>
-    ["closedloop-plan", ticketId, repoPath] as const,
-  closedloopChatHistory: (
+  symphonyStatus: (ticketId: string, repoPath: string | null) =>
+    ["symphony-status", ticketId, repoPath] as const,
+  symphonyPlan: (ticketId: string, repoPath: string) =>
+    ["symphony-plan", ticketId, repoPath] as const,
+  symphonyChatHistory: (
     ticketId: string,
     repoPath: string,
     provider?: string
-  ) =>
-    ["closedloop-chat-history", ticketId, repoPath, provider ?? null] as const,
-  closedloopLogs: (ticketId: string, repoPath: string) =>
-    ["closedloop-logs", ticketId, repoPath] as const,
-  closedloopJudges: (ticketId: string, repoPath: string) =>
-    ["closedloop-judges", ticketId, repoPath] as const,
+  ) => ["symphony-chat-history", ticketId, repoPath, provider ?? null] as const,
+  symphonyLogs: (ticketId: string, repoPath: string) =>
+    ["symphony-logs", ticketId, repoPath] as const,
+  symphonyJudges: (ticketId: string, repoPath: string) =>
+    ["symphony-judges", ticketId, repoPath] as const,
   commentChatHistory: (ticketId: string, commentId: string, repoPath: string) =>
     ["comment-chat-history", ticketId, commentId, repoPath] as const,
   findingChatHistory: (ticketId: string, findingId: string, repoPath: string) =>
@@ -46,8 +45,6 @@ export const queryKeys = {
 
   // Repos domain
   repos: () => ["repos"] as const,
-  repoPath: (repoFullName: string, routingKey: string) =>
-    ["repo-path", repoFullName, routingKey] as const,
 
   // Files domain
   fileSearch: (ticketId: string, repoPath: string, query: string) =>
@@ -71,31 +68,5 @@ export const queryKeys = {
     ["deploy-existing", repoPath, worktreePath] as const,
 
   // Health check domain
-  healthCheck: (
-    targetKey: string,
-    expectedMcpUrl: string | null,
-    latestVersion?: string | null
-  ) =>
-    ["health-check", targetKey, expectedMcpUrl, latestVersion ?? null] as const,
-
-  // Chat session domain
-  chatSessionHistory: (chatKey: string) =>
-    ["chat-session-history", chatKey] as const,
-  chatRunnerToken: (chatKey: string) => ["chat-runner-token", chatKey] as const,
-  branchWorktree: (
-    repoFullName: string,
-    headBranch: string,
-    prNumber: number,
-    routingKey: string
-  ) =>
-    [
-      "branch-worktree",
-      repoFullName,
-      headBranch,
-      prNumber,
-      routingKey,
-    ] as const,
-
-  // Work directory domain
-  workDirectory: (ticketId: string) => ["work-directory", ticketId] as const,
+  healthCheck: () => ["health-check"] as const,
 };

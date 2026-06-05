@@ -1,7 +1,3 @@
-import {
-  CURRENT_DESKTOP_API_NAMESPACE,
-  LEGACY_DESKTOP_API_NAMESPACE,
-} from "@repo/api/src/desktop-api-namespace";
 import { z } from "zod";
 import { repoSchema } from "@/app/loops/validators";
 
@@ -10,9 +6,6 @@ const baseSchema = z.object({
   ticketTitle: z.string().optional(),
   computeTargetId: z.string().uuid(),
   localRepoPath: z.string().min(1),
-  desktopApiNamespace: z
-    .enum([CURRENT_DESKTOP_API_NAMESPACE, LEGACY_DESKTOP_API_NAMESPACE])
-    .optional(),
   repo: repoSchema.optional(),
 });
 

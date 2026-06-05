@@ -5,17 +5,17 @@ describe("deriveBaseRepoPath", () => {
   it("strips ticket-based suffix", () => {
     // Ticket "AI-123" sanitizes to "AI-123" (dashes kept), suffix "-AI-123"
     expect(
-      deriveBaseRepoPath("/Users/me/Source/symphony-alpha-AI-123", "AI-123")
-    ).toBe("/Users/me/Source/symphony-alpha");
+      deriveBaseRepoPath("/Users/me/Source/closedloop-ai-AI-123", "AI-123")
+    ).toBe("/Users/me/Source/closedloop-ai");
   });
 
   it("strips loop-based suffix", () => {
     expect(
       deriveBaseRepoPath(
-        "/Users/me/Source/symphony-alpha-loop-plan-1",
+        "/Users/me/Source/closedloop-ai-loop-plan-1",
         "AI-123"
       )
-    ).toBe("/Users/me/Source/symphony-alpha");
+    ).toBe("/Users/me/Source/closedloop-ai");
   });
 
   it("prefers ticket-based suffix over loop regex for repos with -loop- in name", () => {
@@ -51,9 +51,9 @@ describe("deriveBaseRepoPath", () => {
     // Ticket "5tVcaqmn.4PDTD" sanitizes to "5tVcaqmn_4PDTD"
     expect(
       deriveBaseRepoPath(
-        "/Users/me/Source/symphony-alpha-5tVcaqmn_4PDTD",
+        "/Users/me/Source/closedloop-ai-5tVcaqmn_4PDTD",
         "5tVcaqmn.4PDTD"
       )
-    ).toBe("/Users/me/Source/symphony-alpha");
+    ).toBe("/Users/me/Source/closedloop-ai");
   });
 });

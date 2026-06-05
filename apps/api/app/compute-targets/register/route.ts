@@ -3,16 +3,8 @@ import type {
   RegisterComputeTargetResponse,
 } from "@repo/api/src/types/compute-target";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import {
-  conflictResponse,
-  errorResponse,
-  parseBody,
-  successResponse,
-} from "@/lib/route-utils";
-import {
-  computeTargetsService,
-  isComputeTargetGatewayConflictResult,
-} from "../service";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { computeTargetsService } from "../service";
 import { registerComputeTargetValidator } from "../validators";
 
 /**
@@ -39,15 +31,9 @@ export const POST = withAnyAuth<
       body as RegisterComputeTargetInput
     );
 
-    if (isComputeTargetGatewayConflictResult(target)) {
-      return conflictResponse(
-        "Desktop gateway identity is already bound to another target"
-      );
-    }
-
     return successResponse({
-      id: target.value.id,
-      machineName: target.value.machineName,
+      id: target.id,
+      machineName: target.machineName,
       isOnline: true,
     });
   } catch (error) {

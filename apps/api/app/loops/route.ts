@@ -1,10 +1,9 @@
 import type {
   CreateLoopResponse,
-  LoopAlreadyActiveBody,
   LoopWithUser,
 } from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { resolveDocumentId, resolveWorkstreamId } from "@/lib/identifier-utils";
+import { resolveArtifactId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -12,11 +11,8 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { handleLoopServiceError } from "./loop-error-responses";
-import { loopsService } from "./service";
+import { isConcurrentLoopLimitError, loopsService } from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
-
-type CreateLoopRouteResponse = CreateLoopResponse | LoopAlreadyActiveBody;
 
 export const GET = withAnyAuth<LoopWithUser[], "/loops">(
   async ({ user }, request) => {
@@ -32,10 +28,10 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
         );
       }
 
-      const { documentId, ...restQuery } = parseResult.data;
+      const { artifactId, ...restQuery } = parseResult.data;
       let resolvedArtifactId: string | undefined;
-      if (documentId) {
-        const aId = await resolveDocumentId(documentId, user.organizationId);
+      if (artifactId) {
+        const aId = await resolveArtifactId(artifactId, user.organizationId);
         if (!aId) {
           return notFoundResponse("Artifact");
         }
@@ -43,7 +39,7 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
       }
 
       const loops = await loopsService.findAll(user.organizationId, {
-        documentId: resolvedArtifactId,
+        artifactId: resolvedArtifactId,
         ...restQuery,
       });
 
@@ -58,7 +54,7 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
  * POST /loops — Creates a loop DB record only (status: PENDING).
  * Does NOT launch the loop. To create AND launch, use POST /artifacts/[id]/run-loop.
  */
-export const POST = withAnyAuth<CreateLoopRouteResponse, "/loops">(
+export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -69,37 +65,18 @@ export const POST = withAnyAuth<CreateLoopRouteResponse, "/loops">(
         return parseError;
       }
 
-      const resolved = { ...body };
-      if (body.documentId) {
-        const docId = await resolveDocumentId(
-          body.documentId,
-          user.organizationId
-        );
-        if (!docId) {
-          return notFoundResponse("Document");
-        }
-        resolved.documentId = docId;
-      }
-      if (body.workstreamId) {
-        const wsId = await resolveWorkstreamId(
-          body.workstreamId,
-          user.organizationId
-        );
-        if (!wsId) {
-          return notFoundResponse("Workstream");
-        }
-        resolved.workstreamId = wsId;
-      }
-
       const result = await loopsService.create(
         user.organizationId,
         user.id,
-        resolved
+        body
       );
 
       return successResponse(result);
     } catch (error) {
-      return handleLoopServiceError(error, "Failed to create loop");
+      if (isConcurrentLoopLimitError(error)) {
+        return errorResponse(error.message, error, 429);
+      }
+      return errorResponse("Failed to create loop", error);
     }
   },
   { requiredScopes: ["write"] }

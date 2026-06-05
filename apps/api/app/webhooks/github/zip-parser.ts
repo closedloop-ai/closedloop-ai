@@ -1,12 +1,4 @@
-import {
-  detectExecutionResultSchemaVersion,
-  type ExecutionResultFile,
-  ExecutionResultFileSchema,
-  type ExecutionResultV2,
-  ExecutionResultV2Schema,
-  isSupportedExecutionResultSchemaVersion,
-} from "@closedloop-ai/loops-api/execution-result";
-import type { PlanJson } from "@repo/api/src/types/document";
+import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
@@ -14,11 +6,12 @@ import { parsePerfSummary } from "@repo/github/perf-parser";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
+import type { ExecutionResult } from "./types";
 
 export type ZipContent = {
   planContent: string | null;
   questionsContent: string | null;
-  executionResult: ExecutionResultFile | ExecutionResultV2 | null;
+  executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
@@ -27,49 +20,17 @@ export type ZipContent = {
 };
 
 /**
- * Parse execution result JSON safely using structural Zod validation.
- * Returns the validated raw parsed data so callers can distinguish v1 vs v2.
- * Normalization (fullName-aware) is deferred to the completion handler.
+ * Parse execution result JSON safely.
  */
 function parseExecutionResult(
   content: Buffer,
   entryName: string
-): ExecutionResultFile | ExecutionResultV2 | null {
+): ExecutionResult | null {
   try {
     const jsonContent = content.toString("utf-8");
-    const parsed: unknown = JSON.parse(jsonContent);
-
-    const schemaVersion = detectExecutionResultSchemaVersion(parsed);
-
-    if (!isSupportedExecutionResultSchemaVersion(schemaVersion)) {
-      log.error(
-        `Unsupported execution-result.json schemaVersion: ${schemaVersion}`
-      );
-      return null;
-    }
-
-    if (schemaVersion === 2) {
-      const result = ExecutionResultV2Schema.safeParse(parsed);
-      if (!result.success) {
-        log.error(
-          `Failed to parse execution-result.json (v2): ${result.error.message}`
-        );
-        return null;
-      }
-      log.info(`Found execution-result.json (v2): ${entryName}`);
-      return result.data;
-    }
-
-    // v1: schemaVersion absent or 1
-    const result = ExecutionResultFileSchema.safeParse(parsed);
-    if (!result.success) {
-      log.error(
-        `Failed to parse execution-result.json (v1): ${result.error.message}`
-      );
-      return null;
-    }
-    log.info(`Found execution-result.json: ${entryName}`);
-    return result.data;
+    const result = JSON.parse(jsonContent) as ExecutionResult;
+    log.info(`Found execution result: ${entryName}, PR #${result.pr_number}`);
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     log.error(`Failed to parse execution-result.json: ${message}`);
@@ -129,7 +90,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
   const entries: { name: string; data: Buffer }[] = [];
   let planContent: string | null = null;
   let questionsContent: string | null = null;
-  let executionResult: ExecutionResultFile | ExecutionResultV2 | null = null;
+  let executionResult: ExecutionResult | null = null;
   let judgesReport: JudgesReport | null = null;
   let codeJudgesReport: JudgesReport | null = null;
   let perfSummary: PerfSummary | null = null;
@@ -181,7 +142,7 @@ type ZipEntryContentArgs = {
   name: string;
   planContent: string | null;
   questionsContent: string | null;
-  executionResult: ExecutionResultFile | ExecutionResultV2 | null;
+  executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;

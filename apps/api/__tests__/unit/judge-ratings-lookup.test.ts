@@ -1,11 +1,12 @@
 /**
  * Unit tests for judge-ratings service lookup behavior.
  *
- * Requirements after artifact cutover:
- * 1. submitJudgeRating finds judge score via evaluation.artifactId + evaluation.organizationId
+ * SS8.8 requirements:
+ * 1. submitJudgeRating finds judge score via evaluation.entityId + evaluation.organizationId
  * 2. Returns null for judge score in a different org's evaluation (cross-org null)
- * 3. getUserJudgeRatings where clause uses evaluation.artifactId
+ * 3. getUserJudgeRatings where clause uses evaluation.entityId + evaluation.entityType
  */
+import { EntityType } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMockWithDb,
@@ -15,24 +16,13 @@ import {
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
-  EntityType: { DOCUMENT: "DOCUMENT", FEATURE: "FEATURE" },
+  EntityType: { ARTIFACT: "ARTIFACT", FEATURE: "FEATURE" },
 }));
 
 import {
   getUserJudgeRatings,
   submitJudgeRating,
-} from "@/app/documents/[id]/judge-ratings/service";
+} from "@/app/artifacts/[id]/judge-ratings/service";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,16 +35,16 @@ const ARTIFACT_ID = "artifact-test";
 const JUDGE_SCORE_ID = "a0000000-0000-7000-8000-000000000001";
 
 // ---------------------------------------------------------------------------
-// Scenario 1: submitJudgeRating where clause uses artifactId + organizationId
+// Scenario 1: submitJudgeRating where clause uses entityId + organizationId
 // ---------------------------------------------------------------------------
 
-describe("submitJudgeRating — where clause shape", () => {
+describe("submitJudgeRating — where clause shape (SS8.8.1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getMockWithDb().tx = vi.fn();
   });
 
-  it("finds judge score via evaluation.artifactId and evaluation.organizationId", async () => {
+  it("finds judge score via evaluation.entityId and evaluation.organizationId", async () => {
     const db = {
       judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
@@ -67,7 +57,7 @@ describe("submitJudgeRating — where clause shape", () => {
         where: expect.objectContaining({
           id: JUDGE_SCORE_ID,
           evaluation: expect.objectContaining({
-            artifactId: ARTIFACT_ID,
+            entityId: ARTIFACT_ID,
             organizationId: ORG_ID,
           }),
         }),
@@ -80,7 +70,7 @@ describe("submitJudgeRating — where clause shape", () => {
 // Scenario 2: returns null for cross-org evaluation
 // ---------------------------------------------------------------------------
 
-describe("submitJudgeRating — cross-org isolation", () => {
+describe("submitJudgeRating — cross-org isolation (SS8.8.2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getMockWithDb().tx = vi.fn();
@@ -117,15 +107,15 @@ describe("submitJudgeRating — cross-org isolation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 3: getUserJudgeRatings where clause uses artifactId
+// Scenario 3: getUserJudgeRatings where clause uses entityId + entityType
 // ---------------------------------------------------------------------------
 
-describe("getUserJudgeRatings — where clause shape", () => {
+describe("getUserJudgeRatings — where clause shape (SS8.8.3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("scopes query by evaluation.artifactId", async () => {
+  it("scopes query by evaluation.entityId and evaluation.entityType", async () => {
     const db = {
       judgeHumanScore: { findMany: vi.fn().mockResolvedValue([]) },
     };
@@ -139,7 +129,8 @@ describe("getUserJudgeRatings — where clause shape", () => {
           organizationId: ORG_ID,
           userId: USER_ID,
           evaluation: expect.objectContaining({
-            artifactId: ARTIFACT_ID,
+            entityId: ARTIFACT_ID,
+            entityType: EntityType.ARTIFACT,
           }),
         }),
       })

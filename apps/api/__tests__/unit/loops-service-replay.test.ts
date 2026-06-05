@@ -5,8 +5,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { withDb } from "@repo/database";
-import { ReplayDetectedError } from "@/app/loops/loop-errors";
-import { loopsService } from "@/app/loops/service";
+import { loopsService, ReplayDetectedError } from "@/app/loops/service";
 
 const mockWithDb = withDb as unknown as Mock;
 

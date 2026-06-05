@@ -17,10 +17,10 @@ export function registerCreateWorkstream(
     "create-workstream",
     {
       description:
-        "Create a workstream (an initiative or track of work) within a project. Pass the user's project slug (PRO-*) verbatim for projectId. The assigned workstream slug (WRK-*) is returned in the response.",
+        "Create a workstream, an initiative or track of work within a project.",
       inputSchema: {
         title: z.string().describe("Title of the workstream"),
-        projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
         description: z
           .string()
           .optional()

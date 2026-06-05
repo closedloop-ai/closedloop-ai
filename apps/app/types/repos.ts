@@ -2,7 +2,7 @@
  * Represents a configured repository that the user has added
  */
 export type ConfiguredRepo = {
-  path: string; // e.g., "path/to/workspace/my-app"
+  path: string; // e.g., "~/Source/my-app"
   name: string; // basename of the path
   description?: string;
   addedAt: string; // ISO timestamp
@@ -13,7 +13,7 @@ export type ConfiguredRepo = {
  * Global settings for repository management
  */
 export type RepoSettings = {
-  worktreeParentDir?: string; // Where worktrees are created.
+  worktreeParentDir?: string; // Where worktrees are created (e.g., "~/Source")
   worktreeParentDirConfirmed?: boolean; // Whether the user has confirmed the worktree directory
 };
 

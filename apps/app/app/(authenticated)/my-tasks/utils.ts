@@ -1,11 +1,11 @@
-import {
-  DocumentStatus,
-  type DocumentWithWorkstream,
-  type FindDocumentsOptions,
-} from "@repo/api/src/types/document";
-import type { MyTasksArtifactFilters } from "./types";
+import type {
+  FeatureWithWorkstream,
+  FindFeaturesOptions,
+} from "@repo/api/src/types/feature";
+import { FeatureStatus } from "@repo/api/src/types/feature";
+import type { MyTasksFeatureFilters } from "./types";
 
-export const EMPTY_FILTERS: MyTasksArtifactFilters = {
+export const EMPTY_FILTERS: MyTasksFeatureFilters = {
   priorities: [],
   projectIds: [],
   statuses: [],
@@ -14,37 +14,30 @@ export const EMPTY_FILTERS: MyTasksArtifactFilters = {
 export const DISPLAY_GROUPS: {
   key: string;
   label: string;
-  statuses: DocumentStatus[];
+  statuses: FeatureStatus[];
 }[] = [
   {
-    key: "draft",
-    label: "Draft",
-    statuses: [DocumentStatus.Draft],
+    key: "not_started",
+    label: "Not started",
+    statuses: [FeatureStatus.NotStarted],
   },
   {
     key: "in_progress",
-    label: "In Progress",
-    statuses: [DocumentStatus.InProgress],
+    label: "In progress",
+    statuses: [FeatureStatus.InProgress],
   },
-  {
-    key: "in_review",
-    label: "In Review",
-    statuses: [DocumentStatus.InReview],
-  },
-  { key: "approved", label: "Approved", statuses: [DocumentStatus.Approved] },
-  { key: "executed", label: "Executed", statuses: [DocumentStatus.Executed] },
-  { key: "done", label: "Done", statuses: [DocumentStatus.Done] },
-  { key: "obsolete", label: "Obsolete", statuses: [DocumentStatus.Obsolete] },
+  { key: "in_review", label: "In review", statuses: [FeatureStatus.InReview] },
+  { key: "completed", label: "Completed", statuses: [FeatureStatus.Completed] },
+  { key: "obsolete", label: "Obsolete", statuses: [FeatureStatus.Obsolete] },
 ];
 
 /**
- * Build API query params for the My Tasks page. Returns artifacts of any
- * document type (PRDs, Plans, Features) assigned to the given user.
- * Client-side filtering is applied via `applyClientFilters`.
+ * Build API query params. Only passes assigneeId to the API;
+ * all other filtering is done client-side via `applyClientFilters`.
  */
-export function buildArtifactListParams(
+export function buildFeatureListParams(
   assigneeId: string | null
-): FindDocumentsOptions {
+): FindFeaturesOptions {
   return {
     assigneeId: assigneeId ?? undefined,
   };
@@ -54,25 +47,25 @@ export function buildArtifactListParams(
  * Apply all selected filters client-side.
  */
 export function applyClientFilters(
-  artifacts: DocumentWithWorkstream[],
-  filters: MyTasksArtifactFilters
-): DocumentWithWorkstream[] {
-  return artifacts.filter((artifact) => {
+  features: FeatureWithWorkstream[],
+  filters: MyTasksFeatureFilters
+): FeatureWithWorkstream[] {
+  return features.filter((feature) => {
     if (
       filters.projectIds.length > 0 &&
-      !(artifact.projectId && filters.projectIds.includes(artifact.projectId))
+      !filters.projectIds.includes(feature.projectId)
     ) {
       return false;
     }
     if (
       filters.statuses.length > 0 &&
-      !filters.statuses.includes(artifact.status)
+      !filters.statuses.includes(feature.status)
     ) {
       return false;
     }
     if (
       filters.priorities.length > 0 &&
-      !filters.priorities.includes(artifact.priority)
+      !filters.priorities.includes(feature.priority)
     ) {
       return false;
     }
@@ -80,7 +73,7 @@ export function applyClientFilters(
   });
 }
 
-export function hasActiveFilters(filters: MyTasksArtifactFilters): boolean {
+export function hasActiveFilters(filters: MyTasksFeatureFilters): boolean {
   return (
     filters.projectIds.length > 0 ||
     filters.statuses.length > 0 ||

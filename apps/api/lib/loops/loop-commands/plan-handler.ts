@@ -1,24 +1,21 @@
+import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { DocumentType, PlanJson } from "@repo/api/src/types/document";
-
 import {
   EvaluationReportType,
   type JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import { withDb } from "@repo/database";
+import { EntityType, withDb } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
-import { documentVersionService } from "@/app/documents/document-version-service";
-import { resetDocumentRoom } from "@/app/documents/room-utils";
-import { documentWhere } from "@/lib/artifact-adapters";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { resetArtifactRoom } from "@/app/artifacts/room-utils";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-document-ingestion";
+} from "@/lib/loops/loop-artifact-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
@@ -75,7 +72,7 @@ export async function downloadPlanArtifacts(
   const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
       promptMarkdownEntries,
-      "[loop-document-ingestion]"
+      "[loop-artifact-ingestion]"
     );
 
   return { planContent, questionsContent, judgesReport, promptsSnapshot };
@@ -96,8 +93,8 @@ export async function ingestPlanArtifacts(
   organizationId: string,
   artifacts: PlanArtifacts
 ): Promise<void> {
-  const documentId = loop.documentId;
-  if (!documentId) {
+  const artifactId = loop.artifactId;
+  if (!artifactId) {
     return;
   }
 
@@ -105,46 +102,33 @@ export async function ingestPlanArtifacts(
   const finalContent = artifacts.planContent ?? artifacts.questionsContent;
   if (!finalContent) {
     log.info(
-      "[loop-document-ingestion] No plan or questions content to ingest",
+      "[loop-artifact-ingestion] No plan or questions content to ingest",
       {
-        documentId,
+        artifactId,
       }
     );
     return;
   }
 
-  await documentVersionService.createVersion(
-    documentId,
-    organizationId,
-    null,
-    finalContent
-  );
+  await artifactVersionService.createVersion(artifactId, null, finalContent);
 
   const updatedArtifact = await withDb((db) =>
     db.artifact.update({
-      where: documentWhere({ id: documentId, organizationId }),
+      where: { id: artifactId, organizationId },
       data: { status: "DRAFT" },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        subtype: true,
-        document: { select: { latestVersion: true } },
+        type: true,
+        latestVersion: true,
       },
     })
   );
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    waitUntil(
-      resetDocumentRoom({
-        id: updatedArtifact.id,
-        organizationId: updatedArtifact.organizationId,
-        slug: updatedArtifact.slug,
-        type: updatedArtifact.subtype as DocumentType,
-        latestVersion: updatedArtifact.document?.latestVersion ?? 1,
-      })
-    );
+    await resetArtifactRoom(updatedArtifact);
   }
 
   // Persist prompt registry entries from snapshot (idempotent upsert)
@@ -154,7 +138,9 @@ export async function ingestPlanArtifacts(
   if (artifacts.judgesReport) {
     await withDb.tx(async (tx) => {
       await upsertEvaluationWithJudgeScores({
-        artifactId: documentId,
+        entityId: artifactId,
+        entityType: EntityType.ARTIFACT,
+        artifactId,
         loopId: loop.id,
         organizationId,
         reportType: EvaluationReportType.Plan,
@@ -163,8 +149,8 @@ export async function ingestPlanArtifacts(
       });
     });
 
-    log.info("[loop-document-ingestion] Persisted judges report", {
-      documentId,
+    log.info("[loop-artifact-ingestion] Persisted judges report", {
+      artifactId,
       reportId: artifacts.judgesReport.report_id,
     });
   }
@@ -187,7 +173,7 @@ export async function ingestPlanArtifacts(
             actorType: "system",
             data: {
               loopId: loop.id,
-              documentId,
+              artifactId,
               command: loop.command,
               conclusion: "success",
             },
@@ -197,8 +183,8 @@ export async function ingestPlanArtifacts(
     });
   }
 
-  log.info("[loop-document-ingestion] Plan content ingested", {
-    documentId,
+  log.info("[loop-artifact-ingestion] Plan content ingested", {
+    artifactId,
     contentLength: finalContent.length,
   });
 }

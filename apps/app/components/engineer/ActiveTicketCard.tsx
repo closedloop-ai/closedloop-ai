@@ -1,4 +1,4 @@
-import { DocumentStatus } from "@repo/api/src/types/document";
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -26,23 +26,23 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
-import {
-  ClosedLoopChat,
-  type LeftPaneTab,
-} from "@/components/engineer/ClosedLoopChat";
 import { JudgesViewer } from "@/components/engineer/JudgesViewer";
 import { LogViewer } from "@/components/engineer/LogViewer";
 import { PlanViewer } from "@/components/engineer/PlanViewer";
-import { TicketCard } from "@/components/engineer/TicketCard";
-import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
-import { useActiveTicketStatus } from "@/hooks/engineer/use-active-ticket-status";
-import { useTicketPlanDocument } from "@/hooks/engineer/use-ticket-plan-document";
-import { useDocument } from "@/hooks/queries/use-documents";
 import {
-  closedloopChatHistoryOptions,
-  closedloopLogsOptions,
-  closedloopPlanOptions,
-} from "@/lib/engineer/queries/closedloop";
+  type LeftPaneTab,
+  SymphonyChat,
+} from "@/components/engineer/SymphonyChat";
+import { TicketCard } from "@/components/engineer/TicketCard";
+import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useActiveTicketStatus } from "@/hooks/engineer/use-active-ticket-status";
+import { useTicketPlanArtifact } from "@/hooks/engineer/use-ticket-plan-artifact";
+import { useArtifact } from "@/hooks/queries/use-artifacts";
+import {
+  symphonyChatHistoryOptions,
+  symphonyLogsOptions,
+  symphonyPlanOptions,
+} from "@/lib/engineer/queries/symphony";
 import type { EngineerTicket } from "@/types/engineer";
 
 type ActiveTicketCardProps = {
@@ -68,7 +68,7 @@ type ActiveTicketCardProps = {
   onDeploy?: (ticketId: string) => void;
   isDeploying?: boolean;
   onTeardown?: (ticketId: string) => void;
-  onStopClosedLoop?: (ticketId: string) => void;
+  onStopSymphony?: (ticketId: string) => void;
   onResumeExecution?: (ticketId: string) => void;
   isResuming?: boolean;
   /** Path to CLAUDE.md if it has uncommitted changes */
@@ -142,7 +142,7 @@ export function ActiveTicketCard({
   onDeploy,
   isDeploying,
   onTeardown,
-  onStopClosedLoop,
+  onStopSymphony,
   onResumeExecution,
   isResuming,
   pendingClaudeMdPath,
@@ -179,7 +179,7 @@ export function ActiveTicketCard({
 
   // Detect whether a plan exists (used to show/hide the Plan tab)
   const { data: planData } = useQuery({
-    ...closedloopPlanOptions(ticket.identifier, repoPath ?? ""),
+    ...symphonyPlanOptions(ticket.identifier, repoPath ?? ""),
     enabled: hasActiveSession,
   });
   const hasPlan = !!planData?.planExists;
@@ -195,7 +195,7 @@ export function ActiveTicketCard({
 
   // Chat history query (for unread badge)
   const { data: chatHistory } = useQuery({
-    ...closedloopChatHistoryOptions(ticket.identifier, repoPath ?? ""),
+    ...symphonyChatHistoryOptions(ticket.identifier, repoPath ?? ""),
     enabled: hasActiveSession,
     staleTime: 30_000,
   });
@@ -215,7 +215,7 @@ export function ActiveTicketCard({
 
   // Logs query (enabled when dialog is open and session is active)
   const { data: logs } = useQuery({
-    ...closedloopLogsOptions(ticket.identifier, repoPath ?? ""),
+    ...symphonyLogsOptions(ticket.identifier, repoPath ?? ""),
     enabled: showLogs && hasActiveSession,
     refetchInterval: showLogs ? 2000 : false,
   });
@@ -224,45 +224,45 @@ export function ActiveTicketCard({
   // sessionArtifactId is set immediately when a real plan loop starts, so we
   // use it as an override before the entity link query resolves.
   const {
-    documentId: linkedArtifactId,
+    artifactId: linkedArtifactId,
     isApproved: linkedIsApproved,
     isExecuted: linkedIsExecuted,
     isStatusLoaded: linkedIsStatusLoaded,
     hasLinkedPlan,
-  } = useTicketPlanDocument(ticket);
-  const documentId = sessionArtifactId ?? linkedArtifactId;
+  } = useTicketPlanArtifact(ticket);
+  const artifactId = sessionArtifactId ?? linkedArtifactId;
   // When sessionArtifactId diverges from linkedArtifactId, derive status from
   // the effective artifact so PlanActionButtons reflects the right artifact.
   const useSessionOverride =
     !!sessionArtifactId && sessionArtifactId !== linkedArtifactId;
   const { data: sessionArtifact, isLoading: isSessionArtifactLoading } =
-    useDocument(sessionArtifactId ?? "", undefined, {
+    useArtifact(sessionArtifactId ?? "", undefined, {
       enabled: useSessionOverride,
     });
   const isApproved = useSessionOverride
-    ? sessionArtifact?.status === DocumentStatus.Approved
+    ? sessionArtifact?.status === ArtifactStatus.Approved
     : linkedIsApproved;
   const isExecuted = useSessionOverride
-    ? sessionArtifact?.status === DocumentStatus.Executed
+    ? sessionArtifact?.status === ArtifactStatus.Executed
     : linkedIsExecuted;
   const isStatusLoaded = useSessionOverride
     ? !!sessionArtifactId && !isSessionArtifactLoading
     : linkedIsStatusLoaded;
 
   // Overflow menu items visibility
-  const isClosedLoopActive = isExecuting || isLaunchingOrAccepting;
+  const isSymphonyActive = isExecuting || isLaunchingOrAccepting;
   const showCodexReview =
     !!codexAvailable &&
     !!onCodexReview &&
     (isCompleted || hasPushed || !!prInfo) &&
-    !isClosedLoopActive;
+    !isSymphonyActive;
   const showDeploy =
     (isCompleted || hasPushed || !!prInfo) &&
     !!onDeploy &&
     !deployInfo &&
-    !isClosedLoopActive;
+    !isSymphonyActive;
   const showResumeExecution =
-    !!onResumeExecution && isCompleted && !hasPushed && !isClosedLoopActive;
+    !!onResumeExecution && isCompleted && !hasPushed && !isSymphonyActive;
   const hasPostActionItems =
     showCodexReview || showDeploy || showResumeExecution;
   const hasOverflowItems = hasActiveSession || hasPostActionItems;
@@ -273,9 +273,9 @@ export function ActiveTicketCard({
       {hasActiveSession && (
         <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
           {/* Approve + Execute buttons (only mount when a plan is linked) */}
-          {(hasLinkedPlan || !!sessionArtifactId) && documentId && (
+          {(hasLinkedPlan || !!sessionArtifactId) && artifactId && (
             <PlanActionButtons
-              documentId={documentId}
+              artifactId={artifactId}
               isApproved={isApproved}
               isExecuted={isExecuted}
               isStatusLoaded={isStatusLoaded}
@@ -295,7 +295,6 @@ export function ActiveTicketCard({
             )}
             onClick={() => openChatTab()}
             title="Chat"
-            type="button"
           >
             <MessageSquare className="size-3.5" />
             {hasUnreadMessages && (
@@ -312,7 +311,6 @@ export function ActiveTicketCard({
               )}
               onClick={() => openChatTab("changes")}
               title="Changes"
-              type="button"
             >
               <GitBranch className="size-3.5" />
             </button>
@@ -327,7 +325,6 @@ export function ActiveTicketCard({
               )}
               onClick={() => openChatTab("comments")}
               title="PR Comments"
-              type="button"
             >
               <MessagesSquare className="size-3.5" />
             </button>
@@ -360,10 +357,6 @@ export function ActiveTicketCard({
       <TicketCard
         branchMerged={branchMerged}
         childTicketIds={childTicketIds}
-        closedloopAwaitingUser={isAwaitingUser}
-        closedloopCompleted={isCompleted}
-        closedloopExecuting={isCoding}
-        closedloopStopped={isStopped}
         codexAvailable={codexAvailable}
         codexReviewRunning={codexReviewRunning}
         deployInfo={deployInfo}
@@ -386,12 +379,16 @@ export function ActiveTicketCard({
         onLearningsClick={onLearningsClick}
         onParentClick={onParentClick}
         onResumeExecution={onResumeExecution}
-        onStopClosedLoop={onStopClosedLoop}
+        onStopSymphony={onStopSymphony}
         onTeardown={onTeardown}
         parentTicketId={parentTicketId}
         pendingClaudeMdPath={pendingClaudeMdPath}
         prInfo={prInfo}
         repoPath={repoPath}
+        symphonyAwaitingUser={isAwaitingUser}
+        symphonyCompleted={isCompleted}
+        symphonyExecuting={isCoding}
+        symphonyStopped={isStopped}
         taskProgress={taskProgress}
         ticket={ticket}
       />
@@ -409,7 +406,6 @@ export function ActiveTicketCard({
           )}
           onClick={() => setIsPlanOpen(true)}
           title="View plan"
-          type="button"
         >
           <span
             className="font-medium text-xs uppercase tracking-wider"
@@ -441,7 +437,6 @@ export function ActiveTicketCard({
             )}
             onClick={() => setIsPlanOpen(false)}
             title="Close plan"
-            type="button"
           >
             <span
               className="font-medium text-xs uppercase tracking-wider"
@@ -496,7 +491,7 @@ export function ActiveTicketCard({
 
       {/* Chat dialog */}
       {repoPath && (
-        <ClosedLoopChat
+        <SymphonyChat
           contextRepoPaths={contextRepoPaths}
           initialTab={chatInitialTab}
           isOpen={showChat}
@@ -577,7 +572,6 @@ function OverflowMenu({
             "hover:border-primary/30 hover:text-primary"
           )}
           title="More actions"
-          type="button"
         >
           <MoreHorizontal className="size-3.5" />
         </button>
@@ -641,19 +635,19 @@ function OverflowMenu({
  * instantiated when a plan is actually linked to the ticket.
  */
 function PlanActionButtons({
-  documentId,
+  artifactId,
   isApproved,
   isExecuted,
   isStatusLoaded,
   onLocalExecute,
 }: Readonly<{
-  documentId: string;
+  artifactId: string;
   isApproved: boolean;
   isExecuted: boolean;
   isStatusLoaded: boolean;
   onLocalExecute?: () => void;
 }>) {
-  const { handleApprove, isApproving } = usePlanActions({ documentId });
+  const { handleApprove, isApproving } = usePlanActions({ artifactId });
 
   const showApproved = isApproved || isExecuted;
 
@@ -679,7 +673,6 @@ function PlanActionButtons({
           disabled={isApproving || !isStatusLoaded}
           onClick={handleApprove}
           title={isStatusLoaded ? "Approve plan" : "Loading plan status..."}
-          type="button"
         >
           {isApproving ? (
             <Loader2 className="size-3.5 animate-spin" />
@@ -700,7 +693,6 @@ function PlanActionButtons({
         disabled={!(isApproved && onLocalExecute)}
         onClick={onLocalExecute}
         title={executeButtonTitle(isExecuted, isApproved, !!onLocalExecute)}
-        type="button"
       >
         <Play className="size-3.5" />
       </button>

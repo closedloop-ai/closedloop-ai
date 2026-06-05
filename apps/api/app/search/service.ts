@@ -1,11 +1,11 @@
-import { ProjectStatus } from "@repo/api/src/types/project";
 import type {
-  DocumentSearchResult,
+  ArtifactSearchResult,
+  FeatureSearchResult,
   GlobalSearchResponse,
   ProjectSearchResult,
   WorkstreamSearchResult,
 } from "@repo/api/src/types/search";
-import { ArtifactType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
 const SEARCH_LIMIT = 25;
@@ -23,32 +23,73 @@ export const searchService = {
     organizationId: string,
     query: string
   ): Promise<GlobalSearchResponse> {
-    const [documents, workstreams, projects] = await Promise.all([
-      searchDocuments(organizationId, query),
+    const [artifacts, features, workstreams, projects] = await Promise.all([
+      searchArtifacts(organizationId, query),
+      searchFeatures(organizationId, query),
       searchWorkstreams(organizationId, query),
       searchProjects(organizationId, query),
     ]);
 
-    return { query, documents, workstreams, projects };
+    return { query, artifacts, features, workstreams, projects };
   },
 };
 
-async function searchDocuments(
+async function searchArtifacts(
   organizationId: string,
   query: string
-): Promise<DocumentSearchResult[]> {
+): Promise<ArtifactSearchResult[]> {
   const rows = await withDb((db) =>
     db.artifact.findMany({
       where: {
         organizationId,
-        type: ArtifactType.DOCUMENT,
-        OR: [{ name: ilike(query) }, { slug: ilike(query) }],
+        OR: [{ title: ilike(query) }, { slug: ilike(query) }],
       },
       select: {
         id: true,
-        name: true,
+        title: true,
         slug: true,
-        subtype: true,
+        type: true,
+        status: true,
+        updatedAt: true,
+        assignee: basicUserSelect,
+        project: { select: { name: true } },
+        workstream: { select: { title: true } },
+      },
+      ...SEARCH_ORDER,
+    })
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    slug: r.slug,
+    type: r.type,
+    status: r.status,
+    projectName: r.project?.name ?? null,
+    workstreamTitle: r.workstream?.title ?? null,
+    assignee: r.assignee,
+    updatedAt: r.updatedAt,
+  }));
+}
+
+async function searchFeatures(
+  organizationId: string,
+  query: string
+): Promise<FeatureSearchResult[]> {
+  const rows = await withDb((db) =>
+    db.feature.findMany({
+      where: {
+        organizationId,
+        OR: [
+          { title: ilike(query) },
+          { slug: ilike(query) },
+          { description: ilike(query) },
+        ],
+      },
+      select: {
+        id: true,
+        title: true,
+        slug: true,
         status: true,
         priority: true,
         updatedAt: true,
@@ -60,25 +101,17 @@ async function searchDocuments(
     })
   );
 
-  return rows.flatMap((r) => {
-    if (r.subtype === null) {
-      return [];
-    }
-    return [
-      {
-        id: r.id,
-        title: r.name,
-        slug: r.slug ?? "",
-        type: r.subtype,
-        status: r.status as DocumentSearchResult["status"],
-        priority: r.priority,
-        projectName: r.project.name,
-        workstreamTitle: r.workstream?.title ?? null,
-        assignee: r.assignee,
-        updatedAt: r.updatedAt,
-      },
-    ];
-  });
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    slug: r.slug,
+    status: r.status,
+    priority: r.priority,
+    projectName: r.project?.name ?? null,
+    workstreamTitle: r.workstream?.title ?? null,
+    assignee: r.assignee,
+    updatedAt: r.updatedAt,
+  }));
 }
 
 async function searchWorkstreams(
@@ -121,8 +154,6 @@ async function searchProjects(
     db.project.findMany({
       where: {
         organizationId,
-        isTemplatesSentinel: false,
-        status: { not: ProjectStatus.Archived },
         OR: [{ name: ilike(query) }, { description: ilike(query) }],
       },
       select: {

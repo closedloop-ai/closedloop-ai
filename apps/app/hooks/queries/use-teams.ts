@@ -1,13 +1,10 @@
 "use client";
 
 import type {
-  AddTeamRepositoryInput,
   Team,
   TeamMember,
-  TeamRepository,
   TeamRole,
   TeamWithCounts,
-  UpdateTeamRepositoryInput,
 } from "@repo/api/src/types/teams";
 import {
   type UseQueryOptions,
@@ -26,8 +23,6 @@ export const teamKeys = {
   details: () => [...teamKeys.all, "detail"] as const,
   detail: (id: string) => [...teamKeys.details(), id] as const,
   members: (teamId: string) => [...teamKeys.detail(teamId), "members"] as const,
-  repositories: (teamId: string) =>
-    [...teamKeys.detail(teamId), "repositories"] as const,
 };
 
 // Queries
@@ -185,93 +180,6 @@ export function useRemoveTeamMember() {
       });
       queryClient.invalidateQueries({
         queryKey: teamKeys.detail(teamId),
-      });
-    },
-  });
-}
-
-// Team Repository Queries
-export function useTeamRepositories(
-  teamId: string,
-  options?: Omit<UseQueryOptions<TeamRepository[]>, "queryKey" | "queryFn">
-) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: teamKeys.repositories(teamId),
-    queryFn: () =>
-      apiClient.get<TeamRepository[]>(`/teams/${teamId}/repositories`),
-    enabled: !!teamId,
-    ...options,
-  });
-}
-
-// Team Repository Mutations
-export function useAddTeamRepository() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      teamId,
-      input,
-    }: {
-      teamId: string;
-      input: AddTeamRepositoryInput;
-    }) =>
-      apiClient.post<TeamRepository>(`/teams/${teamId}/repositories`, input),
-    onSuccess: (_, { teamId }) => {
-      queryClient.invalidateQueries({
-        queryKey: teamKeys.repositories(teamId),
-      });
-    },
-  });
-}
-
-export function useUpdateTeamRepository() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      teamId,
-      teamRepositoryId,
-      input,
-    }: {
-      teamId: string;
-      teamRepositoryId: string;
-      input: UpdateTeamRepositoryInput;
-    }) =>
-      apiClient.put<TeamRepository>(
-        `/teams/${teamId}/repositories/${teamRepositoryId}`,
-        input
-      ),
-    onSuccess: (_, { teamId }) => {
-      queryClient.invalidateQueries({
-        queryKey: teamKeys.repositories(teamId),
-      });
-    },
-  });
-}
-
-export function useRemoveTeamRepository() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      teamId,
-      teamRepositoryId,
-    }: {
-      teamId: string;
-      teamRepositoryId: string;
-    }) =>
-      apiClient.delete<{ deleted: true }>(
-        `/teams/${teamId}/repositories/${teamRepositoryId}`
-      ),
-    onSuccess: (_, { teamId }) => {
-      queryClient.invalidateQueries({
-        queryKey: teamKeys.repositories(teamId),
       });
     },
   });

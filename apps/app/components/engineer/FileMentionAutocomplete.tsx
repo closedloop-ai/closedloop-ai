@@ -254,7 +254,6 @@ function FileSearchResults({
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
-            type="button"
           >
             <Icon
               className={cn(

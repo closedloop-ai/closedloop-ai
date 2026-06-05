@@ -32,11 +32,8 @@ export function ZipUploadZone({
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragOver(false);
-      const itemFile = Array.from(e.dataTransfer.items)
-        .find((item) => item.kind === "file")
-        ?.getAsFile();
-      const file = e.dataTransfer.files[0] ?? itemFile;
-      if (file) {
+      const file = e.dataTransfer.files[0];
+      if (file?.name.endsWith(".zip")) {
         onFileSelected(file);
       }
     },
@@ -57,14 +54,14 @@ export function ZipUploadZone({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
         <Loader2 className="size-8 animate-spin text-muted-foreground" />
-        <p className="text-muted-foreground text-sm">Loading file...</p>
+        <p className="text-muted-foreground text-sm">Extracting archive...</p>
       </div>
     );
   }
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-8">
-      <button
+      <div
         className={`flex w-full max-w-md cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed p-12 transition-colors ${
           isDragOver
             ? "border-primary bg-primary/5"
@@ -74,24 +71,30 @@ export function ZipUploadZone({
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        type="button"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
+        role="button"
+        tabIndex={0}
       >
         <Upload
           className={`size-10 ${isDragOver ? "text-primary" : "text-muted-foreground"}`}
         />
         <div className="text-center">
           <p className="font-medium text-sm">
-            {isDragOver
-              ? "Drop file here"
-              : "Drop a run zip or .jsonl file here"}
+            {isDragOver ? "Drop zip file here" : "Drop a run zip file here"}
           </p>
           <p className="mt-1 text-muted-foreground text-xs">
             or click to browse
           </p>
         </div>
-      </button>
+      </div>
 
       <input
+        accept=".zip"
         className="hidden"
         onChange={handleInputChange}
         ref={inputRef}

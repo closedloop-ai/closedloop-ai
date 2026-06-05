@@ -5,17 +5,14 @@ vi.mock("server-only", () => ({}));
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: { DbNull: "DbNull" },
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
 }));
 
+import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   isUuid,
-  resolveArtifactIdentifier,
-  resolveDocumentId,
+  resolveArtifactId,
+  resolveEntityLinkIdentifier,
+  resolveFeatureId,
   resolveProjectId,
   resolveWorkstreamId,
   uuidOrSlug,
@@ -74,7 +71,14 @@ describe("uuidOrSlug", () => {
   });
 
   it("accepts all typed slug prefixes", () => {
-    for (const slug of ["PRO-1", "WRK-99", "PRD-42", "PLN-7", "FEA-123"]) {
+    for (const slug of [
+      "PRO-1",
+      "WRK-99",
+      "PRD-42",
+      "PLN-7",
+      "FEA-123",
+      "BRN-1",
+    ]) {
       expect(schema.safeParse(slug).success).toBe(true);
     }
   });
@@ -104,14 +108,14 @@ describe("uuidOrSlug", () => {
   });
 });
 
-describe("resolveDocumentId", () => {
+describe("resolveArtifactId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("returns UUID directly when input is a UUID", async () => {
     const uuid = "550e8400-e29b-41d4-a716-446655440000";
-    const result = await resolveDocumentId(uuid, "org-1");
+    const result = await resolveArtifactId(uuid, "org-1");
     expect(result).toBe(uuid);
   });
 
@@ -123,12 +127,11 @@ describe("resolveDocumentId", () => {
     };
     mockWithDbCall(mockDb);
 
-    const result = await resolveDocumentId("PRD-42", "org-1");
+    const result = await resolveArtifactId("PRD-42", "org-1");
     expect(result).toBe("resolved-uuid");
     expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
       where: {
         organizationId_slug: { organizationId: "org-1", slug: "PRD-42" },
-        type: "DOCUMENT",
       },
       select: { id: true },
     });
@@ -142,8 +145,32 @@ describe("resolveDocumentId", () => {
     };
     mockWithDbCall(mockDb);
 
-    const result = await resolveDocumentId("PRD-999", "org-1");
+    const result = await resolveArtifactId("PRD-999", "org-1");
     expect(result).toBeNull();
+  });
+});
+
+describe("resolveFeatureId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns UUID directly when input is a UUID", async () => {
+    const uuid = "01932b3a-7e4d-7c8f-9a1b-2c3d4e5f6a7b";
+    const result = await resolveFeatureId(uuid, "org-1");
+    expect(result).toBe(uuid);
+  });
+
+  it("queries by slug when input is not a UUID", async () => {
+    const mockDb = {
+      feature: {
+        findUnique: vi.fn().mockResolvedValue({ id: "feature-uuid" }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await resolveFeatureId("FEAT-42", "org-1");
+    expect(result).toBe("feature-uuid");
   });
 });
 
@@ -195,12 +222,12 @@ describe("resolveWorkstreamId", () => {
   });
 });
 
-describe("resolveArtifactIdentifier", () => {
+describe("resolveEntityLinkIdentifier", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("resolves document slug via artifact lookup", async () => {
+  it("resolves artifact slug via resolveArtifactId", async () => {
     const mockDb = {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({ id: "art-uuid" }),
@@ -208,45 +235,46 @@ describe("resolveArtifactIdentifier", () => {
     };
     mockWithDbCall(mockDb);
 
-    const result = await resolveArtifactIdentifier("PRD-1", "org-1");
+    const result = await resolveEntityLinkIdentifier(
+      "PRD-1",
+      "org-1",
+      EntityType.Artifact
+    );
     expect(result).toBe("art-uuid");
   });
 
-  it("returns UUID directly when input is a UUID and artifact exists", async () => {
-    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+  it("resolves feature slug via resolveFeatureId", async () => {
     const mockDb = {
-      artifact: {
-        findFirst: vi.fn().mockResolvedValue({ id: uuid }),
+      feature: {
+        findUnique: vi.fn().mockResolvedValue({ id: "feature-uuid" }),
       },
     };
     mockWithDbCall(mockDb);
 
-    const result = await resolveArtifactIdentifier(uuid, "org-1");
+    const result = await resolveEntityLinkIdentifier(
+      "FEAT-42",
+      "org-1",
+      EntityType.Feature
+    );
+    expect(result).toBe("feature-uuid");
+  });
+
+  it("returns UUID directly for ExternalLink when input is a UUID", async () => {
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    const result = await resolveEntityLinkIdentifier(
+      uuid,
+      "org-1",
+      EntityType.ExternalLink
+    );
     expect(result).toBe(uuid);
   });
 
-  it("returns null when UUID is not found in org", async () => {
-    const uuid = "550e8400-e29b-41d4-a716-446655440000";
-    const mockDb = {
-      artifact: {
-        findFirst: vi.fn().mockResolvedValue(null),
-      },
-    };
-    mockWithDbCall(mockDb);
-
-    const result = await resolveArtifactIdentifier(uuid, "org-1");
-    expect(result).toBeNull();
-  });
-
-  it("returns null when slug cannot be resolved", async () => {
-    const mockDb = {
-      artifact: {
-        findUnique: vi.fn().mockResolvedValue(null),
-      },
-    };
-    mockWithDbCall(mockDb);
-
-    const result = await resolveArtifactIdentifier("PRD-999", "org-1");
+  it("returns null for ExternalLink when input is not a UUID", async () => {
+    const result = await resolveEntityLinkIdentifier(
+      "not-a-uuid",
+      "org-1",
+      EntityType.ExternalLink
+    );
     expect(result).toBeNull();
   });
 });

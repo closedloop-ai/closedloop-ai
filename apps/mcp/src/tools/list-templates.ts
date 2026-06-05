@@ -17,7 +17,7 @@ export function registerListTemplates(
     "list-templates",
     {
       description:
-        "List templates — internal, reusable document blueprints for PRDs or implementation plans. Templates have no user-facing slug; reference them by UUID. End users do not interact with templates directly.",
+        "List template artifacts, which are reusable document blueprints for PRDs or implementation plans.",
       inputSchema: {
         limit: z
           .number()

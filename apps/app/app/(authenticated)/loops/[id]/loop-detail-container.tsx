@@ -2,9 +2,8 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import type {
-  AdditionalRepoRefWithPr,
+  LoopErrorCode,
   LoopEventError,
-  LoopSupportArtifact,
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import { LoopStatus } from "@repo/api/src/types/loop";
@@ -29,9 +28,7 @@ import {
   ClockIcon,
   CloudIcon,
   CoinsIcon,
-  DownloadIcon,
   ExternalLinkIcon,
-  FileTextIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   Loader2Icon,
@@ -44,27 +41,29 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { EmptyState } from "@/components/empty-state";
 import { ConfirmStopLoopDialog } from "@/components/loops/confirm-stop-loop-dialog";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
-import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
+import {
+  LoopCommandBadge,
+  LoopStatusBadge,
+  loopErrorCodeLabels,
+} from "@/components/status-badge";
 import { UserLink } from "@/components/user-link";
-import { useDocument } from "@/hooks/queries/use-documents";
+import { useArtifact } from "@/hooks/queries/use-artifacts";
 import {
   useCancelLoop,
   useLoop,
   useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
+import { getArtifactRoute } from "@/lib/artifact-navigation";
 import { formatDateTime } from "@/lib/date-utils";
-import { getDocumentRoute } from "@/lib/document-navigation";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import {
   CANCELLABLE_LOOP_STATUSES,
   RESTARTABLE_LOOP_STATUSES,
 } from "@/lib/loop-constants";
-import { getLoopErrorTitle } from "@/lib/loop-error-display";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatModelName(model: string): string {
@@ -116,43 +115,11 @@ function ModelTokenBreakdown({
   );
 }
 
-function renderPrLink(
-  pr: NonNullable<AdditionalRepoRefWithPr["pullRequest"]>,
-  branchPrEnabled: boolean
-) {
-  if (branchPrEnabled && pr.externalLinkId) {
-    return (
-      <Link
-        className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
-        href={`/build/${pr.externalLinkId}`}
-      >
-        <GitPullRequestIcon className="h-3.5 w-3.5" />
-        PR #{pr.number}
-      </Link>
-    );
-  }
-  return (
-    <a
-      className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
-      href={pr.htmlUrl}
-      rel="noopener noreferrer"
-      target="_blank"
-    >
-      <GitPullRequestIcon className="h-3.5 w-3.5" />
-      PR #{pr.number}
-      <ExternalLinkIcon className="h-3 w-3" />
-    </a>
-  );
-}
-
 type MetadataCardsProps = {
   loop: Awaited<ReturnType<typeof useLoop>["data"]>;
 };
 
 function MetadataCards({ loop }: MetadataCardsProps) {
-  const branchPrFlag = useFeatureFlag("branch-pr");
-  const branchPrEnabled = branchPrFlag?.enabled === true;
-
   if (!loop) {
     return null;
   }
@@ -297,50 +264,24 @@ function MetadataCards({ loop }: MetadataCardsProps) {
               <p className="text-muted-foreground text-xs">
                 {loop.branchName || loop.repo.branch}
               </p>
-              {loop.primaryPullRequest
-                ? renderPrLink(loop.primaryPullRequest, branchPrEnabled)
-                : loop.prUrl && (
-                    <a
-                      className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
-                      href={loop.prUrl}
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
-                      <GitPullRequestIcon className="h-3.5 w-3.5" />
-                      PR #{loop.prNumber}
-                      <ExternalLinkIcon className="h-3 w-3" />
-                    </a>
-                  )}
+              {loop.prUrl && (
+                <a
+                  className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+                  href={loop.prUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  <GitPullRequestIcon className="h-3.5 w-3.5" />
+                  PR #{loop.prNumber}
+                  <ExternalLinkIcon className="h-3 w-3" />
+                </a>
+              )}
             </>
           ) : (
             <p className="text-muted-foreground text-sm">-</p>
           )}
         </CardContent>
       </Card>
-
-      {/* Additional Repositories Card */}
-      {loop.additionalRepos && loop.additionalRepos.length > 0 && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="font-medium text-sm">
-              Additional Repositories
-            </CardTitle>
-            <GitBranchIcon className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {loop.additionalRepos.map((repo: AdditionalRepoRefWithPr) => (
-                <div key={`${repo.fullName}:${repo.branch}`}>
-                  <p className="font-medium text-sm">{repo.fullName}</p>
-                  <p className="text-muted-foreground text-xs">{repo.branch}</p>
-                  {repo.pullRequest &&
-                    renderPrLink(repo.pullRequest, branchPrEnabled)}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }
@@ -390,30 +331,27 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
   const isActive = CANCELLABLE_LOOP_STATUSES.has(loop.status);
   const defaultTab = isActive ? "live" : "audit-log";
-  const supportArtifacts = loop.supportArtifacts ?? [];
   const diagnosticsLogTail = ghostLoopUx
     ? (errorEvents?.data?.[0] as LoopEventError | undefined)?.logTail
     : undefined;
-  const loopErrorTitle = loop.error
-    ? getLoopErrorTitle(loop.error, { useFriendlyCodeLabels: !!ghostLoopUx })
-    : null;
 
-  const handleRestart = () => {
-    resumeLoop.mutate(
-      { id: loop.id },
-      {
-        onSuccess: (result) => {
-          toast.success("Loop restarted");
-          router.push(`/loops/${result.loopId}`);
-        },
-      }
-    );
+  const handleRestart = async () => {
+    try {
+      const result = await resumeLoop.mutateAsync({ id: loop.id });
+      toast.success("Loop restarted");
+      router.push(`/loops/${result.loopId}`);
+    } catch {
+      // Global QueryClient onError handler toasts the error
+    }
   };
 
-  const handleCancel = () => {
-    cancelLoop.mutate(loop.id, {
-      onSuccess: () => toast.success("Loop cancelled"),
-    });
+  const handleCancel = async () => {
+    try {
+      await cancelLoop.mutateAsync(loop.id);
+      toast.success("Loop cancelled");
+    } catch {
+      // Global QueryClient onError handler toasts the error
+    }
   };
 
   return (
@@ -444,7 +382,9 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         {RESTARTABLE_LOOP_STATUSES.has(loop.status) && (
           <Button
             disabled={resumeLoop.isPending}
-            onClick={handleRestart}
+            onClick={async () => {
+              await handleRestart();
+            }}
             size="sm"
             variant="outline"
           >
@@ -499,13 +439,17 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       </div>
 
       {/* Artifact link */}
-      {loop.documentId && <ArtifactLink documentId={loop.documentId} />}
+      {loop.artifactId && <ArtifactLink artifactId={loop.artifactId} />}
 
       {/* Error display */}
       {loop.error && (
         <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4">
           <p className="font-medium text-destructive text-sm">
-            Error: {loopErrorTitle}
+            Error:{" "}
+            {ghostLoopUx
+              ? (loopErrorCodeLabels[loop.error.code as LoopErrorCode] ??
+                loop.error.code)
+              : loop.error.code}
           </p>
           <p className="mt-1 text-destructive/80 text-sm">
             {loop.error.message}
@@ -523,7 +467,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         </details>
       )}
 
-      {/* Tabs: Live / Audit Log / Artifacts */}
+      {/* Tabs: Live / Audit Log */}
       <Tabs defaultValue={defaultTab}>
         <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
           <TabsTrigger
@@ -541,12 +485,6 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
           >
             Audit Log
           </TabsTrigger>
-          <TabsTrigger
-            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
-            value="artifacts"
-          >
-            Artifacts
-          </TabsTrigger>
         </TabsList>
 
         <TabsContent className="mt-4" value="live">
@@ -557,10 +495,6 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
         <TabsContent className="mt-4" value="audit-log">
           <LoopAuditLog loopId={id} />
-        </TabsContent>
-
-        <TabsContent className="mt-4" value="artifacts">
-          <SupportArtifacts artifacts={supportArtifacts} />
         </TabsContent>
       </Tabs>
 
@@ -600,14 +534,14 @@ function ComputeTargetDetail({
   return null;
 }
 
-function ArtifactLink({ documentId }: { documentId: string }) {
-  const { data: artifact } = useDocument(documentId);
-  const route = artifact ? getDocumentRoute(artifact) : null;
+function ArtifactLink({ artifactId }: { artifactId: string }) {
+  const { data: artifact } = useArtifact(artifactId);
+  const route = artifact ? getArtifactRoute(artifact) : null;
 
   const renderLabel = () => {
     if (!artifact) {
       return (
-        <span className="text-muted-foreground text-sm">{documentId}</span>
+        <span className="text-muted-foreground text-sm">{artifactId}</span>
       );
     }
     if (route) {
@@ -627,40 +561,5 @@ function ArtifactLink({ documentId }: { documentId: string }) {
       <Badge variant="outline">Artifact</Badge>
       {renderLabel()}
     </div>
-  );
-}
-
-function SupportArtifacts({ artifacts }: { artifacts: LoopSupportArtifact[] }) {
-  if (artifacts.length === 0) {
-    return (
-      <EmptyState
-        className="rounded-md border border-dashed"
-        description="This loop did not produce support artifacts."
-        icon={FileTextIcon}
-        title="No support artifacts uploaded"
-      />
-    );
-  }
-
-  return (
-    <section className="space-y-2">
-      <h2 className="font-medium text-sm">Support Artifacts</h2>
-      <div className="flex flex-wrap gap-2">
-        {artifacts.map((artifact) => (
-          <a
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
-            download={artifact.name}
-            href={artifact.downloadUrl}
-            key={artifact.key}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            <FileTextIcon className="h-4 w-4 text-muted-foreground" />
-            <span>{artifact.name}</span>
-            <DownloadIcon className="h-3.5 w-3.5 text-muted-foreground" />
-          </a>
-        ))}
-      </div>
-    </section>
   );
 }

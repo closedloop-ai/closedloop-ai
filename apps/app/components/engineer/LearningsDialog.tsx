@@ -140,7 +140,6 @@ function CompactRow({
       <button
         className="group flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left"
         onClick={onToggle}
-        type="button"
       >
         {/* Category dot */}
         <span className={`size-2 shrink-0 rounded-full ${dotColor}`} />
@@ -387,7 +386,7 @@ function LearningsStats({ patterns }: Readonly<{ patterns: Pattern[] }>) {
             Category Distribution
           </div>
           <div className="flex items-center justify-center">
-            <svg aria-hidden="true" className="size-28" viewBox="0 0 100 100">
+            <svg className="size-28" viewBox="0 0 100 100">
               {donutSegments.map((seg) => (
                 <circle
                   className="transition-all duration-300"
@@ -597,7 +596,7 @@ export function LearningsDialog({
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshPatterns = useCallback(() => {
-    fetch("/api/gateway/learnings")
+    fetch("/api/engineer/learnings")
       .then((res) => res.json())
       .then((data) => {
         if (!data.error) {
@@ -620,8 +619,8 @@ export function LearningsDialog({
     const fetchAll = async () => {
       try {
         const [learningsRes, pendingRes] = await Promise.all([
-          fetch("/api/gateway/learnings"),
-          fetch("/api/gateway/symphony/pending-learnings"),
+          fetch("/api/engineer/learnings"),
+          fetch("/api/engineer/symphony/pending-learnings"),
         ]);
         const learningsData = await learningsRes.json();
         const pendingData = await pendingRes.json();
@@ -635,7 +634,7 @@ export function LearningsDialog({
 
         // Check if batch processing is already in progress
         const batchRes = await fetch(
-          "/api/gateway/symphony/process-all-learnings"
+          "/api/engineer/symphony/process-all-learnings"
         );
         const batchData = await batchRes.json();
         if (batchData.status === "processing") {
@@ -666,7 +665,7 @@ export function LearningsDialog({
 
     const poll = async () => {
       try {
-        const res = await fetch("/api/gateway/symphony/process-all-learnings");
+        const res = await fetch("/api/engineer/symphony/process-all-learnings");
         const data = await res.json();
         if (data.status === "completed" || data.status === "error") {
           setIsProcessingLocal(false);
@@ -776,7 +775,7 @@ export function LearningsDialog({
             <div className="mb-3 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2.5">
               <Brain className="size-4 shrink-0 text-amber-500" />
               <span className="flex-1 text-amber-700 text-sm dark:text-amber-400">
-                {pendingCount} pending learning{pendingCount === 1 ? "" : "s"}{" "}
+                {pendingCount} pending learning{pendingCount !== 1 ? "s" : ""}{" "}
                 to process
               </span>
               <button
@@ -834,7 +833,6 @@ export function LearningsDialog({
                 }`}
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                type="button"
               >
                 {tab}
               </button>
@@ -884,7 +882,6 @@ export function LearningsDialog({
                           setActiveCategory(isActive ? null : cat);
                           setExpandedId(null);
                         }}
-                        type="button"
                       >
                         {cat}
                         <span className="ml-1.5 opacity-60">{count}</span>
@@ -898,7 +895,6 @@ export function LearningsDialog({
                         setActiveCategory(null);
                         setExpandedId(null);
                       }}
-                      type="button"
                     >
                       Clear
                     </button>

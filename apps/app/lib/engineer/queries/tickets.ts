@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import type { ContentBlock } from "@/components/chat/types";
+import type { ContentBlock } from "@/components/engineer/chat";
 import { queryKeys } from "./keys";
 
 export type TicketChatHistory = {
@@ -19,7 +19,7 @@ export function ticketChatHistoryOptions(ticketId: string) {
     queryKey: queryKeys.ticketChatHistory(ticketId),
     queryFn: async () => {
       const response = await fetch(
-        `/api/gateway/ticket-chat?ticketId=${encodeURIComponent(ticketId)}`
+        `/api/engineer/ticket-chat?ticketId=${encodeURIComponent(ticketId)}`
       );
       if (!response.ok) {
         return { messages: [], ticketId };

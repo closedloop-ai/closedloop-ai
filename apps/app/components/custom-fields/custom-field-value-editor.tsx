@@ -139,14 +139,14 @@ function NumberFieldEditor({
 }: Readonly<NumberFieldEditorProps>) {
   const [focused, setFocused] = useState(false);
   const [raw, setRaw] = useState(
-    initialValue === null ? "" : String(initialValue)
+    initialValue !== null ? String(initialValue) : ""
   );
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
 
   // Sync from server when value changes, but only when not actively editing
   useEffect(() => {
     if (!focused) {
-      setRaw(initialValue === null ? "" : String(initialValue));
+      setRaw(initialValue !== null ? String(initialValue) : "");
     }
   }, [initialValue, focused]);
 
@@ -433,7 +433,7 @@ function DateFieldEditor({
 
   // Sync from server when value changes (use stable primitive dep to avoid re-firing on every render)
   useEffect(() => {
-    setDate(dateKey === null ? null : new Date(dateKey));
+    setDate(dateKey !== null ? new Date(dateKey) : null);
   }, [dateKey]);
 
   const handleSelect = (selected: Date | null) => {

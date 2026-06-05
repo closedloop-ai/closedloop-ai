@@ -1,24 +1,5 @@
-import type { Loop, LoopEvent, LoopWithUser } from "@repo/api/src/types/loop";
-import {
-  LoopCommand,
-  LoopErrorCode,
-  LoopStatus,
-  RunnerErrorSubcode,
-} from "@repo/api/src/types/loop";
-
-export const RUNNER_RATE_LIMIT_LOOP_ERROR = {
-  code: LoopErrorCode.RunnerError,
-  message: "Claude rate limit reached.",
-  result: { subcode: RunnerErrorSubcode.ClaudeRateLimit },
-} satisfies NonNullable<Loop["error"]>;
-
-export const RUNNER_RATE_LIMIT_EVENT: LoopEvent = {
-  type: "error",
-  code: RUNNER_RATE_LIMIT_LOOP_ERROR.code,
-  message: RUNNER_RATE_LIMIT_LOOP_ERROR.message,
-  timestamp: "2026-01-01T00:00:00.000Z",
-  result: RUNNER_RATE_LIMIT_LOOP_ERROR.result,
-};
+import type { Loop, LoopWithUser } from "@repo/api/src/types/loop";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 
 /**
  * Factory for creating mock Loop objects.
@@ -31,13 +12,12 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
     userId: "user-1",
     status: LoopStatus.Failed,
     command: LoopCommand.Execute,
-    documentId: null,
+    artifactId: null,
     workstreamId: null,
     parentLoopId: null,
     computeTargetId: null,
     prompt: "Do the thing",
     repo: null,
-    additionalRepos: null,
     contextRefs: null,
     containerId: null,
     s3StateKey: null,
@@ -52,7 +32,7 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
     startedAt: null,
     completedAt: null,
     error: null,
-    documentVersion: null,
+    artifactVersion: null,
     metadata: {},
     uploadedArtifacts: null,
     createdAt: new Date("2024-01-01T00:00:00Z"),

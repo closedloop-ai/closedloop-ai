@@ -1,14 +1,13 @@
-import type { DocumentType } from "@repo/api/src/types/document";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import type {
+  ArtifactsByType,
   ContributionDay,
   CreateUserInput,
-  DocumentsByType,
   UpdateUserInput,
   UpdateUserProfileFromClerkInput,
   UserProfileStats,
 } from "@repo/api/src/types/user";
-import { ArtifactType, GitHubPRState, withDb } from "@repo/database";
+import { GitHubPRState, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
@@ -222,25 +221,17 @@ export const usersService = {
         loopConcurrencyData,
         loopTokenAggregate,
       ] = await Promise.all([
-        // Total document artifacts created
+        // Total artifacts created
         withDb((db) =>
           db.artifact.count({
-            where: {
-              createdById: userId,
-              organizationId,
-              type: ArtifactType.DOCUMENT,
-            },
+            where: { createdById: userId, organizationId },
           })
         ),
-        // Document artifacts grouped by subtype (legacy DocumentType)
+        // Artifacts grouped by type
         withDb((db) =>
           db.artifact.groupBy({
-            by: ["subtype"],
-            where: {
-              createdById: userId,
-              organizationId,
-              type: ArtifactType.DOCUMENT,
-            },
+            by: ["type"],
+            where: { createdById: userId, organizationId },
             _count: { id: true },
           })
         ),
@@ -253,13 +244,12 @@ export const usersService = {
             },
           })
         ),
-        // Merged PRs — PR artifacts on workstreams assigned to the user
+        // Merged PRs (org-scoped via denormalized organizationId on PR model)
         withDb((db) =>
-          db.artifact.count({
+          db.gitHubPullRequest.count({
             where: {
               organizationId,
-              type: ArtifactType.PULL_REQUEST,
-              pullRequest: { prState: GitHubPRState.MERGED },
+              state: GitHubPRState.MERGED,
               workstream: { assigneeId: userId },
             },
           })
@@ -279,13 +269,12 @@ export const usersService = {
             },
           })
         ),
-        // Contribution heatmap: document artifact creations over last year
+        // Contribution heatmap: artifact creations over last year
         withDb((db) =>
           db.artifact.findMany({
             where: {
               createdById: userId,
               organizationId,
-              type: ArtifactType.DOCUMENT,
               createdAt: { gte: oneYearAgo },
             },
             select: { createdAt: true },
@@ -315,21 +304,19 @@ export const usersService = {
         ),
       ]);
 
-      const artifactsByType: DocumentsByType[] = artifactsByTypeRaw.flatMap(
-        (row) => {
-          if (row.subtype === null) {
-            return [];
-          }
-          return [{ type: row.subtype as DocumentType, count: row._count.id }];
-        }
+      const artifactsByType: ArtifactsByType[] = artifactsByTypeRaw.map(
+        (row) => ({
+          type: row.type,
+          count: row._count.id,
+        })
       );
 
       const contributionHeatmap = buildContributionHeatmap(contributionData);
       const avgConcurrency = computeAvgLoopConcurrency(loopConcurrencyData);
 
       return {
-        totalDocuments: totalArtifacts,
-        documentsByType: artifactsByType,
+        totalArtifacts,
+        artifactsByType,
         totalComments,
         totalPRsLanded,
         totalLoops,

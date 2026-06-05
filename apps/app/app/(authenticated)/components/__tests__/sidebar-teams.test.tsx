@@ -64,7 +64,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 // Mock team-modal to simplify testing
-vi.mock("@/app/(authenticated)/teams/components/team-modal", () => ({
+vi.mock("../team-modal", () => ({
   TeamModal: ({ trigger }: { trigger: React.ReactNode; team?: unknown }) => (
     <div data-testid="team-modal">{trigger}</div>
   ),
@@ -72,9 +72,6 @@ vi.mock("@/app/(authenticated)/teams/components/team-modal", () => ({
 
 // Mock lucide-react icons
 vi.mock("lucide-react", () => ({
-  ArchiveIcon: ({ className }: { className?: string }) => (
-    <svg className={className} data-testid="archive-icon" />
-  ),
   BoxIcon: ({ className }: { className?: string }) => (
     <svg className={className} data-testid="box-icon" />
   ),
@@ -442,16 +439,5 @@ describe("SidebarTeams", () => {
     expect(screen.getByText("Your Teams")).toBeTruthy();
     // No team items
     expect(screen.queryAllByTestId("collapsible")).toHaveLength(0);
-  });
-
-  test("team options menu includes archived projects link", () => {
-    const { container } = render(<SidebarTeams />);
-
-    expect(
-      container.querySelector('a[href="/teams/team-1/projects/archived"]')
-    ).toBeTruthy();
-    expect(
-      container.querySelector('a[href="/teams/team-2/projects/archived"]')
-    ).toBeTruthy();
   });
 });

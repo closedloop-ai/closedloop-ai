@@ -1,5 +1,4 @@
 import { log } from "../log";
-import type { Origin } from "./origin";
 
 // ---------------------------------------------------------------------------
 // QueueMetric — executor/queue health metrics
@@ -14,7 +13,6 @@ export type QueueMetric = {
     | "executor_saturation"
     | "dropped_expired_work_items"
     | "command_state_transition";
-  origin: Origin;
   count?: number;
   value?: number;
   computeTargetId?: string;
@@ -25,32 +23,10 @@ export type QueueMetric = {
 };
 
 // ---------------------------------------------------------------------------
-// ConnectionState — connection health state values
-// ---------------------------------------------------------------------------
-
-export const ConnectionState = {
-  Online: "online",
-  Degraded: "degraded",
-  Disconnected: "disconnected",
-} as const;
-export type ConnectionState =
-  (typeof ConnectionState)[keyof typeof ConnectionState];
-
-// ---------------------------------------------------------------------------
 // ProtocolMetric — connection/protocol health metrics
 // ---------------------------------------------------------------------------
 
-/** Emitted with count: 1 per state transition. Aggregate via sum(count) by {state} for transition-rate view; NOT a live gauge of currently-connected workers. The literal `count: 1` is the enforced invariant — any other numeric count on this metric is a bug. */
-type ConnectionStateCountMetric = {
-  metric: "connection_state_count";
-  state: ConnectionState;
-  count: 1;
-  computeTargetId?: string;
-  gatewaySessionId?: string;
-  timestamp?: string;
-};
-
-type ProtocolBaseMetric = {
+export type ProtocolMetric = {
   metric:
     | "ack_latency"
     | "terminal_event_latency"
@@ -60,15 +36,12 @@ type ProtocolBaseMetric = {
     | "event_ordering_gaps"
     | "connection_churn_rate"
     | "replay_window_usage";
-  origin: Origin;
   value?: number;
   count?: number;
   computeTargetId?: string;
   gatewaySessionId?: string;
   timestamp?: string;
 };
-
-export type ProtocolMetric = ConnectionStateCountMetric | ProtocolBaseMetric;
 
 // ---------------------------------------------------------------------------
 // Emitters
@@ -111,12 +84,8 @@ export function emitValidationFailedCounter(context: {
 // ---------------------------------------------------------------------------
 
 /**
- * Filter log lines where _telemetryMetric === true and aggregate a single
- * numeric per metric name. When both `count` and `value` are present on a
- * line, `value` wins — `count` is typically a per-occurrence sentinel (e.g.
- * `replay_frequency` emits `count: 1, value: events.length`), and summing
- * the sentinel would collapse depth information. Lines with only `count`
- * or only `value` sum that field directly; lines with neither fall back to 1.
+ * Filter log lines where _telemetryMetric === true and aggregate sum of
+ * `count` and `value` fields by metric name.
  */
 export function computeMetricSnapshot(
   logLines: Record<string, unknown>[]
@@ -135,10 +104,10 @@ export function computeMetricSnapshot(
     }
 
     let numeric: number;
-    if (typeof line.value === "number") {
-      numeric = line.value;
-    } else if (typeof line.count === "number") {
+    if (typeof line.count === "number") {
       numeric = line.count;
+    } else if (typeof line.value === "number") {
+      numeric = line.value;
     } else {
       numeric = 1;
     }

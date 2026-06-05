@@ -1,9 +1,6 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { success } from "@repo/api/src/types/common";
-import type {
-  PublicUsageDashboardResponse,
-  TimeInterval,
-} from "@repo/api/src/types/dashboard";
+import type { PublicDashboardResponse } from "@repo/api/src/types/dashboard";
 import { NextResponse } from "next/server";
 import { dashboardService } from "@/app/dashboard/service";
 import { errorResponse, notFoundResponse } from "@/lib/route-utils";
@@ -11,42 +8,21 @@ import { errorResponse, notFoundResponse } from "@/lib/route-utils";
 type RouteParams = { params: Promise<{ token: string }> };
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: RouteParams
-): Promise<NextResponse<ApiResult<PublicUsageDashboardResponse>>> {
+): Promise<NextResponse<ApiResult<PublicDashboardResponse>>> {
   try {
     const { token } = await params;
-    const url = new URL(request.url);
 
-    const rangeParam = url.searchParams.get("range");
-    const rangeDays =
-      rangeParam === null ? undefined : Number.parseInt(rangeParam, 10);
-    const modelsParam = url.searchParams.get("models");
-    const models = modelsParam
-      ? modelsParam.split(",").filter(Boolean)
-      : undefined;
-
-    const intervalParam = url.searchParams.get("interval");
-    const validIntervals = new Set<TimeInterval>(["15min", "1h", "1d"]);
-    const interval: TimeInterval =
-      intervalParam && validIntervals.has(intervalParam as TimeInterval)
-        ? (intervalParam as TimeInterval)
-        : "1d";
-
-    const result = await dashboardService.getPublicUsageDashboard(token, {
-      rangeDays:
-        rangeDays !== undefined && !Number.isNaN(rangeDays)
-          ? rangeDays
-          : undefined,
-      models,
-      interval,
-    });
+    const result = await dashboardService.getPublicDashboardByToken(token);
 
     if (!result) {
       return notFoundResponse("Dashboard");
     }
 
     const response = NextResponse.json(success(result));
+    // Allow cross-origin pages to load this resource even when the browser
+    // defaults Cross-Origin-Embedder-Policy to same-origin.
     response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     return response;
   } catch (error) {

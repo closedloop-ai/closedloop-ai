@@ -8,6 +8,7 @@ import { keys as google } from "@repo/google/keys";
 import { keys as linear } from "@repo/linear/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as observability } from "@repo/observability/keys";
+import { keys as payments } from "@repo/payments/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 import {
@@ -21,7 +22,6 @@ import {
 // @repo/linear keys are now optional and extended here.
 
 export const env = createEnv({
-  emptyStringAsUndefined: true,
   extends: [
     ai(),
     auth(),
@@ -33,9 +33,10 @@ export const env = createEnv({
     google(),
     linear(),
     observability(),
+    payments(),
   ],
   server: {
-    INTERNAL_API_SECRET: z.string().min(1).optional(),
+    INTERNAL_API_SECRET: z.string().min(1),
     LOCAL_GATEWAY_JWT_SECRET: z
       .string()
       .min(LOCAL_GATEWAY_JWT_MIN_SECRET_LENGTH)

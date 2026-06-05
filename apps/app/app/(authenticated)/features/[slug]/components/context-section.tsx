@@ -1,37 +1,38 @@
 "use client";
 
-import {
-  type ArtifactLinkEndpoint,
-  ArtifactType,
-  LinkDirection,
-} from "@repo/api/src/types/artifact";
+import type { Artifact } from "@repo/api/src/types/artifact";
 import type { FileAttachment } from "@repo/api/src/types/attachment";
-import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
+import type { LinkedEntity } from "@repo/api/src/types/entity-link";
+import { EntityType, LinkDirection } from "@repo/api/src/types/entity-link";
+import type { Feature } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
-import { OverflowMenu } from "@/components/document-editor/relationships/overflow-menu";
-import { SectionHeader } from "@/components/document-editor/relationships/section-header";
+import { AssigneeAvatar } from "@/components/assignee-avatar";
 import {
-  useDeleteArtifactLink,
-  useResolvedArtifactLinks,
-} from "@/hooks/queries/use-artifact-links";
-import {
-  useAttachments,
-  useDeleteAttachment,
+  useDeleteFeatureAttachment,
+  useFeatureAttachments,
 } from "@/hooks/queries/use-attachments";
 import {
-  useDocument,
-  useDocumentsByProject,
-} from "@/hooks/queries/use-documents";
+  useDeleteEntityLink,
+  useLinkedEntities,
+} from "@/hooks/queries/use-entity-links";
+import { getArtifactRoute, getFeatureRoute } from "@/lib/artifact-navigation";
 import {
-  DOCUMENT_TYPE_BADGE_LABELS,
-  DOCUMENT_TYPE_ICONS,
+  ARTIFACT_STATUS_TO_ICON,
+  ARTIFACT_TYPE_BADGE_LABELS,
+  ARTIFACT_TYPE_ICONS,
+  FEATURE_ICON,
+  FEATURE_STATUS_TO_ICON,
 } from "@/lib/project-constants";
 import { AddContextDialog } from "./add-context-dialog";
+import { OverflowMenu } from "./overflow-menu";
+import { SectionHeader } from "./section-header";
 
 type ContextSectionProps = {
   featureId: string;
@@ -43,18 +44,15 @@ export function ContextSection({
   projectId,
 }: Readonly<ContextSectionProps>) {
   const [showAddDialog, setShowAddDialog] = useState(false);
-  const [isOpen, setIsOpen] = useState(true);
 
-  const { data: resolvedLinks = [] } = useResolvedArtifactLinks(featureId, {
-    direction: LinkDirection.Source,
-  });
-  const { data: featureAttachments = [] } = useAttachments(featureId);
-  const { data: projectDocuments = [] } = useDocumentsByProject(
-    projectId ?? "",
-    { enabled: !!projectId }
+  const { data: linkedEntities = [] } = useLinkedEntities(
+    featureId,
+    EntityType.Feature,
+    { direction: LinkDirection.Source }
   );
-  const deleteFeatureAttachment = useDeleteAttachment(featureId);
-  const deleteLink = useDeleteArtifactLink();
+  const { data: featureAttachments = [] } = useFeatureAttachments(featureId);
+  const deleteFeatureAttachment = useDeleteFeatureAttachment(featureId);
+  const deleteLink = useDeleteEntityLink();
 
   function handleUnlink(linkId: string) {
     deleteLink.mutate(linkId, {
@@ -64,28 +62,20 @@ export function ContextSection({
     });
   }
 
-  const documentsById = useMemo(
-    () => new Map(projectDocuments.map((doc) => [doc.id, doc])),
-    [projectDocuments]
+  // Filter to only artifact and feature source links (not external links — those go in Branches)
+  const contextLinks = linkedEntities.filter(
+    (linked) =>
+      linked.resolvedEntity &&
+      linked.resolvedEntity.type !== EntityType.ExternalLink
   );
 
-  // `direction: LinkDirection.Source` already returns links where the
-  // feature is the target and the other artifact is the producing source,
-  // so we only need to gate on the source type here (PR/deployment links
-  // belong in Branches / Preview sections).
-  const contextLinks = useMemo(
-    () =>
-      resolvedLinks.filter(
-        (link) => link.source.type === ArtifactType.Document
-      ),
-    [resolvedLinks]
-  );
-
-  // Collect IDs of already-linked documents so the dialog can exclude them
+  // Collect IDs of already-linked artifacts so the dialog can exclude them
   const linkedArtifactIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const link of contextLinks) {
-      ids.add(link.source.id);
+    for (const linked of contextLinks) {
+      if (linked.resolvedEntity?.type === EntityType.Artifact) {
+        ids.add(linked.resolvedEntity.entity.id);
+      }
     }
     return ids;
   }, [contextLinks]);
@@ -93,11 +83,7 @@ export function ContextSection({
   return (
     <>
       <div className="bg-background">
-        <SectionHeader
-          isOpen={isOpen}
-          onToggle={() => setIsOpen((prev) => !prev)}
-          title="Context"
-        >
+        <SectionHeader title="Context">
           <Button
             onClick={() => setShowAddDialog(true)}
             size="icon-sm"
@@ -106,15 +92,41 @@ export function ContextSection({
             <PlusIcon className="h-4 w-4" />
           </Button>
         </SectionHeader>
-        {isOpen && (
-          <ContextBody
-            documentsById={documentsById}
-            featureAttachments={featureAttachments}
-            onAdd={() => setShowAddDialog(true)}
-            onDeleteAttachment={(id) => deleteFeatureAttachment.mutate(id)}
-            onUnlink={handleUnlink}
-            resolvedSourceLinks={contextLinks}
-          />
+        {contextLinks.length > 0 || featureAttachments.length > 0 ? (
+          <div className="flex flex-col">
+            {contextLinks.map((linked) => (
+              <ContextRow
+                key={linked.id}
+                linked={linked}
+                onUnlink={handleUnlink}
+              />
+            ))}
+            {featureAttachments.map((attachment) => (
+              <AttachmentRow
+                attachment={attachment}
+                key={attachment.id}
+                onDelete={() => deleteFeatureAttachment.mutate(attachment.id)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center py-3">
+            <div className="flex flex-1 flex-col gap-4">
+              <p className="text-base text-muted-foreground">
+                No context documents have been added to this feature
+              </p>
+              <div className="flex gap-4">
+                <Button
+                  onClick={() => setShowAddDialog(true)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Add Documents
+                  <PlusIcon className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
@@ -129,121 +141,114 @@ export function ContextSection({
   );
 }
 
-type ContextBodyProps = {
-  documentsById: Map<string, DocumentWithWorkstream>;
-  featureAttachments: FileAttachment[];
-  resolvedSourceLinks: ReturnType<typeof useResolvedArtifactLinks>["data"];
-  onAdd: () => void;
+type ContextRowProps = {
+  linked: LinkedEntity;
   onUnlink: (linkId: string) => void;
-  onDeleteAttachment: (attachmentId: string) => void;
 };
 
-function ContextBody({
-  documentsById,
-  featureAttachments,
-  resolvedSourceLinks = [],
-  onAdd,
-  onUnlink,
-  onDeleteAttachment,
-}: Readonly<ContextBodyProps>) {
-  if (resolvedSourceLinks.length === 0 && featureAttachments.length === 0) {
-    return (
-      <div className="flex items-center py-3">
-        <div className="flex flex-1 flex-col gap-4">
-          <p className="text-base text-muted-foreground">
-            No context documents have been added to this feature
-          </p>
-          <div className="flex gap-4">
-            <Button onClick={onAdd} size="sm" variant="outline">
-              Add Documents
-              <PlusIcon className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
+function ContextRow({ linked, onUnlink }: Readonly<ContextRowProps>) {
+  const resolved = linked.resolvedEntity;
+  if (!resolved) {
+    return null;
   }
 
-  return (
-    <div className="flex flex-col">
-      {resolvedSourceLinks.map((link) => {
-        const doc = documentsById.get(link.source.id);
-        if (doc) {
-          return (
-            <ArtifactRow
-              artifact={doc}
-              key={link.id}
-              linkId={link.id}
-              onDetach={onUnlink}
-            />
-          );
-        }
-        // Document lives in a different project. Render from the
-        // resolved link endpoint so cross-project context still shows.
-        return (
-          <CrossProjectDocumentRow
-            endpoint={link.source}
-            key={link.id}
-            linkId={link.id}
-            onUnlink={onUnlink}
-          />
-        );
-      })}
-      {featureAttachments.map((attachment) => (
-        <AttachmentRow
-          attachment={attachment}
-          key={attachment.id}
-          onDelete={() => onDeleteAttachment(attachment.id)}
+  switch (resolved.type) {
+    case EntityType.Artifact: {
+      return (
+        <ArtifactRow
+          artifact={resolved.entity}
+          linkId={linked.id}
+          onUnlink={onUnlink}
         />
-      ))}
-    </div>
-  );
+      );
+    }
+    case EntityType.Feature: {
+      return (
+        <FeatureRow
+          feature={resolved.entity}
+          linkId={linked.id}
+          onUnlink={onUnlink}
+        />
+      );
+    }
+    default: {
+      return null;
+    }
+  }
 }
 
-/**
- * Renders a context row for a document that isn't in the current feature's
- * project. Fetches the full document by id so status/assignee render with
- * full fidelity; falls back to the resolved-link endpoint while loading.
- */
-function CrossProjectDocumentRow({
-  endpoint,
-  linkId,
-  onUnlink,
-}: Readonly<{
-  endpoint: ArtifactLinkEndpoint;
+type ArtifactRowProps = {
+  artifact: Artifact;
   linkId: string;
   onUnlink: (linkId: string) => void;
-}>) {
-  const { data: artifact } = useDocument(endpoint.id);
-  if (artifact) {
-    return (
-      <ArtifactRow
-        artifact={artifact as DocumentWithWorkstream}
-        linkId={linkId}
-        onDetach={onUnlink}
-      />
-    );
-  }
-  // Fallback: render from the endpoint's minimal fields while the full
-  // document load is pending (or if the user lacks access). Omits status +
-  // assignee since those aren't on the endpoint shape.
-  const docType = endpoint.subtype;
-  const Icon = docType ? DOCUMENT_TYPE_ICONS[docType] : FileIcon;
-  const badgeLabel = docType ? DOCUMENT_TYPE_BADGE_LABELS[docType] : "Document";
+};
+
+function ArtifactRow({
+  artifact,
+  linkId,
+  onUnlink,
+}: Readonly<ArtifactRowProps>) {
+  const Icon = ARTIFACT_TYPE_ICONS[artifact.type];
+  const badgeLabel = ARTIFACT_TYPE_BADGE_LABELS[artifact.type];
+  const statusIconStatus = ARTIFACT_STATUS_TO_ICON[artifact.status];
+  const route = getArtifactRoute(artifact);
+
   return (
     <div className="flex items-center px-2 py-1">
-      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md">
+      <Link
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
+        href={route ?? "#"}
+      >
         <div className="flex shrink-0 items-center p-1">
           <Icon className="h-4 w-4 text-muted-foreground" />
         </div>
         <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
-          {isDisplayableSlug(endpoint.slug) ? endpoint.slug : badgeLabel}
+          {isDisplayableSlug(artifact.slug) ? artifact.slug : badgeLabel}
         </span>
         <span className="truncate px-1 font-medium text-sm">
-          {endpoint.name}
+          {artifact.title}
         </span>
-      </div>
+      </Link>
       <div className="flex h-9 shrink-0 items-center gap-2">
+        <AssigneeAvatar assignee={artifact.assignee} />
+        <StatusIcon size={20} status={statusIconStatus} />
+        <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
+      </div>
+    </div>
+  );
+}
+
+type FeatureRowProps = {
+  feature: Feature;
+  linkId: string;
+  onUnlink: (linkId: string) => void;
+};
+
+function FeatureRow({ feature, linkId, onUnlink }: Readonly<FeatureRowProps>) {
+  const Icon = FEATURE_ICON;
+  const statusIconStatus = FEATURE_STATUS_TO_ICON[feature.status];
+  const route = getFeatureRoute(feature);
+
+  return (
+    <div className="flex items-center gap-4 px-2 py-1">
+      <Link
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
+        href={route}
+      >
+        <div className="flex shrink-0 items-center p-1">
+          <Icon className="h-4 w-4 text-muted-foreground" />
+        </div>
+        <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
+          {isDisplayableSlug(feature.slug) ? feature.slug : "Feature"}
+        </span>
+        <span className="truncate px-1 font-medium text-sm">
+          {feature.title}
+        </span>
+      </Link>
+      <div className="flex h-9 shrink-0 items-center gap-2">
+        <PriorityIcon priority={feature.priority} />
+        <AssigneeAvatar assignee={feature.assignee} />
+        <StatusIcon size={20} status={statusIconStatus} />
         <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
       </div>
     </div>

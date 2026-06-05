@@ -1,4 +1,4 @@
-import { JudgeResultCard as SharedJudgeResultCard } from "@/components/document-editor/judge-result-card";
+import { JudgeResultCard as SharedJudgeResultCard } from "@/components/artifact-editor/judge-result-card";
 
 type SharedProps = Parameters<typeof SharedJudgeResultCard>[0];
 

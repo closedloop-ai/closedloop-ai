@@ -13,31 +13,15 @@ const mockIsLocalGatewayJwtConfigured = vi.fn();
 let mockAuthContext: AuthContext;
 
 vi.mock("@repo/observability/log", () => ({
-  log: {
-    error: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
-  },
+  log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 vi.mock("@repo/observability/error", () => ({
   parseError: (error: unknown) => String(error),
 }));
 
 vi.mock("@/lib/auth/with-api-key-auth", () => ({
-  withApiKeyAuth: (handler: any) => (request: any, context: any) => {
-    if (request.headers.get("x-test-pop-reject") === "true") {
-      return Response.json(
-        {
-          success: false,
-          error: "Desktop managed PoP verification failed",
-        },
-        { status: 401 }
-      );
-    }
-
-    return handler(mockAuthContext, request, context?.params);
-  },
+  withApiKeyAuth: (handler: any) => async (request: any, context: any) =>
+    handler(mockAuthContext, request, context?.params),
 }));
 
 vi.mock("@/lib/auth/local-gateway-jti-registry", () => ({
@@ -120,29 +104,5 @@ describe("POST /compute-targets/local-auth/verify", () => {
     const json = await response.json();
     expect(json.success).toBe(false);
     expect(json.error).toBe("Challenge was not issued for this API key owner");
-  });
-
-  it("lets desktop PoP auth reject before challenge parsing or JTI consumption", async () => {
-    const request = createMockRequest({
-      method: "POST",
-      url: "http://localhost:3002/compute-targets/local-auth/verify",
-      headers: { "x-test-pop-reject": "true" },
-      body: {
-        challengeToken: "challenge-jwt",
-        requestOrigin: "http://localhost:3000",
-      },
-    });
-
-    const response = await POST(request, {
-      params: Promise.resolve({}),
-    } as never);
-
-    expect(response.status).toBe(401);
-    expect(mockVerifyLocalGatewayChallenge).not.toHaveBeenCalled();
-    expect(mockConsumeJti).not.toHaveBeenCalled();
-    expect(await response.json()).toEqual({
-      success: false,
-      error: "Desktop managed PoP verification failed",
-    });
   });
 });

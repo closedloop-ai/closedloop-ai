@@ -6,8 +6,7 @@ vi.mock("@repo/database", () => ({
   Prisma: { DbNull: "DbNull" },
 }));
 
-import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
-import { generateSlug } from "../../lib/slug-generator";
+import { generateSlug, SlugPrefix } from "../../lib/slug-generator";
 
 const ORG_ID = "org-1";
 

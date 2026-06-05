@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import type { ContentBlock } from "@/components/chat/types";
+import type { ContentBlock } from "@/components/engineer/chat";
 import { queryKeys } from "./keys";
 
 /* ---------- Response types ---------- */
@@ -28,7 +28,7 @@ export function terminalChatHistoryOptions() {
   return queryOptions<TerminalChatHistory>({
     queryKey: queryKeys.terminalChatHistory(),
     queryFn: async () => {
-      const response = await fetch("/api/gateway/terminal-chat");
+      const response = await fetch("/api/engineer/terminal-chat");
       if (!response.ok) {
         return { messages: [] };
       }

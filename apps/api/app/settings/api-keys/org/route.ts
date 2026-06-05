@@ -7,7 +7,6 @@ import {
   errorResponse,
   forbiddenResponse,
   parseBody,
-  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { apiKeyService } from "../../api-key-service";
@@ -36,7 +35,6 @@ export const PUT = withAuth<SetKeyResponse, "/settings/api-keys/org">(
           method: "PUT",
           route: "/settings/api-keys/org",
         });
-        scheduleLogFlush();
         return forbiddenResponse();
       }
 
@@ -83,7 +81,6 @@ export const DELETE = withAuth<{ deleted: true }, "/settings/api-keys/org">(
           method: "DELETE",
           route: "/settings/api-keys/org",
         });
-        scheduleLogFlush();
         return forbiddenResponse();
       }
 

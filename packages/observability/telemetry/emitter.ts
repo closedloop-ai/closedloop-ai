@@ -23,38 +23,14 @@ const CREDENTIAL_PATTERNS = ["sk_", "token=", "password=", "authorization:"];
 
 const SAFE_CATEGORY_RE = /^[a-zA-Z0-9._]{1,64}$/;
 
-// biome-ignore lint/complexity/useRegexLiterals: Control characters (\u001b, \u009b) required for ANSI stripping
-const ANSI_RE = new RegExp(
-  String.raw`[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]`,
-  "g"
-);
-
 // ---------------------------------------------------------------------------
 // Sanitization
 // ---------------------------------------------------------------------------
 
-const SAFE_ENV_KEYS = new Set(["NODE_ENV"]);
-const SAFE_ENV_PREFIXES = ["CLAUDE_CODE_USE_"];
-
-function sanitizeTextTail(value: string): string {
-  const stripped = value.replaceAll(ANSI_RE, "");
-  const lines = stripped.split("\n");
-  const filtered = lines.filter((line: string) => {
-    const lower = line.toLowerCase();
-    return !CREDENTIAL_PATTERNS.some((pattern) =>
-      lower.includes(pattern.toLowerCase())
-    );
-  });
-  const joined = filtered.join("\n");
-  return truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
-}
-
 /**
  * Sanitize diagnostics from a desktop-originated event:
- * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
+ * - Truncate logTail to at most LOG_TAIL_MAX_BYTES bytes
  * - Strip lines containing credential patterns
- * - Allowlist spawnMeta.envSnapshot to only safe env var keys
- * - Keep only descriptor fields for outbound-network diagnostics
  */
 export function sanitizeDesktopTelemetryDiagnostics(
   diagnostics: TelemetryDiagnostics | undefined
@@ -66,46 +42,16 @@ export function sanitizeDesktopTelemetryDiagnostics(
   const sanitized: TelemetryDiagnostics = { ...diagnostics };
 
   if (typeof sanitized.logTail === "string") {
-    sanitized.logTail = sanitizeTextTail(sanitized.logTail);
-  }
+    const lines = sanitized.logTail.split("\n");
+    const filtered = lines.filter((line: string) => {
+      const lower = line.toLowerCase();
+      return !CREDENTIAL_PATTERNS.some((pattern) =>
+        lower.includes(pattern.toLowerCase())
+      );
+    });
+    const joined = filtered.join("\n");
 
-  if (typeof sanitized.stderrTail === "string") {
-    sanitized.stderrTail = sanitizeTextTail(sanitized.stderrTail);
-  }
-
-  if (sanitized.spawnMeta?.envSnapshot) {
-    const filtered: Record<string, string> = {};
-    for (const [key, value] of Object.entries(
-      sanitized.spawnMeta.envSnapshot
-    )) {
-      if (
-        SAFE_ENV_KEYS.has(key) ||
-        SAFE_ENV_PREFIXES.some((p) => key.startsWith(p))
-      ) {
-        filtered[key] = value;
-      }
-    }
-    sanitized.spawnMeta = { ...sanitized.spawnMeta, envSnapshot: filtered };
-  }
-
-  if (sanitized.outboundNetwork) {
-    const outboundNetwork = sanitized.outboundNetwork;
-    sanitized.outboundNetwork = {
-      surface: outboundNetwork.surface,
-      decision: outboundNetwork.decision,
-      reason: outboundNetwork.reason,
-      destinationClass: outboundNetwork.destinationClass,
-      ...(outboundNetwork.protocol !== undefined && {
-        protocol: outboundNetwork.protocol,
-      }),
-      ...(outboundNetwork.hostname !== undefined && {
-        hostname: outboundNetwork.hostname,
-      }),
-      ...(outboundNetwork.port !== undefined && { port: outboundNetwork.port }),
-      ...(outboundNetwork.statusCode !== undefined && {
-        statusCode: outboundNetwork.statusCode,
-      }),
-    };
+    sanitized.logTail = truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
   }
 
   return sanitized;
@@ -356,11 +302,6 @@ export function buildDesktopTelemetryPayload(
   };
 }
 
-/**
- * Must NOT be called from apps/api or apps/relay for desktop-forwarded events. Desktop events MUST
- * flow through handleTelemetryEvent() so origin is enriched to Origin.Desktop; this Path B
- * stringified-message emitter would leave origin at the server's ORIGIN value.
- */
 export function emitDesktopTelemetryEvent(rawEvent: unknown): void {
   const payload = buildDesktopTelemetryPayload(rawEvent);
   const severity =

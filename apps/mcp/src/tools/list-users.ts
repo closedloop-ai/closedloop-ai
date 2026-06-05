@@ -17,7 +17,7 @@ export function registerListUsers(
     "list-users",
     {
       description:
-        "List organization users available for assignment or lookup. Users are identified by UUID only (no slug form).",
+        "List organization users available for assignment or lookup.",
       inputSchema: {
         limit: z
           .number()

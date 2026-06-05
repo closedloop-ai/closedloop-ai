@@ -4,11 +4,7 @@ import { Dialog, DialogTitle } from "@repo/design-system/components/ui/dialog";
 import { MessageCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
-import {
-  buildFileTree,
-  decodeText,
-  extractZip,
-} from "@/lib/engineer/run-viewer-utils";
+import { decodeText, extractZip } from "@/lib/engineer/run-viewer-utils";
 import type { RunData } from "@/types/run-viewer";
 import { ContentViewer } from "./ContentViewer";
 import { FileTreeSidebar } from "./FileTreeSidebar";
@@ -20,28 +16,6 @@ type RunViewerDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
-
-function getUploadType(file: File): "zip" | "jsonl" | null {
-  const normalizedName = file.name.toLowerCase();
-  const normalizedType = file.type.toLowerCase();
-
-  if (
-    normalizedName.endsWith(".zip") ||
-    normalizedType === "application/zip" ||
-    normalizedType === "application/x-zip-compressed"
-  ) {
-    return "zip";
-  }
-  if (
-    normalizedName.endsWith(".jsonl") ||
-    normalizedType === "application/x-ndjson" ||
-    normalizedType === "application/jsonl" ||
-    normalizedType === "application/jsonlines"
-  ) {
-    return "jsonl";
-  }
-  return null;
-}
 
 export function RunViewerDialog({
   open,
@@ -61,43 +35,24 @@ export function RunViewerDialog({
     setIsExtracting(true);
     setError(null);
     try {
-      const uploadType = getUploadType(file);
-      if (uploadType === "zip") {
-        const data = await extractZip(file);
-        setRunData(data);
-        setSessionName(file.name.replace(/\.zip$/i, ""));
-        setSelectedFile(null);
+      const data = await extractZip(file);
+      setRunData(data);
+      setSessionName(file.name.replace(/\.zip$/, ""));
+      setSelectedFile(null);
 
-        // Upload zip server-side for Claude file tools
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch("/api/gateway/run-viewer-extract", {
-          method: "POST",
-          body: formData,
-        });
-        if (res.ok) {
-          const { runDir: dir } = await res.json();
-          setRunDir(dir);
-        }
-        return;
+      // Upload zip server-side for Claude file tools
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/engineer/run-viewer-extract", {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        const { runDir: dir } = await res.json();
+        setRunDir(dir);
       }
-
-      if (uploadType === "jsonl") {
-        const raw = new Uint8Array(await file.arrayBuffer());
-        const filePath = file.name;
-        setRunData({
-          files: new Map([[filePath, raw]]),
-          tree: buildFileTree([filePath]),
-        });
-        setSessionName(file.name.replace(/\.jsonl$/i, ""));
-        setSelectedFile(filePath);
-        setRunDir(null);
-        return;
-      }
-
-      setError("Unsupported file type. Upload a .zip or .jsonl file.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load selected file");
+      setError(e instanceof Error ? e.message : "Failed to extract zip file");
     } finally {
       setIsExtracting(false);
     }
@@ -108,7 +63,7 @@ export function RunViewerDialog({
       if (!isOpen) {
         // Clean up server-side extracted files
         if (runDir) {
-          fetch("/api/gateway/run-viewer-extract", {
+          fetch("/api/engineer/run-viewer-extract", {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ runDir }),
@@ -122,7 +77,7 @@ export function RunViewerDialog({
         setSessionName("");
         setChatOpen(false);
         // Clear chat history when dialog closes
-        fetch("/api/gateway/run-viewer-chat", { method: "DELETE" }).catch(
+        fetch("/api/engineer/run-viewer-chat", { method: "DELETE" }).catch(
           () => {}
         );
       }
@@ -257,7 +212,6 @@ export function RunViewerDialog({
                 className="absolute right-5 bottom-5 z-10 flex size-10 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25 transition-all duration-200 hover:scale-105 hover:shadow-xl"
                 onClick={() => setChatOpen(true)}
                 title="Chat about this run"
-                type="button"
               >
                 <MessageCircle className="size-5" />
               </button>

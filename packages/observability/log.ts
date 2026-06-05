@@ -12,8 +12,6 @@
 // ---------------------------------------------------------------------------
 
 import { keys } from "./keys";
-import { resolveServerVersion } from "./telemetry/context";
-import { KNOWN_ORIGINS, ORIGIN, type Origin } from "./telemetry/origin";
 
 function loadConfig() {
   try {
@@ -21,7 +19,7 @@ function loadConfig() {
     return {
       apiKey: env.DD_API_KEY,
       site: env.DD_SITE ?? "datadoghq.com",
-      service: env.DD_SERVICE ?? "cl-unknown",
+      service: env.DD_SERVICE ?? "closedloop",
       env: env.DD_ENV ?? process.env.NODE_ENV ?? "development",
     };
   } catch {
@@ -30,29 +28,13 @@ function loadConfig() {
     return {
       apiKey: process.env.DD_API_KEY,
       site: process.env.DD_SITE ?? "datadoghq.com",
-      // "??" preserves ""; the "!"-falsy guard below catches empty DD_SERVICE (intentional asymmetry)
-      service: process.env.DD_SERVICE ?? "cl-unknown",
+      service: process.env.DD_SERVICE ?? "closedloop",
       env: process.env.DD_ENV ?? process.env.NODE_ENV ?? "development",
     };
   }
 }
 
-function resolveGitSha(): string {
-  return process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? "unknown";
-}
-
-const DD: {
-  apiKey?: string;
-  site: string;
-  service: string;
-  env: string;
-  version: string;
-  gitSha: string;
-} = {
-  ...loadConfig(),
-  version: resolveServerVersion(),
-  gitSha: resolveGitSha(),
-};
+const DD = loadConfig();
 
 const FLUSH_INTERVAL_MS = 5000;
 const MAX_BATCH_SIZE = 100;
@@ -67,7 +49,6 @@ type DatadogLogEntry = {
   ddsource: string;
   ddtags: string;
   timestamp: string;
-  origin: Origin;
   [key: string]: unknown;
 };
 
@@ -94,18 +75,8 @@ function startFlushTimer(): void {
 }
 
 function flushToDatadog(): Promise<void> {
-  if (buffer.length === 0 || !DD.apiKey) {
+  if (buffer.length === 0 || !DD.apiKey || flushInProgress) {
     return flushInProgress ?? Promise.resolve();
-  }
-
-  // If a flush is already in flight, chain a follow-up after it completes so
-  // entries enqueued during that flush are also delivered. The returned
-  // promise resolves only after the buffer is fully drained — critical for
-  // `waitUntil(log.flush())` callers in serverless, where the runtime can
-  // freeze the function between batches and drop logs that haven't been
-  // chained into the awaited promise.
-  if (flushInProgress) {
-    return flushInProgress.then(() => flushToDatadog());
   }
 
   const batch = buffer.splice(0, MAX_BATCH_SIZE);
@@ -137,17 +108,12 @@ function flushToDatadog(): Promise<void> {
     })
     .finally(() => {
       flushInProgress = null;
+      if (buffer.length >= MAX_BATCH_SIZE) {
+        flushToDatadog();
+      }
     });
 
-  // Chain the drain into the returned promise so it resolves only after the
-  // buffer is empty. Without this, callers awaiting log.flush() would resolve
-  // after the first batch completes and miss entries enqueued during the flush.
-  return flushInProgress.then(() => {
-    if (buffer.length > 0) {
-      return flushToDatadog();
-    }
-    return undefined;
-  });
+  return flushInProgress;
 }
 
 function enqueue(entry: DatadogLogEntry): void {
@@ -167,21 +133,14 @@ function buildEntry(
   message: string,
   meta?: Record<string, unknown>
 ): DatadogLogEntry {
-  const metaOrigin =
-    typeof meta?.origin === "string" &&
-    (KNOWN_ORIGINS as readonly string[]).includes(meta.origin)
-      ? (meta.origin as Origin)
-      : undefined;
-  const origin = metaOrigin ?? ORIGIN;
   return {
     ...meta,
     message,
     level,
     service: DD.service,
     ddsource: "nodejs",
-    ddtags: `env:${DD.env},version:${DD.version},git_sha:${DD.gitSha}`,
+    ddtags: `env:${DD.env}`,
     timestamp: new Date().toISOString(),
-    origin,
   };
 }
 
@@ -250,29 +209,3 @@ export const log = {
    */
   flush: (): Promise<void> => flushToDatadog(),
 };
-
-// Server-only diagnostics: these warnings signal a misconfigured deploy to
-// ops. In client bundles (the logger is imported by client components), the
-// env vars are never defined, so emitting the warnings in browsers would
-// pollute every end-user's DevTools console on page load.
-if (typeof window === "undefined") {
-  // console.warn (not log.warn) — mirrors origin.ts; guarantees synchronous stdout delivery
-  if (!process.env.DD_SERVICE) {
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        event: "telemetry.dd_service_fallback",
-        message:
-          "observability: DD_SERVICE is not set; logs will be tagged service:cl-unknown. Set DD_SERVICE in your environment.",
-      })
-    );
-  }
-
-  if (DD.version === "unknown") {
-    log.warn("telemetry.version_fallback");
-  }
-
-  if (DD.gitSha === "unknown") {
-    log.warn("telemetry.git_sha_fallback");
-  }
-}

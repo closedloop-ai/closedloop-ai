@@ -4,7 +4,7 @@
  * Tests concurrence default (no human ratings → avgUserRating = judgeScore, delta = 0),
  * average computation, delta, sort order, coverage, and pagination.
  */
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
@@ -12,17 +12,7 @@ import { mockWithDbCall } from "../utils/db-helpers";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
+  EntityType: { ARTIFACT: "ARTIFACT" },
 }));
 
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
@@ -44,8 +34,7 @@ function makeJudgeScoreRow(
     metricName: "clarity",
     createdAt: new Date("2026-01-15T00:00:00Z"),
     evaluation: {
-      // Service now uses evaluation.artifactId after the cutover
-      artifactId: id,
+      entityId: id,
     },
     judgeHumanScores: humanScores.map((s) => ({ score: s })),
   };
@@ -54,9 +43,8 @@ function makeJudgeScoreRow(
 function makeArtifactRow(id: string) {
   return {
     id,
-    // Artifact rows use `subtype` (not `type`) for document classification
-    subtype: DocumentType.ImplementationPlan,
-    name: `Artifact ${id}`,
+    type: ArtifactType.ImplementationPlan,
+    title: `Artifact ${id}`,
     slug: id,
   };
 }
@@ -67,7 +55,7 @@ function mockDb(
   metricExistsInOrg = true
 ) {
   const artifactIds = [
-    ...new Set(judgeScores.map((js) => js.evaluation.artifactId)),
+    ...new Set(judgeScores.map((js) => js.evaluation.entityId)),
   ];
   const db = {
     prompt: {
@@ -126,8 +114,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
 
     expect(result).toEqual({
       rows: [],
-      totalDocuments: 0,
-      ratedDocuments: 0,
+      totalArtifacts: 0,
+      ratedArtifacts: 0,
       coveragePct: 0,
       pagination: { page: 1, pageSize: 20, totalRows: 0, totalPages: 0 },
     });
@@ -146,7 +134,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
 
     expect(result?.rows).toHaveLength(1);
     expect(result?.rows[0]).toMatchObject({
-      documentId: "a1",
+      artifactId: "a1",
       judgeScore: 0.85,
       avgUserRating: 0.85,
       userRatingCount: 0,
@@ -205,7 +193,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    const ids = result?.rows.map((r) => r.documentId);
+    const ids = result?.rows.map((r) => r.artifactId);
     // high-delta (0.6) first, low-delta (0.2) second, then unrated by judgeScore DESC
     expect(ids).toEqual([
       "high-delta",
@@ -215,7 +203,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     ]);
   });
 
-  it("computes coverage percentage: ratedDocuments / totalDocuments * 100", async () => {
+  it("computes coverage percentage: ratedArtifacts / totalArtifacts * 100", async () => {
     mockDb(
       ["clarity_judge"],
       [
@@ -234,8 +222,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result?.totalDocuments).toBe(4);
-    expect(result?.ratedDocuments).toBe(2);
+    expect(result?.totalArtifacts).toBe(4);
+    expect(result?.ratedArtifacts).toBe(2);
     expect(result?.coveragePct).toBe(50); // 2/4 * 100
   });
 
@@ -253,7 +241,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result?.ratedDocuments).toBe(0);
+    expect(result?.ratedArtifacts).toBe(0);
     expect(result?.coveragePct).toBe(0);
   });
 
@@ -295,7 +283,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
             score: 0.7,
             createdAt: evaluatedAt,
             evaluation: {
-              artifactId: "a1",
+              entityId: "a1",
             },
             judgeHumanScores: [],
           },
@@ -305,8 +293,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
         findMany: vi.fn().mockResolvedValue([
           {
             id: "a1",
-            subtype: DocumentType.ImplementationPlan,
-            name: "A1",
+            type: ArtifactType.ImplementationPlan,
+            title: "A1",
             slug: "a1",
           },
         ]),
@@ -323,8 +311,8 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     );
 
     expect(result?.rows[0]).toMatchObject({
-      documentId: "a1",
-      documentType: DocumentType.ImplementationPlan,
+      artifactId: "a1",
+      artifactType: ArtifactType.ImplementationPlan,
       evaluatedAt: "2026-03-01T12:00:00.000Z",
     });
   });

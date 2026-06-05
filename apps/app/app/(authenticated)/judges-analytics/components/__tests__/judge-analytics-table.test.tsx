@@ -28,7 +28,7 @@ function makeJudge(
     promptName: "gpt-4o",
     metricName: "gpt-4o",
     description: null,
-    documentsEvaluated: 10,
+    artifactsEvaluated: 10,
     min: 0.15,
     mean: 0.65,
     max: 0.95,
@@ -87,7 +87,7 @@ describe("JudgeAnalyticsTable - eval stats columns", () => {
             max: 0.95,
             mean: 0.78,
             stdDev: 0.15,
-            documentsEvaluated: 20,
+            artifactsEvaluated: 20,
           }),
         ]}
         reportType={EvaluationReportType.Plan}
@@ -162,10 +162,10 @@ describe("JudgeAnalyticsTable - judge rows", () => {
     expect(screen.getByText("brevity-judge")).toBeInTheDocument();
   });
 
-  test("renders documentsEvaluated count", () => {
+  test("renders artifactsEvaluated count", () => {
     render(
       <JudgeAnalyticsTable
-        data={[makeJudge({ documentsEvaluated: 10 })]}
+        data={[makeJudge({ artifactsEvaluated: 10 })]}
         reportType={EvaluationReportType.Plan}
       />
     );

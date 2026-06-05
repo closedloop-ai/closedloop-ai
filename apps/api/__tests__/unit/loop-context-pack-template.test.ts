@@ -20,30 +20,32 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/document-version-service", () => ({
-  documentVersionService: {
+vi.mock("@/app/artifacts/artifact-version-service", () => ({
+  artifactVersionService: {
     getLatest: vi.fn(),
   },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
-  documentService: {
+vi.mock("@/app/artifacts/service", () => ({
+  artifactsService: {
     findByIdSimple: vi.fn(),
-  },
-}));
-
-vi.mock("@/app/templates/service", () => ({
-  documentTemplatesService: {
     findOrgTemplate: vi.fn(),
     ensureDefaultTemplates: vi.fn(),
   },
 }));
 
-vi.mock("@/app/documents/attachments-service", () => ({
+vi.mock("@/app/artifacts/attachments-service", () => ({
   attachmentsService: {
-    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
+}));
+
+vi.mock("@/app/features/service", () => ({
+  featuresService: {
+    findById: vi.fn(),
+  },
 }));
 
 vi.mock("@/app/loops/service", () => ({
@@ -63,18 +65,18 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 // --- Imports (after mocks) ---
 
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { documentVersionService } from "@/app/documents/document-version-service";
-import { documentTemplatesService } from "@/app/templates/service";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { artifactsService } from "@/app/artifacts/service";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { buildContextPackInMemory } from "@/lib/loops/loop-context-pack";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockFindOrgTemplate = documentTemplatesService.findOrgTemplate as MockFn;
+const mockFindOrgTemplate = artifactsService.findOrgTemplate as MockFn;
 const mockEnsureDefaultTemplates =
-  documentTemplatesService.ensureDefaultTemplates as MockFn;
-const mockGetLatest = documentVersionService.getLatest as MockFn;
+  artifactsService.ensureDefaultTemplates as MockFn;
+const mockGetLatest = artifactVersionService.getLatest as MockFn;
 const mockGetCommandHandler = getCommandHandler as MockFn;
 
 // ---------------------------------------------------------------------------
@@ -92,7 +94,7 @@ describe("context pack template injection", () => {
     mockFindOrgTemplate.mockResolvedValue({
       id: "template-1",
       title: "PRD Template",
-      type: DocumentType.Template,
+      type: ArtifactType.Template,
     });
     mockGetLatest.mockResolvedValue({
       content: "# PRD Template\n\n## Overview\n\n## Goals",
@@ -109,11 +111,11 @@ describe("context pack template injection", () => {
       userId: "user-1",
       command: LoopCommand.GeneratePrd,
       prompt: "Build a search feature",
-      documentId: "prd-1",
+      artifactId: "prd-1",
       parentLoopId: null,
       repo: null,
       contextRefs: null,
-      documentVersion: null,
+      artifactVersion: null,
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
@@ -121,7 +123,7 @@ describe("context pack template injection", () => {
     // Template should be the first artifact in the pack
     expect(pack.artifacts[0]).toEqual({
       id: "template-1",
-      type: DocumentType.Template,
+      type: ArtifactType.Template,
       title: "PRD Template",
       content: "# PRD Template\n\n## Overview\n\n## Goals",
     });
@@ -132,7 +134,7 @@ describe("context pack template injection", () => {
     mockFindOrgTemplate.mockResolvedValueOnce(null).mockResolvedValueOnce({
       id: "template-1",
       title: "PRD Template",
-      type: DocumentType.Template,
+      type: ArtifactType.Template,
     });
     mockEnsureDefaultTemplates.mockResolvedValue(undefined);
     mockGetLatest.mockResolvedValue({ content: "# Default Template" });
@@ -147,18 +149,18 @@ describe("context pack template injection", () => {
       userId: "user-1",
       command: LoopCommand.GeneratePrd,
       prompt: null,
-      documentId: "prd-1",
+      artifactId: "prd-1",
       parentLoopId: null,
       repo: null,
       contextRefs: null,
-      documentVersion: null,
+      artifactVersion: null,
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
 
     expect(mockEnsureDefaultTemplates).toHaveBeenCalledWith("org-1", "user-1");
     expect(pack.artifacts[0]).toEqual(
-      expect.objectContaining({ type: DocumentType.Template })
+      expect.objectContaining({ type: ArtifactType.Template })
     );
   });
 
@@ -168,18 +170,18 @@ describe("context pack template injection", () => {
       userId: "user-1",
       command: LoopCommand.Plan,
       prompt: null,
-      documentId: null,
+      artifactId: null,
       parentLoopId: null,
       repo: null,
       contextRefs: null,
-      documentVersion: null,
+      artifactVersion: null,
     };
 
     const pack = await buildContextPackInMemory(loop, "org-1");
 
     expect(mockFindOrgTemplate).not.toHaveBeenCalled();
     expect(
-      pack.artifacts.find((a) => a.type === DocumentType.Template)
+      pack.artifacts.find((a) => a.type === ArtifactType.Template)
     ).toBeUndefined();
   });
 });

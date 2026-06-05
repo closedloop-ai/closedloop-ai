@@ -1,8 +1,4 @@
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
-import {
-  getNotificationEntityPath,
-  NotificationEntityKind,
-} from "@repo/api/src/types/notification-routes";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
 import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
@@ -128,11 +124,7 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
           organizationId: user.organizationId,
           entityType: AssignmentEntityType.Project,
           entityTitle: projectWithDetails.name,
-          entityUrl: getNotificationEntityPath({
-            kind: NotificationEntityKind.Project,
-            teamId,
-            projectId: projectWithDetails.id,
-          }),
+          entityUrl: `/teams/${teamId}/projects/${projectWithDetails.id}`,
           subjectId: projectWithDetails.id,
         });
       }

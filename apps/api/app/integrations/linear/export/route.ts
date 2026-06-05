@@ -28,10 +28,10 @@ export const POST = withAuth<
       return parseError;
     }
 
-    const { documentId, teamId } = body;
+    const { artifactId, teamId } = body;
 
     const result = await linearService.exportImplementationPlan(
-      documentId,
+      artifactId,
       teamId,
       user.organizationId,
       user.id

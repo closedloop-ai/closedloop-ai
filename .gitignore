@@ -151,6 +151,9 @@ web_modules/
 .env.production.local
 .env.local
 
+# Database credentials for codebase-review pipeline
+.env.db
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
@@ -162,9 +165,6 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
-
-# tsup bundled files
-*.bundled_*.mjs
 
 # Gatsby files
 .cache/
@@ -274,7 +274,6 @@ $RECYCLE.BIN/
 .github/copilot-instructions.md
 
 # ClosedLoop
-.learnings
 .closedloop
 .closedloop-ai/*
 !.closedloop-ai/loops-setup.sh
@@ -315,8 +314,3 @@ packages/database/generated
 # Review artifacts
 reviews/
 .dev-environment.json
-
-# Playwright
-.auth/
-test-results/
-playwright-report/

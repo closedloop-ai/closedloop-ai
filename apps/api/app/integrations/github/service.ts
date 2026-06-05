@@ -8,7 +8,7 @@ import type {
   GitHubInstallationRepository,
   GitHubInstallationStatus,
 } from "@repo/database";
-import { ArtifactType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import {
   deleteInstallation,
   getRepositoryBranches,
@@ -929,28 +929,24 @@ export const githubService = {
         { state: "all", limit: options?.limit ?? 30 }
       );
 
-      // Find which PR URLs are already tracked as PR artifacts in this project
+      // Find which PR URLs are already tracked as ExternalLinks in this project
       let trackedPrUrls: string[] = [];
       if (projectId) {
         const existingLinks = await withDb((db) =>
-          db.artifact.findMany({
+          db.externalLink.findMany({
             where: {
               organizationId,
               projectId,
-              type: ArtifactType.PULL_REQUEST,
+              type: "PULL_REQUEST",
             },
             select: { externalUrl: true },
           })
         );
 
         const repoPrefix = `https://github.com/${owner}/${name}/pull/`;
-        trackedPrUrls = existingLinks.flatMap((el) => {
-          const url = el.externalUrl;
-          if (url?.startsWith(repoPrefix)) {
-            return [url];
-          }
-          return [];
-        });
+        trackedPrUrls = existingLinks
+          .map((el) => el.externalUrl)
+          .filter((url) => url.startsWith(repoPrefix));
       }
 
       return { pullRequests, trackedPrUrls };

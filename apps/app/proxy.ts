@@ -4,57 +4,24 @@ import type { ClerkMiddlewareAuth } from "@repo/auth/server";
 import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { env } from "./env";
 import { resolveApiOrigin } from "./lib/api-origin";
-import {
-  GATEWAY_PATH_PREFIX,
-  GATEWAY_RELAY_PATH_PREFIX,
-} from "./lib/engineer/constants";
-import { getPossibleElectronHostnames } from "./lib/engineer/electron-probe";
-
-const ELECTRON_HOSTNAMES = getPossibleElectronHostnames().map(
-  ({ hostname }) => hostname
-);
 
 // Clerk middleware wraps other middleware in its callback
-export default authMiddleware(
-  async (auth, request) => {
-    const securityHeadersResponse = await securityHeaders();
+export default authMiddleware(async (auth, request) => {
+  const securityHeadersResponse = await securityHeaders();
 
-    const guardResponse = await gatewayGuard(auth, request);
-    if (guardResponse) {
-      applySecurityHeaders(guardResponse, securityHeadersResponse);
-      return guardResponse;
-    }
-
-    const response = NextResponse.next();
-    const analyticsResponse = await analyticsMiddleware(response)(request);
-    applySecurityHeaders(analyticsResponse, securityHeadersResponse);
-    return analyticsResponse;
-  },
-  {
-    contentSecurityPolicy:
-      env.CSP_ENABLED === "true"
-        ? {
-            strict: true,
-            reportOnly: true,
-            directives: {
-              "base-uri": ["none"],
-              "connect-src": [
-                env.NEXT_PUBLIC_API_URL!,
-                "https://api.liveblocks.io",
-                "wss://api.liveblocks.io",
-                "https://*.posthog.com",
-                "https://www.google-analytics.com/",
-                ...ELECTRON_HOSTNAMES,
-              ],
-              "img-src": ["data:"],
-            },
-            reportTo: env.CSP_REPORT_URI,
-          }
-        : undefined,
+  const guardResponse = await engineerGuard(auth, request);
+  if (guardResponse) {
+    applySecurityHeaders(guardResponse, securityHeadersResponse);
+    return guardResponse;
   }
-);
+
+  const response = NextResponse.next();
+  const analyticsResponse = await analyticsMiddleware(response)(request);
+  applySecurityHeaders(analyticsResponse, securityHeadersResponse);
+
+  return analyticsResponse;
+});
 
 export const config = {
   matcher: [
@@ -67,22 +34,22 @@ export const config = {
 };
 
 /**
- * Guards gateway API routes to localhost or authenticated users with
+ * Guards engineer API routes to localhost or authenticated users with
  * registered compute targets (cached for 30s).
  *
- * Gateway API routes spawn local CLI processes (Claude, git, codex) and
+ * Engineer API routes spawn local CLI processes (Claude, git, codex) and
  * read/write the local filesystem. They must never be accessible in deployed
- * environments — gatewayGuard only blocks the UI, not the HTTP layer.
+ * environments — EngineerGuard only blocks the UI, not the HTTP layer.
  *
  * See CLAUDE.md "Engineer Feature — Architectural Exception" for full context.
  */
-async function gatewayGuard(
+async function engineerGuard(
   auth: ClerkMiddlewareAuth,
   request: NextRequest
 ): Promise<NextResponse | null> {
   const pathname = request.nextUrl.pathname;
-  const isLocal = isGatewayLocalPath(pathname);
-  const isRelay = isGatewayRelayPath(pathname);
+  const isLocal = isEngineerLocalPath(pathname);
+  const isRelay = isEngineerRelayPath(pathname);
 
   if (!(isLocal || isRelay)) {
     return null;
@@ -93,15 +60,15 @@ async function gatewayGuard(
     return null;
   }
 
-  // /api/gateway/* routes spawn local CLI processes — always localhost-only.
+  // /api/engineer/* routes spawn local CLI processes — always localhost-only.
   if (isLocal) {
     return NextResponse.json(
-      { error: "Gateway API is only available on localhost" },
+      { error: "Engineer API is only available on localhost" },
       { status: 403 }
     );
   }
 
-  // /api/gateway-relay/* routes are cloud-safe but require a compute target.
+  // /api/engineer-relay/* routes are cloud-safe but require a compute target.
   const authState = await auth();
   if (!authState.userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -118,19 +85,19 @@ async function gatewayGuard(
   }
 
   return NextResponse.json(
-    { error: "Gateway API requires a registered compute target" },
+    { error: "Engineer API requires a registered compute target" },
     { status: 403 }
   );
 }
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
 
-function isGatewayLocalPath(pathname: string): boolean {
-  return pathname.startsWith(GATEWAY_PATH_PREFIX);
+function isEngineerLocalPath(pathname: string): boolean {
+  return pathname.startsWith("/api/engineer/");
 }
 
-function isGatewayRelayPath(pathname: string): boolean {
-  return pathname.startsWith(GATEWAY_RELAY_PATH_PREFIX);
+function isEngineerRelayPath(pathname: string): boolean {
+  return pathname.startsWith("/api/engineer-relay/");
 }
 
 async function fetchHasComputeTarget(

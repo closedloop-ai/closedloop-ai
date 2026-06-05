@@ -362,13 +362,7 @@ describe("readChatStream", () => {
       onComplete: vi.fn(),
     });
 
-    expect(onError).toHaveBeenCalledWith({
-      message: "context limit exceeded",
-      phase: undefined,
-      code: undefined,
-      boundProvider: undefined,
-      raw: { type: "error", error: "context limit exceeded" },
-    });
+    expect(onError).toHaveBeenCalledWith("context limit exceeded");
   });
 
   it("dispatches usage events", async () => {
@@ -518,9 +512,7 @@ describe("readChatStream — reconnection support", () => {
     });
 
     expect(result.terminalError).toBe(true);
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "Process OOM killed" })
-    );
+    expect(onError).toHaveBeenCalledWith("Process OOM killed");
     expect(result.completed).toBe(false);
   });
 
@@ -567,110 +559,9 @@ describe("readChatStream — reconnection support", () => {
       onComplete: vi.fn(),
     });
 
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "context limit exceeded" })
-    );
+    expect(onError).toHaveBeenCalledWith("context limit exceeded");
     expect(result.terminalError).toBe(false);
     expect(result.lastRelayError).toBeUndefined();
-  });
-
-  it("preserves phase/code/boundProvider on structured upsert error", async () => {
-    const reader = createReader([
-      '{"type":"error","phase":"upsert","code":"PROVIDER_MISMATCH","boundProvider":"codex","message":"Chat is bound to codex"}\n',
-    ]);
-    const onError = vi.fn();
-
-    await readChatStream(reader, {
-      onText: vi.fn(),
-      onError,
-      onComplete: vi.fn(),
-    });
-
-    expect(onError).toHaveBeenCalledTimes(1);
-    const arg = onError.mock.calls[0][0];
-    expect(arg.phase).toBe("upsert");
-    expect(arg.code).toBe("PROVIDER_MISMATCH");
-    expect(arg.boundProvider).toBe("codex");
-    expect(arg.message).toBe("Chat is bound to codex");
-  });
-
-  it("preserves phase/code on structured complete error without boundProvider", async () => {
-    const reader = createReader([
-      '{"type":"error","phase":"complete","code":"PERSISTENCE_FAILED","message":"Assistant message was generated but could not be saved"}\n',
-    ]);
-    const onError = vi.fn();
-
-    await readChatStream(reader, {
-      onText: vi.fn(),
-      onError,
-      onComplete: vi.fn(),
-    });
-
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        phase: "complete",
-        code: "PERSISTENCE_FAILED",
-        boundProvider: undefined,
-        message: "Assistant message was generated but could not be saved",
-      })
-    );
-  });
-
-  it("normalizes legacy string error to message-only structured event", async () => {
-    const reader = createReader([
-      '{"type":"error","error":"claude crashed"}\n',
-    ]);
-    const onError = vi.fn();
-
-    await readChatStream(reader, {
-      onText: vi.fn(),
-      onError,
-      onComplete: vi.fn(),
-    });
-
-    expect(onError).toHaveBeenCalledTimes(1);
-    const arg = onError.mock.calls[0][0];
-    expect(arg.message).toBe("claude crashed");
-    expect(arg.phase).toBeUndefined();
-    expect(arg.code).toBeUndefined();
-    expect(arg.boundProvider).toBeUndefined();
-  });
-
-  it("prefers new `message` field over legacy `error` when both present", async () => {
-    const reader = createReader([
-      '{"type":"error","phase":"spawn","error":"old","message":"new"}\n',
-    ]);
-    const onError = vi.fn();
-
-    await readChatStream(reader, {
-      onText: vi.fn(),
-      onError,
-      onComplete: vi.fn(),
-    });
-
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        phase: "spawn",
-        message: "new",
-      })
-    );
-  });
-
-  it("ignores unknown phase values (leaves phase undefined)", async () => {
-    const reader = createReader([
-      '{"type":"error","phase":"bogus","message":"something broke"}\n',
-    ]);
-    const onError = vi.fn();
-
-    await readChatStream(reader, {
-      onText: vi.fn(),
-      onError,
-      onComplete: vi.fn(),
-    });
-
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ phase: undefined, message: "something broke" })
-    );
   });
 });
 

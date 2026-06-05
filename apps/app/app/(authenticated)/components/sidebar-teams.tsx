@@ -24,7 +24,6 @@ import {
   SidebarMenuSubItem,
 } from "@repo/design-system/components/ui/sidebar";
 import {
-  ArchiveIcon,
   BoxIcon,
   EllipsisIcon,
   FileCodeIcon,
@@ -38,10 +37,10 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { TeamModal } from "@/app/(authenticated)/teams/components/team-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { useDeleteTeam, useTeams } from "@/hooks/queries/use-teams";
 import { useIsMounted } from "@/hooks/use-is-mounted";
+import { TeamModal } from "./team-modal";
 
 const TEAM_PATTERN = /^\/teams\/([^/]+)/;
 
@@ -118,12 +117,6 @@ function TeamCollapsible({
                 </SidebarMenuAction>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" side="right">
-                <DropdownMenuItem asChild>
-                  <Link href={`/teams/${team.id}/projects/archived`}>
-                    <ArchiveIcon className="h-4 w-4" />
-                    Archived Projects
-                  </Link>
-                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
                   <SettingsIcon className="h-4 w-4" />
                   Settings

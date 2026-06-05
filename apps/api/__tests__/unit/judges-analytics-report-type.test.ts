@@ -1,4 +1,4 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { withDb } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,17 +7,7 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: { JUDGE: "JUDGE" },
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
+  EntityType: { ARTIFACT: "ARTIFACT" },
 }));
 
 describe("judgesAnalyticsService reportType scoping", () => {
@@ -35,8 +25,6 @@ describe("judgesAnalyticsService reportType scoping", () => {
       artifact: {
         findMany: vi.fn().mockResolvedValue([]),
       },
-      artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
-      artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -85,6 +73,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.8,
             evaluation: {
               artifactId: "artifact-1",
+              entityId: "artifact-1",
             },
           },
           {
@@ -94,6 +83,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.7,
             evaluation: {
               artifactId: "artifact-1",
+              entityId: "artifact-1",
             },
           },
         ]),
@@ -102,13 +92,12 @@ describe("judgesAnalyticsService reportType scoping", () => {
         findMany: vi
           .fn()
           .mockResolvedValue([
-            { id: "artifact-1", subtype: DocumentType.ImplementationPlan },
+            { id: "artifact-1", type: ArtifactType.ImplementationPlan },
           ]),
       },
       artifactRating: {
         findMany: vi.fn().mockResolvedValue([]),
       },
-      artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -212,6 +201,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.8,
             evaluation: {
               artifactId: "artifact-1",
+              entityId: "artifact-1",
             },
           },
           {
@@ -221,20 +211,20 @@ describe("judgesAnalyticsService reportType scoping", () => {
             score: 0.7,
             evaluation: {
               artifactId: "artifact-2",
+              entityId: "artifact-2",
             },
           },
         ]),
       },
       artifact: {
         findMany: vi.fn().mockResolvedValue([
-          { id: "artifact-1", subtype: DocumentType.ImplementationPlan },
-          { id: "artifact-2", subtype: DocumentType.ImplementationPlan },
+          { id: "artifact-1", type: ArtifactType.ImplementationPlan },
+          { id: "artifact-2", type: ArtifactType.ImplementationPlan },
         ]),
       },
       artifactRating: {
         findMany: vi.fn().mockResolvedValue([]),
       },
-      artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -324,8 +314,8 @@ describe("judgesAnalyticsService reportType scoping", () => {
     expect(result).toEqual(
       expect.objectContaining({
         rows: [],
-        totalDocuments: 0,
-        ratedDocuments: 0,
+        totalArtifacts: 0,
+        ratedArtifacts: 0,
         coveragePct: 0,
       })
     );

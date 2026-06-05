@@ -28,12 +28,7 @@ const {
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
-  },
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("@/app/loops/service", () => ({
@@ -555,7 +550,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       loopId,
       computeTargetId,
       durationMs,
-      documentId: artifactId,
+      artifactId,
     });
   });
 
@@ -621,7 +616,7 @@ describe("GET /api/cron/timeout-loops -- anomaly detection", () => {
       loopId,
       computeTargetId,
       durationMs: 600_000,
-      documentId: artifactId,
+      artifactId,
     });
   });
 

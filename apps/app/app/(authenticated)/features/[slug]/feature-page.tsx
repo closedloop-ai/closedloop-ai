@@ -1,387 +1,202 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
-import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
-import {
-  type DocumentDetail,
-  DocumentType,
-} from "@repo/api/src/types/document";
-import { RunLoopCommand } from "@repo/api/src/types/loop";
-import { InlinePresence, OptionalDocumentRoom } from "@repo/collaboration";
-import {
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@repo/design-system/components/ui/resizable";
-import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
-import { Loader2Icon } from "lucide-react";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { EntityType } from "@repo/api/src/types/entity-link";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { useRouter } from "next/navigation";
+import { useCallback, useState } from "react";
 import { ExecutePlanModal } from "@/app/(authenticated)/implementation-plans/components/execute-plan-modal";
-import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { BackendMismatchModal } from "@/components/backend-mismatch-modal";
-import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import { AttachmentsRow } from "@/components/document-editor/attachments-row";
-import { CollaborativeEditor } from "@/components/document-editor/collaborative-editor";
-import { DocumentChatPanel } from "@/components/document-editor/document-chat-panel";
-import { DocumentEditorDetails } from "@/components/document-editor/document-editor-details";
-import { EditableDocumentTitle } from "@/components/document-editor/editable-document-title";
-import { EditorToolbarActions } from "@/components/document-editor/editor-toolbar-actions";
-import { EditorToolbarRow } from "@/components/document-editor/editor-toolbar-row";
-import { EvaluationSection } from "@/components/document-editor/evaluation-section";
-import { InlineEditEditorShell } from "@/components/document-editor/inline-edit-editor-shell";
-import { BranchesSection } from "@/components/document-editor/relationships/branches-section";
-import { PreviewSection } from "@/components/document-editor/relationships/preview-section";
-import {
-  FloatingTargetPicker,
-  resolveFloatingTargetPickerSource,
-} from "@/components/engineer/floating-target-picker";
+import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { MoveEntityDialog } from "@/components/move-entity-dialog";
-import { useDocumentActions } from "@/hooks/document-editing/use-document-actions";
-import { useDocumentContent } from "@/hooks/document-editing/use-document-content";
-import { useDocumentMetadata } from "@/hooks/document-editing/use-document-metadata";
-import { useDocumentUIState } from "@/hooks/document-editing/use-document-ui-state";
-import { useEditorSession } from "@/hooks/document-editing/use-editor-session";
-import { useFeatureActions } from "@/hooks/document-editing/use-feature-actions";
-import { useInlineEditMode } from "@/hooks/document-editing/use-inline-edit-mode";
-import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
-import { useDocumentGenerationStatus } from "@/hooks/queries/use-documents";
-import { useFeatureJudgesFeedback } from "@/hooks/queries/use-judges";
-import { useModalSession } from "@/hooks/use-modal-session";
+import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import { useDeleteFeature } from "@/hooks/queries/use-features";
+import { useLocalStorageState } from "@/hooks/use-local-storage-state";
+import { BranchesSection } from "./components/branches-section";
 import { ContextSection } from "./components/context-section";
+import { EditableFeatureDescription } from "./components/editable-feature-description";
+import { EditableFeatureTitle } from "./components/editable-feature-title";
 import { FeatureEditorHeader } from "./components/feature-editor-header";
-import { FeatureMetadataBar } from "./components/feature-metadata-bar";
+import { FeatureMetadataPanel } from "./components/feature-metadata-panel";
 import { PlanSection } from "./components/plan-section";
+import { PreviewSection } from "./components/preview-section";
 import { useFeatureState } from "./use-feature-state";
 
 type FeaturePageProps = {
-  feature: DocumentDetail;
-  currentVersion: number;
-  onVersionChange: (version: number) => void;
+  feature: FeatureWithWorkstream;
 };
 
-export function FeaturePage({
-  feature,
-  currentVersion,
-  onVersionChange,
-}: Readonly<FeaturePageProps>) {
-  const chatFlag = useFeatureFlag("interactive-chat");
+export function FeaturePage({ feature }: Readonly<FeaturePageProps>) {
+  const router = useRouter();
+  const deleteFeature = useDeleteFeature();
 
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
-  const generatePlanModal = useModalSession();
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showExecuteModal, setShowExecuteModal] = useState(false);
-  const [showComments, setShowComments] = useState(true);
+  const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
+    "panel:metadata:FEATURE",
+    true
+  );
+  const [displayTitle, setDisplayTitle] = useState(feature.title);
 
   const { hasPlan, isReady, linkedPlanId } = useFeatureState(feature);
+  const {
+    handleExecute,
+    isExecuting,
+    multiTargetState,
+    selectTarget,
+    backendMismatchState,
+    confirmOriginalBackend,
+    confirmPreferredBackend,
+    dismissBackendMismatch,
+  } = usePlanActions({
+    artifactId: linkedPlanId,
+  });
 
-  const session = useEditorSession({
-    artifact: feature,
-    currentVersion,
-    onVersionChange,
-  });
-  const contentController = useDocumentContent({
-    artifact: feature,
-    isLatestVersion: currentVersion === feature.latestVersion,
-    setEditorContent: session.setEditorContent,
-    onVersionCreated: (updatedArtifact) =>
-      onVersionChange(updatedArtifact.version.version),
-  });
-  const metadata = useDocumentMetadata({ artifact: feature });
-  const actions = useDocumentActions({
-    artifact: feature,
-    redirectPath: getFeatureRedirectPath(feature),
-  });
-  const uiState = useDocumentUIState({ documentType: DocumentType.Feature });
-  const editMode = useInlineEditMode({
-    readOnly: session.isViewingHistorical,
-    editor: session.editor,
-  });
-  const planActions = usePlanActions({ documentId: linkedPlanId });
-  const featureActions = useFeatureActions({ documentId: feature.id });
-  const { data: judgesReport, refetch: refetchJudgesReport } =
-    useFeatureJudgesFeedback(feature.id);
-
-  const { data: generationStatus } = useDocumentGenerationStatus(
+  const { data: generationStatus } = useArtifactGenerationStatus(
     linkedPlanId ?? "",
     {
       enabled: !!linkedPlanId,
       polling: true,
     }
   );
-  const {
-    data: featureGenerationStatus,
-    isLoading: featureGenerationStatusLoading,
-  } = useDocumentGenerationStatus(feature.id, { polling: true });
-  const activeTargetPicker = resolveFloatingTargetPickerSource(
-    {
-      multiTargetState: featureActions.multiTargetState,
-      onSelect: featureActions.selectTarget,
-    },
-    {
-      multiTargetState: planActions.multiTargetState,
-      onSelect: planActions.selectTarget,
-    }
-  );
 
-  const latestRefetchedEvaluationRunKey = useRef<string | null>(null);
-  useEffect(() => {
-    const runKey =
-      featureGenerationStatus?.runKey ??
-      featureGenerationStatus?.loopId ??
-      featureGenerationStatus?.correlationId ??
-      null;
-    if (
-      featureGenerationStatus?.command !== RunLoopCommand.EvaluateFeature ||
-      featureGenerationStatus.status !== "SUCCESS" ||
-      !runKey ||
-      latestRefetchedEvaluationRunKey.current === runKey
-    ) {
-      return;
-    }
+  const teamId = feature.project?.teams.length
+    ? feature.project.teams[0].id
+    : null;
+  const projectId = feature.project?.id;
 
-    latestRefetchedEvaluationRunKey.current = runKey;
-    refetchJudgesReport().catch(() => undefined);
-  }, [featureGenerationStatus, refetchJudgesReport]);
+  const handleDelete = useCallback(async (): Promise<boolean> => {
+    const redirectPath =
+      teamId && projectId ? `/teams/${teamId}/projects/${projectId}` : "/";
 
-  // Auto-reveal comments when threads reappear after being fully resolved.
-  // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
-  const prevThreadCount = useRef(session.openThreadCount);
-  useEffect(() => {
-    if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
-      setShowComments(true);
-    }
-    prevThreadCount.current = session.openThreadCount;
-  }, [session.openThreadCount]);
+    const result = await deleteFeature.mutateAsync(feature.id, {
+      onSuccess: () => {
+        toast.success("Feature deleted");
+        router.push(redirectPath);
+      },
+    });
+    return !!result;
+  }, [deleteFeature, feature.id, teamId, projectId, router]);
 
   return (
     <>
       <FeatureEditorHeader
-        displayTitle={feature.title}
+        displayTitle={displayTitle}
         feature={feature}
-        generationStatus={featureGenerationStatus}
-        generationStatusLoading={featureGenerationStatusLoading}
         hasPlan={hasPlan}
-        isEvaluating={featureActions.isEvaluating}
         isReady={isReady}
-        onDelete={uiState.openDeleteDialog}
-        onEvaluateFeature={featureActions.handleEvaluateFeature}
-        onGeneratePlan={generatePlanModal.openModal}
+        onDelete={() => setShowDeleteDialog(true)}
+        onGeneratePlan={() => setShowGenerateModal(true)}
         onMoveToProject={() => setShowMoveDialog(true)}
         onStartBuild={() => setShowExecuteModal(true)}
-        onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        onToggleMetadataPanel={() => setShowMetadataPanel((prev) => !prev)}
+        showMetadataPanel={showMetadataPanel}
       />
 
-      <ResizablePanelGroup autoSaveId="feature-editor" direction="horizontal">
-        <ResizablePanel defaultSize={75} minSize={50}>
-          <div className="h-full overflow-y-auto overflow-x-hidden bg-background">
-            <OptionalDocumentRoom roomId={session.liveblocksRoomId}>
-              <div
-                className={
-                  session.isEditorReady
-                    ? "hidden"
-                    : "flex flex-1 items-center justify-center py-24"
-                }
-              >
-                <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      <main className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="flex min-h-full">
+          {/* Main Content Area */}
+          <div className="min-w-0 flex-1 overflow-x-hidden">
+            <div className="mx-auto flex max-w-[750px] flex-col py-8">
+              <div className="flex flex-col gap-1.5">
+                <EditableFeatureTitle
+                  featureId={feature.id}
+                  initialTitle={feature.title}
+                  onTitleChange={setDisplayTitle}
+                />
+                <EditableFeatureDescription
+                  featureId={feature.id}
+                  initialDescription={feature.description || ""}
+                />
               </div>
 
-              <div
-                className={
-                  session.isEditorReady
-                    ? undefined
-                    : "invisible h-0 overflow-hidden"
-                }
-              >
-                <InlineEditEditorShell
-                  expanded={editMode.isEditing || session.isViewingHistorical}
-                  toolbar={
-                    <EditorToolbarRow
-                      leftContent={
-                        <RichTextToolbar
-                          className="border-0 bg-transparent p-0"
-                          editor={session.editor}
-                          hasLiveblocksExtension={!!session.liveblocksRoomId}
-                          onPasteMarkdown={session.setEditorContent}
-                          readOnly={!editMode.isEditing}
-                        />
-                      }
-                      rightContent={
-                        <>
-                          {session.liveblocksRoomId && (
-                            <Suspense fallback={null}>
-                              <InlinePresence />
-                            </Suspense>
-                          )}
-                          <VersionSelector
-                            currentVersion={currentVersion}
-                            latestVersion={feature.latestVersion}
-                            onVersionChange={onVersionChange}
-                          />
-                          <EditorToolbarActions
-                            canRestoreVersion={true}
-                            canSaveVersion={
-                              currentVersion === feature.latestVersion
-                            }
-                            hasUnsavedChanges={
-                              contentController.hasUnsavedChanges
-                            }
-                            isRestoring={contentController.isSaving}
-                            isSaving={contentController.isSaving}
-                            onRestoreVersion={contentController.restoreVersion}
-                            onSaveVersion={() =>
-                              contentController.saveContent(
-                                undefined,
-                                false,
-                                editMode.exitEditMode
-                              )
-                            }
-                            onToggleComments={setShowComments}
-                            openThreadCount={session.openThreadCount}
-                            showComments={showComments}
-                          />
-                        </>
-                      }
-                    />
-                  }
-                >
-                  <CollaborativeEditor
-                    externalToolbar
-                    headerContent={
-                      <div className="space-y-4 px-5 pt-10">
-                        <EditableDocumentTitle
-                          documentId={feature.id}
-                          initialTitle={feature.title}
-                        />
-                        <FeatureMetadataBar
-                          documentId={feature.id}
-                          metadata={metadata}
-                        />
-                        <AttachmentsRow documentId={feature.id} />
-                      </div>
-                    }
-                    key={currentVersion}
-                    liveblocksRoomId={session.liveblocksRoomId}
-                    onBodyClick={editMode.enterEditMode}
-                    onChange={contentController.updateContent}
-                    onContentReady={session.handleEditorReady}
-                    onEditorInstance={session.handleEditorInstance}
-                    onOpenThreadCountChange={session.handleThreadCountChange}
-                    placeholder="Add description..."
-                    readOnly={!editMode.isEditing}
-                    showComments={editMode.isEditing && showComments}
-                    value={contentController.content}
-                  />
-                </InlineEditEditorShell>
-
-                <DocumentEditorDetails
-                  createdAt={feature.version.createdAt}
-                  documentId={feature.id}
-                  updatedAt={feature.updatedAt}
-                >
-                  <EvaluationSection
-                    documentId={feature.id}
-                    judgeItems={judgesReport ?? null}
-                    title="Agent Evaluation"
-                  />
-                  <CustomFieldsSection
-                    entityId={feature.id}
-                    entityType={CustomFieldEntityType.Document}
-                    values={feature.customFields}
-                  />
-                  <ContextSection
-                    featureId={feature.id}
-                    projectId={feature.projectId ?? undefined}
-                  />
-                  <PlanSection
-                    feature={feature}
-                    generatePlanModalSession={generatePlanModal}
-                    generationStatus={generationStatus}
-                  />
-                  <BranchesSection
-                    documentId={feature.id}
-                    generationStatus={generationStatus}
-                    onStartBuild={() => setShowExecuteModal(true)}
-                    planId={linkedPlanId}
-                    projectId={feature.projectId ?? ""}
-                  />
-                  <PreviewSection documentId={feature.id} />
-                </DocumentEditorDetails>
+              <div className="flex flex-col gap-4">
+                <ContextSection
+                  featureId={feature.id}
+                  projectId={feature.projectId ?? undefined}
+                />
+                <PlanSection
+                  feature={feature}
+                  generationStatus={generationStatus}
+                  onGenerateModalChange={setShowGenerateModal}
+                  showGenerateModal={showGenerateModal}
+                />
+                <BranchesSection
+                  featureId={feature.id}
+                  generationStatus={generationStatus}
+                  onStartBuild={() => setShowExecuteModal(true)}
+                  planId={linkedPlanId}
+                  projectId={feature.projectId ?? ""}
+                />
+                <PreviewSection featureId={feature.id} />
               </div>
-            </OptionalDocumentRoom>
+            </div>
           </div>
-        </ResizablePanel>
 
-        <DocumentChatPanel
-          document={feature}
-          visible={chatFlag?.enabled === true && uiState.showMetadataPanel}
-        />
-      </ResizablePanelGroup>
+          {/* Right Sidebar */}
+          {showMetadataPanel && (
+            <FeatureMetadataPanel
+              feature={feature}
+              teamIds={feature.project?.teams.map((team) => team.id) ?? []}
+            />
+          )}
+        </div>
+      </main>
 
       <DeleteConfirmationDialog
-        isPending={actions.isDeleting}
+        isPending={deleteFeature.isPending}
         itemName={feature.title}
-        onConfirm={actions.handleDelete}
-        onOpenChange={uiState.setShowDeleteDialog}
-        open={uiState.showDeleteDialog}
+        onConfirm={handleDelete}
+        onOpenChange={setShowDeleteDialog}
+        open={showDeleteDialog}
         title="Feature"
       />
 
       <MoveEntityDialog
         entity={{
           id: feature.id,
+          entityType: EntityType.Feature,
           projectId: feature.projectId,
         }}
         onOpenChange={setShowMoveDialog}
         open={showMoveDialog}
-        teamId={feature.project?.teams?.[0]?.id ?? null}
+        teamId={teamId}
       />
 
-      {showExecuteModal && (
-        <ExecutePlanModal
-          isLoading={planActions.isExecuting}
-          onConfirm={planActions.handleExecute}
-          onOpenChange={setShowExecuteModal}
-          open={showExecuteModal}
-          planId={linkedPlanId}
-        />
+      <ExecutePlanModal
+        isLoading={isExecuting}
+        onConfirm={handleExecute}
+        onOpenChange={setShowExecuteModal}
+        open={showExecuteModal}
+      />
+
+      {multiTargetState && (
+        <div className="fixed right-4 bottom-4 z-50 rounded-lg border bg-background p-4 shadow-lg">
+          <p className="mb-2 text-muted-foreground text-sm">
+            Multiple compute targets are online. Select one:
+          </p>
+          <LoopDispatchTargetSelector
+            availableTargets={multiTargetState.availableTargets}
+            onSelect={selectTarget}
+          />
+        </div>
       )}
 
-      <FloatingTargetPicker
-        multiTargetState={activeTargetPicker.multiTargetState}
-        onSelect={activeTargetPicker.onSelect}
-      />
-
       <BackendMismatchModal
-        mismatchData={planActions.backendMismatchState}
-        onConfirmOriginal={planActions.confirmOriginalBackend}
-        onConfirmPreferred={planActions.confirmPreferredBackend}
+        mismatchData={backendMismatchState}
+        onConfirmOriginal={confirmOriginalBackend}
+        onConfirmPreferred={confirmPreferredBackend}
         onOpenChange={(open) => {
           if (!open) {
-            planActions.dismissBackendMismatch();
+            dismissBackendMismatch();
           }
         }}
-        open={!!planActions.backendMismatchState}
-      />
-
-      <BackendMismatchModal
-        mismatchData={featureActions.backendMismatchState}
-        onConfirmOriginal={featureActions.confirmOriginalBackend}
-        onConfirmPreferred={featureActions.confirmPreferredBackend}
-        onOpenChange={(open) => {
-          if (!open) {
-            featureActions.dismissBackendMismatch();
-          }
-        }}
-        open={!!featureActions.backendMismatchState}
+        open={!!backendMismatchState}
       />
     </>
   );
-}
-
-function getFeatureRedirectPath(feature: DocumentDetail): string {
-  const teamId = feature.project?.teams?.[0]?.id;
-  const projectId = feature.project?.id;
-  if (teamId && projectId) {
-    return `/teams/${teamId}/projects/${projectId}`;
-  }
-  return "/";
 }

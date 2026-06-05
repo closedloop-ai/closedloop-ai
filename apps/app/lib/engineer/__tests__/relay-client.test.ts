@@ -10,7 +10,7 @@ vi.mock("@repo/observability/log", () => ({
 
 import { log } from "@repo/observability/log";
 import {
-  isStreamingGatewayRequest,
+  isStreamingEngineerRequest,
   RelayClient,
   type RelayHttpRequestPayload,
 } from "@/lib/engineer/relay-client";
@@ -53,20 +53,20 @@ function relayMeta(commandId: string): string {
   return `${JSON.stringify({ type: "relay_meta", commandId })}\n`;
 }
 
-describe("isStreamingGatewayRequest", () => {
+describe("isStreamingEngineerRequest", () => {
   it("identifies known streaming engineer endpoints", () => {
     expect(
-      isStreamingGatewayRequest(
+      isStreamingEngineerRequest(
         "POST",
-        "/api/gateway/symphony/chat/ENG-123?repo=%2Ftmp%2Frepo",
+        "/api/engineer/symphony/chat/ENG-123?repo=%2Ftmp%2Frepo",
         null
       )
     ).toBe(true);
 
     expect(
-      isStreamingGatewayRequest(
+      isStreamingEngineerRequest(
         "POST",
-        "/api/gateway/codex/review/ENG-123",
+        "/api/engineer/codex/review/ENG-123",
         null
       )
     ).toBe(true);
@@ -74,24 +74,18 @@ describe("isStreamingGatewayRequest", () => {
 
   it("does not classify non-streaming endpoints by default", () => {
     expect(
-      isStreamingGatewayRequest("GET", "/api/gateway/health-check", null)
+      isStreamingEngineerRequest("GET", "/api/engineer/health-check", null)
     ).toBe(false);
-    expect(isStreamingGatewayRequest("POST", "/api/gateway/git", null)).toBe(
+    expect(isStreamingEngineerRequest("POST", "/api/engineer/git", null)).toBe(
       false
     );
   });
 
-  it("classifies legacy engineer streaming endpoints after normalization", () => {
-    expect(
-      isStreamingGatewayRequest("POST", "/api/engineer/terminal-chat", null)
-    ).toBe(true);
-  });
-
   it("honors explicit event-stream accept header", () => {
     expect(
-      isStreamingGatewayRequest(
+      isStreamingEngineerRequest(
         "POST",
-        "/api/gateway/git",
+        "/api/engineer/git",
         "application/json, text/event-stream"
       )
     ).toBe(true);
@@ -135,7 +129,7 @@ describe("RelayClient.executeOperation preserves body fields", () => {
     const client = new RelayClient("http://api.test", "token-123");
     await client.executeOperation("target-1", {
       method: "POST",
-      path: "/api/gateway/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
+      path: "/api/engineer/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
       headers: { "content-type": "application/json" },
       body: {
         kind: "json",
@@ -152,48 +146,6 @@ describe("RelayClient.executeOperation preserves body fields", () => {
       message: "hello",
       provider: "claude",
     });
-  });
-
-  it("accepts legacy engineer paths when creating relay commands", async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        success: true,
-        data: { commandId: "cmd-legacy", status: "queued" },
-      })
-    );
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        `data: ${JSON.stringify({
-          commandId: "cmd-legacy",
-          sequence: 1,
-          eventType: "result",
-          data: { statusCode: 200, body: { ok: true } },
-          createdAt: "2026-03-11T00:00:00.000Z",
-        })}\n\n`,
-        {
-          status: 200,
-          headers: { "Content-Type": "text/event-stream" },
-        }
-      )
-    );
-
-    const client = new RelayClient("http://api.test", "token-123");
-    await client.executeOperation("target-1", {
-      method: "POST",
-      path: "/api/engineer/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
-      headers: { "content-type": "application/json" },
-      body: {
-        kind: "json",
-        value: { message: "hello" },
-      },
-    });
-
-    const createCall = fetchMock.mock.calls[0];
-    const createBody = JSON.parse(createCall[1]?.body as string) as {
-      path: string;
-    };
-    expect(createBody.path).toBe("/api/engineer/symphony/chat/pr-42");
   });
 });
 
@@ -238,7 +190,7 @@ describe("RelayClient.streamOperation", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const result = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     expect(result.commandId).toBe("cmd-meta");
@@ -286,7 +238,7 @@ describe("RelayClient.streamOperation", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -341,7 +293,7 @@ describe("RelayClient.streamOperation", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -389,7 +341,7 @@ describe("RelayClient.streamOperation", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -445,7 +397,7 @@ describe("RelayClient.streamOperation", () => {
     client.setRefreshToken(refreshToken);
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -485,7 +437,7 @@ describe("RelayClient.streamOperation", () => {
     client.setRefreshToken(refreshToken);
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -526,7 +478,7 @@ describe("RelayClient.streamOperation", () => {
     client.setRefreshToken(refreshToken);
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -562,7 +514,7 @@ describe("RelayClient.streamOperation", () => {
     client.setRefreshToken(refreshToken);
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -597,7 +549,7 @@ describe("RelayClient.streamOperation", () => {
     client.setRefreshToken(refreshToken);
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -641,7 +593,7 @@ describe("RelayClient.streamOperation", () => {
     );
     const { stream } = await client.streamOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/symphony/chat/ENG-123")
+      makeRelayRequest("/api/engineer/symphony/chat/ENG-123")
     );
 
     const outputPromise = readAllChunks(stream.getReader());
@@ -727,7 +679,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     await vi.advanceTimersByTimeAsync(0);
     const result = await resultPromise;
@@ -768,7 +720,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     // Tick through: SSE processing + first poll + 750ms delay + second poll
     await vi.advanceTimersByTimeAsync(800);
@@ -812,7 +764,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     // 3 × 750ms delays between attempts = 2250ms total budget
     await vi.advanceTimersByTimeAsync(2300);
@@ -849,7 +801,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     await vi.advanceTimersByTimeAsync(2300);
     const result = await resultPromise;
@@ -886,7 +838,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     await vi.advanceTimersByTimeAsync(800);
     const result = await resultPromise;
@@ -926,7 +878,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     await vi.advanceTimersByTimeAsync(0);
     const result = await resultPromise;
@@ -954,7 +906,7 @@ describe("RelayClient.executeOperation — recoverMissedResult", () => {
     const client = new RelayClient("http://api.test", "token-123");
     const resultPromise = client.executeOperation(
       "target-1",
-      makeRelayRequest("/api/gateway/git/pr/comments")
+      makeRelayRequest("/api/engineer/git/pr/comments")
     );
     await vi.advanceTimersByTimeAsync(0);
     const result = await resultPromise;

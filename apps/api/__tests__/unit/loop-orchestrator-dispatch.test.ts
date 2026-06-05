@@ -32,7 +32,7 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
+vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
@@ -48,9 +48,6 @@ vi.mock("@/app/loops/service", () => ({
     persistLaunchInfo: vi.fn(),
     cancel: vi.fn().mockResolvedValue(undefined),
   },
-}));
-
-vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: vi.fn(),
 }));
 
@@ -58,7 +55,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
+vi.mock("@/lib/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 
@@ -162,7 +159,6 @@ vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
 // --- Imports (after mocks) ---
 
 import {
-  LoopCommand,
   LoopErrorCode,
   LoopStatus,
   type LoopWithUser,
@@ -215,11 +211,11 @@ describe("handleLoopCompleted command dispatch", () => {
     timestamp: new Date().toISOString(),
   };
 
-  function setupLoopForCompleted(command: LoopCommand) {
+  function setupLoopForCompleted(command: string) {
     const loop = buildLoop({
-      command,
+      command: command as "PLAN",
       s3StateKey: "org/loops/loop-1/run-1",
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     });
     mockLoopsService.findById.mockResolvedValue(loop);
     mockLoopsService.updateStatus.mockResolvedValue(undefined);
@@ -227,7 +223,7 @@ describe("handleLoopCompleted command dispatch", () => {
   }
 
   it("PLAN command: calls plan handler", async () => {
-    setupLoopForCompleted(LoopCommand.Plan);
+    setupLoopForCompleted("PLAN");
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -236,7 +232,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("REQUEST_CHANGES command: calls plan handler", async () => {
-    setupLoopForCompleted(LoopCommand.RequestChanges);
+    setupLoopForCompleted("REQUEST_CHANGES");
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -245,7 +241,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("EXECUTE command: calls execute handler", async () => {
-    setupLoopForCompleted(LoopCommand.Execute);
+    setupLoopForCompleted("EXECUTE");
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -254,7 +250,7 @@ describe("handleLoopCompleted command dispatch", () => {
   });
 
   it("DECOMPOSE command: calls decompose handler", async () => {
-    setupLoopForCompleted(LoopCommand.Decompose);
+    setupLoopForCompleted("DECOMPOSE");
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -263,18 +259,8 @@ describe("handleLoopCompleted command dispatch", () => {
     expect(mockExecuteDownloadAndIngest).not.toHaveBeenCalled();
   });
 
-  it("MANUAL command: skips S3 ingestion entirely", async () => {
-    setupLoopForCompleted(LoopCommand.Manual);
-
-    await handleLoopEvent("loop-1", "org-1", completedEvent);
-
-    expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
-    expect(mockExecuteDownloadAndIngest).not.toHaveBeenCalled();
-    expect(mockDecomposeDownloadAndIngest).not.toHaveBeenCalled();
-  });
-
   it("unknown command: calls neither handler", async () => {
-    setupLoopForCompleted(LoopCommand.Chat);
+    setupLoopForCompleted("CHAT");
 
     await handleLoopEvent("loop-1", "org-1", completedEvent);
 
@@ -285,9 +271,9 @@ describe("handleLoopCompleted command dispatch", () => {
 
   it("loop without s3StateKey: skips artifact ingestion entirely", async () => {
     const loop = buildLoop({
-      command: LoopCommand.Plan,
+      command: "PLAN" as const,
       s3StateKey: null,
-      documentId: "artifact-1",
+      artifactId: "artifact-1",
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 
@@ -296,11 +282,11 @@ describe("handleLoopCompleted command dispatch", () => {
     expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
   });
 
-  it("loop without documentId: skips artifact ingestion entirely", async () => {
+  it("loop without artifactId: skips artifact ingestion entirely", async () => {
     const loop = buildLoop({
-      command: LoopCommand.Plan,
+      command: "PLAN" as const,
       s3StateKey: "org/loops/loop-1/run-1",
-      documentId: null,
+      artifactId: null,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
 
@@ -329,7 +315,7 @@ describe("launchLoop orphaned command cleanup on relay failure", () => {
 
   it("expires the orphaned command and cancels the loop when launchLoopOnDesktop throws a DispatchError", async () => {
     const loop = buildLoop({
-      status: LoopStatus.Pending,
+      status: "PENDING",
       computeTargetId: "target-1",
     });
     mockLoopsService.findById.mockResolvedValue(loop);
@@ -351,8 +337,7 @@ describe("launchLoop orphaned command cleanup on relay failure", () => {
 
     expect(mockDesktopCommandStore.markCommandExpired).toHaveBeenCalledWith(
       "cmd-orphan-1",
-      expect.any(String),
-      { computeTargetId: "target-1" }
+      expect.any(String)
     );
 
     expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
@@ -382,7 +367,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("ECS EXECUTE loop with parent s3StateKey: null and computeTargetId: null — fails with PlanStateUnavailable, runEcsTask not called", async () => {
     const childLoop = buildLoop({
-      status: LoopStatus.Pending,
+      status: "PENDING",
       command: "EXECUTE",
       parentLoopId: "parent-1",
       computeTargetId: null,
@@ -416,7 +401,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("Desktop EXECUTE loop with parent s3StateKey: null and computeTargetId: 'ct-parent' — launchLoopOnDesktop IS called", async () => {
     const childLoop = buildLoop({
-      status: LoopStatus.Pending,
+      status: "PENDING",
       command: "EXECUTE",
       parentLoopId: "parent-1",
       computeTargetId: "ct-child",
@@ -436,21 +421,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
     await launchLoop("loop-1", "org-1");
 
-    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledOnce();
-    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledWith(
-      expect.objectContaining({
-        s3StateKey: "org/loops/loop-1/run-1",
-      })
-    );
-    expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
-      "loop-1",
-      "org-1",
-      LoopStatus.Claimed,
-      expect.objectContaining({
-        containerId: "cmd-desktop-1",
-        s3StateKey: "org/loops/loop-1/run-1",
-      })
-    );
+    expect(mockLaunchLoopOnDesktop).toHaveBeenCalledTimes(1);
     expect(mockLoopsService.updateStatus).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -461,7 +432,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("EXECUTE loop with no parentLoopId — launches normally (ECS path, guard does not fire)", async () => {
     const childLoop = buildLoop({
-      status: LoopStatus.Pending,
+      status: "PENDING",
       command: "EXECUTE",
       parentLoopId: null,
       computeTargetId: null,
@@ -489,7 +460,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("PLAN loop with parentLoopId and parent s3StateKey: null — launches normally (requiresParent: false, guard does not fire)", async () => {
     const childLoop = buildLoop({
-      status: LoopStatus.Pending,
+      status: "PENDING",
       command: "PLAN",
       parentLoopId: "parent-1",
       computeTargetId: null,
@@ -524,7 +495,7 @@ describe("PLAN_STATE_UNAVAILABLE pre-dispatch guard", () => {
 
   it("parent findById returns null — PLAN_STATE_UNAVAILABLE triggered, no call to apiKeyService.resolveApiKey", async () => {
     const childLoop = buildLoop({
-      status: LoopStatus.Pending,
+      status: "PENDING",
       command: "EXECUTE",
       parentLoopId: "parent-1",
       computeTargetId: null,
@@ -569,20 +540,15 @@ describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
   });
 
   it("passes error: null to updateStatus when overriding a CANCELLED loop with a completed event", async () => {
-    const cancelledLoop = buildLoop({
-      status: LoopStatus.Cancelled,
-      s3StateKey: null,
-    });
-    const completedLoop = buildLoop({ status: LoopStatus.Completed });
+    const cancelledLoop = buildLoop({ status: "CANCELLED", s3StateKey: null });
+    const completedLoop = buildLoop({ status: "COMPLETED" });
 
     const updateStatusSpy = vi
       .spyOn(loopsService, "updateStatus")
       .mockResolvedValue(completedLoop);
-    vi.spyOn(loopsService, "findById").mockResolvedValue({
-      ...(cancelledLoop as LoopWithUser),
-      additionalRepos: null,
-      primaryPullRequest: null,
-    });
+    vi.spyOn(loopsService, "findById").mockResolvedValue(
+      cancelledLoop as LoopWithUser
+    );
     vi.spyOn(loopsService, "addEvent").mockResolvedValue(true);
 
     const completedEvent = {
@@ -598,7 +564,7 @@ describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
     expect(updateStatusSpy).toHaveBeenCalledWith(
       "loop-1",
       "org-1",
-      LoopStatus.Completed,
+      "COMPLETED",
       expect.objectContaining({ error: null })
     );
   });

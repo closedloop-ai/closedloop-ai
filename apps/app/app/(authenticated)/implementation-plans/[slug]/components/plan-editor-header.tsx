@@ -1,11 +1,9 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import type {
-  DocumentWithWorkstream,
-  GenerationStatus,
-  PullRequestInfo,
-} from "@repo/api/src/types/document";
+  ArtifactWithWorkstream,
+  PullRequestState,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -31,22 +29,23 @@ import {
   RotateCcwIcon,
   TrashIcon,
 } from "lucide-react";
-import Link from "next/link";
 import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
-import { isCommandDisabled } from "@/lib/generation-status-utils";
 
 type PlanEditorHeaderProps = {
-  plan: DocumentWithWorkstream;
+  plan: ArtifactWithWorkstream;
+  showMetadataPanel: boolean;
   canShowPanel?: boolean;
   isDraft: boolean;
   isApproved: boolean;
-  pullRequests?: PullRequestInfo[] | null;
+  pullRequest?: {
+    htmlUrl: string;
+    number: number;
+    state: PullRequestState;
+  } | null;
   isExecuting: boolean;
-  generationStatus?: GenerationStatus;
-  generationStatusLoading?: boolean;
   onToggleMetadataPanel: () => void;
   onApprove: () => void;
   onRequestChanges: () => void;
@@ -67,13 +66,12 @@ type PlanEditorHeaderProps = {
 
 export function PlanEditorHeader({
   plan,
+  showMetadataPanel,
   canShowPanel = true,
   isDraft,
   isApproved,
-  pullRequests,
+  pullRequest,
   isExecuting,
-  generationStatus,
-  generationStatusLoading = false,
   onToggleMetadataPanel,
   onApprove,
   onRequestChanges,
@@ -90,9 +88,6 @@ export function PlanEditorHeader({
   onRestoreVersion,
   isPending = false,
 }: PlanEditorHeaderProps) {
-  const branchPrFlag = useFeatureFlag("branch-pr");
-  const branchPrEnabled = branchPrFlag?.enabled === true;
-
   const breadcrumbs: BreadcrumbEntry[] = plan.project?.teams?.[0]?.id
     ? [
         {
@@ -117,58 +112,47 @@ export function PlanEditorHeader({
           <MoreHorizontalIcon className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[280px]">
-        {pullRequests && pullRequests.length > 0 ? (
+      <DropdownMenuContent align="end" className="w-[180px]">
+        {pullRequest ? (
           <>
-            {pullRequests.map((pr) => (
-              <DropdownMenuItem asChild key={pr.id}>
-                {branchPrEnabled && pr.externalLinkId ? (
-                  <Link href={`/build/${pr.externalLinkId}`}>
-                    <GitPullRequestIcon className="h-4 w-4" />
-                    {pr.repoFullName ? `${pr.repoFullName} ` : ""}
-                    PR #{pr.number}
-                  </Link>
-                ) : (
-                  <a
-                    href={pr.htmlUrl}
-                    rel="noopener noreferrer"
-                    target="_blank"
-                  >
-                    <GitPullRequestIcon className="h-4 w-4" />
-                    {pr.repoFullName ? `${pr.repoFullName} ` : ""}
-                    PR #{pr.number}
-                    <ExternalLinkIcon className="ml-auto h-3 w-3" />
-                  </a>
-                )}
-              </DropdownMenuItem>
-            ))}
+            <DropdownMenuItem asChild>
+              <a
+                href={pullRequest.htmlUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                <GitPullRequestIcon className="h-4 w-4" />
+                PR #{pullRequest.number}
+                <ExternalLinkIcon className="ml-auto h-3 w-3" />
+              </a>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
         ) : null}
-        <DropdownMenuItem onClick={() => onExportMarkdown()}>
+        <DropdownMenuItem onClick={onExportMarkdown}>
           <DownloadIcon className="h-4 w-4" />
           Export Markdown
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => onExportToLinear()}>
+        <DropdownMenuItem onClick={onExportToLinear}>
           <ExternalLinkIcon className="h-4 w-4" />
           Export to Linear
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => onCopyMarkdown()}>
+        <DropdownMenuItem onClick={onCopyMarkdown}>
           <CopyIcon className="h-4 w-4" />
           Copy Markdown
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => onMove()}>
+        <DropdownMenuItem onClick={onMove}>
           <FolderIcon className="h-4 w-4" />
           Move...
         </DropdownMenuItem>
         {showRestore ? (
-          <DropdownMenuItem onClick={() => onRestoreVersion?.()}>
+          <DropdownMenuItem onClick={onRestoreVersion}>
             <RotateCcwIcon className="h-4 w-4" />
             Restore Version
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => onDelete()} variant="destructive">
+        <DropdownMenuItem onClick={onDelete} variant="destructive">
           <TrashIcon className="h-4 w-4" />
           Delete Plan
         </DropdownMenuItem>
@@ -187,80 +171,32 @@ export function PlanEditorHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {isDraft ? (
-            <DropdownMenuItem onClick={() => onApprove()}>
+            <DropdownMenuItem onClick={onApprove}>
               <CheckIcon className="h-4 w-4" />
               Approve
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem
-            disabled={
-              !isApproved ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "execute",
-                localMutationPending: isExecuting,
-              })
-            }
-            onClick={() => onExecute()}
+            disabled={!isApproved || isExecuting}
+            onClick={onExecute}
           >
             <PlayIcon className="h-4 w-4" />
             Execute
           </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={
-              isPending ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "request_changes",
-              })
-            }
-            onClick={() => onRequestChanges()}
-          >
+          <DropdownMenuItem disabled={isPending} onClick={onRequestChanges}>
             <MessageSquareIcon className="h-4 w-4" />
             Request Changes
           </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={
-              isPending ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "plan",
-              })
-            }
-            onClick={() => onRegenerate()}
-          >
+          <DropdownMenuItem disabled={isPending} onClick={onRegenerate}>
             <RefreshCwIcon className="h-4 w-4" />
             Regenerate Plan
           </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={
-              isPending ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "evaluate_plan",
-              })
-            }
-            onClick={() => onEvaluatePlan()}
-          >
+          <DropdownMenuItem disabled={isPending} onClick={onEvaluatePlan}>
             <GaugeIcon className="h-4 w-4" />
             Evaluate Plan
           </DropdownMenuItem>
           {onEvaluateCode ? (
-            <DropdownMenuItem
-              disabled={
-                isPending ||
-                isCommandDisabled({
-                  generationStatus,
-                  isLoading: generationStatusLoading,
-                  targetCommand: "evaluate_code",
-                })
-              }
-              onClick={() => onEvaluateCode()}
-            >
+            <DropdownMenuItem disabled={isPending} onClick={onEvaluateCode}>
               <GaugeIcon className="h-4 w-4" />
               Evaluate PR
             </DropdownMenuItem>
@@ -273,10 +209,10 @@ export function PlanEditorHeader({
       {canShowPanel && (
         <Button
           aria-label="Toggle chat panel"
-          onClick={() => onToggleMetadataPanel()}
+          onClick={onToggleMetadataPanel}
           size="icon"
           title="Toggle chat panel"
-          variant="ghost"
+          variant={showMetadataPanel ? "secondary" : "ghost"}
         >
           <PanelRightIcon className="h-4 w-4" />
         </Button>

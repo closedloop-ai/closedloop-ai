@@ -1,0 +1,158 @@
+name: 'Symphony Post Results'
+description: 'Post ClosedLoop results (plan or questions) to a GitHub issue'
+inputs:
+  issue_number:
+    description: 'GitHub issue number'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  github_token:
+    description: 'GitHub token for API calls'
+    required: true
+  comment_url:
+    description: 'URL of status comment to update'
+    required: false
+    default: ''
+  artifact_url:
+    description: 'URL of the ClosedLoop artifact (optional)'
+    required: false
+    default: ''
+  delete_old_comment:
+    description: 'Whether to delete the old status comment'
+    required: false
+    default: 'false'
+  skip_questions:
+    description: 'Skip showing open questions and always show the plan (use after answer phase)'
+    required: false
+    default: 'false'
+outputs:
+  result_type:
+    description: 'Type of result posted: plan or questions'
+    value: ${{ steps.post.outputs.result_type }}
+  comment_url:
+    description: 'URL of the posted comment'
+    value: ${{ steps.post.outputs.comment_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Post Results
+      id: post
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Helper: Extract comment ID from URL
+        get_comment_id() {
+          echo "$1" | grep -oE '[0-9]+$'
+        }
+
+        # Helper: Detect artifact type and extract content
+        # Sets global RESULT_TYPE and CONTENT variables
+        detect_artifact() {
+          local dir="${1%/}/"  # Ensure trailing slash
+          local skip_questions="${2:-false}"
+
+          # Priority 1: plan.json (code format)
+          if [ -f "${dir}plan.json" ]; then
+            # Validate JSON first
+            if ! jq empty "${dir}plan.json" 2>/dev/null; then
+              echo "::warning::plan.json exists but contains invalid JSON, falling back to plan.md"
+            else
+              local unanswered_count
+              unanswered_count=$(jq '[.openQuestions[]? | select(has("answer") | not)] | length' "${dir}plan.json")
+
+              # Show questions only if there are unanswered ones AND skip_questions is false
+              if [ "$unanswered_count" -gt 0 ] && [ "$skip_questions" != "true" ]; then
+                RESULT_TYPE="questions"
+                CONTENT=$(jq -r '[.openQuestions[] | select(has("answer") | not)] | .[] |
+                  "## " + .id + ": " + .question +
+                  (if .description then "\n\n*Context:* " + .description else "" end) +
+                  (if .recommendedAnswer then "\n\n**Recommended:** " + .recommendedAnswer else "" end)' \
+                  "${dir}plan.json")
+
+                if [ -z "$CONTENT" ]; then
+                  echo "::warning::Expected questions but extraction produced empty output"
+                  jq '.openQuestions' "${dir}plan.json"
+                  return 1
+                fi
+              else
+                RESULT_TYPE="plan"
+                CONTENT=$(jq -r '.content' "${dir}plan.json")
+              fi
+              return 0
+            fi
+          fi
+
+          return 1
+        }
+
+        # Find the latest run directory
+        LATEST_RUN=$(ls -td .closedloop-ai/runs/*/ 2>/dev/null | head -1)
+        if [ -z "$LATEST_RUN" ]; then
+          echo "::error::No runs directory found"
+          exit 1
+        fi
+        echo "Found run directory: $LATEST_RUN"
+
+        # Detect artifact type and extract content
+        if ! detect_artifact "$LATEST_RUN" "${{ inputs.skip_questions }}"; then
+          echo "::error::No plan artifacts found in run directory"
+          ls -la "$LATEST_RUN"
+          exit 1
+        fi
+
+        echo "result_type=$RESULT_TYPE" >> "$GITHUB_OUTPUT"
+
+        # Set title and emoji based on result type
+        if [ "$RESULT_TYPE" = "questions" ]; then
+          TITLE="Open Questions"
+          EMOJI="❓"
+          NEXT_STEPS="**Next steps:** Answer the questions above, then comment \`@symphony-cl answer\` followed by your answers."
+          STATUS_MSG="ClosedLoop has identified some open questions that need answers before planning can continue. See below."
+        else
+          TITLE="Implementation Plan"
+          EMOJI="📋"
+          NEXT_STEPS="**Next steps:** Review the plan above. When ready, comment \`@symphony-cl execute\` to implement it."
+          STATUS_MSG="ClosedLoop has generated an implementation plan. See below."
+        fi
+
+        # Build comment body
+        BODY=$(printf '<details>\n<summary><strong>%s %s</strong></summary>\n\n%s\n\n</details>' "$EMOJI" "$TITLE" "$CONTENT")
+
+        # Add artifact link if provided
+        if [ -n "${{ inputs.artifact_url }}" ]; then
+          BODY=$(printf '%s\n\n---\n[View ClosedLoop Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
+        fi
+
+        # Add next steps
+        BODY=$(printf '%s\n\n---\n%s' "$BODY" "$NEXT_STEPS")
+
+        # Delete old comment if requested
+        if [ "${{ inputs.delete_old_comment }}" = "true" ] && [ -n "${{ inputs.comment_url }}" ]; then
+          OLD_COMMENT_ID=$(get_comment_id "${{ inputs.comment_url }}")
+          if [ -n "$OLD_COMMENT_ID" ]; then
+            gh api -X DELETE "repos/${{ inputs.repository }}/issues/comments/$OLD_COMMENT_ID" || true
+            echo "Deleted old status comment"
+          fi
+        fi
+
+        # Post new comment
+        echo "$BODY" > /tmp/comment-body.txt
+        RESPONSE=$(gh api "repos/${{ inputs.repository }}/issues/${{ inputs.issue_number }}/comments" \
+          --input <(jq -n --rawfile body /tmp/comment-body.txt '{"body": $body}'))
+        rm -f /tmp/comment-body.txt
+
+        COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+        echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+        echo "Posted results: $COMMENT_URL"
+
+        # Update status comment if not deleting
+        if [ "${{ inputs.delete_old_comment }}" != "true" ] && [ -n "${{ inputs.comment_url }}" ]; then
+          STATUS_COMMENT_ID=$(get_comment_id "${{ inputs.comment_url }}")
+          if [ -n "$STATUS_COMMENT_ID" ]; then
+            gh api -X PATCH "repos/${{ inputs.repository }}/issues/comments/$STATUS_COMMENT_ID" \
+              -f body="$STATUS_MSG" || true
+          fi
+        fi

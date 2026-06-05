@@ -35,12 +35,7 @@ vi.mock("@vercel/functions", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
-  },
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 // --- Imports (after mocks) ---

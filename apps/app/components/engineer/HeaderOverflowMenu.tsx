@@ -9,11 +9,11 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   Brain,
+  FolderOpen,
   GitPullRequest,
   Moon,
   MoreVertical,
   Sun,
-  Terminal,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PRBrowserDialog } from "@/components/engineer/PRBrowserDialog";
@@ -59,7 +59,6 @@ export function HeaderOverflowMenu({
           <button
             aria-label="More options"
             className="relative flex size-10 cursor-pointer items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-300 ease-out hover:scale-105 hover:border-primary/30 hover:text-primary hover:shadow-md focus:outline-none focus-visible:border-transparent focus-visible:ring-[3px] focus-visible:ring-primary/50 active:scale-95"
-            type="button"
           >
             <MoreVertical className="size-[18px]" strokeWidth={1.5} />
             {!prBrowserSeen && (
@@ -95,8 +94,8 @@ export function HeaderOverflowMenu({
             className="cursor-pointer"
             onClick={() => setRunViewerOpen(true)}
           >
-            <Terminal className="size-4" />
-            Log Viewer...
+            <FolderOpen className="size-4" />
+            View Run...
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

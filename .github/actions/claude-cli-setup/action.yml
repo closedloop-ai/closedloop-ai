@@ -1,0 +1,121 @@
+name: 'Claude CLI Setup'
+description: 'Install and configure Claude CLI with closedloop marketplace and required plugins'
+inputs:
+  anthropic_api_key:
+    description: 'Anthropic API key for Claude CLI'
+    required: true
+outputs:
+  run_loop_path:
+    description: 'Path to run-loop.sh script from code plugin'
+    value: ${{ steps.resolve_run_loop.outputs.run_loop_path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Mask API Key
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.anthropic_api_key }}
+      run: |
+        # Prevents the API key from being printed in workflow logs
+        echo "::add-mask::$API_KEY"
+
+    - name: Install Claude CLI
+      shell: bash
+      run: |
+        set -e
+        MAX_ATTEMPTS=3
+        ATTEMPT=1
+
+        while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+          echo "Attempt $ATTEMPT of $MAX_ATTEMPTS: Installing Claude CLI..."
+          # claude.ai/install.sh redirects here; use direct URL to avoid Cloudflare bot challenge in CI
+          if curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash; then
+            echo "Claude CLI installed successfully"
+            break
+          else
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "::error::Failed to install Claude CLI after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+            echo "Installation failed, retrying in 5 seconds..."
+            sleep 5
+            ATTEMPT=$((ATTEMPT + 1))
+          fi
+        done
+
+    - name: Add Claude CLI to PATH
+      shell: bash
+      run: |
+        set -e
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Verify Claude CLI Installation
+      shell: bash
+      run: |
+        set -e
+        if ! command -v claude &> /dev/null; then
+          echo "::error::Claude CLI not found in PATH after installation"
+          exit 1
+        fi
+        echo "Claude CLI version:"
+        claude --version
+
+    - name: Configure Claude CLI
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+      run: |
+        set -e
+        claude plugin marketplace add closedloop-ai/claude-plugins
+        claude plugin install code@closedloop-ai
+        claude plugin install judges@closedloop-ai
+        claude plugin install self-learning@closedloop-ai
+        claude plugin install code-review@closedloop-ai
+        claude plugin install platform@closedloop-ai
+
+    - name: Resolve run-loop.sh Path
+      id: resolve_run_loop
+      shell: bash
+      run: |
+        set -e
+
+        PLUGIN_CACHE="$HOME/.claude/plugins/cache/closedloop-ai"
+
+        if [ ! -d "$PLUGIN_CACHE" ]; then
+          echo "::error::ClosedLoop plugin cache not found at $PLUGIN_CACHE"
+          exit 1
+        fi
+
+        # Find newest run-loop.sh by modification time
+        # GitHub Actions runs on Linux (GNU stat), but support macOS for local testing
+        if stat --version &> /dev/null 2>&1; then
+          RUN_LOOP_PATH=$(find "$PLUGIN_CACHE" -name "run-loop.sh" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+        else
+          RUN_LOOP_PATH=$(find "$PLUGIN_CACHE" -name "run-loop.sh" -type f -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+        fi
+
+        if [ -z "$RUN_LOOP_PATH" ] || [ ! -f "$RUN_LOOP_PATH" ]; then
+          echo "::error::run-loop.sh not found in code plugin cache"
+          exit 1
+        fi
+
+        echo "Found run-loop.sh at: $RUN_LOOP_PATH"
+        echo "run_loop_path=$RUN_LOOP_PATH" >> "$GITHUB_OUTPUT"
+
+    - name: Validate run-loop.sh Executable
+      shell: bash
+      env:
+        RUN_LOOP_PATH: ${{ steps.resolve_run_loop.outputs.run_loop_path }}
+      run: |
+        set -e
+
+        if [ ! -x "$RUN_LOOP_PATH" ]; then
+          echo "::warning::run-loop.sh is not executable, making it executable"
+          chmod +x "$RUN_LOOP_PATH" || {
+            echo "::error::Failed to make run-loop.sh executable at $RUN_LOOP_PATH"
+            exit 1
+          }
+        fi
+
+        echo "Validated run-loop.sh is executable at: $RUN_LOOP_PATH"

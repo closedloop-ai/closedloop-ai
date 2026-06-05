@@ -1,7 +1,7 @@
-import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import type {
   DecomposeFeature,
   DecomposeResult,
@@ -11,9 +11,10 @@ import type {
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
-import { artifactLinksService } from "@/app/artifact-links/service";
-import { documentService } from "@/app/documents/document-service";
-import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
+import { artifactsService } from "@/app/artifacts/service";
+import { entityLinksService } from "@/app/entity-links/service";
+import { featuresService } from "@/app/features/service";
+import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
 
@@ -108,7 +109,7 @@ async function downloadDecomposeArtifacts(
       const parsed = decomposeResultSchema.safeParse(r);
       if (!parsed.success) {
         log.warn(
-          "[loop-document-ingestion] features.json failed schema validation",
+          "[loop-artifact-ingestion] features.json failed schema validation",
           { error: parsed.error.message }
         );
         return null;
@@ -131,25 +132,25 @@ async function ingestDecomposeArtifacts(
 ): Promise<void> {
   const { result } = artifacts;
 
-  if (!(result?.features?.length && loop.documentId)) {
-    log.info("[loop-document-ingestion] No features to ingest", {
-      documentId: loop.documentId,
+  if (!(result?.features?.length && loop.artifactId)) {
+    log.info("[loop-artifact-ingestion] No features to ingest", {
+      artifactId: loop.artifactId,
       featureCount: result?.features?.length ?? 0,
     });
     return;
   }
 
   // Resolve projectId from the source PRD artifact
-  const prd = await documentService.findByIdSimple(
-    loop.documentId,
+  const prd = await artifactsService.findByIdSimple(
+    loop.artifactId,
     organizationId
   );
 
   if (!prd?.projectId) {
     log.warn(
-      "[loop-document-ingestion] PRD has no projectId, skipping ingestion",
+      "[loop-artifact-ingestion] PRD has no projectId, skipping ingestion",
       {
-        documentId: loop.documentId,
+        artifactId: loop.artifactId,
       }
     );
     return;
@@ -159,27 +160,24 @@ async function ingestDecomposeArtifacts(
 
   await withDb.tx(async () => {
     for (const feature of result.features) {
-      const createdFeature = await documentService.create(
+      const createdFeature = await featuresService.create(
         organizationId,
         loop.userId,
         {
           projectId: prd.projectId!,
-          type: DocumentType.Feature,
           title: feature.title,
-          content: buildFullDescription(feature),
+          description: buildFullDescription(feature),
           priority:
             PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
-          status: DocumentStatus.Draft,
+          status: FeatureStatus.NotStarted,
         }
       );
 
-      if (!createdFeature) {
-        continue;
-      }
-
-      await artifactLinksService.createLink(organizationId, {
-        sourceId: loop.documentId!,
+      await entityLinksService.createLink(organizationId, {
+        sourceId: loop.artifactId!,
+        sourceType: EntityType.Artifact,
         targetId: createdFeature.id,
+        targetType: EntityType.Feature,
         linkType: LinkType.Produces,
       });
 
@@ -187,8 +185,8 @@ async function ingestDecomposeArtifacts(
     }
   });
 
-  log.info("[loop-document-ingestion] Features ingested", {
-    documentId: loop.documentId,
+  log.info("[loop-artifact-ingestion] Features ingested", {
+    artifactId: loop.artifactId,
     featuresCreated: created,
   });
 }
@@ -207,7 +205,7 @@ function decomposeArtifactsFromUpload(
   const parsed = decomposeUploadSchema.safeParse(uploaded);
   if (!parsed.success) {
     log.warn(
-      "[loop-document-ingestion] Decompose upload failed schema validation",
+      "[loop-artifact-ingestion] Decompose upload failed schema validation",
       { error: parsed.error.message }
     );
     return { result: null };

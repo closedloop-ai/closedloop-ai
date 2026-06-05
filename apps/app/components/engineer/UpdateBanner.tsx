@@ -45,7 +45,6 @@ export function UpdateBanner() {
             toast.error(message);
           }
         }}
-        type="button"
       >
         {pulling ? (
           <span className="flex items-center gap-1.5">
@@ -60,7 +59,6 @@ export function UpdateBanner() {
         aria-label="Dismiss"
         className="ml-auto cursor-pointer rounded p-0.5 transition-colors hover:bg-primary-foreground/20"
         onClick={dismiss}
-        type="button"
       >
         <X className="size-3.5" />
       </button>

@@ -1,5 +1,6 @@
 "use client";
 
+import type { EntityType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -20,11 +21,12 @@ import {
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Loader2Icon } from "lucide-react";
 import { useState } from "react";
-import { useBatchMoveArtifacts } from "@/hooks/queries/use-artifact-links";
+import { useBatchMoveEntities } from "@/hooks/queries/use-entity-links";
 import { useProjects } from "@/hooks/queries/use-projects";
 
 type MovableEntity = {
   id: string;
+  entityType: EntityType;
   projectId?: string | null;
 };
 
@@ -60,7 +62,7 @@ export function MoveEntityDialog({
   const primaryEntity = entitiesToMove[0];
 
   const { data: projects = [] } = useProjects(teamId ?? undefined);
-  const batchMove = useBatchMoveArtifacts();
+  const batchMove = useBatchMoveEntities();
 
   const entityProjectId = primaryEntity?.projectId ?? currentProjectId;
   const availableProjects = projects.filter((p) => p.id !== entityProjectId);
@@ -83,7 +85,8 @@ export function MoveEntityDialog({
     }
     batchMove.mutate(
       {
-        artifactId: primaryEntity.id,
+        entityId: primaryEntity.id,
+        entityType: primaryEntity.entityType,
         targetProjectId: selectedProjectId,
         includeDownstream: true,
       },
@@ -107,7 +110,8 @@ export function MoveEntityDialog({
       const results = await Promise.allSettled(
         entitiesToMove.map((item) =>
           batchMove.mutateAsync({
-            artifactId: item.id,
+            entityId: item.id,
+            entityType: item.entityType,
             targetProjectId: selectedProjectId,
             includeDownstream: true,
           })

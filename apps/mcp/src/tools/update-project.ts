@@ -16,10 +16,9 @@ export function registerUpdateProject(
   server.registerTool(
     "update-project",
     {
-      description:
-        "Update a project's metadata or status by UUID or slug (PRO-*). Pass the user's slug verbatim.",
+      description: "Update a project's metadata or status by ID or slug.",
       inputSchema: {
-        projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
         name: z.string().optional().describe("New name for the project"),
         description: z
           .string()

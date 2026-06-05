@@ -1,4 +1,5 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   cleanup,
   fireEvent,
@@ -7,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockDocument } from "@/__tests__/fixtures/documents";
+import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { NewPlanModal } from "../new-plan-modal";
 import type { PlanSource } from "../plan-source";
 
@@ -18,19 +19,18 @@ const mockUseCreateArtifact = vi.fn();
 const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseProjects = vi.fn();
 const mockUseProject = vi.fn();
-const mockUsePreLoopGate = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => mockUseRouter(),
 }));
 
-vi.mock("@/hooks/queries/use-documents", async () => {
-  const actual = await vi.importActual("@/hooks/queries/use-documents");
+vi.mock("@/hooks/queries/use-artifacts", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-artifacts");
   return {
     ...actual,
-    useDocuments: () => mockUseArtifacts(),
-    useCreateDocument: () => mockUseCreateArtifact(),
-    useCreateAndGenerateDocument: () => mockUseCreateAndGenerateArtifact(),
+    useArtifacts: () => mockUseArtifacts(),
+    useCreateArtifact: () => mockUseCreateArtifact(),
+    useCreateAndGenerateArtifact: () => mockUseCreateAndGenerateArtifact(),
   };
 });
 
@@ -51,10 +51,6 @@ vi.mock("@/hooks/queries/use-projects", async () => {
   };
 });
 
-vi.mock("@/lib/system-check/pre-loop-system-check-provider", () => ({
-  useOptionalPreLoopSystemCheckGate: () => mockUsePreLoopGate(),
-}));
-
 vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubIntegrationStatus: () => ({
     data: { connected: false },
@@ -64,32 +60,11 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubBranches: () => ({ data: undefined, isLoading: false }),
 }));
 
-// PLN-462: NewPlanModal calls useInheritedAdditionalRepos under TanStack
-// Query. Stub it so the existing tests don't need a QueryClientProvider —
-// the multi-repo behaviour has its own dedicated test file.
-vi.mock("@/hooks/queries/use-loops", () => ({
-  useInheritedAdditionalRepos: () => ({
-    data: { additionalRepos: [], source: null },
-    isFetched: true,
-  }),
-}));
-
-// PLN-237: NewPlanModal resolves the project's primary repo via
-// `useTeamRepositoriesUnion`, which uses `useQueries` and would require a
-// QueryClientProvider. Stub it for these structural tests; multi-repo
-// behaviour has its own dedicated test file.
-vi.mock("@/hooks/use-team-repositories-union", () => ({
-  useTeamRepositoriesUnion: () => ({
-    repositories: [],
-    isLoading: false,
-    error: null,
-  }),
-}));
-
 function createMockSource(overrides?: Partial<PlanSource>): PlanSource {
   return {
     id: "source-1",
     title: "Test Source",
+    sourceType: EntityType.Artifact,
     ...overrides,
   } as PlanSource;
 }
@@ -138,7 +113,6 @@ describe("NewPlanModal", () => {
       data: null,
       isLoading: false,
     });
-    mockUsePreLoopGate.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -188,10 +162,10 @@ describe("NewPlanModal", () => {
 
     it("should hide project selector when source PRD is selected", async () => {
       const mockPrds = [
-        createMockDocument({
+        createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: DocumentType.Prd,
+          type: ArtifactType.Prd,
           projectId: "project-1",
         }),
       ];
@@ -357,7 +331,7 @@ describe("NewPlanModal", () => {
 
       // Verify mutation input includes source-derived fields
       const mutationArg = mockCreateAndGenerateMutate.mock.calls[0][0];
-      expect(mutationArg.input).toMatchObject({
+      expect(mutationArg).toMatchObject({
         type: "IMPLEMENTATION_PLAN",
         sourceId: "prd-1",
         projectId: "project-1",
@@ -366,125 +340,20 @@ describe("NewPlanModal", () => {
         targetBranch: "main",
       });
     });
-
-    it("does not create a generated plan until the pre-loop gate executes the callback", async () => {
-      const mockCreateAndGenerateMutate = vi.fn();
-      const mockRunWithPreLoopSystemCheck = vi
-        .fn()
-        .mockResolvedValue({ status: "blocked", attemptId: "attempt-1" });
-      mockUseCreateAndGenerateArtifact.mockReturnValue({
-        mutate: mockCreateAndGenerateMutate,
-        isPending: false,
-      });
-      mockUsePreLoopGate.mockReturnValue({
-        runWithPreLoopSystemCheck: mockRunWithPreLoopSystemCheck,
-        cancelPendingPreLoopAttempt: vi.fn(),
-        isChecking: false,
-        isDialogOpen: false,
-        pendingOwnerKey: null,
-        pendingCommand: null,
-      });
-
-      const mockSource = createMockSource({
-        id: "prd-1",
-        title: "Dashboard PRD",
-        projectId: "project-1",
-        targetRepo: "org/repo",
-      });
-
-      render(<NewPlanModal open={true} source={mockSource} />);
-
-      screen.getByRole("button", { name: GENERATE_PLAN_REGEX }).click();
-
-      await waitFor(() => {
-        expect(mockRunWithPreLoopSystemCheck).toHaveBeenCalledOnce();
-      });
-      expect(mockCreateAndGenerateMutate).not.toHaveBeenCalled();
-
-      const [metadata, execute] = mockRunWithPreLoopSystemCheck.mock.calls[0];
-      expect(metadata).toMatchObject({
-        command: "generate_plan",
-        documentType: "implementation_plan",
-        ownerKey: expect.stringContaining("new-plan:"),
-      });
-
-      execute();
-
-      expect(mockCreateAndGenerateMutate).toHaveBeenCalledOnce();
-      expect(mockCreateAndGenerateMutate.mock.calls[0][0].input).toMatchObject({
-        type: "IMPLEMENTATION_PLAN",
-        sourceId: "prd-1",
-        projectId: "project-1",
-        targetRepo: "org/repo",
-      });
-    });
-
-    it("cancels a pending pre-loop generate attempt when the modal closes", () => {
-      const mockCancelPending = vi.fn();
-      mockUsePreLoopGate.mockReturnValue({
-        runWithPreLoopSystemCheck: vi.fn(),
-        cancelPendingPreLoopAttempt: mockCancelPending,
-        isChecking: false,
-        isDialogOpen: true,
-        pendingOwnerKey: "some-owner",
-        pendingCommand: "generate_plan",
-      });
-
-      render(
-        <NewPlanModal
-          onOpenChange={vi.fn()}
-          open={true}
-          source={createMockSource({ id: "prd-1" })}
-        />
-      );
-
-      screen.getByRole("button", { name: CANCEL_REGEX }).click();
-
-      expect(mockCancelPending).toHaveBeenCalledWith(
-        expect.stringContaining("new-plan:")
-      );
-    });
-
-    it("does not disable Generate Plan while another owner has a pre-loop check pending", () => {
-      mockUsePreLoopGate.mockReturnValue({
-        runWithPreLoopSystemCheck: vi.fn(),
-        cancelPendingPreLoopAttempt: vi.fn(),
-        isChecking: true,
-        isDialogOpen: false,
-        pendingOwnerKey: "other-owner",
-        pendingCommand: "generate_plan",
-      });
-
-      render(
-        <NewPlanModal
-          open={true}
-          source={createMockSource({
-            id: "prd-1",
-            title: "Dashboard PRD",
-            targetRepo: "org/repo",
-          })}
-        />
-      );
-
-      const submitButton = screen.getByRole("button", {
-        name: GENERATE_PLAN_REGEX,
-      });
-      expect(submitButton).not.toBeDisabled();
-    });
   });
 
   describe("PRD selector behavior", () => {
     it("should load PRDs when modal opens without source artifact", async () => {
       const mockPrds = [
-        createMockDocument({
+        createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: DocumentType.Prd,
+          type: ArtifactType.Prd,
         }),
-        createMockDocument({
+        createMockArtifact({
           id: "prd-2",
           title: "Authentication PRD",
-          type: DocumentType.Prd,
+          type: ArtifactType.Prd,
         }),
       ];
 
@@ -509,10 +378,10 @@ describe("NewPlanModal", () => {
 
     it("should update title and fileName when PRD is selected", async () => {
       const mockPrds = [
-        createMockDocument({
+        createMockArtifact({
           id: "prd-1",
           title: "Dashboard Redesign",
-          type: DocumentType.Prd,
+          type: ArtifactType.Prd,
           fileName: "dashboard-redesign.md",
         }),
       ];
@@ -551,10 +420,10 @@ describe("NewPlanModal", () => {
 
     it("should show PlanPreview when PRD is selected", async () => {
       const mockPrds = [
-        createMockDocument({
+        createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: DocumentType.Prd,
+          type: ArtifactType.Prd,
           targetRepo: "org/repo",
           targetBranch: "main",
         }),
@@ -728,6 +597,37 @@ describe("NewPlanModal", () => {
       expect(
         screen.queryByRole("button", { name: NEW_PLAN_REGEX })
       ).not.toBeInTheDocument();
+    });
+
+    it("should reset form when modal is closed", async () => {
+      const mockOnOpenChange = vi.fn();
+
+      const { rerender } = render(
+        <NewPlanModal onOpenChange={mockOnOpenChange} open={true} />
+      );
+
+      // Fill in some fields
+      const titleInput = screen.getByLabelText(TITLE_REGEX);
+      fireEvent.change(titleInput, { target: { value: "Test Title" } });
+
+      // Close modal
+      const cancelButton = screen.getByRole("button", { name: CANCEL_REGEX });
+      cancelButton.click();
+
+      await waitFor(() => {
+        expect(mockOnOpenChange).toHaveBeenCalledWith(false);
+      });
+
+      // Reopen modal - form should be reset
+      mockOnOpenChange.mockClear();
+      rerender(<NewPlanModal onOpenChange={mockOnOpenChange} open={true} />);
+
+      await waitFor(() => {
+        const titleInputReset = screen.getByLabelText(
+          TITLE_REGEX
+        ) as HTMLInputElement;
+        expect(titleInputReset.value).toBe("");
+      });
     });
   });
 });

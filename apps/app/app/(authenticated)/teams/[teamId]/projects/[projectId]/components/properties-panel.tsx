@@ -34,8 +34,6 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useGitHubIntegrationStatus } from "@/hooks/queries/use-github-integration";
-import { useMultiRepoConfigEnabled } from "@/hooks/use-multi-repo-config-enabled";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ensureDate } from "@/lib/date-utils";
 import {
@@ -45,7 +43,6 @@ import {
 import { getUserDisplayName } from "@/lib/user-utils";
 import { CodebaseSummaryUpload } from "./codebase-summary-upload";
 import { DefaultRepositoryPicker } from "./default-repository-picker";
-import { RepoOverridePicker } from "./repo-override-picker";
 
 type PropertiesPanelProps = {
   project: ProjectWithDetails;
@@ -73,9 +70,6 @@ export function PropertiesPanel({
   );
   const { members: teamMembers } = useTeamMembers({ teamIds });
   const projectSettings = getProjectSettings(project.settings);
-  const multiRepoConfigEnabled = useMultiRepoConfigEnabled();
-  const { data: githubStatus } = useGitHubIntegrationStatus();
-  const isGitHubConnected = githubStatus?.connected === true;
 
   return (
     <Collapsible onOpenChange={setIsOpen} open={isOpen}>
@@ -195,31 +189,17 @@ export function PropertiesPanel({
           />
         </div>
 
-        {/* Default Repositories */}
+        {/* Default Repository */}
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <GitBranchIcon className="h-4 w-4" />
-            <span>
-              {multiRepoConfigEnabled
-                ? "Default Repositories"
-                : "Default Repository"}
-            </span>
+            <span>Default Repository</span>
           </div>
-          {multiRepoConfigEnabled ? (
-            <RepoOverridePicker
-              currentOverride={projectSettings.repositoryOverrides}
-              currentSettings={project.settings}
-              enabled={isGitHubConnected}
-              projectId={project.id}
-              teams={project.teams}
-            />
-          ) : (
-            <DefaultRepositoryPicker
-              currentSettings={project.settings}
-              defaultRepository={projectSettings.defaultRepository}
-              projectId={project.id}
-            />
-          )}
+          <DefaultRepositoryPicker
+            currentSettings={project.settings}
+            defaultRepository={projectSettings.defaultRepository}
+            projectId={project.id}
+          />
         </div>
 
         {/* Codebase Summary Upload */}

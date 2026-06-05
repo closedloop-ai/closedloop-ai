@@ -3,7 +3,6 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
-    emptyStringAsUndefined: true,
     server: {
       DD_API_KEY: z.string().min(1).optional(),
       DD_SITE: z.string().min(1).optional(),

@@ -1,7 +1,7 @@
-import { BATCH_META_MAX_SLUGS } from "@repo/api/src/types/document";
+import { BATCH_META_MAX_SLUGS } from "@repo/api/src/types/artifact";
 import { auth } from "@repo/auth/server";
 import { resolveRoomMetadata } from "@repo/collaboration/room-metadata";
-import { parseDocumentRoomId } from "@repo/collaboration/room-utils";
+import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -12,7 +12,7 @@ import { fetchUser } from "../../fetch-user";
  * GET /api/collaboration/rooms/resolve?roomIds=id1,id2,...
  *
  * Resolves room IDs to display names and navigation URLs by reading
- * Liveblocks room metadata (which stores documentType at creation time).
+ * Liveblocks room metadata (which stores artifactType at creation time).
  * Used by the client-side resolveRoomsInfo function in the top-level provider.
  *
  * Only resolves rooms belonging to the authenticated user's organization.
@@ -44,7 +44,7 @@ export async function GET(request: Request): Promise<Response> {
     // Filter to only rooms belonging to the user's organization (defense in depth)
     const orgScopedRoomIds = roomIds.filter((roomId) => {
       try {
-        const { organizationId } = parseDocumentRoomId(roomId);
+        const { organizationId } = parseArtifactRoomId(roomId);
         return organizationId === user.organizationId;
       } catch {
         return false;
@@ -57,7 +57,7 @@ export async function GET(request: Request): Promise<Response> {
     // Extract slugs for title enrichment (derived from cappedRoomIds, independent of resolveRoomMetadata)
     const slugs = cappedRoomIds.flatMap((roomId) => {
       try {
-        return [parseDocumentRoomId(roomId).slug];
+        return [parseArtifactRoomId(roomId).slug];
       } catch {
         return [];
       }
@@ -73,7 +73,7 @@ export async function GET(request: Request): Promise<Response> {
     try {
       const enrichedResults = results.map((room) => {
         try {
-          const { slug } = parseDocumentRoomId(room.roomId);
+          const { slug } = parseArtifactRoomId(room.roomId);
           return { ...room, name: titleMap[slug] ?? room.name };
         } catch {
           return room;

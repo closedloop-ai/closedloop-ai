@@ -3,20 +3,11 @@
  * to the electron harness via the desktop gateway.
  */
 
-import {
-  CURRENT_DESKTOP_API_NAMESPACE,
-  type DesktopApiNamespace,
-  getDesktopApiNamespaceFromCapabilities,
-  rewriteDesktopApiPath,
-} from "@repo/api/src/desktop-api-namespace";
 import type { JsonValue } from "@repo/api/src/types/common";
-import { DocumentType } from "@repo/api/src/types/document";
-import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
-import type { LoopBody } from "@repo/api/src/types/loop-body";
+import type { LoopCommand } from "@repo/api/src/types/loop";
+import type { SymphonyLoopBody } from "@repo/api/src/types/symphony-loop-body";
 import { log } from "@repo/observability/log";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
-import { computeTargetsService } from "@/app/compute-targets/service";
-import { shortContentHash } from "@/lib/content-hash";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   toEnvelope,
@@ -31,12 +22,7 @@ import type { ContextPack } from "./loop-state";
  */
 async function assertDelivered(
   response: Response,
-  context: {
-    label: string;
-    loopId: string;
-    commandId: string;
-    computeTargetId: string;
-  }
+  context: { label: string; loopId: string; commandId: string }
 ): Promise<void> {
   const result = (await response.json().catch(() => null)) as {
     delivered?: boolean;
@@ -46,55 +32,12 @@ async function assertDelivered(
     log.error(`[loop-desktop] ${context.label} relay dispatch not delivered`, {
       loopId: context.loopId,
       commandId: context.commandId,
-      computeTargetId: context.computeTargetId,
       reason: result.reason,
     });
-    throw new RelayDispatchNotDeliveredError(result.reason);
+    throw new Error(
+      `Relay dispatch not delivered: ${result.reason ?? "target offline"}`
+    );
   }
-}
-
-function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
-  artifactCount: number;
-  implementationPlanArtifactPresent: boolean;
-  implementationPlanRawRecordPresent: boolean;
-  implementationPlanRawContentPresent: boolean;
-  implementationPlanRawContentMatchesArtifact: boolean | null;
-  implementationPlanRawReusableByDesktop: boolean | null;
-  implementationPlanContentLength: number | null;
-  implementationPlanRawContentLength: number | null;
-  implementationPlanContentHash: string | null;
-  implementationPlanRawContentHash: string | null;
-} {
-  const planArtifact = contextPack.artifacts.find(
-    (artifact) => artifact.type === DocumentType.ImplementationPlan
-  );
-  const rawPlanContent =
-    typeof planArtifact?.raw?.content === "string"
-      ? planArtifact.raw.content
-      : undefined;
-  let implementationPlanRawReusableByDesktop: boolean | null = null;
-  if (planArtifact && rawPlanContent !== undefined) {
-    implementationPlanRawReusableByDesktop =
-      rawPlanContent === planArtifact.content;
-  } else if (planArtifact) {
-    implementationPlanRawReusableByDesktop = false;
-  }
-
-  return {
-    artifactCount: contextPack.artifacts.length,
-    implementationPlanArtifactPresent: planArtifact !== undefined,
-    implementationPlanRawRecordPresent: planArtifact?.raw !== undefined,
-    implementationPlanRawContentPresent: rawPlanContent !== undefined,
-    implementationPlanRawContentMatchesArtifact:
-      planArtifact && rawPlanContent !== undefined
-        ? rawPlanContent === planArtifact.content
-        : null,
-    implementationPlanRawReusableByDesktop,
-    implementationPlanContentLength: planArtifact?.content.length ?? null,
-    implementationPlanRawContentLength: rawPlanContent?.length ?? null,
-    implementationPlanContentHash: shortContentHash(planArtifact?.content),
-    implementationPlanRawContentHash: shortContentHash(rawPlanContent),
-  };
 }
 
 /**
@@ -120,7 +63,6 @@ async function dispatchRelayOperation(
         log.error(`[loop-desktop] ${context.label} wire conversion failed`, {
           loopId: context.loopId,
           commandId: context.commandId,
-          computeTargetId,
         });
         if (throwOnFailure) {
           throw err;
@@ -146,7 +88,6 @@ async function dispatchRelayOperation(
         log.error(`[loop-desktop] ${context.label} relay dispatch failed`, {
           loopId: context.loopId,
           commandId: context.commandId,
-          computeTargetId,
           status: response.status,
           body,
         });
@@ -159,13 +100,12 @@ async function dispatchRelayOperation(
         // Check the delivered flag -- a 200 with delivered: false means the
         // target was offline or disconnected. Fail loudly so the caller
         // does not report success for a loop that never reached the desktop.
-        await assertDelivered(response, { ...context, computeTargetId });
+        await assertDelivered(response, context);
       }
     } catch (dispatchError) {
       log.error(`[loop-desktop] ${context.label} failed to dispatch to relay`, {
         loopId: context.loopId,
         commandId: context.commandId,
-        computeTargetId,
         error: dispatchError,
       });
       if (throwOnFailure) {
@@ -179,12 +119,10 @@ async function dispatchRelayOperation(
 
 export class DispatchError extends Error {
   readonly commandId: string;
-  readonly dispatchReason?: string;
-  constructor(message: string, commandId: string, dispatchReason?: string) {
+  constructor(message: string, commandId: string) {
     super(message);
     this.name = "DispatchError";
     this.commandId = commandId;
-    this.dispatchReason = dispatchReason;
   }
 }
 
@@ -192,49 +130,20 @@ export function isDispatchError(error: unknown): error is DispatchError {
   return error instanceof DispatchError;
 }
 
-class RelayDispatchNotDeliveredError extends Error {
-  readonly reason?: string;
-  constructor(reason?: string) {
-    super(`Relay dispatch not delivered: ${reason ?? "target offline"}`);
-    this.name = "RelayDispatchNotDeliveredError";
-    this.reason = reason;
-  }
-}
-
 type LaunchDesktopOpts = {
   loopId: string;
   organizationId: string;
   command: LoopCommand;
   computeTargetId: string;
-  desktopApiNamespace?: DesktopApiNamespace;
   closedLoopAuthToken: string;
   apiBaseUrl: string;
-  s3StateKey?: string;
   contextPack: ContextPack;
-  documentSlug?: string;
+  artifactSlug?: string;
   parentLoopId?: string;
   parentBranchName?: string;
   parentSessionId?: string;
   localRepoPath?: string;
-  additionalRepos?: AdditionalRepoRef[];
-  documentId?: string;
 };
-
-async function resolveDesktopApiNamespace(
-  computeTargetId: string,
-  namespaceHint?: DesktopApiNamespace
-): Promise<DesktopApiNamespace> {
-  if (namespaceHint) {
-    return namespaceHint;
-  }
-
-  const target = await computeTargetsService.findById(computeTargetId);
-  return (
-    getDesktopApiNamespaceFromCapabilities(
-      target?.capabilities as Record<string, unknown> | null
-    ) ?? CURRENT_DESKTOP_API_NAMESPACE
-  );
-}
 
 /**
  * Launch a loop on a desktop compute target.
@@ -250,59 +159,37 @@ export async function launchLoopOnDesktop(
     loopId,
     command,
     computeTargetId,
-    desktopApiNamespace,
     closedLoopAuthToken,
     apiBaseUrl,
     contextPack,
-    documentSlug,
+    artifactSlug,
     parentLoopId,
     parentBranchName,
     parentSessionId,
     localRepoPath,
-    additionalRepos,
-    documentId,
-    s3StateKey,
   } = opts;
-  const namespace = await resolveDesktopApiNamespace(
-    computeTargetId,
-    desktopApiNamespace
-  );
 
   const input = {
     operationId: "symphony_loop",
     method: "POST" as const,
-    path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
+    path: "/api/engineer/symphony/loop",
     body: {
       loopId,
       command,
       closedLoopAuthToken,
       apiBaseUrl,
-      ...(s3StateKey ? { s3StateKey } : {}),
       artifacts: contextPack.artifacts,
       prompt: contextPack.prompt ?? null,
       repo: contextPack.repoInfo ?? null,
       committer: contextPack.committer ?? null,
-      artifactSlug: documentSlug ?? null,
+      artifactSlug: artifactSlug ?? null,
       parentLoopId: parentLoopId ?? null,
       parentBranchName: parentBranchName ?? null,
       parentSessionId: parentSessionId ?? null,
       localRepoPath: localRepoPath ?? null,
-      ...(contextPack.userContext === undefined
-        ? {}
-        : { userContext: contextPack.userContext }),
-      ...(contextPack.attachments === undefined
-        ? {}
-        : { attachments: contextPack.attachments }),
-      ...(additionalRepos === undefined
-        ? {}
-        : {
-            additionalRepos: additionalRepos.map((r) => ({
-              fullName: r.fullName,
-              branch: r.branch,
-            })),
-          }),
-      ...(documentId ? { primaryArtifactId: documentId } : {}),
-    } satisfies LoopBody as JsonValue,
+      userContext: contextPack.userContext,
+      attachments: contextPack.attachments,
+    } satisfies SymphonyLoopBody as JsonValue,
   };
 
   const createResult = await desktopCommandStore.createCommand(
@@ -321,22 +208,16 @@ export async function launchLoopOnDesktop(
       true
     );
   } catch (err) {
-    const dispatchReason =
-      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined;
     throw new DispatchError(
       err instanceof Error ? err.message : String(err),
-      commandId,
-      dispatchReason
+      commandId
     );
   }
 
   log.info("[loop-desktop] Desktop loop command dispatched", {
     loopId,
     commandId,
-    command,
     computeTargetId,
-    desktopApiNamespace: namespace,
-    ...getImplementationPlanPayloadDiagnostics(contextPack),
   });
 
   return commandId;
@@ -350,11 +231,10 @@ export async function stopDesktopLoop(
   loopId: string,
   computeTargetId: string
 ): Promise<void> {
-  const namespace = await resolveDesktopApiNamespace(computeTargetId);
   const killInput = {
     operationId: "symphony_loop_kill",
     method: "POST" as const,
-    path: rewriteDesktopApiPath("/api/gateway/symphony/loop/kill", namespace),
+    path: "/api/engineer/symphony/loop/kill",
     body: { loopId },
   };
   const createResult = await desktopCommandStore.createCommand(

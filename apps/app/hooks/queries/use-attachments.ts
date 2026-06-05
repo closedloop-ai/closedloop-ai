@@ -13,24 +13,26 @@ import { useApiClient } from "@/hooks/use-api-client";
 export const attachmentKeys = {
   all: ["attachments"] as const,
   lists: () => [...attachmentKeys.all, "list"] as const,
-  list: (documentId: string) =>
-    [...attachmentKeys.lists(), documentId] as const,
+  list: (artifactId: string) =>
+    [...attachmentKeys.lists(), artifactId] as const,
+  issueList: (issueId: string) =>
+    [...attachmentKeys.all, "issue-list", issueId] as const,
   detail: (id: string) => [...attachmentKeys.all, "detail", id] as const,
 };
 
 // Queries
 
 export function useAttachments(
-  documentId: string,
+  artifactId: string,
   options?: Omit<UseQueryOptions<FileAttachment[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: attachmentKeys.list(documentId),
+    queryKey: attachmentKeys.list(artifactId),
     queryFn: () =>
-      apiClient.get<FileAttachment[]>(`/documents/${documentId}/attachments`),
-    enabled: !!documentId,
+      apiClient.get<FileAttachment[]>(`/artifacts/${artifactId}/attachments`),
+    enabled: !!artifactId,
     ...options,
   });
 }
@@ -43,40 +45,72 @@ export function useRequestAttachmentUpload() {
 
   return useMutation({
     mutationFn: ({
-      documentId,
+      artifactId,
       filename,
       mimeType,
       sizeBytes,
     }: {
-      documentId: string;
+      artifactId: string;
       filename: string;
       mimeType: string;
       sizeBytes: number;
     }) =>
       apiClient.post<CreateAttachmentResponse>(
-        `/documents/${documentId}/attachments`,
+        `/artifacts/${artifactId}/attachments`,
         { filename, mimeType, sizeBytes }
       ),
-    onSuccess: (_, { documentId }) => {
+    onSuccess: (_, { artifactId }) => {
       queryClient.invalidateQueries({
-        queryKey: attachmentKeys.list(documentId),
+        queryKey: attachmentKeys.list(artifactId),
       });
     },
   });
 }
 
-export function useDeleteAttachment(documentId: string) {
+export function useDeleteAttachment(artifactId: string) {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
     mutationFn: (attachmentId: string) =>
       apiClient.delete<{ deleted: true }>(
-        `/documents/${documentId}/attachments/${attachmentId}`
+        `/artifacts/${artifactId}/attachments/${attachmentId}`
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: attachmentKeys.list(documentId),
+        queryKey: attachmentKeys.list(artifactId),
+      });
+    },
+  });
+}
+
+export function useFeatureAttachments(
+  featureId: string,
+  options?: Omit<UseQueryOptions<FileAttachment[]>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: attachmentKeys.issueList(featureId),
+    queryFn: () =>
+      apiClient.get<FileAttachment[]>(`/features/${featureId}/attachments`),
+    enabled: !!featureId,
+    ...options,
+  });
+}
+
+export function useDeleteFeatureAttachment(featureId: string) {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (attachmentId: string) =>
+      apiClient.delete<{ deleted: true }>(
+        `/features/${featureId}/attachments/${attachmentId}`
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: attachmentKeys.issueList(featureId),
       });
     },
   });
@@ -87,14 +121,14 @@ export function useDownloadAttachment() {
 
   return useMutation({
     mutationFn: async ({
-      documentId,
+      artifactId,
       attachmentId,
     }: {
-      documentId: string;
+      artifactId: string;
       attachmentId: string;
     }) => {
       const { downloadUrl } = await apiClient.get<AttachmentDownloadResponse>(
-        `/documents/${documentId}/attachments/${attachmentId}`
+        `/artifacts/${artifactId}/attachments/${attachmentId}`
       );
 
       if (globalThis.window === undefined) {

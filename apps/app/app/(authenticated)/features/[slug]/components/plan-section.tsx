@@ -1,38 +1,49 @@
 "use client";
 
 import {
-  type DocumentDetail,
+  type Artifact,
   type GenerationStatus,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/document";
+} from "@repo/api/src/types/artifact";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { BotIcon, SparklesIcon } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
-import { ArtifactRow } from "@/components/document-editor/relationships/artifact-row";
-import { SectionHeader } from "@/components/document-editor/relationships/section-header";
+import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
-import { useDeleteArtifactLink } from "@/hooks/queries/use-artifact-links";
-import { useDocument } from "@/hooks/queries/use-documents";
-import type { ModalSession } from "@/hooks/use-modal-session";
+import { useArtifact } from "@/hooks/queries/use-artifacts";
+import { useDeleteEntityLink } from "@/hooks/queries/use-entity-links";
+import { getArtifactRoute } from "@/lib/artifact-navigation";
+import {
+  ARTIFACT_STATUS_TO_ICON,
+  ARTIFACT_TYPE_BADGE_LABELS,
+  ARTIFACT_TYPE_ICONS,
+} from "@/lib/project-constants";
 import { useFeatureState } from "../use-feature-state";
+import { OverflowMenu } from "./overflow-menu";
+import { SectionHeader } from "./section-header";
 import { SelectPlanDialog } from "./select-plan-dialog";
 
 type PlanSectionProps = {
-  feature: DocumentDetail;
-  generatePlanModalSession: ModalSession;
+  feature: FeatureWithWorkstream;
+  showGenerateModal: boolean;
+  onGenerateModalChange: (open: boolean) => void;
   generationStatus?: GenerationStatus;
 };
 
 export function PlanSection({
   feature,
-  generatePlanModalSession,
+  showGenerateModal,
+  onGenerateModalChange,
   generationStatus,
 }: Readonly<PlanSectionProps>) {
   const [showSelectModal, setShowSelectModal] = useState(false);
-  const [isOpen, setIsOpen] = useState(true);
 
   const {
     linkedPlanLink,
@@ -42,9 +53,9 @@ export function PlanSection({
     newPlanSource,
   } = useFeatureState(feature);
 
-  const { data: plan, isLoading: isLoadingPlan } = useDocument(linkedPlanId);
+  const { data: plan, isLoading: isLoadingPlan } = useArtifact(linkedPlanId);
 
-  const deleteLink = useDeleteArtifactLink();
+  const deleteLink = useDeleteEntityLink();
 
   function handleUnlink(linkId: string) {
     deleteLink.mutate(linkId, {
@@ -69,11 +80,7 @@ export function PlanSection({
   return (
     <>
       <div className="bg-background">
-        <SectionHeader
-          isOpen={isOpen}
-          onToggle={() => setIsOpen((prev) => !prev)}
-          title="Plan"
-        >
+        <SectionHeader title="Plan">
           {hasPlan || isLoadingPlan ? null : (
             <Badge
               className="gap-1.5 border border-[var(--progress-badge-border)] bg-[var(--progress-badge-bg)] px-2.5 py-1 text-[var(--progress-badge-text)]"
@@ -84,64 +91,52 @@ export function PlanSection({
             </Badge>
           )}
         </SectionHeader>
-        {isOpen ? (
-          <>
-            {hasPlan ? (
-              <div className="flex flex-col border-t">
-                <ArtifactRow
-                  artifact={plan}
-                  linkId={linkedPlanLink?.id ?? null}
-                  onDetach={handleUnlink}
-                />
-              </div>
-            ) : null}
-            {!(hasPlan || isLoadingPlan) && (
-              <div className="flex items-center py-3">
-                <div className="flex flex-1 flex-col gap-4">
-                  <p className="text-base text-muted-foreground">
-                    {isReady
-                      ? "A plan has not yet been generated for this feature"
-                      : "Need description to generate a plan"}
-                  </p>
-                  <div className="flex gap-3">
-                    <Button
-                      disabled={!isReady}
-                      onClick={generatePlanModalSession.openModal}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      Generate Plan
-                      <SparklesIcon className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      onClick={() => setShowSelectModal(true)}
-                      size="sm"
-                      variant="outline"
-                    >
-                      Select Existing Plan
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-            {isGeneratingPlan && (
-              <div className="px-2 py-1">
-                <GenerationStatusIndicator
-                  generationStatus={generationStatus}
-                />
-              </div>
-            )}
-          </>
+        {hasPlan ? (
+          <PlanRow
+            linkId={linkedPlanLink!.id}
+            onUnlink={handleUnlink}
+            plan={plan}
+          />
         ) : null}
+        {!(hasPlan || isLoadingPlan) && (
+          <div className="flex items-center py-3">
+            <div className="flex flex-1 flex-col gap-4">
+              <p className="text-base text-muted-foreground">
+                {isReady
+                  ? "A plan has not yet been generated for this feature"
+                  : "Need description to generate a plan"}
+              </p>
+              <div className="flex gap-3">
+                <Button
+                  disabled={!isReady}
+                  onClick={() => onGenerateModalChange(true)}
+                  size="sm"
+                  variant="default"
+                >
+                  Generate Plan
+                  <SparklesIcon className="h-4 w-4" />
+                </Button>
+                <Button
+                  onClick={() => setShowSelectModal(true)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Select Existing Plan
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+        {isGeneratingPlan && (
+          <div className="px-2 py-1">
+            <GenerationStatusIndicator generationStatus={generationStatus} />
+          </div>
+        )}
       </div>
 
-      {/* `key` bumps on each open so the modal mounts fresh and form
-          state resets via remount instead of imperative reset logic
-          inside the modal. */}
       <NewPlanModal
-        key={generatePlanModalSession.mountKey}
-        onOpenChange={generatePlanModalSession.onOpenChange}
-        open={generatePlanModalSession.open}
+        onOpenChange={onGenerateModalChange}
+        open={showGenerateModal}
         source={newPlanSource}
       />
 
@@ -152,5 +147,40 @@ export function PlanSection({
         projectId={feature.projectId ?? undefined}
       />
     </>
+  );
+}
+
+type PlanRowProps = {
+  plan: Artifact;
+  linkId: string;
+  onUnlink: (linkId: string) => void;
+};
+
+function PlanRow({ plan, linkId, onUnlink }: Readonly<PlanRowProps>) {
+  const Icon = ARTIFACT_TYPE_ICONS[plan.type];
+  const badgeLabel = ARTIFACT_TYPE_BADGE_LABELS[plan.type];
+  const statusIconStatus = ARTIFACT_STATUS_TO_ICON[plan.status];
+  const route = getArtifactRoute(plan);
+
+  return (
+    <div className="flex items-center px-2 py-1">
+      <Link
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-accent"
+        href={route ?? "#"}
+      >
+        <div className="flex shrink-0 items-center p-1">
+          <Icon className="h-4 w-4 text-muted-foreground" />
+        </div>
+        <span className="min-w-[60px] shrink-0 truncate font-medium text-muted-foreground text-xs">
+          {isDisplayableSlug(plan.slug) ? plan.slug : badgeLabel}
+        </span>
+        <span className="truncate px-1 font-medium text-sm">{plan.title}</span>
+      </Link>
+      <div className="flex h-9 shrink-0 items-center gap-2">
+        <AssigneeAvatar assignee={plan.assignee} />
+        <StatusIcon size={20} status={statusIconStatus} />
+        <OverflowMenu linkId={linkId} onUnlink={onUnlink} />
+      </div>
+    </div>
   );
 }

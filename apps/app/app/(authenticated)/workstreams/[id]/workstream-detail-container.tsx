@@ -2,7 +2,7 @@
 
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
-import { useDocuments } from "@/hooks/queries/use-documents";
+import { useArtifacts } from "@/hooks/queries/use-artifacts";
 import { useWorkstream } from "@/hooks/queries/use-workstreams";
 import { WorkstreamDetail } from "./workstream-detail";
 
@@ -18,7 +18,7 @@ export function WorkstreamDetailContainer({
     isLoading: isLoadingWorkstream,
     error,
   } = useWorkstream(id);
-  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useDocuments({
+  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useArtifacts({
     workstreamId: id,
   });
 

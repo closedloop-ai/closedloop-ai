@@ -1,6 +1,6 @@
 "use client";
 
-import type { Document } from "@repo/api/src/types/document";
+import type { Artifact } from "@repo/api/src/types/artifact";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
@@ -17,13 +17,13 @@ export const templateKeys = {
  * Returns artifacts where type=TEMPLATE.
  */
 export function useOrgTemplates(
-  options?: Omit<UseQueryOptions<Document[]>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<Artifact[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: templateKeys.orgTemplates(),
-    queryFn: () => apiClient.get<Document[]>("/templates"),
+    queryFn: () => apiClient.get<Artifact[]>("/templates"),
     staleTime: 10 * 60 * 1000, // 10 minutes - templates don't change frequently
     ...options,
   });
@@ -35,13 +35,13 @@ export function useOrgTemplates(
  */
 export function useOrgTemplateByType(
   templateForType: string,
-  options?: Omit<UseQueryOptions<Document>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<Artifact>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: templateKeys.orgTemplateByType(templateForType),
-    queryFn: () => apiClient.get<Document>(`/templates/${templateForType}`),
+    queryFn: () => apiClient.get<Artifact>(`/templates/${templateForType}`),
     staleTime: 10 * 60 * 1000, // 10 minutes - templates don't change frequently
     enabled: !!templateForType,
     ...options,

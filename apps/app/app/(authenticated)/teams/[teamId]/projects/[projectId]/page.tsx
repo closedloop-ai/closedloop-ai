@@ -1,11 +1,12 @@
 "use client";
 
-import type { Priority } from "@repo/api/src/types/common";
 import {
-  DocumentType,
+  type ArtifactStatus,
+  ArtifactType,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/document";
-import { ProjectStatus } from "@repo/api/src/types/project";
+} from "@repo/api/src/types/artifact";
+import type { Priority } from "@repo/api/src/types/common";
+import type { FeatureStatus } from "@repo/api/src/types/feature";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -21,7 +22,6 @@ import {
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
-  ArchiveIcon,
   BoxIcon,
   ChevronDownIcon,
   FileCode2Icon,
@@ -35,15 +35,12 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import { ActiveFiltersBar } from "@/components/document-table/active-filters-bar";
 import type {
-  DocumentRowItem,
+  ArtifactRowItem,
   RowEditHandlers,
-} from "@/components/document-table/document-row";
-import type { FilterCategory } from "@/components/document-table/filter-category";
-import { FilterPopover } from "@/components/document-table/filter-popover";
-import { TableViewMenu } from "@/components/document-table/table-view-menu";
+} from "@/components/artifact-table/artifact-row";
+import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
@@ -51,42 +48,49 @@ import {
   UnderlineTabsTrigger,
 } from "@/components/underline-tabs";
 import {
-  useDeleteDocument,
-  useDocumentsByProject,
-  useUpdateDocument,
-} from "@/hooks/queries/use-documents";
-import { useLoopSummaries, useLoopsByProject } from "@/hooks/queries/use-loops";
+  useArtifactsByProject,
+  useDeleteArtifact,
+  useUpdateArtifact,
+} from "@/hooks/queries/use-artifacts";
+import {
+  useDeleteFeature,
+  useFeatures,
+  useUpdateFeature,
+} from "@/hooks/queries/use-features";
+import { useLoopsByProject } from "@/hooks/queries/use-loops";
 import {
   useDeleteProject,
   useIsFavorite,
   useProject,
   useProjectActivity,
-  useProjectStatusHandler,
   useToggleFavorite,
   useUpdateProjectAssignee,
   useUpdateProjectPriority,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
-import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useActiveLoops } from "@/hooks/use-active-loops";
 import {
+  ArtifactColumn,
   type ColumnVisibility,
-  DocumentColumn,
   useColumnVisibility,
 } from "@/hooks/use-column-visibility";
-import { useFilterCurrentUser } from "@/hooks/use-filter-current-user";
-import { useGroupBy } from "@/hooks/use-group-by";
-import { useProjectFilters } from "@/hooks/use-project-filters";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ActiveLoopsStatus } from "./components/active-loops-status";
-import { CreateDocumentModal } from "./components/create-document-modal";
+import { ArtifactsView } from "./components/artifacts-view";
+import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { CreateFeatureModal } from "./components/create-feature-modal";
-import { DocumentsView } from "./components/documents-view";
 import { OverviewActivity } from "./components/overview-activity";
 import { OverviewProperties } from "./components/overview-properties";
 import { useMergeNotification } from "./hooks/use-merge-notification";
+
+export type FilterCategory =
+  | "all"
+  | "documents"
+  | "features"
+  | "plans"
+  | "branches";
 
 /** Workstream states that indicate an async workflow is actively running. */
 const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([
@@ -111,22 +115,23 @@ export default function ProjectDetailPage() {
   });
   const [createArtifactOpen, setCreateArtifactOpen] = useState(false);
   const [createFeatureOpen, setCreateFeatureOpen] = useState(false);
-  const [selectedDocumentType, setSelectedDocumentType] =
-    useState<DocumentType>(DocumentType.Prd);
+  const [selectedArtifactType, setSelectedArtifactType] =
+    useState<ArtifactType>(ArtifactType.Prd);
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("all");
   const [filterText, setFilterText] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
-  // Column visibility — hide the Type column when the active filter already
-  // pins items to a single type (Type would be a constant column otherwise).
-  // Parent stays user-controlled across all categories.
+  // Column visibility — override based on active filter category
   const columnOverrides = useMemo((): Partial<ColumnVisibility> => {
     switch (filterCategory) {
+      case "all":
+        return { [ArtifactColumn.Parent]: false };
       case "documents":
+        return { [ArtifactColumn.Type]: false, [ArtifactColumn.Parent]: false };
       case "features":
       case "plans":
       case "branches":
-        return { [DocumentColumn.Type]: false };
+        return { [ArtifactColumn.Type]: false };
       default:
         return {};
     }
@@ -135,9 +140,6 @@ export default function ProjectDetailPage() {
     overrides: columnOverrides,
     storageKey: COLUMN_VISIBILITY_KEY,
   });
-  const { groupBy, setGroupBy } = useGroupBy(
-    "table:groupByStatus:project-artifacts"
-  );
   const isFavorite = useIsFavorite(projectId);
   const toggleFavorite = useToggleFavorite();
   const deleteProjectMutation = useDeleteProject();
@@ -159,11 +161,10 @@ export default function ProjectDetailPage() {
   // Show toast notification when PRs are merged
   useMergeNotification(activityData, projectId, teamId);
 
-  // Single project-scoped fetch for all documents (PRDs, plans, features).
-  // Artifacts and features are derived client-side so mutations invalidating
-  // documentKeys.list({projectId}) keep both views consistent.
-  const { data: allDocuments = [], isLoading: loadingArtifacts } =
-    useDocumentsByProject(projectId, {
+  // Poll artifacts when any workstream is actively running (e.g., execution in progress).
+  const { data: artifacts = [], isLoading: loadingArtifacts } =
+    useArtifactsByProject(projectId, {
+      staleTime: 4000,
       refetchInterval: (query) => {
         const data = query.state.data ?? [];
         const hasActiveWorkstream = data.some(
@@ -180,59 +181,41 @@ export default function ProjectDetailPage() {
       },
     });
 
+  const { data: features = [], isLoading: loadingFeatures } = useFeatures({
+    projectId,
+  });
+
   const { data: loops = [] } = useLoopsByProject(projectId, {
     refetchInterval: 10_000,
   });
   const activeLoops = useActiveLoops(loops);
 
-  const documentSummaryIds = useMemo(
-    () => allDocuments.map((d) => d.id),
-    [allDocuments]
-  );
-  const { data: loopSummaries } = useLoopSummaries(documentSummaryIds);
-
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
 
-  const hasArtifactItems = allDocuments.length > 0;
+  const hasArtifactItems = artifacts.length > 0 || features.length > 0;
 
   const loading =
-    loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
+    loadingTeam ||
+    loadingProject ||
+    loadingActivity ||
+    loadingArtifacts ||
+    loadingFeatures;
   const error = teamError?.message || projectError?.message || null;
 
   // Team members for inline editing
-  const {
-    members: teamMembers,
-    isLoading: teamMembersLoading,
-    error: teamMembersError,
-  } = useTeamMembers({
+  const { members: teamMembers } = useTeamMembers({
     teamIds: teamData ? [teamData.id] : [],
   });
-
-  // Current user for "Assigned to me" filter
-  const { data: currentUser } = useCurrentUser();
-
-  // Project filters
-  const filtersReturn = useProjectFilters({
-    documents: allDocuments,
-    filterCategory,
-    currentUserId: currentUser?.id,
-  });
-
-  const filterCurrentUser = useFilterCurrentUser(currentUser);
 
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();
   const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
-  const {
-    handleUpdateStatus: handleProjectStatusUpdate,
-    isPending: statusPending,
-  } = useProjectStatusHandler({
-    onArchived: () => router.push(`/teams/${teamId}/projects`),
-  });
-  const updateDocumentMutation = useUpdateDocument();
-  const deleteDocumentMutation = useDeleteDocument();
+  const updateArtifactMutation = useUpdateArtifact();
+  const updateFeatureMutation = useUpdateFeature();
+  const deleteArtifactMutation = useDeleteArtifact();
+  const deleteFeatureMutation = useDeleteFeature();
 
   const handleUpdatePriority = (priority: Priority) => {
     if (!project) {
@@ -261,22 +244,26 @@ export default function ProjectDetailPage() {
     });
   };
 
-  const handleCreateArtifact = (type: DocumentType) => {
-    setSelectedDocumentType(type);
+  const handleArtifactStatusChange = (
+    artifactId: string,
+    status: ArtifactStatus
+  ) => {
+    updateArtifactMutation.mutate({ id: artifactId, status });
+  };
+
+  const handleCreateArtifact = (type: ArtifactType) => {
+    setSelectedArtifactType(type);
     setCreateArtifactOpen(true);
   };
 
-  const handleUpdateProjectStatus = (status: ProjectStatus) => {
-    if (!project) {
-      return;
-    }
-    handleProjectStatusUpdate(project.id, status, project.status);
-  };
-
   const handleDeleteArtifact = async (
-    item: DocumentRowItem
+    item: ArtifactRowItem
   ): Promise<boolean> => {
-    const result = await deleteDocumentMutation.mutateAsync(item.data.id);
+    if (item.kind === "feature") {
+      const result = await deleteFeatureMutation.mutateAsync(item.data.id);
+      return result.deleted ?? false;
+    }
+    const result = await deleteArtifactMutation.mutateAsync(item.data.id);
     return result.deleted ?? false;
   };
 
@@ -285,22 +272,48 @@ export default function ProjectDetailPage() {
     (): RowEditHandlers => ({
       teamMembers,
       activeLoops,
-      loopVariant: "team",
-      loopSummaries,
       onUpdateAssignee: (itemId, assigneeId) => {
-        updateDocumentMutation.mutate({ id: itemId, assigneeId });
+        // Determine if it's an artifact or issue by checking both lists
+        const isArtifact = artifacts.some((a) => a.id === itemId);
+        if (isArtifact) {
+          updateArtifactMutation.mutate({ id: itemId, assigneeId });
+        } else {
+          updateFeatureMutation.mutate({ id: itemId, assigneeId });
+        }
       },
       onUpdatePriority: (itemId, priority) => {
-        updateDocumentMutation.mutate({ id: itemId, priority });
+        const isArtifact = artifacts.some((a) => a.id === itemId);
+        if (isArtifact) {
+          updateArtifactMutation.mutate({ id: itemId, priority });
+        } else {
+          updateFeatureMutation.mutate({ id: itemId, priority });
+        }
       },
       onUpdateDueDate: (_itemId, _date) => {
         // Due date update not yet supported on artifacts/issues — placeholder
       },
       onUpdateStatus: (itemId, status) => {
-        updateDocumentMutation.mutate({ id: itemId, status });
+        const isArtifact = artifacts.some((a) => a.id === itemId);
+        if (isArtifact) {
+          updateArtifactMutation.mutate({
+            id: itemId,
+            status: status as ArtifactStatus,
+          });
+        } else {
+          updateFeatureMutation.mutate({
+            id: itemId,
+            status: status as FeatureStatus,
+          });
+        }
       },
     }),
-    [teamMembers, activeLoops, loopSummaries, updateDocumentMutation]
+    [
+      teamMembers,
+      activeLoops,
+      artifacts,
+      updateArtifactMutation,
+      updateFeatureMutation,
+    ]
   );
 
   if (loading) {
@@ -319,21 +332,13 @@ export default function ProjectDetailPage() {
     );
   }
 
-  const favoritesDisabled =
-    toggleFavorite.isPending || project.status === ProjectStatus.Archived;
-  const favoriteButtonLabel = getFavoriteButtonLabel(
-    project.status,
-    isFavorite
-  );
-  const favoriteMenuLabel = getFavoriteMenuLabel(project.status, isFavorite);
-
   return (
     <>
       <Header
         afterBreadcrumbs={
           <Button
             className="ml-1 h-6 w-6"
-            disabled={favoritesDisabled}
+            disabled={toggleFavorite.isPending}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -348,7 +353,9 @@ export default function ProjectDetailPage() {
             <StarIcon
               className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
             />
-            <span className="sr-only">{favoriteButtonLabel}</span>
+            <span className="sr-only">
+              {isFavorite ? "Remove from favorites" : "Add to favorites"}
+            </span>
           </Button>
         }
         breadcrumbs={[
@@ -365,7 +372,7 @@ export default function ProjectDetailPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              onClick={() => handleCreateArtifact(DocumentType.Prd)}
+              onClick={() => handleCreateArtifact(ArtifactType.Prd)}
             >
               <FileIcon className="h-4 w-4" />
               Create PRD
@@ -376,7 +383,7 @@ export default function ProjectDetailPage() {
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() =>
-                handleCreateArtifact(DocumentType.ImplementationPlan)
+                handleCreateArtifact(ArtifactType.ImplementationPlan)
               }
             >
               <FileCode2Icon className="h-4 w-4" />
@@ -393,7 +400,7 @@ export default function ProjectDetailPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              disabled={favoritesDisabled}
+              disabled={toggleFavorite.isPending}
               onClick={() =>
                 toggleFavorite.mutate({
                   projectId: project.id,
@@ -404,22 +411,7 @@ export default function ProjectDetailPage() {
               <StarIcon
                 className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
               />
-              {favoriteMenuLabel}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={statusPending}
-              onClick={() =>
-                handleUpdateProjectStatus(
-                  project.status === ProjectStatus.Archived
-                    ? ProjectStatus.NotStarted
-                    : ProjectStatus.Archived
-                )
-              }
-            >
-              <ArchiveIcon className="h-4 w-4" />
-              {project.status === ProjectStatus.Archived
-                ? "Unarchive Project"
-                : "Archive Project"}
+              {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => setDeleteDialogOpen(true)}
@@ -446,66 +438,41 @@ export default function ProjectDetailPage() {
           </UnderlineTabsTrigger>
         </UnderlineTabsList>
         {activeTab === "artifacts" && hasArtifactItems && (
-          <div className="border-b">
-            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <ToggleGroup
-                  onValueChange={(value) => {
-                    if (value) {
-                      setFilterCategory(value as FilterCategory);
-                    }
-                  }}
-                  size="sm"
-                  type="single"
-                  value={filterCategory}
-                  variant="outline"
-                >
-                  <ToggleGroupItem value="all">All</ToggleGroupItem>
-                  <ToggleGroupItem value="documents">PRDs</ToggleGroupItem>
-                  <ToggleGroupItem value="features">Features</ToggleGroupItem>
-                  <ToggleGroupItem value="plans">Plans</ToggleGroupItem>
-                  <ToggleGroupItem value="branches">Branches</ToggleGroupItem>
-                </ToggleGroup>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="relative min-w-[200px] max-w-[350px]">
-                  <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                    <SearchIcon className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <Input
-                    aria-label="Filter items"
-                    className="h-8 pl-9 shadow-none"
-                    onChange={(e) => setFilterText(e.target.value)}
-                    placeholder="Filter items..."
-                    value={filterText}
-                  />
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <ToggleGroup
+              onValueChange={(value) => {
+                if (value) {
+                  setFilterCategory(value as FilterCategory);
+                }
+              }}
+              type="single"
+              value={filterCategory}
+              variant="outline"
+            >
+              <ToggleGroupItem value="all">All</ToggleGroupItem>
+              <ToggleGroupItem value="documents">PRDs</ToggleGroupItem>
+              <ToggleGroupItem value="features">Features</ToggleGroupItem>
+              <ToggleGroupItem value="plans">Plans</ToggleGroupItem>
+              <ToggleGroupItem value="branches">Branches</ToggleGroupItem>
+            </ToggleGroup>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-[200px] max-w-[350px]">
+                <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                  <SearchIcon className="h-4 w-4 text-muted-foreground" />
                 </div>
-                {filterCategory !== "branches" && (
-                  <FilterPopover
-                    currentUser={filterCurrentUser}
-                    filtersReturn={filtersReturn}
-                    teamMembers={teamMembers}
-                    teamMembersError={teamMembersError}
-                    teamMembersLoading={teamMembersLoading}
-                  />
-                )}
-                <TableViewMenu
-                  groupBy={groupBy}
-                  onChangeGroupBy={setGroupBy}
-                  onToggle={toggleColumn}
-                  visibility={userVisibility}
+                <Input
+                  aria-label="Filter items"
+                  className="pl-9 shadow-none"
+                  onChange={(e) => setFilterText(e.target.value)}
+                  placeholder="Filter items..."
+                  value={filterText}
                 />
               </div>
-            </div>
-            {filtersReturn.isAnyFilterActive && (
-              <ActiveFiltersBar
-                currentUser={filterCurrentUser}
-                filtersReturn={filtersReturn}
-                teamMembers={teamMembers}
-                teamMembersError={teamMembersError}
-                teamMembersLoading={teamMembersLoading}
+              <ColumnVisibilityPanel
+                onToggle={toggleColumn}
+                visibility={userVisibility}
               />
-            )}
+            </div>
           </div>
         )}
         <main className="flex-1 overflow-auto">
@@ -538,20 +505,14 @@ export default function ProjectDetailPage() {
             </div>
           </TabsContent>
           <TabsContent className="mt-0 min-w-fit" value="artifacts">
-            <DocumentsView
-              applyProjectFilters={
-                filtersReturn.isAnyFilterActive
-                  ? filtersReturn.applyFilters
-                  : undefined
-              }
-              documents={allDocuments}
+            <ArtifactsView
+              artifacts={artifacts}
               editHandlers={artifactEditHandlers}
+              features={features}
               filterCategory={filterCategory}
               filterText={filterText}
-              groupBy={groupBy}
-              isFilterActive={filtersReturn.isAnyFilterActive}
-              onClearFilters={filtersReturn.clearAllFilters}
               onDelete={handleDeleteArtifact}
+              onStatusChange={handleArtifactStatusChange}
               projectId={projectId}
               teamId={teamId}
               visibleColumns={visibleColumns}
@@ -559,8 +520,8 @@ export default function ProjectDetailPage() {
           </TabsContent>
         </main>
       </Tabs>
-      <CreateDocumentModal
-        documentType={selectedDocumentType}
+      <CreateArtifactModal
+        artifactType={selectedArtifactType}
         onOpenChange={setCreateArtifactOpen}
         open={createArtifactOpen}
         projectId={projectId}
@@ -590,24 +551,4 @@ export default function ProjectDetailPage() {
       />
     </>
   );
-}
-
-function getFavoriteButtonLabel(status: ProjectStatus, isFavorite: boolean) {
-  if (status === ProjectStatus.Archived) {
-    return "Archived projects cannot be favorited";
-  }
-  if (isFavorite) {
-    return "Remove from favorites";
-  }
-  return "Add to favorites";
-}
-
-function getFavoriteMenuLabel(status: ProjectStatus, isFavorite: boolean) {
-  if (status === ProjectStatus.Archived) {
-    return "Favorites unavailable while archived";
-  }
-  if (isFavorite) {
-    return "Remove from Favorites";
-  }
-  return "Add to Favorites";
 }

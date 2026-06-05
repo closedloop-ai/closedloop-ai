@@ -7,3 +7,14 @@ export type ComputeMode = "GITHUB_ACTIONS" | "LOOPS";
 
 /** @deprecated See ComputeMode. */
 export type ComputeModeResponse = { computeMode: ComputeMode };
+
+/**
+ * @deprecated Per-artifact execution backend. The execution-backend route
+ * and this type are no longer used — all operations route through run-loop.
+ * Retained only for the settings service until it is removed.
+ */
+export type ExecutionBackendResponse = {
+  backend: ComputeMode;
+  /** Why this backend was chosen */
+  reason: "loop_history" | "github_action_history" | "org_default";
+};

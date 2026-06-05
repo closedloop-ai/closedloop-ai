@@ -1,200 +1,297 @@
-// Artifact types for API contract.
-// Mirrors the Prisma schema's class-table-inheritance shape: one parent
-// record (Artifact) plus one of three type-specific detail objects, each
-// identified by `Artifact.type`.
+// Artifact and Approval types for API contract
+// These are explicitly defined to keep packages/api independent of database
 
-import type { JsonObject, Priority } from "./common";
+import type { ArtifactVersion } from "./artifact-version";
+import type { Priority } from "./common";
+import type { CustomFieldValueDetail } from "./custom-field";
+import type { EntityType } from "./entity-link";
 import type { BasicUser } from "./user";
+import type { WorkstreamState } from "./workstream";
 
+/**
+ * Artifact types in the new schema.
+ * Only PRD, IMPLEMENTATION_PLAN, and TEMPLATE remain as artifact types.
+ * Issues and external links (PR, Figma, etc.) are separate entities now.
+ */
 export const ArtifactType = {
-  Document: "DOCUMENT",
-  PullRequest: "PULL_REQUEST",
-  Deployment: "DEPLOYMENT",
-} as const;
-export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
-
-export const ArtifactSubtype = {
   Prd: "PRD",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
   Template: "TEMPLATE",
-  Feature: "FEATURE",
 } as const;
-export type ArtifactSubtype =
-  (typeof ArtifactSubtype)[keyof typeof ArtifactSubtype];
+export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
+export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
 
 /**
- * Parent-row fields common to every artifact type. Per-type detail objects
- * extend this base in the discriminated union below.
+ * Maps artifact types to their URL route prefixes.
+ * Single source of truth for type->route mapping used by:
+ * - apps/app/lib/artifact-navigation.ts (frontend navigation)
+ * - apps/app/app/(authenticated)/artifacts/[slug]/page.tsx (redirect fallback)
+ * - packages/collaboration/room-metadata.ts (Liveblocks notification URLs)
  */
+export const TYPE_ROUTE_PREFIX: Partial<Record<ArtifactType, string>> = {
+  PRD: "prds",
+  IMPLEMENTATION_PLAN: "implementation-plans",
+};
+
+/**
+ * Returns the route prefix for a navigable artifact type, or null if not navigable.
+ * Accepts raw strings (e.g. from Liveblocks room metadata) in addition to typed values.
+ */
+export function getRoutePrefixForType(type: string): string | null {
+  if (type in TYPE_ROUTE_PREFIX) {
+    return TYPE_ROUTE_PREFIX[type as ArtifactType] ?? null;
+  }
+  return null;
+}
+
+// Artifact Status
+export const ArtifactStatus = {
+  Draft: "DRAFT",
+  ReadyForReview: "READY_FOR_REVIEW",
+  InReview: "IN_REVIEW",
+  Approved: "APPROVED",
+  Executed: "EXECUTED",
+  Obsolete: "OBSOLETE",
+} as const;
+export type ArtifactStatus =
+  (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
+export const ARTIFACT_STATUS_OPTIONS = Object.values(ArtifactStatus);
+
+export const ChecksStatus = {
+  Unknown: "UNKNOWN",
+  Pending: "PENDING",
+  Passing: "PASSING",
+  Failing: "FAILING",
+} as const;
+export type ChecksStatus = (typeof ChecksStatus)[keyof typeof ChecksStatus];
+
 export type Artifact = {
   id: string;
   organizationId: string;
-  projectId: string;
   workstreamId: string | null;
+  projectId: string | null;
   type: ArtifactType;
-  subtype: ArtifactSubtype | null;
-  name: string;
-  slug: string | null;
-  status: string;
-  priority: Priority | null;
+  title: string;
+  slug: string;
+  fileName: string | null;
+  status: ArtifactStatus;
+  priority: Priority;
+  latestVersion: number;
+  createdById: string;
   assigneeId: string | null;
   assignee: BasicUser | null;
-  dueDate: Date | null;
-  externalUrl: string | null;
+  approverId: string | null;
+  approver: BasicUser | null;
+  tokenUsage: unknown;
+  targetRepo: string | null;
+  targetBranch: string | null;
+  templateForType: ArtifactType | null;
   sortOrder: number | null;
   createdAt: Date;
-  createdById: string | null;
   updatedAt: Date;
 };
 
-export type DocumentDetail = {
-  fileName: string | null;
-  approverId: string | null;
-  approver: BasicUser | null;
-  templateForType: ArtifactSubtype | null;
-  latestVersion: number;
-  targetRepo: string | null;
-  targetBranch: string | null;
+export type ArtifactWithWorkstream = Artifact & {
+  workstream?: {
+    id: string;
+    title: string;
+    state: WorkstreamState;
+  } | null;
+  project?: {
+    id: string;
+    name: string;
+    teams?: { id: string; name: string }[];
+  } | null;
+  /** The latest generation status for this artifact. Omitted when no generation status is available. */
+  generationStatus?: GenerationStatus;
+  /**
+   * The pull request associated with this artifact's workstream.
+   * - `undefined`: field was not populated (findById/findBySlug do not batch-fetch PR data)
+   * - `null`: findAll ran and found no PR for this workstream
+   * - `PullRequestInfo`: a PR was found and linked to this workstream
+   */
+  pullRequest?: PullRequestInfo | null;
+  /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
+  snippet?: string | null;
+  /** Custom field values attached to this artifact. Omitted when not requested. */
+  customFields?: CustomFieldValueDetail[];
 };
 
-export type PullRequestDetail = {
-  repositoryId: string;
-  githubId: string;
+/** Detail response from GET /artifacts/:id and GET /artifacts/by-slug/:slug. Always includes version content. */
+export type ArtifactDetail = ArtifactWithWorkstream & {
+  version: ArtifactVersion;
+};
+
+export type FindArtifactsOptions = {
+  type?: ArtifactType;
+  workstreamId?: string;
+  projectId?: string;
+  assigneeId?: string;
+};
+
+export type CreateArtifactInput = {
+  workstreamId?: string;
+  projectId: string;
+  sourceId?: string;
+  sourceType?: EntityType;
+  sourceVersion?: number;
+  type: ArtifactType;
+  title: string;
+  fileName?: string;
+  approverId?: string | null;
+  status?: ArtifactStatus;
+  priority?: Priority;
+  content: string;
+  targetRepo?: string;
+  targetBranch?: string;
+  assigneeId?: string | null;
+  templateForType?: ArtifactType | null;
+};
+
+export type UpdateArtifactInput = {
+  id: string;
+  title?: string;
+  fileName?: string;
+  projectId?: string;
+  approverId?: string | null;
+  status?: ArtifactStatus;
+  priority?: Priority;
+  targetRepo?: string | null;
+  targetBranch?: string | null;
+  assigneeId?: string | null;
+  sortOrder?: number | null;
+};
+
+export type MergeArtifactsInput = {
+  primaryArtifactId: string;
+  secondaryArtifactId: string;
+};
+
+// Pull Request State
+export const PullRequestState = {
+  Open: "OPEN",
+  Merged: "MERGED",
+  Closed: "CLOSED",
+} as const;
+export type PullRequestState =
+  (typeof PullRequestState)[keyof typeof PullRequestState];
+
+// Review Decision
+export const ReviewDecision = {
+  Approved: "APPROVED",
+  ChangesRequested: "CHANGES_REQUESTED",
+  Commented: "COMMENTED",
+  Dismissed: "DISMISSED",
+} as const;
+export type ReviewDecision =
+  (typeof ReviewDecision)[keyof typeof ReviewDecision];
+
+// Pull Request info returned when an implementation plan is executed
+export type PullRequestInfo = {
+  id: string;
   number: number;
-  body: string | null;
+  title: string;
+  htmlUrl: string;
+  state: PullRequestState;
   headBranch: string;
   baseBranch: string;
-  headSha: string | null;
-  isDraft: boolean;
-  checksStatus: string | null;
-  reviewDecision: string | null;
-  closedAt: Date | null;
-  mergedAt: Date | null;
-  mergeCommitSha: string | null;
-  lastVerifiedAt: Date | null;
-  lastRefreshAttemptAt: Date | null;
+  createdAt: Date;
+  checksStatus: ChecksStatus | null;
+  reviewDecision: ReviewDecision | null;
 };
 
-export type DeploymentDetail = {
-  environment: string | null;
-  ref: string | null;
-  sha: string | null;
-  githubStatusUrl: string | null;
-  githubDeploymentUrl: string | null;
-  transient: boolean | null;
-  production: boolean | null;
-  pullRequestArtifactId: string | null;
+// Generation status for artifacts being processed by GitHub Actions or Loops
+export type GenerationStatus = {
+  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command:
+    | "plan"
+    | "execute"
+    | "chat"
+    | "request_changes"
+    | "request_prd_changes"
+    | "explore"
+    | "decompose"
+    | "evaluate_prd"
+    | null;
+  htmlUrl: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  correlationId: string | null;
+  /** Identifies the compute backend that produced this status. */
+  source?: "github_actions" | "loop";
+  /** Loop ID when source is "loop". Used for internal navigation to /loops/:id. */
+  loopId?: string | null;
+  /** User who initiated the generation (loop or workflow). */
+  initiatedBy?: {
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
+};
+
+const ACTIVE_GENERATION_STATUSES = ["PENDING", "QUEUED", "RUNNING"] as const;
+
+export function isActiveGenerationStatus(
+  status: GenerationStatus["status"]
+): boolean {
+  return ACTIVE_GENERATION_STATUSES.includes(
+    status as (typeof ACTIVE_GENERATION_STATUSES)[number]
+  );
+}
+
+// Plan JSON types for code plugin artifacts
+export type PlanAcceptanceCriterion = {
+  id: string;
+  criterion: string;
+  source: string;
+};
+
+export type PlanTask = {
+  id: string;
+  description: string;
+  acceptanceCriteria: string[];
+};
+
+export type PlanOpenQuestion = {
+  id: string;
+  question: string;
+  recommendedAnswer?: string | null;
+  blockingTask?: string | null;
+};
+
+export type PlanAnsweredQuestion = {
+  id: string;
+  question: string;
+  answer: string;
+};
+
+export type PlanGap = {
+  id: string;
+  description: string;
+  addressed: boolean;
+  resolution?: string | null;
+};
+
+export type PlanJson = {
+  content: string;
+  acceptanceCriteria: PlanAcceptanceCriterion[];
+  pendingTasks: PlanTask[];
+  completedTasks: PlanTask[];
+  openQuestions: PlanOpenQuestion[];
+  answeredQuestions: PlanAnsweredQuestion[];
+  gaps: PlanGap[];
+  manualTasks?: PlanTask[];
+};
+
+export type BatchCreateArtifactInput = {
+  items: CreateArtifactInput[];
 };
 
 /**
- * Discriminated union of every artifact-shaped record returned by the API.
- * Callers narrow on `type` to access the correct detail fields.
+ * Map of artifact slug to artifact title.
+ * Returned by the batch-meta endpoint for lightweight name lookups.
+ * Slugs not found in the org are omitted.
  */
-export type DocumentArtifact = Omit<Artifact, "type" | "subtype"> & {
-  type: typeof ArtifactType.Document;
-  subtype: ArtifactSubtype | null;
-  document: DocumentDetail;
-};
+export type ArtifactTitleMap = Record<string, string>;
 
-export type PullRequestArtifact = Omit<Artifact, "type" | "subtype"> & {
-  type: typeof ArtifactType.PullRequest;
-  subtype: null;
-  pullRequest: PullRequestDetail;
-};
-
-export type DeploymentArtifact = Omit<Artifact, "type" | "subtype"> & {
-  type: typeof ArtifactType.Deployment;
-  subtype: null;
-  deployment: DeploymentDetail;
-};
-
-export type ArtifactWithDetail =
-  | DocumentArtifact
-  | PullRequestArtifact
-  | DeploymentArtifact;
-
-export function isDocumentArtifact(
-  artifact: ArtifactWithDetail
-): artifact is DocumentArtifact {
-  return artifact.type === ArtifactType.Document;
-}
-
-export function isPullRequestArtifact(
-  artifact: ArtifactWithDetail
-): artifact is PullRequestArtifact {
-  return artifact.type === ArtifactType.PullRequest;
-}
-
-export function isDeploymentArtifact(
-  artifact: ArtifactWithDetail
-): artifact is DeploymentArtifact {
-  return artifact.type === ArtifactType.Deployment;
-}
-
-// ---------------------------------------------------------------------------
-// ArtifactLink — replaces the legacy EntityLink polymorphic relationship
-// ---------------------------------------------------------------------------
-
-export const LinkType = {
-  Produces: "PRODUCES",
-  Blocks: "BLOCKS",
-  RelatesTo: "RELATES_TO",
-} as const;
-export type LinkType = (typeof LinkType)[keyof typeof LinkType];
-
-export const LinkDirection = {
-  Source: "source",
-  Target: "target",
-  Both: "both",
-} as const;
-export type LinkDirection = (typeof LinkDirection)[keyof typeof LinkDirection];
-
-export const LinkQueryMode = {
-  Direct: "direct",
-  Tree: "tree",
-} as const;
-export type LinkQueryMode = (typeof LinkQueryMode)[keyof typeof LinkQueryMode];
-
-export type ArtifactLink = {
-  id: string;
-  organizationId: string;
-  sourceId: string;
-  targetId: string;
-  linkType: LinkType;
-  metadata: JsonObject | null;
-  createdAt: Date;
-};
-
-export type CreateArtifactLinkInput = {
-  sourceId: string;
-  targetId: string;
-  linkType: LinkType;
-  metadata?: JsonObject | null;
-};
-
-/** Minimal endpoint shape returned by /artifact-links/resolved. */
-export type ArtifactLinkEndpoint = Omit<Artifact, "assignee">;
-
-/** A hydrated artifact link with source + target endpoints resolved. */
-export type ArtifactLinkWithEndpoints = ArtifactLink & {
-  source: ArtifactLinkEndpoint;
-  target: ArtifactLinkEndpoint;
-};
-
-export type FindArtifactLinksOptions = {
-  artifactId: string;
-  linkType?: LinkType;
-  direction?: LinkDirection;
-  mode?: LinkQueryMode;
-  maxDepth?: number;
-};
-
-export type BatchMoveArtifactsInput = {
-  artifactId: string;
-  targetProjectId: string;
-  includeDownstream: boolean;
-};
-
-export type BatchMoveArtifactsResult = {
-  movedArtifacts: { id: string; type: ArtifactType }[];
-};
+/** Maximum number of slugs accepted by GET /artifacts/batch-meta */
+export const BATCH_META_MAX_SLUGS = 50;

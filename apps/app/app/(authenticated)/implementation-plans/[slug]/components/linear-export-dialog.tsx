@@ -32,13 +32,13 @@ import {
 } from "@/hooks/queries/use-linear";
 
 type LinearExportDialogProps = {
-  documentId: string;
+  artifactId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
 
 export function LinearExportDialog({
-  documentId,
+  artifactId,
   onOpenChange,
   open,
 }: LinearExportDialogProps) {
@@ -83,7 +83,7 @@ export function LinearExportDialog({
     }
 
     const result = await exportToLinear.mutateAsync({
-      documentId,
+      artifactId,
       teamId: selectedTeamId,
     });
 

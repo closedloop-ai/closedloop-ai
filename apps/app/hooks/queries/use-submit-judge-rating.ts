@@ -10,14 +10,14 @@ import { judgeScoreKeys } from "./use-judge-scores";
 import { myJudgeRatingsKeys } from "./use-my-judge-ratings";
 
 // Mutation hook
-export function useSubmitJudgeRating(documentId: string) {
+export function useSubmitJudgeRating(artifactId: string) {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
     mutationFn: (body: SubmitJudgeRatingRequest) =>
       apiClient.post<SubmitJudgeRatingResponse>(
-        `/documents/${documentId}/judge-ratings`,
+        `/artifacts/${artifactId}/judge-ratings`,
         body
       ),
     onSuccess: (data) => {
@@ -30,7 +30,7 @@ export function useSubmitJudgeRating(documentId: string) {
         queryClient.invalidateQueries({ queryKey: judgeScoreKeys.all });
       }
       queryClient.invalidateQueries({
-        queryKey: myJudgeRatingsKeys.detail(documentId),
+        queryKey: myJudgeRatingsKeys.detail(artifactId),
       });
     },
   });

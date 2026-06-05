@@ -12,7 +12,7 @@ import {
 } from "@repo/api/src/types/custom-field";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { Prisma } from "@repo/database";
-import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { computeDisplayValue, validateValueType } from "./utils";
 
 /**
@@ -85,13 +85,52 @@ export const customFieldValuesService = {
         include: SETTING_WITH_FIELD_INCLUDE,
       });
 
+      // Cascade to direct child Workstreams and Features when attaching to a Project.
       if (entityType === CustomFieldEntityType.Project) {
-        await cascadeProjectFieldToChildren(tx, {
-          fieldId,
-          organizationId,
-          projectId: entityId,
-          input,
-        });
+        const [childWorkstreams, childFeatures] = await Promise.all([
+          tx.workstream.findMany({
+            where: { projectId: entityId, organizationId },
+            select: { id: true },
+          }),
+          tx.feature.findMany({
+            where: { projectId: entityId, organizationId },
+            select: { id: true },
+          }),
+        ]);
+
+        const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] =
+          [];
+
+        for (const ws of childWorkstreams) {
+          childSettingsData.push({
+            customFieldId: fieldId,
+            organizationId,
+            entityType: CustomFieldEntityType.Workstream,
+            entityId: ws.id,
+            isImportant: input.isImportant ?? false,
+            isRequired: input.isRequired ?? false,
+            sortOrder: input.sortOrder ?? 0,
+          });
+        }
+
+        for (const feature of childFeatures) {
+          childSettingsData.push({
+            customFieldId: fieldId,
+            organizationId,
+            entityType: CustomFieldEntityType.Feature,
+            entityId: feature.id,
+            isImportant: input.isImportant ?? false,
+            isRequired: input.isRequired ?? false,
+            sortOrder: input.sortOrder ?? 0,
+          });
+        }
+
+        if (childSettingsData.length > 0) {
+          await tx.customFieldSetting.createMany({
+            data: childSettingsData,
+            skipDuplicates: true,
+          });
+        }
       }
 
       return created;
@@ -323,13 +362,16 @@ async function verifyEntityExists(
         });
         return record !== null;
       }
-      case CustomFieldEntityType.Document: {
+      case CustomFieldEntityType.Feature: {
+        const record = await db.feature.findFirst({
+          where: { id: entityId, organizationId },
+          select: { id: true },
+        });
+        return record !== null;
+      }
+      case CustomFieldEntityType.Artifact: {
         const record = await db.artifact.findFirst({
-          where: {
-            id: entityId,
-            organizationId,
-            type: ArtifactType.DOCUMENT,
-          },
+          where: { id: entityId, organizationId },
           select: { id: true },
         });
         return record !== null;
@@ -689,16 +731,16 @@ function toValueDetail(
   peopleMap: Map<string, BasicUser>
 ): CustomFieldValueDetail {
   const enumValue =
-    row.enumValue === null
-      ? null
-      : {
+    row.enumValue !== null
+      ? {
           id: row.enumValue.id,
           customFieldId: row.enumValue.customFieldId,
           name: row.enumValue.name,
           color: row.enumValue.color,
           enabled: row.enumValue.enabled,
           sortOrder: row.enumValue.sortOrder,
-        };
+        }
+      : null;
 
   const peopleValues: BasicUser[] = row.peopleValueIds
     .map((id) => peopleMap.get(id))
@@ -733,66 +775,4 @@ function toValueDetail(
     multiEnumValues,
     peopleValues,
   };
-}
-
-type CascadeInput = {
-  fieldId: string;
-  organizationId: string;
-  projectId: string;
-  input: AttachCustomFieldInput;
-};
-
-async function cascadeProjectFieldToChildren(
-  tx: Prisma.TransactionClient,
-  { fieldId, organizationId, projectId, input }: CascadeInput
-): Promise<void> {
-  // Features are feature-typed document artifacts — cascade only against
-  // the artifact table.
-  const [childWorkstreams, childFeatureDocuments] = await Promise.all([
-    tx.workstream.findMany({
-      where: { projectId, organizationId },
-      select: { id: true },
-    }),
-    tx.artifact.findMany({
-      where: {
-        projectId,
-        organizationId,
-        type: ArtifactType.DOCUMENT,
-        subtype: ArtifactSubtype.FEATURE,
-      },
-      select: { id: true },
-    }),
-  ]);
-
-  const defaults = {
-    customFieldId: fieldId,
-    organizationId,
-    isImportant: input.isImportant ?? false,
-    isRequired: input.isRequired ?? false,
-    sortOrder: input.sortOrder ?? 0,
-  };
-
-  const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] = [
-    ...childWorkstreams.map(
-      (ws): Prisma.CustomFieldSettingCreateManyInput => ({
-        ...defaults,
-        entityType: CustomFieldEntityType.Workstream,
-        entityId: ws.id,
-      })
-    ),
-    ...childFeatureDocuments.map(
-      (doc): Prisma.CustomFieldSettingCreateManyInput => ({
-        ...defaults,
-        entityType: CustomFieldEntityType.Document,
-        entityId: doc.id,
-      })
-    ),
-  ];
-
-  if (childSettingsData.length > 0) {
-    await tx.customFieldSetting.createMany({
-      data: childSettingsData,
-      skipDuplicates: true,
-    });
-  }
 }

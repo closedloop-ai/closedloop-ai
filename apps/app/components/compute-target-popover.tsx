@@ -8,7 +8,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
-import { SidebarMenuButton } from "@repo/design-system/components/ui/sidebar";
+import {
+  SidebarMenuButton,
+  useSidebar,
+} from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import {
   AlertTriangleIcon,
@@ -26,7 +29,7 @@ import {
 } from "@/hooks/queries/use-compute-preference";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
-import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
+import { sortByDateDesc } from "@/lib/table-utils";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
 const SSE_MAX_RECONNECT_ATTEMPTS = 3;
@@ -114,6 +117,8 @@ export function ComputeTargetPopover({
   const [showDownloadPrompt, setShowDownloadPrompt] = useState(false);
   const { user } = useUser();
   const userId = user?.id ?? "";
+  const sidebar = useSidebar();
+
   // Keep SSE stream alive for real-time target status updates
   useComputeTargetStatusStream(true);
 
@@ -123,27 +128,37 @@ export function ComputeTargetPopover({
   const setPreference = useSetComputePreference(userId);
 
   const isDegraded = isStreamDegraded(streamReconnectAttempts);
+  const currentPreference =
+    preferenceData?.preferredComputeMode ?? ComputePreference.Cloud;
   const ownTargets = targets.filter((t) => !t.ownerName);
   const sharedTargets = targets.filter((t) => !!t.ownerName);
-  const {
-    allOffline,
-    currentPreference,
-    effectiveTarget,
-    effectiveTargetId,
-    notInstalled,
-  } = resolveEffectiveComputeTargetSelection({
-    preference: preferenceData,
-    targets,
-  });
+  const onlineTargets = targets.filter((t) => t.isOnline);
   const isLocal = currentPreference === ComputePreference.Local;
 
+  // Only use persisted target if it is currently online; otherwise fall back to
+  // the most recently active online target so the UI matches backend dispatch.
+  const persistedTargetId = preferenceData?.computeTargetId;
+  const persistedIsOnline =
+    persistedTargetId != null &&
+    onlineTargets.some((t) => t.id === persistedTargetId);
+  const defaultActiveTargetId = persistedIsOnline
+    ? persistedTargetId
+    : sortByDateDesc(onlineTargets, "lastSeenAt")[0]?.id;
+
+  const activeLocalTarget = isLocal
+    ? (targets.find((t) => t.id === defaultActiveTargetId) ??
+      onlineTargets[0] ??
+      null)
+    : null;
+
   // T-4.4: no registered targets at all
-  const shouldShowNotInstalled = !targetsLoading && notInstalled;
+  const notInstalled = !targetsLoading && targets.length === 0;
   // T-4.5: targets registered but all offline
-  const shouldShowAllOffline = !targetsLoading && allOffline;
+  const allOffline =
+    !targetsLoading && targets.length > 0 && targets.every((t) => !t.isOnline);
 
   const triggerLabel = isLocal
-    ? `Compute: ${effectiveTarget?.machineName ?? "Local"}`
+    ? `Compute: ${activeLocalTarget?.machineName ?? "Local"}`
     : "Compute: Cloud";
 
   function getTriggerIcon() {
@@ -156,7 +171,7 @@ export function ComputeTargetPopover({
       );
     }
     // T-4.5: show warning badge on trigger when local preference is set but all targets are offline
-    if (isLocal && shouldShowAllOffline) {
+    if (isLocal && allOffline) {
       return (
         <AlertTriangleIcon
           aria-label="Desktop app offline"
@@ -191,7 +206,7 @@ export function ComputeTargetPopover({
 
   function handleLocalOptionClick(): void {
     // T-4.4: no registered targets -- show download prompt, do NOT set preference
-    if (shouldShowNotInstalled) {
+    if (notInstalled) {
       setShowDownloadPrompt(true);
       return;
     }
@@ -213,7 +228,10 @@ export function ComputeTargetPopover({
       open={open}
     >
       <PopoverTrigger asChild>
-        <SidebarMenuButton aria-label={triggerLabel} tooltip={triggerLabel}>
+        <SidebarMenuButton
+          aria-label={triggerLabel}
+          tooltip={sidebar.open ? undefined : triggerLabel}
+        >
           {getTriggerIcon()}
           <span>{triggerLabel}</span>
         </SidebarMenuButton>
@@ -242,7 +260,7 @@ export function ComputeTargetPopover({
         )}
 
         {/* T-4.5: offline warning banner -- shown when preference is Local but all targets are offline */}
-        {isLocal && shouldShowAllOffline && (
+        {isLocal && allOffline && (
           <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
             <div className="mb-1.5 flex items-center gap-2">
               <AlertTriangleIcon className="size-3.5 shrink-0" />
@@ -303,7 +321,7 @@ export function ComputeTargetPopover({
           )}
 
           {/* T-4.4: Local option shown when no targets registered; clicking opens download prompt */}
-          {shouldShowNotInstalled && (
+          {notInstalled && (
             <TargetOption
               description="Desktop app not installed"
               icon={<LaptopIcon className="size-4 text-muted-foreground" />}
@@ -338,7 +356,7 @@ export function ComputeTargetPopover({
               }
               isSelected={
                 currentPreference === ComputePreference.Local &&
-                target.id === effectiveTargetId
+                target.id === defaultActiveTargetId
               }
               key={target.id}
               label={target.machineName}
@@ -377,7 +395,7 @@ export function ComputeTargetPopover({
                   }
                   isSelected={
                     currentPreference === ComputePreference.Local &&
-                    target.id === effectiveTargetId
+                    target.id === defaultActiveTargetId
                   }
                   key={target.id}
                   label={target.machineName}
@@ -389,7 +407,7 @@ export function ComputeTargetPopover({
         </div>
 
         {/* T-4.4: download prompt -- popover stays open, preference NOT changed */}
-        {showDownloadPrompt && shouldShowNotInstalled && (
+        {showDownloadPrompt && notInstalled && (
           <div className="mt-2 rounded-md border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
             <div className="mb-1.5 flex items-center gap-2">
               <DownloadIcon className="size-3.5 shrink-0" />

@@ -11,7 +11,7 @@ vi.mock("@/hooks/queries/use-judge-scores", () => ({
 }));
 
 vi.mock("../score-comparison-table", () => ({
-  ScoreComparisonTable: ({ rows }: { rows: Array<{ documentId: string }> }) => (
+  ScoreComparisonTable: ({ rows }: { rows: Array<{ artifactId: string }> }) => (
     <div data-testid="mock-score-table">rows-count:{rows.length}</div>
   ),
 }));
@@ -67,8 +67,8 @@ describe("ScoreComparisonSection", () => {
 function makeResponse(rows: JudgeScoresResponse["rows"]): JudgeScoresResponse {
   return {
     rows,
-    totalDocuments: rows.length,
-    ratedDocuments: rows.filter((row) => row.userRatingCount > 0).length,
+    totalArtifacts: rows.length,
+    ratedArtifacts: rows.filter((row) => row.userRatingCount > 0).length,
     coveragePct: 0,
     pagination: {
       page: 1,
@@ -87,10 +87,10 @@ function makeRows(
   return Array.from({ length: count }, (_, index) => ({
     judgeScoreId: `js-artifact-${index + 1}`,
     metricName: `metric-${index + 1}`,
-    documentId: `artifact-${index + 1}`,
-    documentType: "IMPLEMENTATION_PLAN",
-    documentTitle: `Artifact ${index + 1}`,
-    documentSlug: `artifact-${index + 1}`,
+    artifactId: `artifact-${index + 1}`,
+    artifactType: "IMPLEMENTATION_PLAN",
+    artifactTitle: `Artifact ${index + 1}`,
+    artifactSlug: `artifact-${index + 1}`,
     judgeScore,
     avgUserRating,
     userRatingCount: 1,

@@ -4,7 +4,7 @@ import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 // biome-ignore lint/style/useImportType: runtime value used by callers and child components
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { useState } from "react";
-import { CollapsibleSection } from "@/components/document-editor/collapsible-section";
+import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { useCustomFieldsForEntityType } from "@/hooks/queries/use-custom-fields";
 import { CustomFieldValueEditor } from "./custom-field-value-editor";
 

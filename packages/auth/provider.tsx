@@ -1,14 +1,13 @@
 "use client";
 
 import { ClerkProvider } from "@clerk/nextjs";
-import type { Appearance } from "@clerk/ui";
-import { dark } from "@clerk/ui/themes";
+import { dark } from "@clerk/themes";
+import type { Theme } from "@clerk/types";
 import { useTheme } from "next-themes";
 import type { ComponentProps } from "react";
 import { keys } from "./keys";
 
 type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
-  nonce?: string;
   privacyUrl?: string;
   termsUrl?: string;
   helpUrl?: string;
@@ -16,7 +15,6 @@ type AuthProviderProperties = ComponentProps<typeof ClerkProvider> & {
 };
 
 export const AuthProvider = ({
-  nonce,
   privacyUrl,
   termsUrl,
   helpUrl,
@@ -25,9 +23,9 @@ export const AuthProvider = ({
 }: AuthProviderProperties) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
-  const theme = isDark ? dark : undefined;
+  const baseTheme = isDark ? dark : undefined;
 
-  const variables: Appearance["variables"] = {
+  const variables: Theme["variables"] = {
     fontFamily: "var(--font-sans)",
     fontFamilyButtons: "var(--font-sans)",
     fontWeight: {
@@ -37,7 +35,7 @@ export const AuthProvider = ({
     },
   };
 
-  const elements: Appearance["elements"] = {
+  const elements: Theme["elements"] = {
     dividerLine: "bg-border",
     socialButtonsIconButton: "bg-card",
     navbarButton: "text-foreground",
@@ -57,7 +55,7 @@ export const AuthProvider = ({
     badge: "bg-muted text-muted-foreground",
   };
 
-  const options: Appearance["options"] = {
+  const layout: Theme["layout"] = {
     logoImageUrl: logoUrl ?? keys().NEXT_PUBLIC_LOGO_URL,
     privacyPageUrl: privacyUrl,
     termsPageUrl: termsUrl,
@@ -67,8 +65,7 @@ export const AuthProvider = ({
   return (
     <ClerkProvider
       {...properties}
-      appearance={{ options, theme, elements, variables }}
-      dynamic
+      appearance={{ layout, baseTheme, elements, variables }}
       localization={{
         signIn: {
           start: {
@@ -84,7 +81,6 @@ export const AuthProvider = ({
           action__manageAccount: "Settings",
         },
       }}
-      nonce={nonce}
     />
   );
 };

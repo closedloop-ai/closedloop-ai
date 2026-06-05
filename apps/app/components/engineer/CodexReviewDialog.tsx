@@ -10,11 +10,11 @@ import {
   pendingNewReview,
 } from "@/components/engineer/codex-review/constants";
 import { DefaultView } from "@/components/engineer/codex-review/DefaultView";
-import { useChatStream } from "@/hooks/chat/use-chat-stream";
+import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import { useCodexDebate } from "@/hooks/engineer/use-codex-debate";
 import { useCodexReviewStatus } from "@/hooks/engineer/use-codex-review-status";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
-import type { LearningUsed, SuggestedAction } from "@/lib/chat/chat-utils";
+import type { LearningUsed, SuggestedAction } from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
@@ -23,11 +23,11 @@ import {
   parseCodexReviewOutput,
   type ReviewFindings,
 } from "@/lib/engineer/codex-review-parser";
-import {
-  closedloopChatHistoryOptions,
-  findingChatHistoryOptions,
-} from "@/lib/engineer/queries/closedloop";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import {
+  findingChatHistoryOptions,
+  symphonyChatHistoryOptions,
+} from "@/lib/engineer/queries/symphony";
 
 type CodexReviewDialogProps = {
   open: boolean;
@@ -102,7 +102,7 @@ export function CodexReviewDialog({
     selectedFindingIndex === null ? null : `finding-${selectedFindingIndex}`;
 
   const { data: chatHistory } = useQuery({
-    ...closedloopChatHistoryOptions(ticketId, repoPath),
+    ...symphonyChatHistoryOptions(ticketId, repoPath),
     enabled: open && chatMode && selectedFindingIndex === null,
   });
 
@@ -118,7 +118,7 @@ export function CodexReviewDialog({
 
   const recordLearningUse = useCallback(
     (used: LearningUsed[]) => {
-      fetch("/api/gateway/symphony/record-learning-use", {
+      fetch("/api/engineer/symphony/record-learning-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath, learnings: used }),
@@ -128,7 +128,7 @@ export function CodexReviewDialog({
   );
 
   const debateSaveEndpoint = findingId
-    ? `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+    ? `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
     : undefined;
   const debateInvalidateKey = findingId
     ? queryKeys.findingChatHistory(ticketId, findingId, repoPath)
@@ -220,7 +220,7 @@ export function CodexReviewDialog({
 
     try {
       const response = await fetch(
-        `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
+        `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -280,7 +280,7 @@ export function CodexReviewDialog({
   const handleStopReview = useCallback(async () => {
     try {
       const response = await fetch(
-        `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}`,
+        `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -315,7 +315,7 @@ export function CodexReviewDialog({
         "Analyze the Codex code review findings. Read the referenced source files and assess whether each finding is valid or a false positive.",
       timestamp: new Date().toISOString(),
     });
-    const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     stream.sendMessage(
       url,
       {
@@ -328,7 +328,7 @@ export function CodexReviewDialog({
         onLearningsUsed: recordLearningUse,
         onComplete: () =>
           queryClient.invalidateQueries({
-            queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
+            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
           }),
       }
     );
@@ -359,7 +359,7 @@ export function CodexReviewDialog({
       // Check server for existing history
       try {
         const res = await fetch(
-          `/api/gateway/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+          `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
         );
         if (res.ok) {
           const data = await res.json();
@@ -383,7 +383,7 @@ export function CodexReviewDialog({
         timestamp: new Date().toISOString(),
       });
 
-      const url = `/api/gateway/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       findingStream.sendMessage(
         url,
         {
@@ -446,7 +446,7 @@ export function CodexReviewDialog({
     });
 
     if (selectedFindingIndex !== null && findingId) {
-      const url = `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       await findingStream.sendMessage(
         url,
         { message: trimmed },
@@ -464,7 +464,7 @@ export function CodexReviewDialog({
         }
       );
     } else {
-      const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         { message: trimmed, activeTab: "plan", codexReview: { model } },
@@ -473,7 +473,7 @@ export function CodexReviewDialog({
           onLearningsUsed: recordLearningUse,
           onComplete: () =>
             queryClient.invalidateQueries({
-              queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
+              queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
             }),
         }
       );
@@ -586,7 +586,7 @@ export function CodexReviewDialog({
     try {
       if (selectedFindingIndex !== null && findingId) {
         await fetch(
-          `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         );
         queryClient.setQueryData(
@@ -600,11 +600,11 @@ export function CodexReviewDialog({
         );
       } else {
         await fetch(
-          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         );
         queryClient.setQueryData(
-          queryKeys.closedloopChatHistory(ticketId, repoPath),
+          queryKeys.symphonyChatHistory(ticketId, repoPath),
           {
             messages: [],
             ticketId,
@@ -624,7 +624,7 @@ export function CodexReviewDialog({
     const promises = findings.findings.map((_, idx) => {
       const fId = `finding-${idx}`;
       return fetch(
-        `/api/gateway/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       ).catch(() => {});
     });
@@ -639,11 +639,11 @@ export function CodexReviewDialog({
     try {
       await Promise.all([
         fetch(
-          `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         fetch(
-          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         clearAllFindingChats(),
@@ -652,7 +652,7 @@ export function CodexReviewDialog({
         hasReview: false,
       });
       queryClient.invalidateQueries({
-        queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
+        queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
       });
     } catch {
       // Best-effort clear
@@ -674,13 +674,13 @@ export function CodexReviewDialog({
     try {
       await Promise.all([
         fetch(
-          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         clearAllFindingChats(),
       ]);
       queryClient.invalidateQueries({
-        queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
+        queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
       });
     } catch {
       // Best-effort clear
@@ -864,7 +864,7 @@ function handleDismissAction(ctx: DismissActionContext) {
     setCurrentDebateFindingIndex(null);
     const dId = `finding-${dismissIdx}`;
     fetch(
-      `/api/gateway/codex/finding-chat/${encodeURIComponent(dId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+      `/api/engineer/codex/finding-chat/${encodeURIComponent(dId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
       { method: "DELETE" }
     ).catch(() => {});
     queryClient.setQueryData(
@@ -927,7 +927,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
     onLearningsUsed,
   } = ctx;
   if (selectedFindingIndex !== null && findingId) {
-    const url = `/api/gateway/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
     findingStream.sendMessage(
       url,
       { message },
@@ -945,7 +945,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
       }
     );
   } else {
-    const url = `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     stream.sendMessage(
       url,
       { message, activeTab: "plan", codexReview: { model } },
@@ -954,7 +954,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
         onLearningsUsed,
         onComplete: () =>
           queryClient.invalidateQueries({
-            queryKey: queryKeys.closedloopChatHistory(ticketId, repoPath),
+            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
           }),
       }
     );

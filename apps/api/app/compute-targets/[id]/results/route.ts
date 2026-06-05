@@ -7,7 +7,6 @@ import {
   errorResponse,
   notFoundResponse,
   parseBody,
-  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { isRecord } from "@/lib/type-guards";
@@ -154,7 +153,6 @@ export const POST = withAnyAuth<
       }
     }
 
-    scheduleLogFlush();
     return successResponse({ ok: true });
   } catch (error) {
     return errorResponse("Failed to ingest relay result", error);

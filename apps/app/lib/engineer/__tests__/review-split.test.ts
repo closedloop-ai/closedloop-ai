@@ -60,13 +60,13 @@ describe("splitReviewOutput", () => {
       "Review comment:",
       "",
       "- [P2] Remove artifact loop polling from feature-only My Tasks page — apps/app/app/(authenticated)/my-tasks/page.tsx:98-103",
-      "  This page only renders feature rows, but loop display logic matches by loop.documentId.",
+      "  This page only renders feature rows, but loop display logic matches by loop.artifactId.",
       "The patch introduces loop polling on a feature-only page where matching cannot succeed.",
       "",
       "Review comment:",
       "",
       "- [P2] Remove artifact loop polling from feature-only My Tasks page — apps/app/app/(authenticated)/my-tasks/page.tsx:98-103",
-      "  This page only renders feature rows, but loop display logic matches by loop.documentId.",
+      "  This page only renders feature rows, but loop display logic matches by loop.artifactId.",
     ].join("\n");
 
     const result = splitReviewOutput(output, "codex");

@@ -1,10 +1,9 @@
-import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
-import type { JsonObject } from "@repo/api/src/types/common";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
 import {
-  generateDocumentRoomId,
-  parseDocumentRoomId,
+  generateArtifactRoomId,
+  parseArtifactRoomId,
 } from "@repo/collaboration/room-utils";
 import type { CommentData, ThreadData } from "@repo/collaboration/webhook";
 import { Prisma, withDb } from "@repo/database";
@@ -21,7 +20,7 @@ export const commentsService = {
     thread: ThreadData,
     createdBy?: string
   ) {
-    const artifact = await findArtifactForRoom(organizationId, thread.roomId);
+    const entity = await findEntityForRoom(organizationId, thread.roomId);
     const metadata = thread.metadata ?? Prisma.JsonNull;
 
     return withDb((db) =>
@@ -37,7 +36,8 @@ export const commentsService = {
           source: ThreadSource.Liveblocks,
           externalId: thread.id,
           roomId: thread.roomId,
-          artifactId: artifact?.artifactId ?? null,
+          entityId: entity?.entityId ?? null,
+          entityType: entity?.entityType ?? null,
           status: thread.resolved ? ThreadStatus.Resolved : ThreadStatus.Open,
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
@@ -46,7 +46,8 @@ export const commentsService = {
         },
         update: {
           roomId: thread.roomId,
-          artifactId: artifact?.artifactId,
+          entityId: entity?.entityId,
+          entityType: entity?.entityType,
           status: thread.resolved ? ThreadStatus.Resolved : ThreadStatus.Open,
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
@@ -235,35 +236,7 @@ export const commentsService = {
     );
   },
 
-  /**
-   * Find all threads for a given artifact entity, optionally filtered by status.
-   */
-  findThreadsByDocument(
-    organizationId: string,
-    entityId: string,
-    options?: { status?: ThreadStatus }
-  ): Promise<CommentThreadWithComments[]> {
-    return withDb(async (db) => {
-      const rows = await db.commentThread.findMany({
-        where: {
-          organizationId,
-          artifactId: entityId,
-          status: options?.status,
-        },
-        include: {
-          comments: {
-            where: { deletedAt: null },
-            include: { reactions: true, attachments: true },
-            orderBy: { createdAt: "asc" },
-          },
-        },
-        orderBy: { createdAt: "desc" },
-      });
-      return rows.map(toCommentThreadWithComments);
-    });
-  },
-
-  createDocumentThread,
+  createArtifactThread,
 };
 
 /**
@@ -271,14 +244,14 @@ export const commentsService = {
  * Encapsulates room ID computation, Liveblocks SDK call, and DB sync.
  * Throws on Liveblocks errors; DB failures are logged but do not throw.
  */
-async function createDocumentThread(
+async function createArtifactThread(
   organizationId: string,
-  documentSlug: string,
+  artifactSlug: string,
   userId: string,
   bodyText: string,
   anchorText: string
 ): Promise<{ threadId: string; commentId: string }> {
-  const roomId = generateDocumentRoomId(organizationId, documentSlug);
+  const roomId = generateArtifactRoomId(organizationId, artifactSlug);
 
   const threadData = await createLiveblocksThread({
     roomId,
@@ -313,39 +286,15 @@ async function createDocumentThread(
 }
 
 /**
- * Map a Prisma CommentThread row (with comments included) to the API type.
- * `resolvedBy` and `createdBy` are not fetched — set to null.
- * Prisma's `Json` fields are cast to our stricter `JsonObject` type.
- */
-function toCommentThreadWithComments(
-  row: Prisma.CommentThreadGetPayload<{
-    include: {
-      comments: { include: { reactions: true; attachments: true } };
-    };
-  }>
-): CommentThreadWithComments {
-  return {
-    ...row,
-    metadata: row.metadata as JsonObject | null,
-    resolvedBy: null,
-    createdBy: null,
-    comments: row.comments.map((c) => ({
-      ...c,
-      body: c.body as JsonObject,
-    })),
-  };
-}
-
-/**
  * Parse roomId to find the associated artifact entity.
  * Returns null for non-artifact rooms or if artifact not found.
  */
-async function findArtifactForRoom(
+async function findEntityForRoom(
   organizationId: string,
   roomId: string
-): Promise<{ artifactId: string } | null> {
+): Promise<{ entityId: string; entityType: EntityType } | null> {
   try {
-    const { slug } = parseDocumentRoomId(roomId);
+    const { slug } = parseArtifactRoomId(roomId);
 
     const artifact = await withDb((db) =>
       db.artifact.findUnique({
@@ -358,7 +307,7 @@ async function findArtifactForRoom(
       return null;
     }
 
-    return { artifactId: artifact.id };
+    return { entityId: artifact.id, entityType: EntityType.Artifact };
   } catch {
     // Non-artifact room format — expected, not an error
     return null;

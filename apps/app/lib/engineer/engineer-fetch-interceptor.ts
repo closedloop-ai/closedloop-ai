@@ -1,22 +1,13 @@
 "use client";
 
-import { rewriteDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import {
-  CLOUD_RELAY_ENABLED,
-  COMPUTE_TARGET_HEADER,
-  GATEWAY_PATH_PREFIX,
-  GATEWAY_RELAY_PATH_PREFIX,
-} from "./constants";
+import { log } from "@repo/observability/log";
+import { CLOUD_RELAY_ENABLED } from "./constants";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
   invalidateElectronDetectionCache,
 } from "./electron-detection";
-import {
-  ensureLocalGatewayApiNamespace,
-  invalidateLocalGatewayApiNamespace,
-} from "./local-gateway-api-namespace";
 import {
   ensureLocalGatewaySession,
   getLastExchangeError,
@@ -29,8 +20,11 @@ type InterceptorWindow = Window & {
   __engineerFetchInterceptorRefs?: number;
 };
 
-function isGatewayRequest(url: URL): boolean {
-  return url.pathname.startsWith(GATEWAY_PATH_PREFIX);
+const ENGINEER_PREFIX = "/api/engineer/";
+const ENGINEER_RELAY_PREFIX = "/api/engineer-relay/";
+
+function isEngineerRequest(url: URL): boolean {
+  return url.pathname.startsWith(ENGINEER_PREFIX);
 }
 
 function stripAuthHeaders(headers: Headers): Headers {
@@ -94,13 +88,13 @@ function buildLocalhostRequest(
 
 function withComputeTargetHeader(headers: Headers, targetId: string): Headers {
   const next = new Headers(headers);
-  next.set(COMPUTE_TARGET_HEADER, targetId);
+  next.set("x-compute-target", targetId);
   return next;
 }
 
 function toRelayPath(pathname: string): string {
-  return pathname.startsWith(GATEWAY_PATH_PREFIX)
-    ? pathname.replace(GATEWAY_PATH_PREFIX, GATEWAY_RELAY_PATH_PREFIX)
+  return pathname.startsWith(ENGINEER_PREFIX)
+    ? pathname.replace(ENGINEER_PREFIX, ENGINEER_RELAY_PREFIX)
     : pathname;
 }
 
@@ -108,24 +102,29 @@ function createFetchInterceptor(
   originalFetch: typeof globalThis.fetch
 ): typeof globalThis.fetch {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
-    let request: Request;
-    if (input instanceof Request) {
-      request = new Request(input, init);
-    } else if (input instanceof URL) {
-      request = new Request(input.toString(), init);
-    } else {
-      request = new Request(
-        new URL(input, globalThis.location.origin).toString(),
-        init
-      );
-    }
+    const request =
+      input instanceof Request
+        ? new Request(input, init)
+        : input instanceof URL
+          ? new Request(input.toString(), init)
+          : new Request(
+              new URL(input, globalThis.location.origin).toString(),
+              init
+            );
     const requestUrl = new URL(request.url, globalThis.location.origin);
 
-    if (!isGatewayRequest(requestUrl)) {
+    if (!isEngineerRequest(requestUrl)) {
       return originalFetch(request);
     }
 
     const routingSelection = getEngineerRoutingSelection();
+
+    log.debug("[engineer-debug] Fetch interceptor routing", {
+      url: requestUrl.pathname,
+      mode: routingSelection.mode,
+      computeTargetId: routingSelection.computeTargetId,
+      cloudRelayEnabled: CLOUD_RELAY_ENABLED,
+    });
 
     if (
       CLOUD_RELAY_ENABLED &&
@@ -160,6 +159,18 @@ function createFetchInterceptor(
     }
 
     if (routingSelection.mode !== EngineerRoutingMode.LocalElectron) {
+      log.warn(
+        "[engineer-debug] Engineer request falling through to original fetch (will hit proxy guard)",
+        {
+          url: requestUrl.pathname,
+          mode: routingSelection.mode,
+          computeTargetId: routingSelection.computeTargetId,
+          reason:
+            routingSelection.mode === EngineerRoutingMode.CloudRelay
+              ? "CloudRelay mode but no computeTargetId -- request will be sent to Next.js app server (403 if hosted)"
+              : "Not in LocalElectron mode",
+        }
+      );
       return originalFetch(request);
     }
 
@@ -174,6 +185,11 @@ function createFetchInterceptor(
     }
 
     const port = detection.port;
+    const localhostUrl = new URL(
+      `${requestUrl.pathname}${requestUrl.search}`,
+      `http://localhost:${port}`
+    );
+
     const sessionToken = await ensureLocalGatewaySession(port);
 
     // Short-circuit: if the session exchange failed with an actionable error
@@ -185,17 +201,6 @@ function createFetchInterceptor(
         return buildExchangeErrorResponse(exchangeError);
       }
     }
-
-    const namespace = await ensureLocalGatewayApiNamespace(port, sessionToken);
-    const localhostUrl = new URL(
-      namespace
-        ? rewriteDesktopApiPath(
-            `${requestUrl.pathname}${requestUrl.search}`,
-            namespace
-          )
-        : `${requestUrl.pathname}${requestUrl.search}`,
-      `http://localhost:${port}`
-    );
 
     // Materialize body once so retries can reuse the same buffer.
     const bodyBuffer = methodAllowsBody(request.method)
@@ -214,20 +219,10 @@ function createFetchInterceptor(
       // On 401, invalidate session, re-acquire, and retry once
       if (response.status === 401 && sessionToken) {
         invalidateLocalGatewaySession();
-        invalidateLocalGatewayApiNamespace(port);
         const freshToken = await ensureLocalGatewaySession(port);
         if (freshToken) {
-          const freshNamespace = await ensureLocalGatewayApiNamespace(
-            port,
-            freshToken
-          );
           const retryUrl = new URL(
-            freshNamespace
-              ? rewriteDesktopApiPath(
-                  `${requestUrl.pathname}${requestUrl.search}`,
-                  freshNamespace
-                )
-              : `${requestUrl.pathname}${requestUrl.search}`,
+            `${requestUrl.pathname}${requestUrl.search}`,
             `http://localhost:${port}`
           );
           const retryRequest = buildLocalhostRequest(
@@ -250,7 +245,6 @@ function createFetchInterceptor(
       if (error instanceof TypeError) {
         invalidateElectronDetectionCache();
         invalidateLocalGatewaySession();
-        invalidateLocalGatewayApiNamespace(port);
       }
       throw error;
     }
@@ -258,7 +252,7 @@ function createFetchInterceptor(
 }
 
 /**
- * Installs a global fetch shim for gateway routes.
+ * Installs a global fetch shim for engineer routes.
  * Reference-counted to tolerate React Strict Mode remounts in development.
  */
 export function installEngineerFetchInterceptor(): () => void {
@@ -299,7 +293,6 @@ export function resetEngineerFetchInterceptorForTests(): void {
   if (globalThis.window === undefined) {
     return;
   }
-  invalidateLocalGatewayApiNamespace();
   const interceptorWindow = globalThis.window as InterceptorWindow;
   if (interceptorWindow.__engineerOriginalFetch) {
     globalThis.fetch = interceptorWindow.__engineerOriginalFetch;

@@ -12,8 +12,6 @@ export const judgesKeys = {
   all: ["judges"] as const,
   detail: (id: string) => [...judgesKeys.all, "detail", id] as const,
   prdDetail: (id: string) => [...judgesKeys.all, "prd-detail", id] as const,
-  featureDetail: (id: string) =>
-    [...judgesKeys.all, "feature-detail", id] as const,
   codeDetail: (id: string) => [...judgesKeys.all, "code-detail", id] as const,
 };
 
@@ -21,38 +19,33 @@ function makeJudgesFeedbackHook(
   getEndpoint: (id: string) => string,
   keyFn: (id: string) => readonly unknown[]
 ) {
-  return (documentId: string): UseQueryResult<JudgeFeedbackItem[] | null> => {
+  return (artifactId: string): UseQueryResult<JudgeFeedbackItem[] | null> => {
     const apiClient = useApiClient();
     return useQuery({
-      queryKey: keyFn(documentId),
+      queryKey: keyFn(artifactId),
       queryFn: async () => {
         const response = await apiClient.get<JudgesFeedbackResponse>(
-          getEndpoint(documentId)
+          getEndpoint(artifactId)
         );
         return response.status === "success" ? response.data : null;
       },
-      enabled: !!documentId,
+      enabled: !!artifactId,
       staleTime: 10 * 60 * 1000,
     });
   };
 }
 
 export const usePlanJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/documents/${id}/plan-judges`,
+  (id) => `/artifacts/${id}/plan-judges`,
   judgesKeys.detail
 );
 
 export const usePrdJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/documents/${id}/prd-judges`,
+  (id) => `/artifacts/${id}/prd-judges`,
   judgesKeys.prdDetail
 );
 
-export const useFeatureJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/documents/${id}/feature-judges`,
-  judgesKeys.featureDetail
-);
-
 export const useCodeJudgesFeedback = makeJudgesFeedbackHook(
-  (id) => `/documents/${id}/code-judges`,
+  (id) => `/artifacts/${id}/code-judges`,
   judgesKeys.codeDetail
 );

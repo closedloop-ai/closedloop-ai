@@ -31,13 +31,14 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
+vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/documents/attachments-service", () => ({
+vi.mock("@/app/artifacts/attachments-service", () => ({
   attachmentsService: {
-    listWithSignedUrlsByDocument: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByArtifact: vi.fn().mockResolvedValue([]),
+    listWithSignedUrlsByFeature: vi.fn().mockResolvedValue([]),
   },
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
 }));
@@ -57,9 +58,6 @@ vi.mock("@/app/loops/service", () => ({
     addEvent: vi.fn().mockResolvedValue(undefined),
     persistLaunchInfo: vi.fn(),
   },
-}));
-
-vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: mockIsInvalidStatusTransitionError,
 }));
 
@@ -67,7 +65,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
+vi.mock("@/lib/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn(),
 }));
 
@@ -121,7 +119,7 @@ describe("handleLoopCompleted token persistence", () => {
     const loop = buildLoop({
       command: "CHAT" as "PLAN",
       s3StateKey: null,
-      documentId: null,
+      artifactId: null,
       ...overrides,
     });
     mockLoopsService.findById.mockResolvedValue(loop);
@@ -555,7 +553,7 @@ describe("handleLoopError cache token persistence", () => {
     const loop = buildLoop({
       command: "CHAT" as "PLAN",
       s3StateKey: null,
-      documentId: null,
+      artifactId: null,
       status: "RUNNING",
       ...overrides,
     });
@@ -664,7 +662,7 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
     const loop = buildLoop({
       status: "RUNNING",
       s3StateKey: null,
-      documentId: null,
+      artifactId: null,
       ...overrides,
     });
     mockLoopsService.findById.mockResolvedValue(loop);

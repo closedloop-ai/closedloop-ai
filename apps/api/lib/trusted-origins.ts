@@ -1,6 +1,6 @@
 const TRAILING_SLASH_REGEX = /\/$/;
 const LEADING_DOT_REGEX = /^\./;
-const DEFAULT_PREVIEW_SUFFIX = "preview.closedloop-stage.ai";
+const DEFAULT_PREVIEW_SUFFIX = "preview.localhost";
 const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
 
 function getAllowedOrigins(): Set<string> {
@@ -65,5 +65,5 @@ export function isTrustedOrigin(origin: string | null): boolean {
     return true;
   }
 
-  return false;
+  return hostname.endsWith(".vercel.app") && hostname.startsWith("app-");
 }

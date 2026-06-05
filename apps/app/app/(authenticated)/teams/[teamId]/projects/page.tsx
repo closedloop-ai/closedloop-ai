@@ -2,20 +2,17 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import type { CreateProjectInput } from "@repo/api/src/types/project";
-import { ProjectStatus } from "@repo/api/src/types/project";
 import { Loader2Icon } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
-import { TableViewMenu } from "@/components/document-table/table-view-menu";
+import { ColumnVisibilityPanel } from "@/components/artifact-table/column-visibility-panel";
 import {
   useCreateProject,
   useDeleteProject,
   useProjectsByTeam,
   useUpdateProjectAssignee,
   useUpdateProjectPriority,
-  useUpdateProjectStatus,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -52,9 +49,7 @@ export default function TeamProjectsPage() {
     data: projects = [],
     isLoading: loadingProjects,
     error: projectsError,
-  } = useProjectsByTeam(teamId, undefined, {
-    excludeStatus: [ProjectStatus.Archived],
-  });
+  } = useProjectsByTeam(teamId);
 
   const loading = loadingTeam || loadingProjects;
   const error = teamError?.message || projectsError?.message || null;
@@ -65,7 +60,6 @@ export default function TeamProjectsPage() {
   const updatePriorityMutation = useUpdateProjectPriority();
   const createProjectMutation = useCreateProject();
   const deleteProjectMutation = useDeleteProject();
-  const updateStatusMutation = useUpdateProjectStatus();
 
   const handleUpdateAssignee = (
     projectId: string,
@@ -93,35 +87,6 @@ export default function TeamProjectsPage() {
   const handleDeleteProject = async (projectId: string) => {
     const result = await deleteProjectMutation.mutateAsync(projectId);
     return result.deleted ?? false;
-  };
-
-  const handleUpdateStatus = (
-    projectId: string,
-    status: ProjectStatus,
-    previousStatus: ProjectStatus
-  ) => {
-    updateStatusMutation.mutate(
-      { projectId, status },
-      {
-        onSuccess: () => {
-          if (status === ProjectStatus.Archived) {
-            toast.success("Project archived", {
-              action: {
-                label: "Undo",
-                onClick: () => {
-                  updateStatusMutation.mutate({
-                    projectId,
-                    status: previousStatus,
-                  });
-                },
-              },
-            });
-            return;
-          }
-          toast.success("Project unarchived");
-        },
-      }
-    );
   };
 
   if (loading) {
@@ -161,7 +126,7 @@ export default function TeamProjectsPage() {
         {/* Title bar */}
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
           <h1 className="font-semibold text-xl">Projects</h1>
-          <TableViewMenu
+          <ColumnVisibilityPanel
             columns={PROJECT_DEFAULT_COLUMNS}
             onToggle={toggleColumn}
             visibility={visibility}
@@ -174,7 +139,6 @@ export default function TeamProjectsPage() {
             onDelete={handleDeleteProject}
             onUpdateAssignee={handleUpdateAssignee}
             onUpdatePriority={handleUpdatePriority}
-            onUpdateStatus={handleUpdateStatus}
             onUpdateTargetDate={handleUpdateTargetDate}
             projects={projects}
             teamId={teamId}

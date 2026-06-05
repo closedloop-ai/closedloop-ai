@@ -1,13 +1,13 @@
 "use client";
 
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Card } from "@repo/design-system/components/ui/card";
 import { BoxIcon, FileTextIcon } from "lucide-react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { CreateDocumentModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-document-modal";
+import { CreateArtifactModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-artifact-modal";
 import { CreateFeatureModal } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/create-feature-modal";
 
 type MyTasksEmptyStateProps = {
@@ -15,6 +15,7 @@ type MyTasksEmptyStateProps = {
 };
 
 export function MyTasksEmptyState({ projects }: MyTasksEmptyStateProps) {
+  const router = useRouter();
   const [showPrdModal, setShowPrdModal] = useState(false);
   const [showFeatureModal, setShowFeatureModal] = useState(false);
 
@@ -67,15 +68,19 @@ export function MyTasksEmptyState({ projects }: MyTasksEmptyStateProps) {
           </Card>
         </div>
       ) : (
-        <Button asChild className="mt-8" variant="outline">
-          <Link href="/teams">Go to Teams</Link>
+        <Button
+          className="mt-8"
+          onClick={() => router.push("/teams")}
+          variant="outline"
+        >
+          Go to Teams
         </Button>
       )}
 
       {hasProjectContext && (
         <>
-          <CreateDocumentModal
-            documentType={DocumentType.Prd}
+          <CreateArtifactModal
+            artifactType={ArtifactType.Prd}
             onOpenChange={setShowPrdModal}
             open={showPrdModal}
             projectId={defaultProject.id}

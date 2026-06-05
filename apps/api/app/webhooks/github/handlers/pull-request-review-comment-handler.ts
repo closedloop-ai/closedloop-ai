@@ -3,8 +3,7 @@ import type {
   PullRequestReviewCommentDeletedEvent,
   PullRequestReviewCommentEditedEvent,
 } from "@octokit/webhooks-types";
-import { LinkType } from "@repo/api/src/types/artifact";
-import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
@@ -80,8 +79,8 @@ export async function handlePullRequestReviewComment(
       return;
     }
 
-    // Step 2: Find PR artifact detail by repositoryId + number
-    const prDetail = await tx.pullRequestDetail.findUnique({
+    // Step 2: Find GitHubPullRequest by repositoryId + number
+    const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -89,39 +88,12 @@ export async function handlePullRequestReviewComment(
         },
       },
       select: {
+        id: true,
+        workstreamId: true,
         artifactId: true,
-        artifact: {
-          select: {
-            workstreamId: true,
-            // PR is the TARGET of a DOCUMENT → produces → PR link — query
-            // targetLinks, not sourceLinks. sourceLinks would filter
-            // links-where-PR-is-source, which never match this direction.
-            targetLinks: {
-              where: {
-                linkType: LinkType.Produces,
-                source: { type: ArtifactType.DOCUMENT },
-              },
-              select: {
-                source: { select: { id: true, slug: true } },
-              },
-              orderBy: { createdAt: "asc" },
-              take: 1,
-            },
-          },
-        },
+        artifact: { select: { slug: true } },
       },
     });
-
-    const linkedDoc = prDetail?.artifact.targetLinks[0]?.source ?? null;
-    const existingPr = prDetail
-      ? {
-          id: prDetail.artifactId,
-          // Preserve null — empty string is not a valid workstream id.
-          workstreamId: prDetail.artifact.workstreamId,
-          documentId: linkedDoc?.id ?? null,
-          document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
-        }
-      : null;
 
     if (!existingPr) {
       log.warn(
@@ -139,17 +111,116 @@ export async function handlePullRequestReviewComment(
     // Step 3: Handle comment action
     switch (action) {
       case "created": {
-        await handleCreatedComment(tx, existingPr, comment, pull_request);
+        // Upsert GitHubPRReviewComment record (idempotent for webhook retries)
+        await tx.gitHubPRReviewComment.upsert({
+          where: { githubCommentId: String(comment.id) },
+          create: {
+            pullRequestId: existingPr.id,
+            githubCommentId: String(comment.id),
+            reviewId: comment.pull_request_review_id
+              ? String(comment.pull_request_review_id)
+              : null,
+            body: comment.body,
+            path: comment.path,
+            line: comment.line,
+            authorLogin: comment.user.login,
+            authorAvatarUrl: comment.user.avatar_url,
+            state: "PENDING",
+            htmlUrl: comment.html_url,
+          },
+          update: {
+            body: comment.body,
+            path: comment.path,
+            line: comment.line,
+            reviewId: comment.pull_request_review_id
+              ? String(comment.pull_request_review_id)
+              : null,
+          },
+        });
+
+        // Create workstream event
+        await tx.workstreamEvent.create({
+          data: {
+            workstreamId: existingPr.workstreamId,
+            type: "GITHUB_PR_COMMENT_ADDED",
+            actorType: "system",
+            data: {
+              commentId: comment.id,
+              commentBody: comment.body,
+              commentPath: comment.path,
+              commentLine: comment.line,
+              authorLogin: comment.user.login,
+              prNumber: pull_request.number,
+              prTitle: pull_request.title,
+              prUrl: pull_request.html_url,
+              commentUrl: comment.html_url,
+              artifactId: existingPr.artifactId,
+              artifactSlug: existingPr.artifact?.slug,
+            },
+          },
+        });
+
+        log.info("[handlePullRequestReviewComment] Review comment created", {
+          commentId: comment.id,
+          prNumber: pull_request.number,
+          path: comment.path,
+          line: comment.line,
+        });
         break;
       }
 
       case "edited": {
-        await handleEditedComment(tx, comment, pull_request);
+        // Update body field on existing GitHubPRReviewComment
+        const updatedComment = await tx.gitHubPRReviewComment.updateMany({
+          where: {
+            githubCommentId: String(comment.id),
+          },
+          data: {
+            body: comment.body,
+          },
+        });
+
+        if (updatedComment.count === 0) {
+          log.warn(
+            "[handlePullRequestReviewComment] Comment not found for update",
+            {
+              githubCommentId: comment.id,
+              prNumber: pull_request.number,
+              reason: "Comment may not have been tracked by Symphony",
+            }
+          );
+        } else {
+          log.info("[handlePullRequestReviewComment] Review comment edited", {
+            commentId: comment.id,
+            prNumber: pull_request.number,
+          });
+        }
         break;
       }
 
       case "deleted": {
-        await handleDeletedComment(tx, comment, pull_request);
+        // Delete GitHubPRReviewComment by githubCommentId
+        const deletedComment = await tx.gitHubPRReviewComment.deleteMany({
+          where: {
+            githubCommentId: String(comment.id),
+          },
+        });
+
+        if (deletedComment.count === 0) {
+          log.warn(
+            "[handlePullRequestReviewComment] Comment not found for deletion",
+            {
+              githubCommentId: comment.id,
+              prNumber: pull_request.number,
+              reason: "Comment may not have been tracked by Symphony",
+            }
+          );
+        } else {
+          log.info("[handlePullRequestReviewComment] Review comment deleted", {
+            commentId: comment.id,
+            prNumber: pull_request.number,
+          });
+        }
         break;
       }
 
@@ -175,127 +246,4 @@ export async function handlePullRequestReviewComment(
     message: "Event processed successfully",
     ok: true,
   });
-}
-
-type ExistingPr = {
-  id: string;
-  workstreamId: string | null;
-  documentId: string | null;
-  document: { slug: string } | null;
-};
-
-async function handleCreatedComment(
-  tx: TransactionClient,
-  existingPr: ExistingPr,
-  comment: HandledPullRequestReviewCommentEvent["comment"],
-  pull_request: HandledPullRequestReviewCommentEvent["pull_request"]
-): Promise<void> {
-  await tx.gitHubPRReviewComment.upsert({
-    where: { githubCommentId: String(comment.id) },
-    create: {
-      pullRequestId: existingPr.id,
-      githubCommentId: String(comment.id),
-      inReplyToId: comment.in_reply_to_id
-        ? String(comment.in_reply_to_id)
-        : null,
-      reviewId: comment.pull_request_review_id
-        ? String(comment.pull_request_review_id)
-        : null,
-      body: comment.body,
-      path: comment.path,
-      line: comment.line,
-      authorLogin: comment.user.login,
-      authorAvatarUrl: comment.user.avatar_url,
-      state: "PENDING",
-      htmlUrl: comment.html_url,
-    },
-    update: {
-      body: comment.body,
-      path: comment.path,
-      line: comment.line,
-      reviewId: comment.pull_request_review_id
-        ? String(comment.pull_request_review_id)
-        : null,
-    },
-  });
-
-  if (existingPr.workstreamId) {
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId: existingPr.workstreamId,
-        type: "GITHUB_PR_COMMENT_ADDED",
-        actorType: "system",
-        data: {
-          commentId: comment.id,
-          commentBody: comment.body,
-          commentPath: comment.path,
-          commentLine: comment.line,
-          authorLogin: comment.user.login,
-          prNumber: pull_request.number,
-          prTitle: pull_request.title,
-          prUrl: pull_request.html_url,
-          commentUrl: comment.html_url,
-          documentId: existingPr.documentId,
-          documentSlug: existingPr.document?.slug,
-        },
-      },
-    });
-  }
-
-  log.info("[handlePullRequestReviewComment] Review comment created", {
-    commentId: comment.id,
-    prNumber: pull_request.number,
-    path: comment.path,
-    line: comment.line,
-  });
-}
-
-async function handleEditedComment(
-  tx: TransactionClient,
-  comment: HandledPullRequestReviewCommentEvent["comment"],
-  pull_request: HandledPullRequestReviewCommentEvent["pull_request"]
-): Promise<void> {
-  const updatedComment = await tx.gitHubPRReviewComment.updateMany({
-    where: { githubCommentId: String(comment.id) },
-    data: { body: comment.body },
-  });
-
-  if (updatedComment.count === 0) {
-    log.warn("[handlePullRequestReviewComment] Comment not found for update", {
-      githubCommentId: comment.id,
-      prNumber: pull_request.number,
-      reason: "Comment may not have been tracked by Symphony",
-    });
-  } else {
-    log.info("[handlePullRequestReviewComment] Review comment edited", {
-      commentId: comment.id,
-      prNumber: pull_request.number,
-    });
-  }
-}
-
-async function handleDeletedComment(
-  tx: TransactionClient,
-  comment: HandledPullRequestReviewCommentEvent["comment"],
-  pull_request: HandledPullRequestReviewCommentEvent["pull_request"]
-): Promise<void> {
-  const deletedComment = await tx.gitHubPRReviewComment.deleteMany({
-    where: { githubCommentId: String(comment.id) },
-  });
-
-  if (deletedComment.count === 0) {
-    log.warn(
-      "[handlePullRequestReviewComment] Comment not found for deletion",
-      {
-        githubCommentId: comment.id,
-        prNumber: pull_request.number,
-        reason: "Comment may not have been tracked by Symphony",
-      }
-    );
-  } else {
-    log.info("[handlePullRequestReviewComment] Review comment deleted", {
-      commentId: comment.id,
-      prNumber: pull_request.number,
-    });
-  }
 }

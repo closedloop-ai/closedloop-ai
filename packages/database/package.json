@@ -15,7 +15,7 @@
     "@aws-sdk/rds-signer": "^3.1003.0",
     "@prisma/adapter-pg": "~7.5.0",
     "@prisma/client": "~7.5.0",
-    "@prisma/client-runtime-utils": "~7.8.0",
+    "@prisma/client-runtime-utils": "~7.5.0",
     "@t3-oss/env-nextjs": "^0.13.10",
     "@vercel/functions": "^3.4.3",
     "pg": "^8.20.0",

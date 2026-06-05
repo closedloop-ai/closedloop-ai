@@ -1,7 +1,8 @@
 import "server-only";
 
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { TYPED_SLUG_PATTERN } from "@repo/api/src/types/slug";
-import { ArtifactType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { z } from "zod";
 
 const UUID_REGEX =
@@ -47,7 +48,7 @@ export function uuidOrSlug() {
 // UUID-only resolvers — return the UUID string for filter/body params
 // ---------------------------------------------------------------------------
 
-export async function resolveDocumentId(
+export async function resolveArtifactId(
   id: string,
   organizationId: string
 ): Promise<string | null> {
@@ -56,10 +57,23 @@ export async function resolveDocumentId(
   }
   const row = await withDb((db) =>
     db.artifact.findUnique({
-      where: {
-        organizationId_slug: { organizationId, slug: id },
-        type: ArtifactType.DOCUMENT,
-      },
+      where: { organizationId_slug: { organizationId, slug: id } },
+      select: { id: true },
+    })
+  );
+  return row?.id ?? null;
+}
+
+export async function resolveFeatureId(
+  id: string,
+  organizationId: string
+): Promise<string | null> {
+  if (isUuid(id)) {
+    return id;
+  }
+  const row = await withDb((db) =>
+    db.feature.findUnique({
+      where: { organizationId_slug: { organizationId, slug: id } },
       select: { id: true },
     })
   );
@@ -99,23 +113,23 @@ export async function resolveWorkstreamId(
 }
 
 /**
- * Resolve an artifact identifier that may be a UUID or a document slug.
- * Non-document artifacts (PR, deployment) don't carry slugs, so non-UUID
- * input falls back to a document lookup first, then returns the raw UUID
- * if the caller insists.
+ * Entity-type-aware resolver for entity-link params.
+ * Supports slug resolution for ARTIFACT and FEATURE only.
+ * EXTERNAL_LINK has no slug field — non-UUID input returns null immediately.
  */
-export async function resolveArtifactIdentifier(
+export function resolveEntityLinkIdentifier(
   id: string,
-  organizationId: string
+  organizationId: string,
+  entityType: EntityType
 ): Promise<string | null> {
-  if (isUuid(id)) {
-    const row = await withDb((db) =>
-      db.artifact.findFirst({
-        where: { id, organizationId },
-        select: { id: true },
-      })
-    );
-    return row?.id ?? null;
+  switch (entityType) {
+    case EntityType.Artifact:
+      return resolveArtifactId(id, organizationId);
+    case EntityType.Feature:
+      return resolveFeatureId(id, organizationId);
+    case EntityType.ExternalLink:
+      return Promise.resolve(isUuid(id) ? id : null);
+    default:
+      return Promise.resolve(isUuid(id) ? id : null);
   }
-  return resolveDocumentId(id, organizationId);
 }

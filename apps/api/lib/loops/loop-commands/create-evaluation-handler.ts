@@ -4,13 +4,12 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
-import { withDb } from "@repo/database";
+import { EntityType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { documentWhere } from "@/lib/artifact-adapters";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-document-ingestion";
+} from "@/lib/loops/loop-artifact-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { judgesReportSchema } from "../judges-report-schema";
 import type { LoopCommandHandler } from "./loop-command-handler";
@@ -72,9 +71,9 @@ export function createEvaluationHandler(
       organizationId: string,
       artifacts: JudgesArtifacts
     ) {
-      if (!loop.documentId) {
+      if (!loop.artifactId) {
         log.warn(
-          `[loop-document-ingestion] No artifactId on loop, skipping ${label} evaluation ingestion`,
+          `[loop-artifact-ingestion] No artifactId on loop, skipping ${label} evaluation ingestion`,
           { loopId: loop.id }
         );
         return;
@@ -84,34 +83,33 @@ export function createEvaluationHandler(
 
       if (!report) {
         log.info(
-          `[loop-document-ingestion] No ${label} judges report to ingest`,
-          { documentId: loop.documentId }
+          `[loop-artifact-ingestion] No ${label} judges report to ingest`,
+          { artifactId: loop.artifactId }
         );
         return;
       }
 
-      const documentId = loop.documentId;
+      const artifactId = loop.artifactId;
 
       await withDb.tx(async (tx) => {
         // Stale-write guard: if the artifact has advanced beyond the version this
         // loop was created for, a newer evaluation loop has already run (or is
         // in flight). Skip ingestion to prevent old scores from overwriting newer ones.
         // Check is inside the transaction to avoid a TOCTOU race between read and write.
-        if (loop.documentVersion != null) {
+        if (loop.artifactVersion != null) {
           const artifact = await tx.artifact.findUnique({
-            where: documentWhere({ id: documentId, organizationId }),
-            select: { document: { select: { latestVersion: true } } },
+            where: { id: artifactId, organizationId },
+            select: { latestVersion: true },
           });
 
-          const latestVersion = artifact?.document?.latestVersion;
-          if (latestVersion != null && latestVersion > loop.documentVersion) {
+          if (artifact && artifact.latestVersion > loop.artifactVersion) {
             log.info(
-              `[loop-document-ingestion] Skipping ${label} evaluation ingest — artifact has a newer version`,
+              `[loop-artifact-ingestion] Skipping ${label} evaluation ingest — artifact has a newer version`,
               {
-                documentId,
+                artifactId,
                 loopId: loop.id,
-                loopArtifactVersion: loop.documentVersion,
-                currentArtifactVersion: latestVersion,
+                loopArtifactVersion: loop.artifactVersion,
+                currentArtifactVersion: artifact.latestVersion,
               }
             );
             return;
@@ -119,7 +117,9 @@ export function createEvaluationHandler(
         }
 
         await upsertEvaluationWithJudgeScores({
-          artifactId: documentId,
+          entityId: artifactId,
+          entityType: EntityType.ARTIFACT,
+          artifactId,
           loopId: loop.id,
           organizationId,
           reportType,

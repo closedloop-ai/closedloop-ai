@@ -1,10 +1,10 @@
 /**
- * Tests for the attachment path regex used in PlanViewer and ClosedLoopChat.
+ * Tests for the attachment path regex used in PlanViewer and SymphonyChat.
  * Verifies that canonical .closedloop-ai/work paths and relative paths are matched.
  */
 import { describe, expect, it } from "vitest";
 
-// Mirror the regex from PlanViewer.tsx / ClosedLoopChat.tsx
+// Mirror the regex from PlanViewer.tsx / SymphonyChat.tsx
 const ATTACHMENTS_REGEX = /(?:\.closedloop-ai\/work\/)?attachments\/(.+)$/;
 
 describe("attachment path regex", () => {

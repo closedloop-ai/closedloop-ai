@@ -1,6 +1,6 @@
 "use client";
 
-import type { Document } from "@repo/api/src/types/document";
+import type { Artifact } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -14,34 +14,34 @@ import {
 type MoveRelatedConfirmationDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  artifact: Document;
-  relatedDocuments: Document[];
+  artifact: Artifact;
+  relatedArtifacts: Artifact[];
   onConfirm: (moveAll: boolean) => void;
 };
 
 export function MoveRelatedConfirmationDialog({
   open,
   onOpenChange,
-  relatedDocuments,
+  relatedArtifacts,
   onConfirm,
 }: MoveRelatedConfirmationDialogProps) {
-  const relatedCount = relatedDocuments.length;
+  const relatedCount = relatedArtifacts.length;
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Move Related Documents?</DialogTitle>
+          <DialogTitle>Move Related Artifacts?</DialogTitle>
           <DialogDescription>
             This artifact has {relatedCount} related{" "}
-            {relatedCount === 1 ? "artifact" : "documents"}. Would you like to
+            {relatedCount === 1 ? "artifact" : "artifacts"}. Would you like to
             move them together?
           </DialogDescription>
         </DialogHeader>
         <div className="py-4">
           <p className="mb-2 font-medium text-sm">Related artifacts:</p>
           <ul className="list-inside list-disc space-y-1">
-            {relatedDocuments.map((related) => (
+            {relatedArtifacts.map((related) => (
               <li className="text-muted-foreground text-sm" key={related.id}>
                 {related.title}
               </li>

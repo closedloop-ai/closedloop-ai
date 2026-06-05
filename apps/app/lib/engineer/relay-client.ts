@@ -1,7 +1,3 @@
-import {
-  isDesktopApiPath,
-  normalizeDesktopApiPath,
-} from "@repo/api/src/desktop-api-namespace";
 import type { ApiResult, JsonValue } from "@repo/api/src/types/common";
 import type {
   CreateDesktopCommandInput,
@@ -57,19 +53,14 @@ function parseRelayResponseEnvelope(
   }
 
   // Electron gateway uses { statusCode, data }, relay envelope uses { status, body }.
-  let status: number | undefined;
-  if (typeof value.status === "number") {
-    status = value.status;
-  } else if (typeof value.statusCode === "number") {
-    status = value.statusCode;
-  }
-
-  let body: unknown;
-  if ("body" in value) {
-    body = value.body;
-  } else if ("data" in value) {
-    body = value.data;
-  }
+  const status =
+    typeof value.status === "number"
+      ? value.status
+      : typeof value.statusCode === "number"
+        ? value.statusCode
+        : undefined;
+  const body =
+    "body" in value ? value.body : "data" in value ? value.data : undefined;
 
   if (status === undefined || body === undefined) {
     return null;
@@ -309,8 +300,6 @@ function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
       return body.value as unknown as JsonValue;
     case "base64":
       return body.value as unknown as JsonValue;
-    default:
-      throw new Error("Unsupported relay body kind");
   }
 }
 
@@ -320,10 +309,8 @@ function toDesktopCommandInput(
   streaming: boolean
 ): CreateDesktopCommandInput {
   const { path, query } = splitPathAndQuery(request.path);
-  if (!isDesktopApiPath(path)) {
-    throw new Error(
-      `Relay path must target /api/gateway/* or /api/engineer/*, got: ${path}`
-    );
+  if (!path.startsWith("/api/engineer/")) {
+    throw new Error(`Relay path must target /api/engineer/*, got: ${path}`);
   }
 
   return {
@@ -354,7 +341,7 @@ function mapCommandEventToNdjsonLine(
   return line;
 }
 
-export function isStreamingGatewayRequest(
+export function isStreamingEngineerRequest(
   method: string,
   path: string,
   acceptHeader: string | null
@@ -366,22 +353,17 @@ export function isStreamingGatewayRequest(
     return false;
   }
 
-  const rawPathname = path.split("?")[0];
-  const pathname = normalizeDesktopApiPath(rawPathname);
-  if (!pathname) {
-    return false;
-  }
+  const pathname = path.split("?")[0];
   return [
-    /^\/api\/gateway\/symphony\/chat\/[^/]+$/,
-    /^\/api\/gateway\/symphony\/comment-chat\/[^/]+$/,
-    /^\/api\/gateway\/codex\/chat\/[^/]+$/,
-    /^\/api\/gateway\/codex\/argue\/[^/]+$/,
-    /^\/api\/gateway\/codex\/review\/[^/]+$/,
-    /^\/api\/gateway\/codex\/finding-chat\/[^/]+$/,
-    /^\/api\/gateway\/ticket-chat$/,
-    /^\/api\/gateway\/terminal-chat$/,
-    /^\/api\/gateway\/run-viewer-chat$/,
-    /^\/api\/gateway\/chat$/,
+    /^\/api\/engineer\/symphony\/chat\/[^/]+$/,
+    /^\/api\/engineer\/symphony\/comment-chat\/[^/]+$/,
+    /^\/api\/engineer\/codex\/chat\/[^/]+$/,
+    /^\/api\/engineer\/codex\/argue\/[^/]+$/,
+    /^\/api\/engineer\/codex\/review\/[^/]+$/,
+    /^\/api\/engineer\/codex\/finding-chat\/[^/]+$/,
+    /^\/api\/engineer\/ticket-chat$/,
+    /^\/api\/engineer\/terminal-chat$/,
+    /^\/api\/engineer\/run-viewer-chat$/,
   ].some((pattern) => pattern.test(pathname));
 }
 
@@ -562,7 +544,6 @@ export class RelayClient {
         if (resultEvent) {
           const line = mapCommandEventToNdjsonLine(resultEvent);
           log.info("Recovered missed result event via poll fallback", {
-            computeTargetId: targetId,
             commandId,
             attempt,
           });
@@ -573,7 +554,6 @@ export class RelayClient {
         }
       } catch (err) {
         log.warn("Poll fallback for missed result failed", {
-          computeTargetId: targetId,
           commandId,
           attempt,
           error: err instanceof Error ? err.message : String(err),
@@ -734,7 +714,6 @@ export class RelayClient {
         } catch (error) {
           log.error("Relay command event polling failed", {
             targetId,
-            computeTargetId: targetId,
             commandId,
             error,
           });

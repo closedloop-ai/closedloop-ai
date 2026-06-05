@@ -218,7 +218,6 @@ export function RepoFileAutocomplete({
               ref={(el) => {
                 itemRefs.current[index] = el;
               }}
-              type="button"
             >
               <Icon className="size-4 shrink-0 text-muted-foreground" />
               <span className="shrink-0 text-muted-foreground text-xs">

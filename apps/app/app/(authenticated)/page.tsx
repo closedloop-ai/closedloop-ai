@@ -1,6 +1,5 @@
-import { ClientRedirect } from "@/components/client-redirect";
+import { redirect } from "next/navigation";
 
 export default function App() {
-  // Work around a Next App Router dev bug triggered by server redirects here.
-  return <ClientRedirect href="/my-tasks" />;
+  redirect("/my-tasks");
 }

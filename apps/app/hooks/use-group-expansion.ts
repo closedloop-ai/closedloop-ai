@@ -6,34 +6,27 @@ import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 
 /**
  * Hook managing which groups are expanded/collapsed in a grouped table view.
- * Persists toggled groups to localStorage so state survives re-renders,
+ * Persists expanded groups to localStorage so state survives re-renders,
  * data refetches, and page navigation.
  *
- * @param storageKey - localStorage key for persisting state.
- * @param options.defaultExpanded - When true, groups default to expanded and
- *   the stored keys represent *collapsed* groups. Default: false (collapsed).
+ * Groups default to collapsed — only explicitly expanded groups are stored.
  */
-export function useGroupExpansion(
-  storageKey: string,
-  options?: { defaultExpanded?: boolean }
-) {
-  const defaultExpanded = options?.defaultExpanded ?? false;
-  const [toggledKeys, setToggledKeys] = useLocalStorageState<string[]>(
+export function useGroupExpansion(storageKey: string) {
+  const [expandedKeys, setExpandedKeys] = useLocalStorageState<string[]>(
     storageKey,
     []
   );
 
-  const toggledSet = useMemo(() => new Set(toggledKeys), [toggledKeys]);
+  const expandedSet = useMemo(() => new Set(expandedKeys), [expandedKeys]);
 
   const isExpanded = useCallback(
-    (groupKey: string) =>
-      defaultExpanded ? !toggledSet.has(groupKey) : toggledSet.has(groupKey),
-    [toggledSet, defaultExpanded]
+    (groupKey: string) => expandedSet.has(groupKey),
+    [expandedSet]
   );
 
   const toggleGroup = useCallback(
     (groupKey: string) => {
-      setToggledKeys((prev) => {
+      setExpandedKeys((prev) => {
         const set = new Set(prev);
         if (set.has(groupKey)) {
           set.delete(groupKey);
@@ -43,7 +36,7 @@ export function useGroupExpansion(
         return Array.from(set);
       });
     },
-    [setToggledKeys]
+    [setExpandedKeys]
   );
 
   return { isExpanded, toggleGroup };

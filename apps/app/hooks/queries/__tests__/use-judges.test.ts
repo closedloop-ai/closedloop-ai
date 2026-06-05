@@ -5,7 +5,6 @@ import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   judgesKeys,
   useCodeJudgesFeedback,
-  useFeatureJudgesFeedback,
   usePlanJudgesFeedback,
   usePrdJudgesFeedback,
 } from "../use-judges";
@@ -67,7 +66,7 @@ describe("usePlanJudgesFeedback", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/documents/artifact-abc/plan-judges"
+      "/artifacts/artifact-abc/plan-judges"
     );
     expect(result.current.data).toHaveLength(1);
     expect(result.current.data?.[0].caseId).toBe("clarity-judge");
@@ -112,7 +111,7 @@ describe("usePlanJudgesFeedback", () => {
     expect(result.current.data).toBeNull();
   });
 
-  test("does not fetch when documentId is empty string", () => {
+  test("does not fetch when artifactId is empty string", () => {
     renderHook(() => usePlanJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
@@ -177,12 +176,12 @@ describe("usePrdJudgesFeedback", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/documents/artifact-abc/prd-judges"
+      "/artifacts/artifact-abc/prd-judges"
     );
     expect(result.current.data?.[0].caseId).toBe("prd-clarity-judge");
   });
 
-  test("does not fetch when documentId is empty string", () => {
+  test("does not fetch when artifactId is empty string", () => {
     renderHook(() => usePrdJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
@@ -190,56 +189,14 @@ describe("usePrdJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from usePlanJudgesFeedback, useFeatureJudgesFeedback, and useCodeJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback and useCodeJudgesFeedback", () => {
     const prdKey = judgesKeys.prdDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
-    const featureKey = judgesKeys.featureDetail("artifact-xyz");
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
 
     expect(prdKey).toEqual(["judges", "prd-detail", "artifact-xyz"]);
     expect(prdKey).not.toEqual(planKey);
-    expect(prdKey).not.toEqual(featureKey);
     expect(prdKey).not.toEqual(codeKey);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests — useFeatureJudgesFeedback
-// ---------------------------------------------------------------------------
-
-describe("useFeatureJudgesFeedback", () => {
-  test("fetches feature judge feedback using feature-judges endpoint", async () => {
-    const response = buildSuccessResponse({
-      caseId: "feature-clarity-judge",
-      score: 0.91,
-    });
-    mockApiClient.get.mockResolvedValueOnce(response);
-
-    const { result } = renderHook(
-      () => useFeatureJudgesFeedback("artifact-abc"),
-      {
-        wrapper: createWrapper(),
-      }
-    );
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/documents/artifact-abc/feature-judges"
-    );
-    expect(result.current.data?.[0].caseId).toBe("feature-clarity-judge");
-  });
-
-  test("uses a distinct query key from other judge feedback hooks", () => {
-    const featureKey = judgesKeys.featureDetail("artifact-xyz");
-    const planKey = judgesKeys.detail("artifact-xyz");
-    const prdKey = judgesKeys.prdDetail("artifact-xyz");
-    const codeKey = judgesKeys.codeDetail("artifact-xyz");
-
-    expect(featureKey).toEqual(["judges", "feature-detail", "artifact-xyz"]);
-    expect(featureKey).not.toEqual(planKey);
-    expect(featureKey).not.toEqual(prdKey);
-    expect(featureKey).not.toEqual(codeKey);
   });
 });
 
@@ -262,12 +219,12 @@ describe("useCodeJudgesFeedback", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.get).toHaveBeenCalledWith(
-      "/documents/artifact-abc/code-judges"
+      "/artifacts/artifact-abc/code-judges"
     );
     expect(result.current.data?.[0].caseId).toBe("dry-principle-judge");
   });
 
-  test("does not fetch when documentId is empty string", () => {
+  test("does not fetch when artifactId is empty string", () => {
     renderHook(() => useCodeJudgesFeedback(""), {
       wrapper: createWrapper(),
     });
@@ -275,13 +232,11 @@ describe("useCodeJudgesFeedback", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("uses a distinct query key from usePlanJudgesFeedback and useFeatureJudgesFeedback", () => {
+  test("uses a distinct query key from usePlanJudgesFeedback", () => {
     const codeKey = judgesKeys.codeDetail("artifact-xyz");
     const planKey = judgesKeys.detail("artifact-xyz");
-    const featureKey = judgesKeys.featureDetail("artifact-xyz");
 
     expect(codeKey).toEqual(["judges", "code-detail", "artifact-xyz"]);
     expect(codeKey).not.toEqual(planKey);
-    expect(codeKey).not.toEqual(featureKey);
   });
 });

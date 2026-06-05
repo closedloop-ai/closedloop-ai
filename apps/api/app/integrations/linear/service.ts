@@ -1,5 +1,5 @@
 import type { LinearIntegration } from "@repo/database";
-import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import {
   type CreateIssueInput,
   createIssues,
@@ -15,11 +15,7 @@ import {
 } from "@repo/linear";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import {
-  encryptTokenPair,
-  resolveIntegrationToken,
-} from "@/lib/integration-encryption";
-import { documentVersionService } from "../../documents/document-version-service";
+import { artifactVersionService } from "../../artifacts/artifact-version-service";
 
 /**
  * Result types for service operations
@@ -78,52 +74,14 @@ async function ensureValidAccessToken(
   const needsRefresh =
     integration.tokenExpiresAt &&
     integration.tokenExpiresAt < new Date() &&
-    (integration.refreshTokenEncrypted ?? integration.refreshToken);
+    integration.refreshToken;
 
   if (!needsRefresh) {
-    // Prefer encrypted token on read, fall back to plaintext
-    let accessToken: string | null;
-    try {
-      accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
-      );
-    } catch (error) {
-      log.warn(`${logPrefix} Decryption failed, falling back to plaintext`, {
-        organizationId,
-        error: parseError(error),
-      });
-      accessToken = integration.accessToken;
-    }
-    return { success: true, accessToken: accessToken as string };
+    return { success: true, accessToken: integration.accessToken };
   }
 
   try {
-    const rawRefreshToken = await resolveIntegrationToken(
-      integration.refreshTokenEncrypted,
-      integration.refreshToken as string
-    );
-
-    const tokens = await refreshAccessToken(rawRefreshToken as string);
-
-    let encryptedAccessToken: string | null = null;
-    let encryptedRefreshToken: string | null = null;
-    try {
-      const encrypted = await encryptTokenPair(
-        tokens.accessToken,
-        tokens.refreshToken
-      );
-      encryptedAccessToken = encrypted.encryptedAccessToken;
-      encryptedRefreshToken = encrypted.encryptedRefreshToken;
-    } catch (error) {
-      log.warn(
-        `${logPrefix} Failed to encrypt refreshed tokens, storing plaintext only`,
-        {
-          organizationId,
-          error: parseError(error),
-        }
-      );
-    }
+    const tokens = await refreshAccessToken(integration.refreshToken as string);
 
     await withDb((db) =>
       db.linearIntegration.update({
@@ -131,8 +89,6 @@ async function ensureValidAccessToken(
         data: {
           accessToken: tokens.accessToken,
           refreshToken: tokens.refreshToken,
-          accessTokenEncrypted: encryptedAccessToken ?? undefined,
-          refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
           tokenExpiresAt: calculateTokenExpiration(tokens.expiresIn),
         },
       })
@@ -177,30 +133,9 @@ export const linearService = {
         redirectUri
       );
 
-      // Calculate token expiration
-      const tokenExpiresAt = calculateTokenExpiration(tokens.expiresIn);
-
-      // Get viewer info and encrypt tokens in parallel (independent operations)
+      // Create client and get organization info
       const client = createLinearClient(tokens.accessToken);
-      const [linearOrg, { encryptedAccessToken, encryptedRefreshToken }] =
-        await Promise.all([
-          getViewer(client),
-          encryptTokenPair(tokens.accessToken, tokens.refreshToken).catch(
-            (error) => {
-              log.warn(
-                "[linear/oauth] Failed to encrypt tokens, storing plaintext only",
-                {
-                  organizationId,
-                  error: parseError(error),
-                }
-              );
-              return {
-                encryptedAccessToken: null,
-                encryptedRefreshToken: null,
-              };
-            }
-          ),
-        ]);
+      const linearOrg = await getViewer(client);
 
       if (!linearOrg) {
         return {
@@ -208,6 +143,9 @@ export const linearService = {
           error: "Failed to get Linear organization info",
         };
       }
+
+      // Calculate token expiration
+      const tokenExpiresAt = calculateTokenExpiration(tokens.expiresIn);
 
       // Upsert the integration record
       await withDb((db) =>
@@ -217,8 +155,6 @@ export const linearService = {
             organizationId,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
@@ -226,8 +162,6 @@ export const linearService = {
           update: {
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
             tokenExpiresAt,
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
@@ -314,13 +248,7 @@ export const linearService = {
 
     // Revoke the token (best effort - don't fail if this errors)
     try {
-      // Prefer decrypted token; fall back to plaintext for backward compatibility
-      // accessToken is non-null: integration.accessToken is always a non-null DB field
-      const accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
-      );
-      await revokeToken(accessToken as string);
+      await revokeToken(integration.accessToken);
     } catch (error) {
       log.warn("[linear] Failed to revoke token during disconnect", {
         organizationId,
@@ -345,7 +273,7 @@ export const linearService = {
    * Export an approved implementation plan to Linear as individual issues.
    */
   async exportImplementationPlan(
-    documentId: string,
+    artifactId: string,
     teamId: string,
     organizationId: string,
     userId: string
@@ -354,8 +282,7 @@ export const linearService = {
     const artifact = await withDb((db) =>
       db.artifact.findFirst({
         where: {
-          id: documentId,
-          type: ArtifactType.DOCUMENT,
+          id: artifactId,
           project: { organizationId },
         },
       })
@@ -366,7 +293,7 @@ export const linearService = {
     }
 
     // Validate artifact type and status
-    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== "IMPLEMENTATION_PLAN") {
       return {
         success: false,
         error: "Only implementation plans can be exported to Linear",
@@ -383,7 +310,7 @@ export const linearService = {
     }
 
     // Fetch latest version content (content is stored in ArtifactVersion, not on artifact)
-    const latestVersion = await documentVersionService.getLatest(documentId);
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
     if (!latestVersion?.content) {
       return {
         success: false,
@@ -443,7 +370,7 @@ export const linearService = {
       log.error("[linear/export] Failed to extract tasks with LLM", {
         userId,
         organizationId,
-        documentId,
+        artifactId,
         error: parseError(error),
       });
       return {
@@ -487,7 +414,7 @@ export const linearService = {
       log.error("[linear/export] Failed to create Linear issues", {
         userId,
         organizationId,
-        documentId,
+        artifactId,
         error: parseError(error),
       });
       return {
@@ -517,7 +444,7 @@ export const linearService = {
     log.info("[linear/export] Exported implementation plan to Linear", {
       userId,
       organizationId,
-      documentId,
+      artifactId,
       teamId,
       issuesCreated: createdIssues.length,
     });

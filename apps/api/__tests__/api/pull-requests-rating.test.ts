@@ -1,9 +1,9 @@
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
-import { Status } from "@repo/api/src/types/result";
 import { vi } from "vitest";
 import { GET, PUT } from "@/app/pull-requests/[id]/rating/route";
 import { submitPullRequestRatingSchema } from "@/app/pull-requests/[id]/rating/validators";
-import { pullRequestRatingsService } from "@/app/pull-requests/ratings-service";
+import { PullRequestNotFoundError } from "@/app/pull-requests/errors";
+import { pullRequestRatingsService } from "@/app/pull-requests/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   createMockRequest,
@@ -17,7 +17,7 @@ vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
-vi.mock("@/app/pull-requests/ratings-service");
+vi.mock("@/app/pull-requests/service");
 
 // ---------------------------------------------------------------------------
 // Schema Validation Tests (SSOT for all validation rules)
@@ -149,10 +149,9 @@ describe("GET /api/pull-requests/[id]/rating", () => {
       },
     };
 
-    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
@@ -187,10 +186,9 @@ describe("GET /api/pull-requests/[id]/rating", () => {
       userRating: null,
     };
 
-    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-2/rating",
@@ -211,10 +209,9 @@ describe("GET /api/pull-requests/[id]/rating", () => {
       userRating: null,
     };
 
-    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-3/rating",
@@ -228,10 +225,9 @@ describe("GET /api/pull-requests/[id]/rating", () => {
   });
 
   it("returns 404 when pull request not found", async () => {
-    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue({
-      ok: false,
-      error: Status.NotFound,
-    });
+    vi.mocked(pullRequestRatingsService.getRating).mockRejectedValue(
+      new PullRequestNotFoundError("pr-not-found")
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-not-found/rating",
@@ -247,10 +243,9 @@ describe("GET /api/pull-requests/[id]/rating", () => {
   });
 
   it("returns 404 for cross-org pull request access", async () => {
-    vi.mocked(pullRequestRatingsService.getRating).mockResolvedValue({
-      ok: false,
-      error: Status.NotFound,
-    });
+    vi.mocked(pullRequestRatingsService.getRating).mockRejectedValue(
+      new PullRequestNotFoundError("cross-org-pr")
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/cross-org-pr/rating",
@@ -305,10 +300,9 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       },
     };
 
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
@@ -354,10 +348,9 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       },
     };
 
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
@@ -406,10 +399,9 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       },
     };
 
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
@@ -453,10 +445,9 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
   });
 
   it("returns 404 when pull request not found", async () => {
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue({
-      ok: false,
-      error: Status.NotFound,
-    });
+    vi.mocked(pullRequestRatingsService.upsertRating).mockRejectedValue(
+      new PullRequestNotFoundError("pr-not-found")
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-not-found/rating",
@@ -474,10 +465,9 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
   });
 
   it("returns 404 for cross-org pull request access", async () => {
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue({
-      ok: false,
-      error: Status.NotFound,
-    });
+    vi.mocked(pullRequestRatingsService.upsertRating).mockRejectedValue(
+      new PullRequestNotFoundError("cross-org-pr")
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/cross-org-pr/rating",
@@ -531,10 +521,9 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       },
     };
 
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue({
-      ok: true,
-      value: mockSummary,
-    });
+    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue(
+      mockSummary
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",

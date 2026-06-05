@@ -1,4 +1,4 @@
-import type { GenerationStatus } from "@repo/api/src/types/document";
+import type { GenerationStatus } from "@repo/api/src/types/artifact";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import { GenerationStatusIndicator } from "../generation-status-indicator";

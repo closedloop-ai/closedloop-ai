@@ -1,13 +1,11 @@
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
 import { z } from "zod";
-import { documentVersionService } from "@/app/documents/document-version-service";
-import { resetDocumentRoom } from "@/app/documents/room-utils";
-import { documentWhere } from "@/lib/artifact-adapters";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { resetArtifactRoom } from "@/app/artifacts/room-utils";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { defineHandler } from "./loop-command-handler";
 
@@ -40,51 +38,38 @@ export async function ingestGeneratePrdArtifacts(
   organizationId: string,
   artifacts: GeneratePrdArtifacts
 ): Promise<void> {
-  const documentId = loop.documentId;
-  if (!documentId) {
+  const artifactId = loop.artifactId;
+  if (!artifactId) {
     return;
   }
 
   const { prdContent } = artifacts;
   if (!prdContent) {
-    log.info("[loop-document-ingestion] No PRD content to ingest", {
-      documentId,
+    log.info("[loop-artifact-ingestion] No PRD content to ingest", {
+      artifactId,
     });
     return;
   }
 
-  await documentVersionService.createVersion(
-    documentId,
-    organizationId,
-    null,
-    prdContent
-  );
+  await artifactVersionService.createVersion(artifactId, null, prdContent);
 
   const updatedArtifact = await withDb((db) =>
     db.artifact.update({
-      where: documentWhere({ id: documentId, organizationId }),
-      data: { status: DocumentStatus.Draft },
+      where: { id: artifactId, organizationId },
+      data: { status: ArtifactStatus.Draft },
       select: {
         id: true,
         organizationId: true,
         slug: true,
-        subtype: true,
-        document: { select: { latestVersion: true } },
+        type: true,
+        latestVersion: true,
       },
     })
   );
 
   // Reset the Liveblocks room so any stale Y.Doc content is cleared.
   if (updatedArtifact.slug) {
-    waitUntil(
-      resetDocumentRoom({
-        id: updatedArtifact.id,
-        organizationId: updatedArtifact.organizationId,
-        slug: updatedArtifact.slug,
-        type: updatedArtifact.subtype as DocumentType,
-        latestVersion: updatedArtifact.document?.latestVersion ?? 1,
-      })
-    );
+    await resetArtifactRoom(updatedArtifact);
   }
 
   // Create workstream completion event (idempotent — skip if already exists)
@@ -105,7 +90,7 @@ export async function ingestGeneratePrdArtifacts(
             actorType: "system",
             data: {
               loopId: loop.id,
-              documentId,
+              artifactId,
               command: loop.command,
               conclusion: "success",
             },
@@ -115,8 +100,8 @@ export async function ingestGeneratePrdArtifacts(
     });
   }
 
-  log.info("[loop-document-ingestion] PRD content ingested", {
-    documentId,
+  log.info("[loop-artifact-ingestion] PRD content ingested", {
+    artifactId,
     contentLength: prdContent.length,
   });
 }
@@ -135,7 +120,7 @@ function generatePrdArtifactsFromUpload(
   const parsed = generatePrdUploadSchema.safeParse(uploaded);
   if (!parsed.success) {
     log.warn(
-      "[loop-document-ingestion] Generate PRD upload failed schema validation",
+      "[loop-artifact-ingestion] Generate PRD upload failed schema validation",
       { error: parsed.error.message }
     );
     return { prdContent: null };
@@ -177,18 +162,18 @@ export const requestPrdChangesHandler = defineHandler<GeneratePrdArtifacts>({
     // artifactType, and the defineHandler pattern has no allowedArtifactTypes
     // field, so this DB lookup is the only way to guard against a misrouted
     // loop reaching this handler with a non-PRD artifact.
-    const artifact = loop.documentId
+    const artifact = loop.artifactId
       ? await withDb((db) =>
           db.artifact.findUnique({
-            where: documentWhere({ id: loop.documentId!, organizationId }),
-            select: { subtype: true },
+            where: { id: loop.artifactId!, organizationId },
+            select: { type: true },
           })
         )
       : null;
 
-    if (artifact?.subtype !== DocumentType.Prd) {
+    if (artifact?.type !== ArtifactType.Prd) {
       throw new Error(
-        `[request-prd-changes] Expected artifact type ${DocumentType.Prd}, got ${artifact?.subtype ?? "none"} — marking loop failed`
+        `[request-prd-changes] Expected artifact type ${ArtifactType.Prd}, got ${artifact?.type ?? "none"} — marking loop failed`
       );
     }
 

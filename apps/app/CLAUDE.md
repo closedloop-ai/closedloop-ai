@@ -9,7 +9,7 @@ Authenticated Next.js app (App Router). Port 3000. For Server Component vs Clien
 ## TanStack Query Conventions
 
 All data fetching in `hooks/queries/use-*.ts`:
-- Export `<entity>Keys` factory (e.g., `documentKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
+- Export `<entity>Keys` factory (e.g., `artifactKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
 - Query hooks: `queryKey` + `queryFn` + `enabled` + `...options` spread
 - Mutations: invalidate relevant caches in `onSuccess`
 - Prefer `mutate` over `mutateAsync`. `mutateAsync` can throw and thus requires try/catch, which is overly verbose.
@@ -22,7 +22,7 @@ All data fetching in `hooks/queries/use-*.ts`:
 ```
 hooks/
 ├── queries/
-│   ├── use-documents.ts    # documentKeys + useDocument, useCreateDocument, etc.
+│   ├── use-artifacts.ts    # artifactKeys + useArtifact, useCreateArtifact, etc.
 │   ├── use-projects.ts     # projectKeys + useProject, useCreateProject, etc.
 │   ├── use-workstreams.ts
 │   ├── use-teams.ts
@@ -38,7 +38,6 @@ hooks/
 - **[pattern]**: New hooks: queryKey + queryFn + enabled + `...options` spread. Export `queryKeys` factory (.all, .detail(id)). Cache invalidation in mutations. Only `staleTime` acceptable as default.
 - **[pattern]**: `queryClient.clear()` for org switching is correct when: (1) routes use withAnyAuth() with orgId from JWT/API key, (2) services filter by organizationId, (3) frontend uses authenticated API client.
 - **[pattern]**: `AuthGate` in `layout.tsx` gates all authenticated content on Clerk `isLoaded`. If `useApiClient` is ever used above the gate boundary, add `enabled: isLoaded` in query options to prevent 401 race on first render.
-- **[mistake]**: Do not use `mutateAsync`. This requires wrapping the call in try/catch, and is a code smell. There is generally no reason to do this. Instead, prefer `mutate` with an `onSuccess` handler.
 
 ### Tables & Sorting
 - **[pattern]**: Sort nested object fields via SortConfig accessor function. `sortItems()` handles nulls-last.
@@ -50,14 +49,13 @@ hooks/
 - **[pattern]**: Radix Dialog `modal={false}` still fires `onInteractOutside` and `onPointerDownOutside`. Non-modal panels: `e.preventDefault()` on both.
 - **[pattern]**: Multi-provider AI context injection must be provider-aware. Skip client-side formatting for non-target providers — use server-side.
 - **[convention]**: Async cancellation in useEffect: `let cancelled = false` + cleanup return, NOT AbortController/useRef.
-- **[pattern]**: Shared client-only UI state that must survive component remounts, route transitions, or browser back/forward should live in a small `useSyncExternalStore` store module, following `lib/engineer/routing-store.ts` and `lib/engineer/electron-detection.ts`. Keep reset semantics explicit: module memory for current-tab only, `localStorage` only when refresh/new-tab persistence is intended.
-- **[mistake]**: Do not put navigation-sensitive shared state in component module-local `Set`/`Map`/`let` values or ad hoc `window` globals. This repo does not currently use Zustand in `apps/app`; do not add it just to store small client-only state unless a human explicitly asks for a state-library migration.
 
 ### UI Patterns
-- **[pattern]**: Collapsible sections in document sidebar: PropertiesPanel pattern with CollapsibleTrigger/Content, ChevronUp/Down, default collapsed.
+- **[pattern]**: Collapsible sections in artifact sidebar: PropertiesPanel pattern with CollapsibleTrigger/Content, ChevronUp/Down, default collapsed.
 - **[pattern]**: Convert tabs to collapsible: MetadataPanel + space-y-6 + separate useState(bool) per section + Collapsible components.
-- **[pattern]**: Document metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in `app/(authenticated)/{document-type}/[slug]/components/`.
-- **[pattern]**: Check document type via `document.type === DocumentType.Prd` etc. Import from `@repo/api/src/types/document`.
+- **[pattern]**: Artifact metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in `app/(authenticated)/{artifact}/[slug]/components/`.
+- **[pattern]**: Check artifact categories via `artifact.type === ArtifactType.DOCUMENT` not subtype enumeration.
+- **[mistake]**: Route lookups use `artifact.subtype` not `artifact.type`. Type = broad category, subtype = specific. `ARTIFACT_TYPE_ROUTES` keyed by subtype.
 
 ### Testing
 - **[pattern]**: After adding required props, run typecheck to find test files with outdated mock/defaultProps.
@@ -71,7 +69,7 @@ hooks/
 - **[mistake]**: RoomProvider needs LiveblocksProvider ancestor. When Provider is conditional on user loading, mount minimal Provider during loading states.
 - **[mistake]**: Loading/bootstrap LiveblocksProvider needs LiveblocksErrorBoundary for auth/runtime errors.
 - **[pattern]**: Nesting LiveblocksErrorBoundary with manual LiveblocksAvailabilityContext.Provider: place manual override inside error boundary.
-- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `documentType` in room-utils.ts. Legacy rooms may still have `artifactType`/`artifactSubtype` — the resolver reads both.
+- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `artifactSubtype` in room-utils.ts.
 
 ### OAuth Integrations
 - **[pattern]**: Three-part architecture: (1) Frontend OAuth routes handle PKCE/state/redirect, (2) Callback validates state + calls API for token storage, (3) TanStack Query hooks for status/disconnect/mutations. Reference: Linear integration.

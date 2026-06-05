@@ -58,7 +58,7 @@ You're set. The web app sends commands through the relay to your desktop app, wh
 
 ```
 Browser (app.closedloop.ai/engineer)
-  → API (/api/gateway-relay/*)
+  → API (/api/engineer-relay/*)
     → Relay Server (relay.closedloop.ai, Socket.IO)
       → Your Electron Desktop App (localhost:19432)
         → Executes locally (Claude CLI, git, gh, etc.)

@@ -85,18 +85,4 @@ describe("EngineerDashboard", () => {
     expect(screen.queryByTestId("health-check-dialog")).toBeNull();
     expect(screen.getByTestId("ticket-list")).toBeInTheDocument();
   });
-
-  it("renders the Home button as an <a> link with href='/'", () => {
-    const { container } = render(<EngineerDashboard />);
-
-    const homeLink = container.querySelector("a[href='/']");
-    expect(homeLink).toBeInTheDocument();
-    expect(homeLink?.tagName).toBe("A");
-  });
-
-  it("Home button contains the 'Home' label text", () => {
-    render(<EngineerDashboard />);
-
-    expect(screen.getByText("Home")).toBeInTheDocument();
-  });
 });

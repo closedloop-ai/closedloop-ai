@@ -3,15 +3,18 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { ChatMessage, ContentBlock } from "@/components/chat/types";
-import { useChatStream } from "@/hooks/chat/use-chat-stream";
+import type {
+  ChatMessage,
+  ContentBlock,
+} from "@/components/engineer/chat/types";
+import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import {
   CHAT_SENTINEL,
   type DebateStatus,
   parseDebateStatus,
   type SuggestedAction,
   stripAssistantProtocol,
-} from "@/lib/chat/chat-utils";
+} from "@/lib/engineer/chat-utils";
 import {
   createCodexStreamState,
   readCodexStream,
@@ -26,11 +29,11 @@ type UseCodexDebateOptions = {
   claudeStream: ReturnType<typeof useChatStream>;
   /** Override where debate messages are saved (default: symphony chat-history) */
   saveEndpoint?: string;
-  /** Override which query key to invalidate after saving (default: closedloopChatHistory) */
+  /** Override which query key to invalidate after saving (default: symphonyChatHistory) */
   invalidateKey?: readonly unknown[];
-  /** Override URL to POST Claude messages during debate (default: /api/gateway/symphony/chat/{ticketId}?repo=...) */
+  /** Override URL to POST Claude messages during debate (default: /api/engineer/symphony/chat/{ticketId}?repo=...) */
   claudeUrl?: string;
-  /** Override URL to GET latest messages after Claude responds (default: /api/gateway/symphony/chat-history/{ticketId}?repo=...) */
+  /** Override URL to GET latest messages after Claude responds (default: /api/engineer/symphony/chat-history/{ticketId}?repo=...) */
   historyUrl?: string;
   /** Optional middle action shown between the primary and "End debate" buttons.
    *  Defaults to none. CodexReviewDialog passes { label: "Dismiss Finding", message: "/dismiss" }. */
@@ -163,7 +166,7 @@ export function useCodexDebate({
       };
       const url =
         saveEndpoint ||
-        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       const method = saveEndpoint ? "PATCH" : "POST";
       await fetch(url, {
         method,
@@ -172,7 +175,7 @@ export function useCodexDebate({
       });
       await queryClient.invalidateQueries({
         queryKey:
-          invalidateKey || queryKeys.closedloopChatHistory(ticketId, repoPath),
+          invalidateKey || queryKeys.symphonyChatHistory(ticketId, repoPath),
       });
     },
     [ticketId, repoPath, queryClient, saveEndpoint, invalidateKey]
@@ -184,7 +187,7 @@ export function useCodexDebate({
       finding: string,
       history: { sender: string; content: string }[]
     ) => {
-      const url = `/api/gateway/codex/argue/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/argue/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       const abortController = new AbortController();
       codexAbortRef.current = abortController;
@@ -410,7 +413,7 @@ export function useCodexDebate({
 
     const url =
       claudeUrlProp ||
-      `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     await claudeStream.sendMessage(
       url,
       {
@@ -428,12 +431,12 @@ export function useCodexDebate({
             await queryClient.invalidateQueries({
               queryKey:
                 invalidateKey ||
-                queryKeys.closedloopChatHistory(ticketId, repoPath),
+                queryKeys.symphonyChatHistory(ticketId, repoPath),
             });
             // Fetch the latest messages to get Claude's response for debate history
             const fetchHistoryUrl =
               historyUrlProp ||
-              `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+              `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
             const res = await fetch(fetchHistoryUrl);
             const data = await res.json();
             const messages = data.messages || [];
@@ -547,7 +550,7 @@ export function useCodexDebate({
 
       const url =
         claudeUrlProp ||
-        `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await claudeStream.sendMessage(
         url,
         {
@@ -561,7 +564,7 @@ export function useCodexDebate({
             await queryClient.invalidateQueries({
               queryKey:
                 invalidateKey ||
-                queryKeys.closedloopChatHistory(ticketId, repoPath),
+                queryKeys.symphonyChatHistory(ticketId, repoPath),
             });
             // Auto-debate is done — disable auto mode
             setAutoDebateState(false);
@@ -659,7 +662,7 @@ export function useCodexDebate({
       };
       const url =
         saveEndpoint ||
-        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       const method = saveEndpoint ? "PATCH" : "POST";
       await fetch(url, {
         method,
@@ -668,7 +671,7 @@ export function useCodexDebate({
       });
       await queryClient.invalidateQueries({
         queryKey:
-          invalidateKey || queryKeys.closedloopChatHistory(ticketId, repoPath),
+          invalidateKey || queryKeys.symphonyChatHistory(ticketId, repoPath),
       });
 
       // Wrap the prompt so Codex knows a human developer is speaking

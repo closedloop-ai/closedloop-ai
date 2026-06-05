@@ -204,7 +204,7 @@
           {
             "title": "Add the Plugin Marketplace",
             "description": "Register the ClosedLoop marketplace with Claude Code:",
-            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude-plugins"
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
           },
           {
             "title": "Install ClosedLoop Core",

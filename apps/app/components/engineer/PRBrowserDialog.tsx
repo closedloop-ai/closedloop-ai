@@ -49,7 +49,7 @@ import { PRCommentsViewer } from "@/components/engineer/PRCommentsViewer";
 import { ReviewChatPane } from "@/components/engineer/ReviewChatPane";
 import { useGitHubUser } from "@/hooks/engineer/use-github-user";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
-import type { LearningUsed } from "@/lib/chat/chat-utils";
+import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 import { normalizeReviewRestoreSeed } from "@/lib/engineer/pr-browser-review-state";
 import { resetCommentStatus } from "@/lib/engineer/pr-comment-tracker";
@@ -117,7 +117,7 @@ function addReviewEntry(
     [provider]: {
       config: {
         instructions: data.config?.instructions ?? "",
-        model: data.config?.model ?? "claude-opus-4-7",
+        model: data.config?.model ?? "claude-opus-4-6",
         reasoningEffort: data.config?.reasoningEffort ?? "medium",
         reviewMode: data.config?.reviewMode ?? "base",
         provider: (data.provider as "claude" | "codex") ?? provider,
@@ -281,7 +281,7 @@ export function PRBrowserDialog({
 
   const handleLearningsUsed = useCallback(
     (used: LearningUsed[]) => {
-      fetch("/api/gateway/symphony/record-learning-use", {
+      fetch("/api/engineer/symphony/record-learning-use", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -456,7 +456,7 @@ export function PRBrowserDialog({
     let cancelled = false;
     const encodedRepo = encodeURIComponent(selectedRepo.path);
     fetch(
-      `/api/gateway/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
+      `/api/engineer/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
     )
       .then((res) => res.json())
       .then((data) => {
@@ -534,7 +534,7 @@ export function PRBrowserDialog({
             ),
           });
           fetch(
-            `/api/gateway/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
+            `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
             { method: "DELETE" }
           ).catch(() => {});
         }
@@ -670,7 +670,7 @@ export function PRBrowserDialog({
     const restoreProvider = async (provider: "claude" | "codex") => {
       try {
         const res = await fetch(
-          `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
+          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
         );
         const data = await res.json();
         if (cancelled || !data.hasReview) {
@@ -817,7 +817,7 @@ export function PRBrowserDialog({
         }
 
         const dedupRes = await fetch(
-          `/api/gateway/codex/review-dedup/${encodeURIComponent(ticketId)}`,
+          `/api/engineer/codex/review-dedup/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -865,7 +865,7 @@ export function PRBrowserDialog({
       try {
         // Fetch existing PR comments
         const commentsRes = await fetch(
-          `/api/gateway/git/pr/comments?repo=${encodeURIComponent(selectedRepo.path)}&pr=${selectedPR.number}`
+          `/api/engineer/git/pr/comments?repo=${encodeURIComponent(selectedRepo.path)}&pr=${selectedPR.number}`
         );
         const commentsData = await commentsRes.json();
         const allComments: Array<{
@@ -892,7 +892,7 @@ export function PRBrowserDialog({
         }));
 
         const dedupRes = await fetch(
-          `/api/gateway/codex/review-dedup/${encodeURIComponent(ticketId)}`,
+          `/api/engineer/codex/review-dedup/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -981,11 +981,11 @@ export function PRBrowserDialog({
       if (selectedPR && selectedRepo) {
         const ticketId = `pr-${selectedPR.number}`;
         fetch(
-          `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
+          `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
         fetch(
-          `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
       }
@@ -996,11 +996,6 @@ export function PRBrowserDialog({
       });
     },
     [selectedPR, selectedRepo]
-  );
-
-  const incrementCommentStatusKey = useCallback(
-    () => setCommentStatusKey((k) => k + 1),
-    []
   );
 
   const handleSubmitReviewAsComment = useCallback(
@@ -1100,16 +1095,10 @@ export function PRBrowserDialog({
         patchReview(provider, { isSubmitting: false });
       }
     },
-    [
-      reviews,
-      selectedRepo,
-      selectedPR,
-      commitSha,
-      queryClient,
-      patchReview,
-      incrementCommentStatusKey,
-    ]
+    [reviews, selectedRepo, selectedPR, commitSha, queryClient, patchReview]
   );
+
+  const incrementCommentStatusKey = () => setCommentStatusKey((k) => k + 1);
 
   const removeCommentChat = (key: string, commentId: string) => {
     setCommentChats((prev) => {
@@ -1359,7 +1348,6 @@ export function PRBrowserDialog({
                     "cursor-pointer border border-border bg-background transition-colors hover:bg-muted",
                     "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   )}
-                  type="button"
                 >
                   <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
                   <span className="max-w-[160px] truncate">
@@ -1395,7 +1383,6 @@ export function PRBrowserDialog({
                     setActiveCommentChatKey(null);
                     setPreviewComment(null);
                   }}
-                  type="button"
                 >
                   Open
                 </button>
@@ -1415,7 +1402,6 @@ export function PRBrowserDialog({
                     setActiveCommentChatKey(null);
                     setPreviewComment(null);
                   }}
-                  type="button"
                 >
                   Merged
                 </button>
@@ -1435,7 +1421,6 @@ export function PRBrowserDialog({
                       : "cursor-not-allowed opacity-50"
                   )}
                   disabled={!selectedRepo}
-                  type="button"
                 >
                   <GitPullRequest className="size-4 shrink-0 text-muted-foreground" />
                   <span className="max-w-[260px] truncate">
@@ -1463,7 +1448,6 @@ export function PRBrowserDialog({
                   "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 )}
                 onClick={restoreOrShowSettings}
-                type="button"
               >
                 <Search className="size-3.5" />
                 Review
@@ -1602,7 +1586,7 @@ export function PRBrowserDialog({
               autoFocus
               onChange={(value) => setNewRepoPath(value)}
               onSelect={(path) => setNewRepoPath(path)}
-              placeholder="Path to a local repository"
+              placeholder="~/Source/my-repo"
               value={newRepoPath}
             />
           </div>
@@ -1658,7 +1642,7 @@ async function fetchPRFiles(
 ): Promise<string[]> {
   try {
     const res = await fetch(
-      `/api/gateway/git/pr/files?repo=${encodeURIComponent(repoPath)}&pr=${prNumber}`
+      `/api/engineer/git/pr/files?repo=${encodeURIComponent(repoPath)}&pr=${prNumber}`
     );
     if (!res.ok) {
       return [];
@@ -1748,7 +1732,7 @@ async function postReviewFindings(
   // Post inline findings as file-level comments (batched to avoid GitHub rate limits)
   const inlineTasks = inlineFindings.map(({ finding, fullPath }) => () => {
     const body = formatSingleFinding(providerLabel, finding);
-    return fetch("/api/gateway/git/pr/inline-comment", {
+    return fetch("/api/engineer/git/pr/inline-comment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1766,7 +1750,7 @@ async function postReviewFindings(
   // Post general findings (if any) as a top-level comment
   if (generalFindings.length > 0) {
     const body = formatReviewComment(providerLabel, generalFindings);
-    await fetch("/api/gateway/git/pr/reply", {
+    await fetch("/api/engineer/git/pr/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoPath, prNumber, body }),
@@ -1857,76 +1841,79 @@ function ReviewCard({
   return (
     <div
       className={cn(
-        "mb-3 rounded-lg border p-3 transition-all",
+        "mb-3 cursor-pointer rounded-lg border p-3 transition-all",
         isDone ? "bg-muted/30" : "review-card-active",
         "hover:bg-muted/60",
         isSelected && "border-primary/30 ring-2 ring-primary/50"
       )}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
-      <div className="flex items-start gap-2">
-        <button
-          className="min-w-0 flex-1 text-left"
-          onClick={onSelect}
-          type="button"
+      <div className="flex items-center gap-2.5">
+        <ScanEye className="size-4 shrink-0 text-muted-foreground" />
+        <span className="flex-1 font-medium text-sm">Code Review</span>
+        <span
+          className={cn(
+            "inline-flex rounded px-1.5 py-0.5 font-medium font-mono text-[10px]",
+            provider === "claude"
+              ? "bg-orange-500/10 text-orange-600 dark:text-orange-400"
+              : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          )}
         >
-          <div className="flex items-center gap-2.5">
-            <ScanEye className="size-4 shrink-0 text-muted-foreground" />
-            <span className="flex-1 font-medium text-sm">Code Review</span>
-            <span
-              className={cn(
-                "inline-flex rounded px-1.5 py-0.5 font-medium font-mono text-[10px]",
-                provider === "claude"
-                  ? "bg-orange-500/10 text-orange-600 dark:text-orange-400"
-                  : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-              )}
-            >
-              {(provider === "claude" ? "Claude" : "Codex")
-                .split("")
-                .map((ch, i) => (
-                  <span
-                    className={isDone ? undefined : "inline-block"}
-                    key={ch}
-                    style={
-                      isDone
-                        ? undefined
-                        : {
-                            animation: `eng-letter-wave 5s ease-in-out ${i * 0.12}s infinite`,
-                          }
-                    }
-                  >
-                    {ch}
-                  </span>
-                ))}
-            </span>
-          </div>
-          <div className="mt-2 flex items-center gap-2 pl-[26px]">
-            {isDone ? (
-              <>
-                <Check className="size-3.5 text-emerald-500" />
-                <span className="text-muted-foreground text-xs">
-                  {findingCount} finding{findingCount === 1 ? "" : "s"}
-                  {duplicateCount > 0 && (
-                    <span className="ml-1 text-amber-600 dark:text-amber-400">
-                      ({duplicateCount} dup)
-                    </span>
-                  )}
-                </span>
-              </>
-            ) : (
-              <span className="review-shimmer-text font-medium text-xs">
-                Reviewing...
+          {(provider === "claude" ? "Claude" : "Codex")
+            .split("")
+            .map((ch, i) => (
+              <span
+                className={isDone ? undefined : "inline-block"}
+                key={`${ch}-${i}`}
+                style={
+                  isDone
+                    ? undefined
+                    : {
+                        animation: `eng-letter-wave 5s ease-in-out ${i * 0.12}s infinite`,
+                      }
+                }
+              >
+                {ch}
               </span>
-            )}
-          </div>
-        </button>
+            ))}
+        </span>
         <button
           className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-          onClick={onDelete}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
           title="Delete review"
-          type="button"
         >
           <X className="size-3.5" />
         </button>
+      </div>
+      <div className="mt-2 flex items-center gap-2 pl-[26px]">
+        {isDone ? (
+          <>
+            <Check className="size-3.5 text-emerald-500" />
+            <span className="text-muted-foreground text-xs">
+              {findingCount} finding{findingCount === 1 ? "" : "s"}
+              {duplicateCount > 0 && (
+                <span className="ml-1 text-amber-600 dark:text-amber-400">
+                  ({duplicateCount} dup)
+                </span>
+              )}
+            </span>
+          </>
+        ) : (
+          <span className="review-shimmer-text font-medium text-xs">
+            Reviewing...
+          </span>
+        )}
       </div>
       {isDone && findingCount > 0 && (
         <div className="mt-2 pl-[26px]">
@@ -1942,7 +1929,6 @@ function ReviewCard({
                 onSubmitAsComment();
               }
             }}
-            type="button"
           >
             <PostButtonContent
               isCommented={isCommented}
@@ -2035,7 +2021,7 @@ async function fetchProviderStatus(
 ) {
   try {
     const res = await fetch(
-      `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${provider}`
+      `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${provider}`
     );
     const data = await res.json();
     return { provider, data };

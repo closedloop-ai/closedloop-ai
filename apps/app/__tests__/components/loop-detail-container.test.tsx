@@ -5,13 +5,10 @@
 
 import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMutateAsync = vi.fn();
 const mockCancelMutateAsync = vi.fn();
-const mockMutate = vi.fn();
-const mockCancelMutate = vi.fn();
 const mockPush = vi.fn();
 
 const RESTART_BUTTON_NAME = /restart/i;
@@ -26,12 +23,7 @@ const CACHE_WRITE = /cache write/i;
 const CACHE_READ = /cache read/i;
 const NO_OUTPUT_PRODUCED = /No output produced/;
 const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
-const CLAUDE_RATE_LIMIT_ERROR = /^Error: Claude rate limit$/;
-const CLAUDE_RATE_LIMIT_MESSAGE = /Claude rate limit reached\./;
 const ERROR_LABEL = /^Error:/;
-const ARTIFACTS_TAB_NAME = /Artifacts/i;
-const SUPPORT_CLAUDE_OUTPUT_LINK = /claude-output\.jsonl/i;
-const SUPPORT_PERF_LINK = /perf\.jsonl/i;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -47,12 +39,10 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/hooks/queries/use-loops", () => ({
   useLoop: vi.fn(),
   useResumeLoop: vi.fn(() => ({
-    mutate: mockMutate,
     mutateAsync: mockMutateAsync,
     isPending: false,
   })),
   useCancelLoop: vi.fn(() => ({
-    mutate: mockCancelMutate,
     mutateAsync: mockCancelMutateAsync,
     isPending: false,
   })),
@@ -65,8 +55,8 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 vi.mock("@repo/analytics/client", () => ({ useFeatureFlag: vi.fn() }));
 
-vi.mock("@/hooks/queries/use-documents", () => ({
-  useDocument: vi.fn(() => ({ data: null })),
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useArtifact: vi.fn(() => ({ data: null })),
 }));
 
 // Mock heavy sub-components that would require extra providers or network calls
@@ -87,10 +77,7 @@ import {
   useLoopEventsPaginated,
   useResumeLoop,
 } from "@/hooks/queries/use-loops";
-import {
-  createMockLoopWithUser,
-  RUNNER_RATE_LIMIT_LOOP_ERROR,
-} from "../fixtures/loops";
+import { createMockLoopWithUser } from "../fixtures/loops";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -99,8 +86,11 @@ import {
 describe("LoopDetailContainer — restart button visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockMutateAsync.mockResolvedValue({
+      loopId: "new-loop-999",
+      status: LoopStatus.Pending,
+    });
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -216,11 +206,11 @@ describe("LoopDetailContainer — restart button visibility", () => {
 describe("LoopDetailContainer — restart button interaction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockMutate.mockImplementation((_, opts) =>
-      opts?.onSuccess?.({ loopId: "new-loop-999", status: LoopStatus.Pending })
-    );
+    mockMutateAsync.mockResolvedValue({
+      loopId: "new-loop-999",
+      status: LoopStatus.Pending,
+    });
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -235,6 +225,11 @@ describe("LoopDetailContainer — restart button interaction", () => {
   });
 
   it("navigates to the new loop id returned by the resume response", async () => {
+    mockMutateAsync.mockResolvedValueOnce({
+      loopId: "new-loop-999",
+      status: LoopStatus.Pending,
+    });
+
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
@@ -245,6 +240,11 @@ describe("LoopDetailContainer — restart button interaction", () => {
   });
 
   it("does not navigate to the original loop id after restart", async () => {
+    mockMutateAsync.mockResolvedValueOnce({
+      loopId: "new-loop-999",
+      status: LoopStatus.Pending,
+    });
+
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
@@ -261,12 +261,10 @@ describe("LoopDetailContainer — cancel button visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -333,12 +331,10 @@ describe("LoopDetailContainer — compute target display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -399,14 +395,12 @@ describe("LoopDetailContainer — compute target display", () => {
 describe("LoopDetailContainer — cancel button interaction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCancelMutate.mockImplementation((_, opts) => opts?.onSuccess?.());
+    mockCancelMutateAsync.mockResolvedValue({});
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
@@ -420,7 +414,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     } as ReturnType<typeof useLoop>);
   });
 
-  it("calls mutate with the loop id after confirming the stop dialog", async () => {
+  it("calls mutateAsync with the loop id after confirming the stop dialog", async () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
@@ -431,10 +425,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(mockCancelMutate).toHaveBeenCalledWith(
-        "loop-001",
-        expect.any(Object)
-      );
+      expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");
     });
   });
 
@@ -449,7 +440,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(mockCancelMutate).toHaveBeenCalled();
+      expect(mockCancelMutateAsync).toHaveBeenCalled();
     });
 
     expect(mockPush).not.toHaveBeenCalled();
@@ -460,12 +451,10 @@ describe("LoopDetailContainer — cache token display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -644,12 +633,10 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -725,29 +712,6 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
     expect(screen.queryByText(ERROR_LABEL)).not.toBeInTheDocument();
   });
 
-  it("renders runner failure reason from result subcode when flag is disabled", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: RUNNER_RATE_LIMIT_LOOP_ERROR,
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-runner-error" />);
-
-    expect(screen.getByText(CLAUDE_RATE_LIMIT_ERROR)).toBeInTheDocument();
-    expect(screen.getByText(CLAUDE_RATE_LIMIT_MESSAGE)).toBeInTheDocument();
-    expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
-  });
-
   it("renders raw 'NO_WORK_PRODUCED' string (not 'No output produced') when flag is disabled", () => {
     vi.mocked(useFeatureFlag).mockReturnValue({
       key: "ghost-loop-ux",
@@ -774,70 +738,14 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
   });
 });
 
-describe("LoopDetailContainer — additional repositories display", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
-      mutateAsync: mockMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useResumeLoop>);
-    vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
-      mutateAsync: mockCancelMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useCancelLoop>);
-  });
-
-  it("renders each additional repo fullName and branch when additionalRepos is non-empty", () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Completed,
-        additionalRepos: [
-          { fullName: "org/repo-alpha", branch: "main" },
-          { fullName: "org/repo-beta", branch: "develop" },
-        ],
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(screen.getByText("org/repo-alpha")).toBeInTheDocument();
-    expect(screen.getByText("main")).toBeInTheDocument();
-    expect(screen.getByText("org/repo-beta")).toBeInTheDocument();
-    expect(screen.getByText("develop")).toBeInTheDocument();
-  });
-
-  it("does not render additional repositories card when additionalRepos is null", () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Completed,
-        additionalRepos: null,
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-002" />);
-
-    expect(
-      screen.queryByText("Additional Repositories")
-    ).not.toBeInTheDocument();
-  });
-});
-
 describe("LoopDetailContainer -- diagnostics UI", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
       mutateAsync: mockMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
       mutateAsync: mockCancelMutateAsync,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
@@ -876,87 +784,5 @@ describe("LoopDetailContainer -- diagnostics UI", () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     expect(screen.getByText("stderr output here")).toBeInTheDocument();
-  });
-});
-
-describe("LoopDetailContainer -- support artifacts", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
-      mutateAsync: mockMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useResumeLoop>);
-    vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
-      mutateAsync: mockCancelMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useCancelLoop>);
-  });
-
-  it("renders an empty state under the Artifacts tab when there are no support artifacts", async () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({ supportArtifacts: [] } as never),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(screen.queryByText("Support Artifacts")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("tab", { name: ARTIFACTS_TAB_NAME })
-    ).toBeInTheDocument();
-
-    await userEvent.click(
-      screen.getByRole("tab", { name: ARTIFACTS_TAB_NAME })
-    );
-
-    expect(
-      screen.getByText("No support artifacts uploaded")
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("This loop did not produce support artifacts.")
-    ).toBeInTheDocument();
-  });
-
-  it("renders support artifact download links under the Artifacts tab", async () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        supportArtifacts: [
-          {
-            name: "claude-output.jsonl",
-            key: "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
-            downloadUrl: "https://download.example/claude",
-            sizeBytes: 12,
-          },
-          {
-            name: "perf.jsonl",
-            key: "org-1/loops/loop-1/run-1/support/perf.jsonl",
-            downloadUrl: "https://download.example/perf",
-            sizeBytes: 34,
-          },
-        ],
-      } as never),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(
-      screen.queryByRole("link", { name: SUPPORT_CLAUDE_OUTPUT_LINK })
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("tab", { name: ARTIFACTS_TAB_NAME })
-    );
-
-    expect(screen.getByText("Support Artifacts")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: SUPPORT_CLAUDE_OUTPUT_LINK })
-    ).toHaveAttribute("href", "https://download.example/claude");
-    expect(
-      screen.getByRole("link", { name: SUPPORT_PERF_LINK })
-    ).toHaveAttribute("href", "https://download.example/perf");
   });
 });

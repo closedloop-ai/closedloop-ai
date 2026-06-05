@@ -3,18 +3,12 @@
  *
  * Tests the limit parameter functionality and multi-tenant security checks.
  */
-import { DocumentStatus } from "@repo/api/src/types/document";
-import { ProjectStatus } from "@repo/api/src/types/project";
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
 }));
 
 // Import after mocking
@@ -71,11 +65,10 @@ describe("projectsService.findByTeam", () => {
 
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {
-        organizationId: TEST_ORG_ID,
-        isTemplatesSentinel: false,
         teams: {
           some: { teamId: TEST_TEAM_ID },
         },
+        organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
       orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
@@ -101,11 +94,10 @@ describe("projectsService.findByTeam", () => {
 
     expect(callArgs).toEqual({
       where: {
-        organizationId: TEST_ORG_ID,
-        isTemplatesSentinel: false,
         teams: {
           some: { teamId: TEST_TEAM_ID },
         },
+        organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
       orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
@@ -153,56 +145,6 @@ describe("projectsService.findByTeam", () => {
       })
     );
   });
-
-  it("applies status inclusion filters when provided", async () => {
-    const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
-
-    mockWithDb.mockImplementation((callback: any) => {
-      const mockDb = {
-        project: {
-          findMany: mockFindMany,
-        },
-      };
-      return callback(mockDb);
-    });
-
-    await projectsService.findByTeam(TEST_TEAM_ID, TEST_ORG_ID, {
-      status: [ProjectStatus.Archived],
-    });
-
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          status: { in: [ProjectStatus.Archived] },
-        }),
-      })
-    );
-  });
-
-  it("applies status exclusion filters when provided", async () => {
-    const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
-
-    mockWithDb.mockImplementation((callback: any) => {
-      const mockDb = {
-        project: {
-          findMany: mockFindMany,
-        },
-      };
-      return callback(mockDb);
-    });
-
-    await projectsService.findByTeam(TEST_TEAM_ID, TEST_ORG_ID, {
-      excludeStatus: [ProjectStatus.Archived],
-    });
-
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          status: { notIn: [ProjectStatus.Archived] },
-        }),
-      })
-    );
-  });
 });
 
 describe("projectsService.calculateStatus", () => {
@@ -212,66 +154,66 @@ describe("projectsService.calculateStatus", () => {
 
   it("returns 0 when all artifacts have non-terminal statuses", () => {
     const artifacts = [
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.InReview },
-      { status: DocumentStatus.Approved },
-      { status: DocumentStatus.Executed },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.InReview },
+      { status: ArtifactStatus.Approved },
+      { status: ArtifactStatus.ReadyForReview },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(0);
   });
 
-  it("returns 100 when all artifacts are Done", () => {
+  it("returns 100 when all artifacts are Executed", () => {
     const artifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Done },
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Executed },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
   it("returns 100 when all artifacts are Obsolete", () => {
     const artifacts = [
-      { status: DocumentStatus.Obsolete },
-      { status: DocumentStatus.Obsolete },
-      { status: DocumentStatus.Obsolete },
+      { status: ArtifactStatus.Obsolete },
+      { status: ArtifactStatus.Obsolete },
+      { status: ArtifactStatus.Obsolete },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
-  it("returns 50 for mixed Done+Obsolete+Draft with 2-of-4 completed", () => {
+  it("returns 50 for mixed Executed+Obsolete+Draft with 2-of-4 completed", () => {
     const artifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Obsolete },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Obsolete },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(50);
   });
 
-  it("returns 25 for 1-of-4 Done artifacts", () => {
+  it("returns 25 for 1-of-4 Executed artifacts", () => {
     const artifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.InReview },
-      { status: DocumentStatus.Approved },
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.InReview },
+      { status: ArtifactStatus.Approved },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(25);
   });
 
-  it("regression: 1-Executed-of-4 returns 0 while 1-Done-of-4 returns 25, confirming Executed is not terminal", () => {
+  it("regression: 1-Approved-of-4 returns 0 while 1-Executed-of-4 returns 25, confirming Approved is not terminal", () => {
+    const approvedArtifacts = [
+      { status: ArtifactStatus.Approved },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+    ];
     const executedArtifacts = [
-      { status: DocumentStatus.Executed },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
     ];
-    const doneArtifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
-    ];
-    expect(projectsService.calculateStatus(executedArtifacts)).toBe(0);
-    expect(projectsService.calculateStatus(doneArtifacts)).toBe(25);
+    expect(projectsService.calculateStatus(approvedArtifacts)).toBe(0);
+    expect(projectsService.calculateStatus(executedArtifacts)).toBe(25);
   });
 });

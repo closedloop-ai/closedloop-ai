@@ -30,7 +30,7 @@ function resolveEnvironment(): string {
   );
 }
 
-export function resolveServerVersion(): string {
+function resolveServerVersion(): string {
   return (
     process.env.RELEASE_VERSION ?? process.env.npm_package_version ?? "unknown"
   );
@@ -67,12 +67,6 @@ export function buildTelemetryTraceContext(
     }),
     ...(overrides.pluginVersion !== undefined && {
       pluginVersion: overrides.pluginVersion,
-    }),
-    ...(overrides.desktopClientVersion !== undefined && {
-      desktopClientVersion: overrides.desktopClientVersion,
-    }),
-    ...(overrides.gatewayProtocolVersion !== undefined && {
-      gatewayProtocolVersion: overrides.gatewayProtocolVersion,
     }),
   };
 }

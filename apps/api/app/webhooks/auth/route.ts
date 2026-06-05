@@ -5,7 +5,6 @@ import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { Webhook } from "svix";
 import { env } from "@/env";
-import { scheduleLogFlush } from "@/lib/route-utils";
 import {
   handleOrganizationCreated,
   handleOrganizationDeleted,
@@ -54,7 +53,6 @@ export const POST = async (request: Request): Promise<Response> => {
     }) as WebhookEvent;
   } catch (error) {
     log.error("Error verifying webhook:", { error });
-    scheduleLogFlush();
     return new Response("Error occured", {
       status: 400,
     });
@@ -112,6 +110,5 @@ export const POST = async (request: Request): Promise<Response> => {
 
   await analytics.shutdown();
 
-  scheduleLogFlush();
   return response;
 };

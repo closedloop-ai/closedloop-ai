@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
 import type { MentionState } from "@/components/engineer/FileMentionAutocomplete";
 import { dispatchMentionKeyDown } from "@/components/engineer/FileMentionAutocomplete";
-import type { useChatStream } from "@/hooks/chat/use-chat-stream";
+import type { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import {
   type SlashCommand,
   useSlashCommands,
@@ -18,7 +18,7 @@ import {
   type SuggestedAction,
   sanitizeHistoryForModel,
   stripAssistantProtocol,
-} from "@/lib/chat/chat-utils";
+} from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
@@ -29,8 +29,8 @@ import {
   parseCodexReviewOutput,
   type ReviewFinding,
 } from "@/lib/engineer/codex-review-parser";
-import type { ChatHistory } from "@/lib/engineer/queries/closedloop";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import type { ChatHistory } from "@/lib/engineer/queries/symphony";
 
 const REVIEW_SLASH_COMMANDS: SlashCommand[] = [
   {
@@ -141,7 +141,7 @@ export function useReviewChat(
           prompt = `${formatReviewContextForCodex(findings, reviewOutput, config.model)}\n\n${message}`;
         }
         return {
-          url: `/api/gateway/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          url: `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           body: {
             prompt,
             chatHistory: recentHistory,
@@ -152,7 +152,7 @@ export function useReviewChat(
         };
       }
       return {
-        url: `/api/gateway/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        url: `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         body: {
           message,
           activeTab: "plan",
@@ -184,7 +184,7 @@ export function useReviewChat(
       sender?: string;
     }) =>
       fetch(
-        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -266,7 +266,7 @@ export function useReviewChat(
             });
           }
           await queryClient.invalidateQueries({
-            queryKey: queryKeys.closedloopChatHistory(
+            queryKey: queryKeys.symphonyChatHistory(
               ticketId,
               repoPath,
               config.provider

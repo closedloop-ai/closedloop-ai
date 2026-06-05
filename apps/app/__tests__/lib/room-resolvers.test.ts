@@ -67,7 +67,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.url).toBe("/documents/my-document");
+      expect(result[0]?.url).toBe("/artifacts/my-document");
     });
 
     it("returns undefined for invalid room ID format (missing parts)", async () => {
@@ -198,7 +198,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.url).toBe("/documents/my-document");
+      expect(result[0]?.url).toBe("/artifacts/my-document");
       expect(result[0]?.name).toBe("my-document");
     });
 
@@ -211,7 +211,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.url).toBe("/documents/my-document");
+      expect(result[0]?.url).toBe("/artifacts/my-document");
       expect(result[0]?.name).toBe("my-document");
     });
 
@@ -224,7 +224,7 @@ describe("createResolveRoomsInfo", () => {
         ok: true,
         json: () =>
           Promise.resolve([
-            { roomId, name: "my-document", url: "/documents/my-document" },
+            { roomId, name: "my-document", url: "/artifacts/my-document" },
           ]),
       });
 
@@ -233,7 +233,7 @@ describe("createResolveRoomsInfo", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.name).toBe("my-document");
-      expect(result[0]?.url).toBe("/documents/my-document");
+      expect(result[0]?.url).toBe("/artifacts/my-document");
     });
 
     it("converts null url from server response to undefined in RoomInfo (Q-002)", async () => {
@@ -289,7 +289,7 @@ describe("createResolveRoomsInfo", () => {
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
         name: "test-document",
-        url: "/documents/test-document",
+        url: "/artifacts/test-document",
       });
     });
 
@@ -300,7 +300,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.url).toBe("/documents/my-special-doc-123");
+      expect(result[0]?.url).toBe("/artifacts/my-special-doc-123");
     });
   });
 
@@ -344,7 +344,7 @@ describe("createResolveRoomsInfo", () => {
       expect(result).toHaveLength(1);
       expect(result[0]).toBeDefined();
       expect(result[0]?.name).toBe("");
-      expect(result[0]?.url).toBe("/documents/");
+      expect(result[0]?.url).toBe("/artifacts/");
     });
 
     it("handles slug with numbers", async () => {

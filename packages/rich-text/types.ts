@@ -1,21 +1,14 @@
 import type { AnyExtension, Editor } from "@tiptap/react";
 
-export type TiptapEditor = Editor & {
-  /**
-   * Reset the editor content from a markdown string.
-   * Temporarily makes the editor editable if it's read-only,
-   * so the command succeeds even in view mode.
-   */
-  resetContent: (markdown: string) => void;
-};
-
 export type RichTextEditorProps = {
   value: string;
   onChange: (value: string) => void;
-  onEditorReady?: (editor: TiptapEditor | null) => void;
+  onEditorReady?: (editor: Editor | null) => void;
   placeholder?: string;
   readOnly?: boolean;
   className?: string;
+  contentResetKey?: number;
+  contentResetValue?: string;
   liveblocksExtension?: AnyExtension;
   /**
    * Whether the Liveblocks editor has finished syncing and is ready.
@@ -39,11 +32,4 @@ export type RichTextEditorProps = {
    * "focus" hides the toolbar until the editor receives focus.
    */
   toolbarMode?: "always" | "focus";
-  /**
-   * Opt into the interactive mermaid viewer (pan/zoom, fullscreen, minimap,
-   * export). When false (or unset), mermaid diagrams render as a static SVG
-   * with a hover-reveal edit button. Gated by the `mermaid-enhancements`
-   * feature flag at call sites.
-   */
-  mermaidEnhancementsEnabled?: boolean;
 };

@@ -32,8 +32,8 @@ vi.mock("@/app/compute-targets/service", () => ({
 // --- Imports (after mocks) ---
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { checkBackendMismatch } from "@/app/artifacts/[id]/run-loop/run-loop-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { checkBackendMismatch } from "@/app/documents/[id]/run-loop/run-loop-helpers";
 import { loopsService } from "@/app/loops/service";
 
 type MockFn = ReturnType<typeof vi.fn>;
@@ -134,7 +134,7 @@ describe("checkBackendMismatch", () => {
       originalComputeTargetId: "target-old",
       originalComputeTargetName: "Old-MBP",
       preferredComputeTargetId: "target-new",
-      documentId: ARTIFACT_ID,
+      artifactId: ARTIFACT_ID,
     });
     expect(mockComputeTargetsService.findById).toHaveBeenCalledWith(
       "target-old"

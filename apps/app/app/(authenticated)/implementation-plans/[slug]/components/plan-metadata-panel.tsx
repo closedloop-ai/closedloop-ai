@@ -2,57 +2,199 @@
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import type {
-  DocumentDetail,
+  ArtifactDetail,
+  ArtifactStatus,
   GenerationStatus,
-} from "@repo/api/src/types/document";
+  PullRequestInfo,
+} from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
+import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
+import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import Link from "next/link";
-import { useState } from "react";
-import { CollapsibleSection } from "@/components/document-editor/collapsible-section";
-import { EvaluationSection } from "@/components/document-editor/evaluation-section";
-import { MetadataSection } from "@/components/document-editor/metadata-panel";
-import { RatingSection } from "@/components/document-editor/rating-section";
-import { getUserDisplayName } from "@/lib/user-utils";
+import { useMemo, useState } from "react";
+import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
+import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
+import { CommentsSection } from "@/components/artifact-editor/comments-section";
+import { EvaluationSection } from "@/components/artifact-editor/evaluation-section";
+import {
+  MetadataPanel,
+  MetadataSection,
+} from "@/components/artifact-editor/metadata-panel";
+import { RatingSection } from "@/components/artifact-editor/rating-section";
+import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
+import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
+import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
+import {
+  getUserDisplayName,
+  transformApiUserToSelectUser,
+} from "@/lib/user-utils";
 import { PerformanceSection } from "./performance-section";
+import { PreviewDeploymentSection } from "./preview-deployment-section";
+import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
+import { PullRequestSection } from "./pull-request-section";
+import { SourceArtifactSection } from "./source-artifact-section";
 
 export type PlanMetadataPanelProps = {
-  plan: DocumentDetail;
+  plan: ArtifactDetail;
+  status: ArtifactStatus;
+  approver: User | null;
+  assignee: User | null;
+  teamMembers: User[];
   generationStatus: GenerationStatus | null;
+  pullRequest: PullRequestInfo | null;
+  previewDeployment: PreviewDeploymentInfo | null;
+  onPreviewRefresh: () => void;
+  isPreviewRefreshing: boolean;
+  judgeItems: JudgeFeedbackItem[] | null;
   codeJudgeItems: JudgeFeedbackItem[] | null;
-  additionalRepos?: AdditionalRepoRef[] | null;
+  onStatusChange: (status: ArtifactStatus) => void;
+  onApproverSelect: (user: User | null) => void;
+  onAssigneeChange: (user: User | null) => void;
+  targetRepo: string;
+  targetBranch: string;
+  onTargetRepoChange: (targetRepo: string) => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
+  onTargetBranchChange: (targetBranch: string) => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
+  /**
+   * When "detailsOnly", render content without sidebar wrapper and without StatusMetadataSection.
+   */
+  variant?: "detailsOnly" | "sidebar";
 };
 
-/**
- * Plan-specific modules that aren't shared across document subtypes.
- * Attachments, agent evaluation, source document, comments and version info
- * live in the shared below-editor container in `plan-editor.tsx`.
- */
 export function PlanMetadataPanel({
   plan,
+  status,
+  approver,
+  assignee,
+  teamMembers,
   generationStatus,
+  pullRequest,
+  previewDeployment,
+  onPreviewRefresh,
+  isPreviewRefreshing,
+  judgeItems,
   codeJudgeItems,
-  additionalRepos,
+  onStatusChange,
+  onApproverSelect,
+  onAssigneeChange,
+  targetRepo = "Inherited from project",
+  targetBranch = "main",
+  onTargetRepoChange,
+  onTargetRepoBlur,
+  onTargetBranchChange,
+  onTargetBranchBlur,
+  variant = "sidebar",
 }: PlanMetadataPanelProps) {
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
+  const {
+    dialogOpen,
+    dialogTrace,
+    selectedSessionId,
+    handleViewFullTrace,
+    setDialogOpen,
+  } = useExecutionLogDialog();
+
+  const [isPropertiesOpen, setIsPropertiesOpen] = useState(false);
+  const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
   const [isRatingOpen, setIsRatingOpen] = useState(false);
 
-  return (
+  const projectId = plan.projectId ?? plan.project?.id;
+
+  const detailsContent = (
     <div className="space-y-6">
-      <GenerationSection
-        additionalRepos={additionalRepos}
-        generationStatus={generationStatus}
+      <CollapsibleSection
+        onOpenChange={setIsPropertiesOpen}
+        open={isPropertiesOpen}
+        title="Properties"
+      >
+        {variant === "sidebar" ? (
+          <StatusMetadataSection
+            approver={approver}
+            assignee={assignee}
+            onApproverSelect={onApproverSelect}
+            onAssigneeChange={onAssigneeChange}
+            onStatusChange={onStatusChange}
+            orgUsers={transformedOrgUsers}
+            status={status}
+            teamMembers={teamMembers}
+          />
+        ) : null}
+
+        <TargetRepositoryFields
+          onTargetBranchBlur={onTargetBranchBlur}
+          onTargetBranchChange={onTargetBranchChange}
+          onTargetRepoBlur={onTargetRepoBlur}
+          onTargetRepoChange={onTargetRepoChange}
+          separator={variant === "sidebar"}
+          targetBranch={targetBranch}
+          targetRepo={targetRepo}
+          title="Target Repository"
+        />
+
+        <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
+
+        <GenerationSection generationStatus={generationStatus} />
+
+        {pullRequest ? <PullRequestSection pullRequest={pullRequest} /> : null}
+
+        {pullRequest ? (
+          <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
+        ) : null}
+
+        {previewDeployment ? (
+          <PreviewDeploymentSection
+            isRefreshing={isPreviewRefreshing}
+            onRefresh={onPreviewRefresh}
+            previewDeployment={previewDeployment}
+          />
+        ) : null}
+
+        <ArtifactVersionInfo
+          createdAt={plan.version.createdAt}
+          updatedAt={plan.updatedAt}
+          version={plan.version.version}
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        onOpenChange={setIsExecutionLogOpen}
+        open={isExecutionLogOpen}
+        title="Execution Log"
+      >
+        <ExecutionLogSummary
+          artifactId={plan.id}
+          onViewFullTrace={handleViewFullTrace}
+        />
+      </CollapsibleSection>
+
+      <EvaluationSection
+        artifactId={plan.id}
+        judgeItems={judgeItems}
+        title="Plan Evaluation"
       />
 
       <EvaluationSection
-        documentId={plan.id}
+        artifactId={plan.id}
         emptyMessage="Code judge feedback is not available yet"
         judgeItems={codeJudgeItems}
         title="Code Evaluation"
       />
 
       <FeatureFlagged flag="the-one-flag">
-        <PerformanceSection documentId={plan.id} />
+        <PerformanceSection artifactId={plan.id} />
       </FeatureFlagged>
 
       <CollapsibleSection
@@ -61,21 +203,59 @@ export function PlanMetadataPanel({
         title="Rating"
       >
         <RatingSection
+          artifactId={plan.id}
           currentPlanVersion={plan.version.version}
-          documentId={plan.id}
         />
       </CollapsibleSection>
+
+      <FeatureFlagged flag="the-one-flag">
+        <CommentsSection artifactId={plan.id} />
+      </FeatureFlagged>
+
+      <AttachmentsSection artifactId={plan.id} />
+
+      <CustomFieldsSection
+        entityId={plan.id}
+        entityType={CustomFieldEntityType.Artifact}
+        values={plan.customFields}
+      />
     </div>
+  );
+
+  if (variant === "detailsOnly") {
+    return (
+      <>
+        {detailsContent}
+        <ExecutionLogDialog
+          initialSessionId={selectedSessionId}
+          onOpenChange={setDialogOpen}
+          open={dialogOpen}
+          trace={dialogTrace}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <MetadataPanel title="Implementation Plan Details">
+        {detailsContent}
+      </MetadataPanel>
+      <ExecutionLogDialog
+        initialSessionId={selectedSessionId}
+        onOpenChange={setDialogOpen}
+        open={dialogOpen}
+        trace={dialogTrace}
+      />
+    </>
   );
 }
 
 /** Renders loop generation info in the metadata sidebar. */
 function GenerationSection({
   generationStatus,
-  additionalRepos,
 }: {
   generationStatus: GenerationStatus | null;
-  additionalRepos?: AdditionalRepoRef[] | null;
 }) {
   if (generationStatus?.source === "loop" && generationStatus.loopId) {
     return (
@@ -97,24 +277,6 @@ function GenerationSection({
           >
             View loop details
           </Link>
-          {additionalRepos && additionalRepos.length > 0 ? (
-            <div className="space-y-1">
-              <span className="text-muted-foreground text-xs">
-                Additional Repositories
-              </span>
-              <ul className="space-y-0.5">
-                {additionalRepos.map((repo) => (
-                  <li
-                    className="text-muted-foreground text-xs"
-                    key={`${repo.fullName}:${repo.branch}`}
-                  >
-                    <span className="font-medium">{repo.fullName}</span>
-                    <span className="opacity-70"> ({repo.branch})</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
         </div>
       </MetadataSection>
     );

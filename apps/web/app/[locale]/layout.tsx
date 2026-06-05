@@ -1,15 +1,12 @@
 import "./styles.css";
-import { GoogleTagManager } from "@next/third-parties/google";
 import { AnalyticsProvider } from "@repo/analytics/provider";
 import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
 import { cn } from "@repo/design-system/lib/utils";
-import { RootProvider } from "fumadocs-ui/provider/next";
-import type { Metadata } from "next";
-import { headers } from "next/headers";
+import { getDictionary } from "@repo/internationalization";
 import type { ReactNode } from "react";
-import { env } from "@/env";
-import { locales } from "@/lib/site";
+import { Footer } from "./components/footer";
+import { Header } from "./components/header";
 
 type RootLayoutProperties = {
   readonly children: ReactNode;
@@ -18,39 +15,22 @@ type RootLayoutProperties = {
   }>;
 };
 
-export function generateStaticParams() {
-  return locales.map((locale) => ({ locale }));
-}
-
-const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
-const metadataBase = productionUrl
-  ? new URL(
-      `${productionUrl.startsWith("https") ? "https" : "http"}://${productionUrl}`
-    )
-  : new URL("https://closedloop.ai");
-
-export const metadata: Metadata = {
-  metadataBase,
-};
-
 const RootLayout = async ({ children, params }: RootLayoutProperties) => {
   const { locale } = await params;
-
-  const nonce = env.CSP_ENABLED
-    ? ((await headers()).get("x-nonce") ?? undefined)
-    : undefined;
+  const dictionary = await getDictionary(locale);
 
   return (
     <html
-      className={cn(fonts, "scroll-smooth", "light")}
-      lang={locale}
+      className={cn(fonts, "scroll-smooth")}
+      lang="en"
       suppressHydrationWarning
     >
-      <GoogleTagManager gtmId="GTM-MV8VKHSF" nonce={nonce} />
-      <body className="min-h-screen bg-background text-foreground">
-        <AnalyticsProvider nonce={nonce}>
-          <DesignSystemProvider forcedTheme="light" nonce={nonce}>
-            <RootProvider search={{ enabled: false }}>{children}</RootProvider>
+      <body>
+        <AnalyticsProvider>
+          <DesignSystemProvider>
+            <Header dictionary={dictionary} />
+            {children}
+            <Footer dictionary={dictionary} />
           </DesignSystemProvider>
         </AnalyticsProvider>
       </body>

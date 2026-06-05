@@ -1,8 +1,8 @@
 "use client";
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import { LinkType } from "@repo/api/src/types/artifact";
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -27,19 +27,19 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useCreateArtifactLink } from "@/hooks/queries/use-artifact-links";
 import { attachmentKeys } from "@/hooks/queries/use-attachments";
 import {
   useCreateContextAttachment,
   useImportGDriveContext,
 } from "@/hooks/queries/use-context-attachments";
+import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
 import {
   GDRIVE_FOLDER_ID_REGEX,
   useGDriveFolderFiles,
   useGoogleIntegrationStatus,
 } from "@/hooks/queries/use-google-integration";
 import { uploadToS3 } from "@/lib/s3-upload";
-import { SelectDocumentDialog } from "./select-document-dialog";
+import { SelectArtifactDialog } from "./select-artifact-dialog";
 
 const DEBOUNCE_MS = 300;
 
@@ -137,7 +137,7 @@ function LinkExistingTab({
   onOpenChange,
 }: Readonly<LinkExistingTabProps>) {
   const [selectOpen, setSelectOpen] = useState(false);
-  const createArtifactLink = useCreateArtifactLink();
+  const createEntityLink = useCreateEntityLink();
 
   if (!projectId) {
     return (
@@ -164,9 +164,9 @@ function LinkExistingTab({
         <FileTextIcon className="h-4 w-4" />
         Browse PRDs
       </Button>
-      <SelectDocumentDialog
+      <SelectArtifactDialog
+        artifactType={ArtifactType.Prd}
         description="Choose a PRD to link as context for this feature."
-        documentType={DocumentType.Prd}
         emptyText="No PRDs found."
         excludeIds={excludeArtifactIds}
         icon={FileTextIcon}
@@ -177,10 +177,12 @@ function LinkExistingTab({
           }
         }}
         onSelect={(prd) => {
-          createArtifactLink.mutate(
+          createEntityLink.mutate(
             {
               sourceId: prd.id,
+              sourceType: EntityType.Artifact,
               targetId: featureId,
+              targetType: EntityType.Feature,
               linkType: LinkType.Produces,
             },
             {
@@ -252,7 +254,7 @@ function UploadFileTab({
       }
 
       queryClient.invalidateQueries({
-        queryKey: attachmentKeys.list(featureId),
+        queryKey: attachmentKeys.issueList(featureId),
       });
       toast.success("File uploaded as context");
       onOpenChange(false);

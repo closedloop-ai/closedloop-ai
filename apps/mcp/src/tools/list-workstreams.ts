@@ -19,9 +19,9 @@ export function registerListWorkstreams(
     "list-workstreams",
     {
       description:
-        "List workstreams (initiatives or tracks of work) for a project. Supports state and title search filters. Returned `slug` values (WRK-*) are the preferred user-facing handles for follow-up calls.",
+        "List workstreams, meaning initiatives or tracks of work, for a project. Supports state and title search filters.",
       inputSchema: {
-        projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
+        projectId: z.string().describe(describeIdOrSlug("Project", "PROJ-7")),
         state: z
           .enum(WORKSTREAM_STATE_OPTIONS)
           .optional()

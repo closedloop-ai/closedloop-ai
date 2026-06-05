@@ -27,45 +27,6 @@ export function getUserInitials(
 }
 
 /**
- * Get initials from a full name.
- */
-export function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .filter(Boolean)
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
-
-type ComparableAssignee = {
-  firstName: string | null;
-  lastName: string | null;
-  email?: string;
-};
-
-/**
- * Compare two assignees by display name. Null/undefined assignees sort to the
- * end so "unassigned" rows appear last under ascending order.
- */
-export function compareAssigneeNames(
-  a: ComparableAssignee | null | undefined,
-  b: ComparableAssignee | null | undefined
-): number {
-  if (!(a || b)) {
-    return 0;
-  }
-  if (!a) {
-    return 1;
-  }
-  if (!b) {
-    return -1;
-  }
-  return getUserDisplayName(a).localeCompare(getUserDisplayName(b));
-}
-
-/**
  * Transform API User to UserSelectPopover User format
  * Handles null avatarUrl (converts to undefined) and missing names (fallback to email)
  */

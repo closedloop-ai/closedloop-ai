@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
-import { env } from "@/env";
 import type {
   ReviewFinding,
   ReviewVerdict,
@@ -34,7 +33,6 @@ import {
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped"]);
 const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_TRANSIENT_RETRY_ATTEMPTS = 2;
-const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
 
 type UseReviewExecutionParams = {
   ticketId: string;
@@ -158,11 +156,10 @@ export function useReviewExecution(
     initialOutput ? new Date().toISOString() : ""
   );
 
-  // Fetch persisted findings to restore commented status and hydrate
-  // humanized bodies (written to disk by triggerExtraction in a prior mount).
-  const findingsUrl = `/api/gateway/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+  // Fetch persisted findings to restore commented status
+  const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
-    findings: Array<ReviewFinding & { commented: boolean }>;
+    findings: Array<{ commented: boolean }>;
     declined?: boolean;
     declineReason?: string;
   }>({
@@ -171,12 +168,7 @@ export function useReviewExecution(
     enabled: reviewDone,
   });
 
-  // Sync submitted findings and declined status from persisted data.
-  // Also hydrate structuredFindings when disk has humanized bodies — this
-  // recovers humanized comments after the component remounts (the parent
-  // flips initialOutput on completion, which changes the React key and
-  // destroys the in-memory structuredFindings state populated by
-  // triggerExtraction in the previous mount).
+  // Sync submitted findings and declined status from persisted data
   useEffect(() => {
     if (!savedFindings?.findings) {
       return;
@@ -199,27 +191,7 @@ export function useReviewExecution(
     if (savedFindings.declined) {
       setDeclined(true);
     }
-    const hasHumanized = savedFindings.findings.some(
-      (f) => typeof f.humanizedBody === "string" && f.humanizedBody.trim()
-    );
-    // Hydrate structuredFindings from disk when:
-    // 1. Disk has humanized bodies (from extraction), OR
-    // 2. Stream parser found nothing but disk has findings (code-review skill bridge)
-    const streamParsedEmpty =
-      reviewOutput &&
-      splitReviewOutput(reviewOutput, config.provider).findings.length === 0;
-    if (
-      hasHumanized ||
-      (streamParsedEmpty && savedFindings.findings.length > 0)
-    ) {
-      setStructuredFindings((prev) => {
-        if (prev && prev.length > 0) {
-          return prev;
-        }
-        return savedFindings.findings.map(({ commented: _c, ...rest }) => rest);
-      });
-    }
-  }, [savedFindings, reviewOutput, config.provider]);
+  }, [savedFindings]);
 
   // Split completed review output into thinking (process log) + findings
   const reviewSplit = useMemo(() => {
@@ -265,13 +237,9 @@ export function useReviewExecution(
       allCommentedFiredRef.current = true;
       onAllCommented?.();
     }
-  }, [reviewSplit, onAllCommented, submittedFindings]);
+  }, [submittedFindings.size, reviewSplit, onAllCommented]);
 
-  // Notify parent when restoring a previous review. Do NOT re-save findings
-  // here: on remount (e.g. after review completes and the React key flips from
-  // "live" to "restored"), the disk may already contain humanized findings
-  // written by the extract route. Re-saving the basic log-parser findings
-  // would clobber humanizedBody and other fields.
+  // Notify parent when restoring a previous review + persist findings if missing
   useEffect(() => {
     if (!initialOutput) {
       return;
@@ -282,25 +250,22 @@ export function useReviewExecution(
       split.findings.length,
       split.findings
     );
-  }, [config.provider, initialOutput]);
+    if (split.findings.length > 0 && !findingsSavedRef.current) {
+      findingsSavedRef.current = true;
+      saveReviewFindings(
+        ticketId,
+        repoPath,
+        config.provider,
+        config.model,
+        split.findings
+      );
+    }
+  }, [config.model, config.provider, initialOutput, repoPath, ticketId]);
 
   /** Split output, notify callback, persist findings. Returns the split result. */
   function finalizeReviewOutput(output: string) {
     setReviewOutput(output);
     setReviewDone(true);
-    // Fallback: if the stream's sessionId event was missed, parse the codex
-    // banner out of the accumulated output. createCodexStream always forwards
-    // stdout (banner included) as "output" events, so the session id appears
-    // in the raw text even if the dedicated event was lost.
-    if (config.provider === "codex" && !sessionIdRef.current) {
-      const match = CODEX_SESSION_ID_REGEX.exec(output);
-      if (match) {
-        sessionIdRef.current = match[1];
-        console.log(
-          `[review-extract] Recovered codex session ID from output: ${match[1]}`
-        );
-      }
-    }
     const split = splitReviewOutput(output, config.provider);
     onReviewCompleteRef.current?.(
       output,
@@ -324,13 +289,9 @@ export function useReviewExecution(
   function handlePostStreamActions(
     split: ReturnType<typeof splitReviewOutput>
   ) {
-    console.log(
-      `[review-extract-gate] provider=${config.provider}, sessionId=${sessionIdRef.current ?? "NULL"}, findingsCount=${split.findings.length}`
-    );
-
     if (config.provider === "claude" && sessionIdRef.current) {
       fetch(
-        `/api/gateway/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=claude`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -342,19 +303,13 @@ export function useReviewExecution(
     }
 
     if (config.provider === "codex" && sessionIdRef.current) {
-      console.log("[review-extract-gate] Firing codex triggerExtraction");
       triggerExtraction(sessionIdRef.current);
     } else if (
       config.provider === "claude" &&
       split.findings.length > 0 &&
       sessionIdRef.current
     ) {
-      console.log("[review-extract-gate] Firing claude triggerExtraction");
       triggerExtraction(sessionIdRef.current);
-    } else {
-      console.warn(
-        `[review-extract-gate] Skipped triggerExtraction — provider=${config.provider}, sessionId=${sessionIdRef.current ?? "NULL"}, findingsCount=${split.findings.length}`
-      );
     }
 
     if (!split.verdict && sessionIdRef.current) {
@@ -374,6 +329,11 @@ export function useReviewExecution(
       provider: config.provider || "codex",
       useBaseRepo: config.useBaseRepo || undefined,
     };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-shadow -- startReview is hoisted and used in the mount effect
+  async function startReview(signal: AbortSignal) {
+    await runReviewAttempt(signal, 0);
   }
 
   async function runReviewAttempt(
@@ -422,7 +382,7 @@ export function useReviewExecution(
       setReviewOutput("");
 
       const response = await fetch(
-        `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
+        `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -567,7 +527,7 @@ export function useReviewExecution(
               reconnectHeaders["x-relay-command-id"] = commandId;
             }
             const reconnectResponse = await fetch(
-              `/api/gateway/codex/review/${encodeURIComponent(ticketId)}`,
+              `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
               {
                 method: "POST",
                 headers: reconnectHeaders,
@@ -685,7 +645,7 @@ export function useReviewExecution(
   };
 
   const pollRunningReview = async (signal: AbortSignal) => {
-    const statusUrl = `/api/gateway/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+    const statusUrl = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
     let pollCount = 0;
     let lastKnownOutput = "";
     console.log("[poll] Starting poll for running review");
@@ -740,7 +700,7 @@ export function useReviewExecution(
     abortRef.current?.abort();
     try {
       const response = await fetch(
-        `/api/gateway/codex/stop/${encodeURIComponent(ticketId)}`,
+        `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -756,7 +716,6 @@ export function useReviewExecution(
   }, [ticketId, repoPath, config.provider]);
 
   // Start the review on mount (skip if restoring a previous result)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally one-shot mount effect; adding runReviewAttempt would restart streams
   useEffect(() => {
     if (initialOutput) {
       return;
@@ -768,12 +727,10 @@ export function useReviewExecution(
 
     const controller = new AbortController();
     abortRef.current = controller;
-    runReviewAttempt(controller.signal, 0).catch((error: unknown) => {
-      console.error("[review] Failed to start review", error);
-    });
+    startReview(controller.signal);
     // NOTE: no cleanup abort — the stream continues across StrictMode re-mounts.
     // The Stop button calls handleStopReview which aborts via abortRef.
-  }, [initialOutput]);
+  }, [initialOutput]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmitComment = useCallback(
     async (index: number, finding: ReviewFinding) => {
@@ -786,7 +743,7 @@ export function useReviewExecution(
       const body = buildCommentBody(finding, filePath);
 
       try {
-        const response = await fetch("/api/gateway/git/pr/inline-comment", {
+        const response = await fetch("/api/engineer/git/pr/inline-comment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -844,7 +801,7 @@ export function useReviewExecution(
           `[review-extract] Triggering extraction for ${config.provider} with session ${sid}`
         );
         const res = await fetch(
-          `/api/gateway/codex/review-extract/${encodeURIComponent(ticketId)}`,
+          `/api/engineer/codex/review-extract/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -852,7 +809,6 @@ export function useReviewExecution(
               repoPath,
               sessionId: sid,
               provider: config.provider,
-              expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
             }),
           }
         );
@@ -895,7 +851,7 @@ export function useReviewExecution(
           `[review-verdict] Triggering verdict extraction with session ${sid}`
         );
         const res = await fetch(
-          `/api/gateway/codex/review-verdict/${encodeURIComponent(ticketId)}`,
+          `/api/engineer/codex/review-verdict/${encodeURIComponent(ticketId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -903,7 +859,6 @@ export function useReviewExecution(
               repoPath,
               sessionId: sid,
               provider: config.provider,
-              expectedMcpUrl: env.NEXT_PUBLIC_MCP_SERVER_URL,
             }),
           }
         );

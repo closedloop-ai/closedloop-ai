@@ -6,7 +6,7 @@ import {
   type CaseScore,
   EvalStatus,
   type EvaluationReport,
-} from "@/lib/engineer/queries/closedloop";
+} from "@/lib/engineer/queries/symphony";
 import { decodeText } from "@/lib/engineer/run-viewer-utils";
 import { formatScorePercent } from "@/lib/evaluation-utils";
 
@@ -147,7 +147,6 @@ export function JudgesViewer({ data }: Readonly<JudgesViewerProps>) {
                   expandedScoreId === score.case_id ? null : score.case_id
                 )
               }
-              type="button"
             >
               <div className="flex items-center gap-3">
                 {renderStatusIcon(inferStatusFromScore(score))}
@@ -156,9 +155,9 @@ export function JudgesViewer({ data }: Readonly<JudgesViewerProps>) {
                 </span>
               </div>
               <span className="text-muted-foreground text-xs">
-                {getScore(score) === null
-                  ? "N/A"
-                  : formatScorePercent(getScore(score)!)}
+                {getScore(score) !== null
+                  ? formatScorePercent(getScore(score)!)
+                  : "N/A"}
               </span>
             </button>
             {expandedScoreId === score.case_id && (
@@ -189,9 +188,9 @@ export function JudgesViewer({ data }: Readonly<JudgesViewerProps>) {
                           </span>
                           <span className="text-sm">
                             Score:{" "}
-                            {metric.score == null
-                              ? "N/A"
-                              : formatScorePercent(metric.score)}
+                            {metric.score != null
+                              ? formatScorePercent(metric.score)
+                              : "N/A"}
                           </span>
                         </div>
                         {metric.threshold !== null && (

@@ -29,7 +29,7 @@ Email: security@closedloop.ai
 ### Application Security
 
 - **Nosecone** — security headers via `@nosecone/next`
-- **Webhook verification** — GitHub (HMAC SHA-256), Clerk (Svix), all with timing-safe comparison
+- **Webhook verification** — GitHub (HMAC SHA-256), Clerk (Svix), Stripe (SDK), all with timing-safe comparison
 - **Environment variable validation** — Zod schemas via `@t3-oss/env-nextjs` at startup
 - **`server-only` imports** — critical packages prevent accidental client-side inclusion
 
@@ -53,5 +53,6 @@ Email: security@closedloop.ai
 
 **Out-of-scope:**
 
+- Issues in upstream dependencies (Clerk, Stripe, GitHub) — report to those providers
 - Theoretical vulnerabilities without proof of concept
 - UI-only display preferences not enforced server-side (non-security cosmetic gating)

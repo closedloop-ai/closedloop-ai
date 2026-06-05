@@ -12,7 +12,6 @@ import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ActiveTicketCard } from "@/components/engineer/ActiveTicketCard";
-import { ClosedLoopChat } from "@/components/engineer/ClosedLoopChat";
 import { CloseTicketDialog } from "@/components/engineer/CloseTicketDialog";
 import { CodexReviewDialog } from "@/components/engineer/CodexReviewDialog";
 import { CommitDialog } from "@/components/engineer/CommitDialog";
@@ -20,6 +19,7 @@ import { DeployDialog } from "@/components/engineer/DeployDialog";
 import { LinkPRDialog } from "@/components/engineer/LinkPRDialog";
 import type { MentionedFile } from "@/components/engineer/RepoPickerDialog";
 import { RepoPickerDialog } from "@/components/engineer/RepoPickerDialog";
+import { SymphonyChat } from "@/components/engineer/SymphonyChat";
 import { TicketCard } from "@/components/engineer/TicketCard";
 import { TicketCardSkeleton } from "@/components/engineer/TicketCardSkeleton";
 import { TicketChatDialog } from "@/components/engineer/TicketChatDialog";
@@ -30,11 +30,7 @@ import {
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
 import type { FullTicketDetails } from "@/hooks/engineer/use-engineer-features";
 import { useStartPlanLoop } from "@/hooks/engineer/use-start-plan-loop";
-import { useClosedLoopLaunch } from "@/hooks/engineer/useClosedLoopLaunch";
-import {
-  MountDeployHealthAction,
-  resolveMountDeployHealthAction,
-} from "@/lib/engineer/deploy-health";
+import { useSymphonyLaunch } from "@/hooks/engineer/useSymphonyLaunch";
 import {
   clearDeployment,
   type DeployInfo,
@@ -50,10 +46,10 @@ import {
   saveTicketPR,
 } from "@/lib/engineer/pr-tracker";
 import { clearTicketPushed, isTicketPushed } from "@/lib/engineer/push-tracker";
-import type { ClosedLoopStatusResponse } from "@/lib/engineer/queries/closedloop";
 import { triggerDeployDetect } from "@/lib/engineer/queries/deploy";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { reposOptions } from "@/lib/engineer/queries/repos";
+import type { SymphonyStatusResponse } from "@/lib/engineer/queries/symphony";
 import { getChildTickets } from "@/lib/engineer/stack-utils";
 import { deriveBaseRepoPath } from "@/lib/engineer/worktree-utils";
 import { type EngineerTicket, TicketSourceType } from "@/types/engineer";
@@ -76,29 +72,9 @@ type TicketListProps = {
   viewMode?: "grid" | "list";
 };
 
-const LIST_SKELETON_KEYS = [
-  "list-skeleton-1",
-  "list-skeleton-2",
-  "list-skeleton-3",
-  "list-skeleton-4",
-  "list-skeleton-5",
-  "list-skeleton-6",
-  "list-skeleton-7",
-  "list-skeleton-8",
-];
-
-const GRID_SKELETON_KEYS = [
-  "grid-skeleton-1",
-  "grid-skeleton-2",
-  "grid-skeleton-3",
-  "grid-skeleton-4",
-  "grid-skeleton-5",
-  "grid-skeleton-6",
-];
-
 /**
  * TicketList component displays Linear tickets in a responsive grid layout.
- * When ClosedLoop is running for a ticket, it shows in a dedicated "Active Planning" section.
+ * When Symphony is running for a ticket, it shows in a dedicated "Active Planning" section.
  */
 export function TicketList({
   tickets,
@@ -118,25 +94,25 @@ export function TicketList({
     isActive,
     getSession,
     error,
-  } = useClosedLoopLaunch();
+  } = useSymphonyLaunch();
 
   const {
     startPlanLoop,
-    pendingDocuments,
-    selectDocument,
-    clearPendingDocuments,
+    pendingArtifacts,
+    selectArtifact,
+    clearPendingArtifacts,
   } = useStartPlanLoop(
-    async (ticketIdentifier, repoPath, worktreePath, loopId, documentId) => {
-      // Persist loopId + documentId in the session immediately so ActiveTicketCard
+    async (ticketIdentifier, repoPath, worktreePath, loopId, artifactId) => {
+      // Persist loopId + artifactId in the session immediately so ActiveTicketCard
       // can use them before the gateway process starts.
       mergeSessionFields(ticketIdentifier, {
         repoPath,
         worktreePath,
         loopId,
-        documentId,
+        artifactId,
       });
       // Also persist to the sessions file via the API route
-      await fetch("/api/gateway/symphony/sessions", {
+      await fetch("/api/engineer/symphony/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -144,7 +120,7 @@ export function TicketList({
           repoPath,
           worktreePath,
           loopId,
-          documentId,
+          artifactId,
         }),
       });
     }
@@ -356,7 +332,7 @@ export function TicketList({
 
     // Check repo sync status
     try {
-      const response = await fetch("/api/gateway/git", {
+      const response = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -440,9 +416,7 @@ export function TicketList({
     if (stale.length > 0) {
       setReopenedTickets((prev) => {
         const next = new Set(prev);
-        for (const id of stale) {
-          next.delete(id);
-        }
+        stale.forEach((id) => next.delete(id));
         localStorage.setItem("reopened-tickets", JSON.stringify([...next]));
         return next;
       });
@@ -542,7 +516,7 @@ export function TicketList({
         tickets.map(async (ticket) => {
           try {
             const response = await fetch(
-              `/api/gateway/work-directory/${ticket.identifier}`
+              `/api/engineer/work-directory/${ticket.identifier}`
             );
             if (response.ok) {
               const data = await response.json();
@@ -573,9 +547,9 @@ export function TicketList({
   // Check pushed status for all tickets (from localStorage)
   useEffect(() => {
     const statusMap: Record<string, boolean> = {};
-    for (const ticket of tickets) {
+    tickets.forEach((ticket) => {
       statusMap[ticket.identifier] = isTicketPushed(ticket.identifier);
-    }
+    });
     setPushedStatus(statusMap);
   }, [tickets]);
 
@@ -585,12 +559,12 @@ export function TicketList({
       string,
       { url: string; number: number; repoPath?: string } | null
     > = {};
-    for (const ticket of tickets) {
+    tickets.forEach((ticket) => {
       const pr = getTicketPR(ticket.identifier);
       statusMap[ticket.identifier] = pr
         ? { url: pr.url, number: pr.number, repoPath: pr.repoPath }
         : null;
-    }
+    });
     setPrStatus(statusMap);
   }, [tickets]);
 
@@ -598,9 +572,9 @@ export function TicketList({
   useEffect(() => {
     const deploys = getDeployments();
     const statusMap: Record<string, DeployInfo | null> = {};
-    for (const ticket of tickets) {
+    tickets.forEach((ticket) => {
       statusMap[ticket.identifier] = deploys[ticket.identifier] || null;
-    }
+    });
     setDeployStatus(statusMap);
 
     // Reconcile any "deploying" entries — the process may have finished while the page was closed
@@ -624,13 +598,13 @@ export function TicketList({
       }
 
       fetch(
-        `/api/gateway/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
+        `/api/engineer/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
       )
         .then((r) => r.json())
         .then((data) => {
           if (data.status === "completed") {
             // Process finished successfully — extract info
-            fetch("/api/gateway/deploy/extract-info", {
+            fetch("/api/engineer/deploy/extract-info", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ repoPath, logs: data.logs || "" }),
@@ -697,32 +671,31 @@ export function TicketList({
     }
 
     for (const [ticketId, info] of deployed) {
-      fetch("/api/gateway/deploy/health", {
+      fetch("/api/engineer/deploy/health", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: info.deployedUrl }),
       })
         .then((r) => r.json())
         .then((data) => {
-          const action = resolveMountDeployHealthAction(info, data);
-          if (action === MountDeployHealthAction.ResetFailure) {
-            updateDeployment(ticketId, {
-              healthCheckFailed: false,
-              consecutiveFailures: 0,
-            });
-            setDeployStatus((prev) => ({
-              ...prev,
-              [ticketId]: prev[ticketId]
-                ? {
-                    ...prev[ticketId]!,
-                    healthCheckFailed: false,
-                    consecutiveFailures: 0,
-                  }
-                : null,
-            }));
-            return;
-          }
-          if (action === MountDeployHealthAction.ClearDeployment) {
+          if (data.alive) {
+            if (info.healthCheckFailed) {
+              updateDeployment(ticketId, {
+                healthCheckFailed: false,
+                consecutiveFailures: 0,
+              });
+              setDeployStatus((prev) => ({
+                ...prev,
+                [ticketId]: prev[ticketId]
+                  ? {
+                      ...prev[ticketId]!,
+                      healthCheckFailed: false,
+                      consecutiveFailures: 0,
+                    }
+                  : null,
+              }));
+            }
+          } else {
             clearDeployment(ticketId);
             setDeployStatus((prev) => ({ ...prev, [ticketId]: null }));
           }
@@ -741,7 +714,7 @@ export function TicketList({
     if (last && Date.now() - Number(last) < ONE_HOUR) {
       return;
     }
-    fetch("/api/gateway/git/worktree", { method: "POST" })
+    fetch("/api/engineer/git/worktree", { method: "POST" })
       .then((res) => {
         if (res.ok) {
           globalThis.localStorage?.setItem(THROTTLE_KEY, Date.now().toString());
@@ -749,24 +722,6 @@ export function TicketList({
       })
       .catch(() => {});
   }, []);
-
-  // Derive base repo path from a ticket's worktree or active session
-  const getRepoPathForTicket = useCallback(
-    (ticketId: string): string | null => {
-      const session = getSession(ticketId);
-      if (session?.repoPath) {
-        return session.repoPath;
-      }
-
-      const worktree = workDirStatus[ticketId];
-      if (worktree?.exists && worktree.path) {
-        return deriveBaseRepoPath(worktree.path, ticketId);
-      }
-
-      return null;
-    },
-    [getSession, workDirStatus]
-  );
 
   // Discover external deployments (e.g., `vercel --yes` from CLI) on page load
   useEffect(() => {
@@ -809,7 +764,7 @@ export function TicketList({
       const repoPath = getRepoPathForTicket(id)!;
       const worktreePath = workDirStatus[id]!.path!;
 
-      fetch("/api/gateway/deploy/check-existing", {
+      fetch("/api/engineer/deploy/check-existing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoPath, worktreePath }),
@@ -850,15 +805,7 @@ export function TicketList({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    tickets,
-    workDirStatus,
-    pushedStatus,
-    prStatus,
-    deployStatus,
-    reposData,
-    getRepoPathForTicket,
-  ]);
+  }, [tickets, workDirStatus, pushedStatus, prStatus, deployStatus, reposData]);
 
   // Trigger LLM detection for repos that have a local deployment but no port
   useEffect(() => {
@@ -891,7 +838,7 @@ export function TicketList({
 
   // Show toast when a ticket finishes launching (transitions out of launchingTickets)
   useEffect(() => {
-    for (const session of activeSessions) {
+    activeSessions.forEach((session) => {
       if (
         !(
           launchingTickets.has(session.ticketId) ||
@@ -901,7 +848,7 @@ export function TicketList({
         // New session that wasn't there before and isn't launching
         lastLaunchedTicketRef.current.add(session.ticketId);
       }
-    }
+    });
   }, [activeSessions, launchingTickets]);
 
   // Handler for starting planning - opens repo picker dialog OR resumes existing worktree
@@ -1069,7 +1016,7 @@ export function TicketList({
   // Helper to remove worktree
   const removeWorktree = async (worktreePath: string, force = false) => {
     try {
-      const response = await fetch("/api/gateway/git/worktree", {
+      const response = await fetch("/api/engineer/git/worktree", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ worktreePath, force }),
@@ -1093,7 +1040,7 @@ export function TicketList({
 
     try {
       // Check git status of the worktree
-      const response = await fetch("/api/gateway/git", {
+      const response = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1185,7 +1132,7 @@ export function TicketList({
     }
     try {
       // Check git status of the worktree
-      const response = await fetch("/api/gateway/git", {
+      const response = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1250,7 +1197,7 @@ export function TicketList({
 
     setCreatingPR(ticketId);
     try {
-      const response = await fetch("/api/gateway/git/pr", {
+      const response = await fetch("/api/engineer/git/pr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1342,6 +1289,28 @@ export function TicketList({
     return repoPath ? deployableRepos.has(repoPath) : false;
   };
 
+  // Derive base repo path from a ticket's worktree or active session
+  const getRepoPathForTicket = (ticketId: string): string | null => {
+    // Try active session first
+    const session = getSession(ticketId);
+    if (session?.repoPath) {
+      return session.repoPath;
+    }
+
+    // Fall back to deriving from worktree path
+    const worktree = workDirStatus[ticketId];
+    if (worktree?.exists && worktree.path) {
+      const pathParts = worktree.path.split("/");
+      const worktreeDirName = pathParts.at(-1)!;
+      const parentDir = pathParts.slice(0, -1).join("/");
+      const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+      const repoName = worktreeDirName.replace(`-${sanitizedTicket}`, "");
+      return `${parentDir}/${repoName}`;
+    }
+
+    return null;
+  };
+
   // Handler for deploy button
   const handleDeploy = (ticketId: string) => {
     const repoPath = getRepoPathForTicket(ticketId);
@@ -1393,7 +1362,7 @@ export function TicketList({
     }
 
     try {
-      const response = await fetch("/api/gateway/deploy/teardown", {
+      const response = await fetch("/api/engineer/deploy/teardown", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1422,7 +1391,7 @@ export function TicketList({
     }
   };
 
-  // Handler for stopping a running ClosedLoop process
+  // Handler for stopping a running Symphony process
   const handleStopSymphony = async (ticketId: string) => {
     const repoPath = getRepoPathForTicket(ticketId);
     if (!repoPath) {
@@ -1439,7 +1408,7 @@ export function TicketList({
       // The gateway cancels the Loop record in the DB and kills the local process.
       if (session?.loopId) {
         const response = await fetch(
-          `/api/gateway/symphony/plan-loop/${encodeURIComponent(ticketId)}/cancel`,
+          `/api/engineer/symphony/plan-loop/${encodeURIComponent(ticketId)}/cancel`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1463,7 +1432,7 @@ export function TicketList({
             mergeSessionFields(ticketId, { loopId: undefined });
             // Persist the cleared loopId to the sessions file.
             if (session.worktreePath) {
-              fetch("/api/gateway/symphony/sessions", {
+              fetch("/api/engineer/symphony/sessions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1486,7 +1455,7 @@ export function TicketList({
             toast.success("ClosedLoop process stopped");
           }
           queryClient.invalidateQueries({
-            queryKey: queryKeys.closedloopStatus(ticketId, repoPath),
+            queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
           });
         } else {
           toast.error("Failed to cancel loop", {
@@ -1497,7 +1466,7 @@ export function TicketList({
       }
 
       // Legacy path: PID-only kill for non-loop sessions
-      const response = await fetch("/api/gateway/symphony/kill", {
+      const response = await fetch("/api/engineer/symphony/kill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath }),
@@ -1509,7 +1478,7 @@ export function TicketList({
         toast.success("ClosedLoop process stopped");
         // Invalidate status query to update UI
         queryClient.invalidateQueries({
-          queryKey: queryKeys.closedloopStatus(ticketId, repoPath),
+          queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
         });
       } else {
         toast.error("Failed to stop process", {
@@ -1566,16 +1535,16 @@ export function TicketList({
     if (viewMode === "list") {
       return (
         <div className="divide-y divide-border/50 overflow-hidden rounded-xl border border-border/50 bg-card">
-          {LIST_SKELETON_KEYS.map((skeletonKey) => (
-            <TicketListRowSkeleton key={skeletonKey} />
+          {Array.from({ length: 8 }, (_, i) => (
+            <TicketListRowSkeleton key={`skeleton-${i}`} />
           ))}
         </div>
       );
     }
     return (
       <div className="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {GRID_SKELETON_KEYS.map((skeletonKey) => (
-          <TicketCardSkeleton key={skeletonKey} />
+        {Array.from({ length: 6 }, (_, i) => (
+          <TicketCardSkeleton key={`skeleton-${i}`} />
         ))}
       </div>
     );
@@ -1646,9 +1615,9 @@ export function TicketList({
                     onLinkPR={handleLinkPR}
                     onParentClick={handleParentClick}
                     onStartPlanning={
-                      ticket.sourceType === TicketSourceType.ImplementationPlan
-                        ? undefined
-                        : handleStartPlanning
+                      ticket.sourceType !== TicketSourceType.ImplementationPlan
+                        ? handleStartPlanning
+                        : undefined
                     }
                     onTeardown={handleTeardown}
                     onToggleStar={handleToggleStar}
@@ -1763,12 +1732,12 @@ export function TicketList({
 
                                 if (result.launched && !result.alreadyRunning) {
                                   queryClient.setQueryData(
-                                    queryKeys.closedloopStatus(
+                                    queryKeys.symphonyStatus(
                                       ticketId,
                                       repoPath
                                     ),
                                     (
-                                      old: ClosedLoopStatusResponse | undefined
+                                      old: SymphonyStatusResponse | undefined
                                     ) => ({
                                       ...old,
                                       exists: true,
@@ -1794,7 +1763,7 @@ export function TicketList({
                             }
                           : undefined
                       }
-                      onStopClosedLoop={handleStopSymphony}
+                      onStopSymphony={handleStopSymphony}
                       onTeardown={handleTeardown}
                       parentTicketId={parentId}
                       pendingClaudeMdPath={
@@ -1802,7 +1771,7 @@ export function TicketList({
                       }
                       prInfo={prStatus[ticket.identifier] || null}
                       repoPath={repoPath}
-                      sessionArtifactId={session?.documentId}
+                      sessionArtifactId={session?.artifactId}
                       ticket={ticket}
                     />
                   </div>
@@ -1845,9 +1814,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType === TicketSourceType.ImplementationPlan
-                      ? undefined
-                      : handleStartPlanning
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -1885,9 +1854,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType === TicketSourceType.ImplementationPlan
-                      ? undefined
-                      : handleStartPlanning
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -1919,7 +1888,6 @@ export function TicketList({
                 className="cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={pendingPage === 0}
                 onClick={() => setPendingPage((p) => Math.max(0, p - 1))}
-                type="button"
               >
                 <ChevronLeft className="size-4" />
               </button>
@@ -1932,7 +1900,6 @@ export function TicketList({
                 onClick={() =>
                   setPendingPage((p) => Math.min(pendingPageCount - 1, p + 1))
                 }
-                type="button"
               >
                 <ChevronRight className="size-4" />
               </button>
@@ -1962,9 +1929,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType === TicketSourceType.ImplementationPlan
-                      ? undefined
-                      : handleStartPlanning
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -2002,9 +1969,9 @@ export function TicketList({
                   onLearningsClick={handleLearningsClick}
                   onLinkPR={handleLinkPR}
                   onStartPlanning={
-                    ticket.sourceType === TicketSourceType.ImplementationPlan
-                      ? undefined
-                      : handleStartPlanning
+                    ticket.sourceType !== TicketSourceType.ImplementationPlan
+                      ? handleStartPlanning
+                      : undefined
                   }
                   onTeardown={handleTeardown}
                   onToggleStar={handleToggleStar}
@@ -2038,7 +2005,6 @@ export function TicketList({
               setShowCompleted(next);
               localStorage.setItem("show-completed-tickets", String(next));
             }}
-            type="button"
           >
             <span
               className={cn(
@@ -2054,7 +2020,6 @@ export function TicketList({
               )}
             >
               <svg
-                aria-hidden="true"
                 className="opacity-60"
                 fill="none"
                 height="10"
@@ -2081,7 +2046,6 @@ export function TicketList({
             <div className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent" />
             <span className="flex items-center gap-2 font-medium text-muted-foreground/70 text-xs uppercase tracking-wider">
               <svg
-                aria-hidden="true"
                 className="text-emerald-500/60"
                 fill="none"
                 height="12"
@@ -2106,7 +2070,6 @@ export function TicketList({
                 className="cursor-pointer rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
                 disabled={donePage === 0}
                 onClick={() => setDonePage((p) => Math.max(0, p - 1))}
-                type="button"
               >
                 <ChevronLeft className="size-4" />
               </button>
@@ -2119,7 +2082,6 @@ export function TicketList({
                 onClick={() =>
                   setDonePage((p) => Math.min(donePageCount - 1, p + 1))
                 }
-                type="button"
               >
                 <ChevronRight className="size-4" />
               </button>
@@ -2263,10 +2225,10 @@ export function TicketList({
         onOpenChange={(open) => {
           if (!open) {
             // Dismissing clears picker state; user can retry Start Planning
-            clearPendingDocuments();
+            clearPendingArtifacts();
           }
         }}
-        open={pendingDocuments !== null && pendingDocuments.length > 0}
+        open={pendingArtifacts !== null && pendingArtifacts.length > 0}
       >
         <DialogContent>
           <DialogHeader>
@@ -2277,14 +2239,14 @@ export function TicketList({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            {pendingDocuments?.map((doc) => (
+            {pendingArtifacts?.map((artifact) => (
               <Button
                 className="h-auto w-full justify-start whitespace-normal text-left"
-                key={doc.id}
-                onClick={() => selectDocument(doc.id)}
+                key={artifact.id}
+                onClick={() => selectArtifact(artifact.id)}
                 variant="outline"
               >
-                {doc.title}
+                {artifact.title}
               </Button>
             ))}
           </div>
@@ -2379,7 +2341,7 @@ export function TicketList({
       )}
 
       {commentViewTicketId && prStatus[commentViewTicketId] && (
-        <ClosedLoopChat
+        <SymphonyChat
           initialTab="comments"
           isOpen={commentViewOpen}
           onClose={() => {

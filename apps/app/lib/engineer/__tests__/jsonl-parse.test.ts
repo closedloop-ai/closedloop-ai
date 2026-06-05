@@ -69,52 +69,9 @@ describe("parseJsonlLine", () => {
     expect(parseJsonlLine(line)).toBeNull();
   });
 
-  it("normalizes result type into a system entry", () => {
-    const line = JSON.stringify({
-      type: "result",
-      subtype: "success",
-      duration_ms: 421,
-      num_turns: 4,
-      total_cost_usd: 0,
-      is_error: false,
-      result: "done",
-    });
-    const result = parseJsonlLine(line);
-    expect(result).not.toBeNull();
-    expect(result!.type).toBe("system");
-    expect(result!.data?.type).toBe("result");
-    expect(result!.data?.subtype).toBe("success");
-    expect(result!.data?.durationMs).toBe(421);
-    expect(result!.data?.numTurns).toBe(4);
-    expect(result!.data?.totalCostUsd).toBe(0);
-    expect(result!.data?.isError).toBe(false);
-    expect(result!.data?.resultText).toBe("done");
-  });
-
-  it("normalizes result entries whose result is a content-block array", () => {
-    const line = JSON.stringify({
-      type: "result",
-      subtype: "success",
-      result: [
-        { type: "text", text: "first chunk " },
-        { type: "tool_use", id: "abc" },
-        { type: "text", text: "second chunk" },
-      ],
-    });
-    const result = parseJsonlLine(line);
-    expect(result).not.toBeNull();
-    expect(result!.data?.resultText).toBe("first chunk second chunk");
-  });
-
-  it("leaves resultText undefined when the result array has no text blocks", () => {
-    const line = JSON.stringify({
-      type: "result",
-      subtype: "success",
-      result: [{ type: "tool_use", id: "abc" }],
-    });
-    const result = parseJsonlLine(line);
-    expect(result).not.toBeNull();
-    expect(result!.data?.resultText).toBeUndefined();
+  it("returns null for result type", () => {
+    const line = JSON.stringify({ type: "result" });
+    expect(parseJsonlLine(line)).toBeNull();
   });
 
   it("returns null for malformed JSON", () => {

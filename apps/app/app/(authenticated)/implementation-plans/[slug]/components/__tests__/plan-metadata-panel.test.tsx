@@ -1,17 +1,28 @@
-import type { DocumentDetail } from "@repo/api/src/types/document";
+import type {
+  ArtifactDetail,
+  ArtifactStatus,
+} from "@repo/api/src/types/artifact";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-  createMockDocument,
+  createMockArtifact,
   createMockGenerationStatus,
-} from "@/__tests__/fixtures/documents";
+  createMockPullRequest,
+} from "@/__tests__/fixtures/artifacts";
 import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   calculateAcceptanceRate,
   sortJudgeFeedbackItemsByScore,
 } from "@/lib/evaluation-utils";
 import { PlanMetadataPanel } from "../plan-metadata-panel";
+
+// Mock the ExecutionLogSummary component to avoid query client dependencies
+vi.mock("@/components/execution-log/execution-log-summary", () => ({
+  ExecutionLogSummary: () => (
+    <div data-testid="execution-log-summary">Execution Log Content</div>
+  ),
+}));
 
 // Mock usePerformanceData to avoid query client dependencies
 vi.mock("@/hooks/queries/use-performance", () => ({
@@ -20,6 +31,13 @@ vi.mock("@/hooks/queries/use-performance", () => ({
     isLoading: false,
     error: null,
   }),
+}));
+
+// Mock the StatusMetadataSection to simplify testing
+vi.mock("@/components/artifact-editor/status-metadata-section", () => ({
+  StatusMetadataSection: () => (
+    <div data-testid="status-metadata-section">Status Section Mock</div>
+  ),
 }));
 
 // Mock JudgeResultCard to simplify testing
@@ -32,35 +50,84 @@ vi.mock("../judge-result-card", () => ({
 }));
 
 // Mock RatingSection to avoid Clerk auth dependencies
-vi.mock("@/components/document-editor/rating-section", () => ({
+vi.mock("@/components/artifact-editor/rating-section", () => ({
   RatingSection: () => (
     <div data-testid="rating-section">Rating Section Mock</div>
   ),
 }));
 
-// Mock useDocumentsByProject to avoid Clerk auth dependencies
-vi.mock("@/hooks/queries/use-documents", () => ({
-  useDocumentsByProject: () => ({
+// Mock useArtifactsByProject to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useArtifactsByProject: () => ({
     data: [],
     isLoading: false,
     error: null,
   }),
 }));
 
-// Mock artifact links hooks to avoid Clerk auth dependencies
-vi.mock("@/hooks/queries/use-artifact-links", () => ({
-  useResolvedArtifactLinks: () => ({
+// Mock useOrganizationUsers to avoid Clerk authentication context
+vi.mock("@/hooks/queries/use-users", () => ({
+  useOrganizationUsers: () => ({
     data: [],
     isLoading: false,
     error: null,
   }),
-  useCreateArtifactLink: () => ({
+}));
+
+// Mock entity links hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-entity-links", () => ({
+  useLinkedEntities: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+  useCreateEntityLink: () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),
-  useDeleteArtifactLink: () => ({
+  useDeleteEntityLink: () => ({
     mutateAsync: vi.fn(),
     isPending: false,
+  }),
+}));
+
+// Mock GitHub integration hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-github-integration", () => ({
+  useGitHubIntegrationStatus: () => ({
+    data: { connected: false },
+    isLoading: false,
+    error: null,
+  }),
+  useGitHubRepositories: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+  useGitHubBranches: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+// Mock AttachmentsSection to avoid QueryClient dependencies
+vi.mock("@/components/artifact-editor/attachments-section", () => ({
+  AttachmentsSection: () => (
+    <div data-testid="attachments-section">Attachments Mock</div>
+  ),
+}));
+
+// Mock custom fields hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-custom-fields", () => ({
+  useCustomFieldSettings: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+  useCustomFieldsForEntityType: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
   }),
 }));
 
@@ -77,24 +144,49 @@ vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
   }),
 }));
 
-const createMockPlan = (overrides?: Partial<DocumentDetail>): DocumentDetail =>
+// Regex patterns for testing (hoisted to module level per Biome lint rules)
+const VERSION_PATTERN = /version: v1/i;
+const CREATED_PATTERN = /created:/i;
+const UPDATED_PATTERN = /updated:/i;
+const PR_NUMBER_PATTERN = /#42:/i;
+const PR_TITLE_PATTERN = /add new feature/i;
+
+const createMockPlan = (overrides?: Partial<ArtifactDetail>): ArtifactDetail =>
   ({
-    ...createMockDocument({ type: "IMPLEMENTATION_PLAN" }),
+    ...createMockArtifact({ type: "IMPLEMENTATION_PLAN" }),
     version: {
       id: "version-1",
-      documentId: "artifact-123",
+      artifactId: "artifact-123",
       version: 1,
       content: "# Plan content",
       createdById: null,
       createdAt: new Date("2024-01-15T10:00:00Z"),
     },
     ...overrides,
-  }) as DocumentDetail;
+  }) as ArtifactDetail;
 
 const defaultProps = {
   plan: createMockPlan(),
+  status: "DRAFT" as ArtifactStatus,
+  approver: null,
+  assignee: null,
+  teamMembers: [],
   generationStatus: null,
+  pullRequest: null,
+  previewDeployment: null,
+  onPreviewRefresh: vi.fn().mockResolvedValue(null),
+  isPreviewRefreshing: false,
+  judgeItems: null,
   codeJudgeItems: null,
+  onStatusChange: vi.fn(),
+  onApproverSelect: vi.fn(),
+  onAssigneeChange: vi.fn(),
+  targetRepo: "",
+  targetBranch: "",
+  onTargetRepoChange: vi.fn(),
+  onTargetRepoBlur: vi.fn(),
+  onTargetBranchChange: vi.fn(),
+  onTargetBranchBlur: vi.fn(),
 };
 
 describe("sortJudgeFeedbackItemsByScore", () => {
@@ -274,15 +366,50 @@ describe("PlanMetadataPanel", () => {
   });
 
   describe("Section structure", () => {
-    test("renders plan-specific sections: Code Evaluation and Rating", () => {
+    test("renders all collapsible sections: Properties, Execution Log, Plan Evaluation, Code Evaluation, Performance, and Comments", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
+      // Check for collapsible section headings
+      expect(screen.getByText("Properties")).toBeDefined();
+      expect(screen.getByText("Execution Log")).toBeDefined();
+      expect(screen.getByText("Plan Evaluation")).toBeDefined();
       expect(screen.getByText("Code Evaluation")).toBeDefined();
-      expect(screen.getByText("Rating")).toBeDefined();
+      expect(screen.getByText("Performance")).toBeDefined();
+      expect(screen.getByText("Comments")).toBeDefined();
+    });
+
+    test("Properties section is collapsed by default", () => {
+      render(<PlanMetadataPanel {...defaultProps} />);
+
+      // Properties section content should NOT be visible when collapsed
+      expect(screen.queryByTestId("status-metadata-section")).toBeNull();
     });
   });
 
-  describe("Generation content", () => {
+  describe("Details tab content", () => {
+    function expandProperties() {
+      fireEvent.click(screen.getByText("Properties"));
+    }
+
+    test("renders StatusMetadataSection when Properties is expanded", () => {
+      render(<PlanMetadataPanel {...defaultProps} />);
+      expandProperties();
+      expect(screen.getByTestId("status-metadata-section")).toBeDefined();
+    });
+
+    test("displays version information", () => {
+      render(<PlanMetadataPanel {...defaultProps} />);
+      expandProperties();
+      expect(screen.getByText(VERSION_PATTERN)).toBeDefined();
+    });
+
+    test("displays created and updated dates", () => {
+      render(<PlanMetadataPanel {...defaultProps} />);
+      expandProperties();
+      expect(screen.getByText(CREATED_PATTERN)).toBeDefined();
+      expect(screen.getByText(UPDATED_PATTERN)).toBeDefined();
+    });
+
     test("displays loop link when generationStatus has loop source", () => {
       render(
         <PlanMetadataPanel
@@ -293,43 +420,20 @@ describe("PlanMetadataPanel", () => {
           })}
         />
       );
+      expandProperties();
       expect(screen.getByText("View loop details")).toBeDefined();
     });
-  });
 
-  describe("Additional repositories", () => {
-    const loopGenerationStatus = createMockGenerationStatus({
-      source: "loop",
-      loopId: "loop-abc",
-    });
-
-    test("renders each repo fullName and branch when additionalRepos is non-empty", () => {
+    test("displays pull request info when pullRequest is provided", () => {
       render(
         <PlanMetadataPanel
           {...defaultProps}
-          additionalRepos={[
-            { fullName: "org/repo-one", branch: "main" },
-            { fullName: "org/repo-two", branch: "feature-branch" },
-          ]}
-          generationStatus={loopGenerationStatus}
+          pullRequest={createMockPullRequest()}
         />
       );
-
-      expect(screen.getByText("org/repo-one")).toBeDefined();
-      expect(screen.getByText("(main)")).toBeDefined();
-      expect(screen.getByText("org/repo-two")).toBeDefined();
-      expect(screen.getByText("(feature-branch)")).toBeDefined();
-    });
-
-    test("does not render additional repos section when additionalRepos is absent", () => {
-      render(
-        <PlanMetadataPanel
-          {...defaultProps}
-          generationStatus={loopGenerationStatus}
-        />
-      );
-
-      expect(screen.queryByText("Additional Repositories")).toBeNull();
+      expandProperties();
+      expect(screen.getByText(PR_NUMBER_PATTERN)).toBeDefined();
+      expect(screen.getByText(PR_TITLE_PATTERN)).toBeDefined();
     });
   });
 });

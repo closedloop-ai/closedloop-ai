@@ -3,7 +3,7 @@
  *
  * All three evaluation handlers (PRD, PLAN, CODE) share identical behavior
  * via createEvaluationHandler. This factory produces the full test suite
- * parameterized by { handler, reportType, documentId, fileName, reportId, command }.
+ * parameterized by { handler, reportType, artifactId, fileName, reportId, command }.
  *
  * Usage (in each test file, after vi.mock() declarations):
  *
@@ -16,11 +16,12 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { Loop, LoopCommand } from "@repo/api/src/types/loop";
+import { EntityType } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseJsonArtifact,
   upsertEvaluationWithJudgeScores,
-} from "@/lib/loops/loop-document-ingestion";
+} from "@/lib/loops/loop-artifact-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildCaseScore } from "../fixtures/evaluation";
 import { buildLoop } from "../fixtures/loop";
@@ -38,7 +39,7 @@ type EvaluationHandlerTestConfig = {
   };
   /** Persisted discriminator — use e.g. `EvaluationReportType.Prd`. */
   reportType: EvaluationReportTypeValue;
-  documentId: string;
+  artifactId: string;
   fileName: string;
   reportId: string;
   judgeName: string;
@@ -84,7 +85,7 @@ export function registerEvaluationHandlerTests(
   const {
     handler,
     reportType,
-    documentId,
+    artifactId,
     fileName,
     reportId,
     judgeName,
@@ -103,7 +104,7 @@ export function registerEvaluationHandlerTests(
     return buildLoop({
       command,
       s3StateKey,
-      documentId,
+      artifactId,
       ...overrides,
     });
   }
@@ -126,7 +127,9 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledWith(
         expect.objectContaining({
-          artifactId: documentId,
+          entityId: artifactId,
+          entityType: EntityType.ARTIFACT,
+          artifactId,
           loopId: loop.id,
           organizationId: "org-1",
           reportType,
@@ -148,8 +151,8 @@ export function registerEvaluationHandlerTests(
       );
     });
 
-    it("does not call upsertEvaluationWithJudgeScores when loop.documentId is null", async () => {
-      const loop = buildTestLoop({ documentId: null });
+    it("does not call upsertEvaluationWithJudgeScores when loop.artifactId is null", async () => {
+      const loop = buildTestLoop({ artifactId: null });
       setupMockTx();
       setupDownload(report, mocks);
 
@@ -182,14 +185,12 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).not.toHaveBeenCalled();
     });
 
-    it("skips ingestion when artifact.latestVersion is greater than loop.documentVersion", async () => {
-      const loop = buildTestLoop({ documentVersion: 1 });
+    it("skips ingestion when artifact.latestVersion is greater than loop.artifactVersion", async () => {
+      const loop = buildTestLoop({ artifactVersion: 1 });
       setupDownload(report, mocks);
       setupMockTx({
         artifact: {
-          findUnique: vi.fn().mockResolvedValue({
-            document: { latestVersion: 2 },
-          }),
+          findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
         },
       });
 
@@ -198,14 +199,12 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).not.toHaveBeenCalled();
     });
 
-    it("proceeds with ingestion when artifact.latestVersion equals loop.documentVersion", async () => {
-      const loop = buildTestLoop({ documentVersion: 2 });
+    it("proceeds with ingestion when artifact.latestVersion equals loop.artifactVersion", async () => {
+      const loop = buildTestLoop({ artifactVersion: 2 });
       setupDownload(report, mocks);
       setupMockTx({
         artifact: {
-          findUnique: vi.fn().mockResolvedValue({
-            document: { latestVersion: 2 },
-          }),
+          findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
         },
       });
 
@@ -214,8 +213,8 @@ export function registerEvaluationHandlerTests(
       expect(mocks.mockUpsertEvaluationWithJudgeScores).toHaveBeenCalledOnce();
     });
 
-    it("proceeds with ingestion when loop.documentVersion is null (backwards compat — no version check)", async () => {
-      const loop = buildTestLoop({ documentVersion: null });
+    it("proceeds with ingestion when loop.artifactVersion is null (backwards compat — no version check)", async () => {
+      const loop = buildTestLoop({ artifactVersion: null });
       setupDownload(report, mocks);
       setupMockTx();
 
@@ -225,7 +224,7 @@ export function registerEvaluationHandlerTests(
     });
 
     it("proceeds with ingestion when artifact is not found during version check (best effort)", async () => {
-      const loop = buildTestLoop({ documentVersion: 1 });
+      const loop = buildTestLoop({ artifactVersion: 1 });
       setupDownload(report, mocks);
       setupMockTx({
         artifact: { findUnique: vi.fn().mockResolvedValue(null) },

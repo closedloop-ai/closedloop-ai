@@ -123,7 +123,7 @@ export const ContributionHeatmap = memo(
                     <TooltipContent>
                       <p className="text-xs">
                         <span className="font-medium">
-                          {day.count} contribution{day.count === 1 ? "" : "s"}
+                          {day.count} contribution{day.count !== 1 ? "s" : ""}
                         </span>{" "}
                         on {day.date}
                       </p>

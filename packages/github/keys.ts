@@ -11,7 +11,6 @@ const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
  */
 export const keys = () =>
   createEnv({
-    emptyStringAsUndefined: true,
     server: {
       GITHUB_APP_ID: z.string().min(1),
       GITHUB_APP_PRIVATE_KEY: z.string().min(1),
@@ -41,7 +40,6 @@ export const keys = () =>
  */
 export const clientKeys = () =>
   createEnv({
-    emptyStringAsUndefined: true,
     server: {
       // GitHub App client ID for OAuth authorize URL - optional since GitHub integration is optional
       GITHUB_APP_CLIENT_ID: z.string().min(1).optional(),

@@ -1,6 +1,5 @@
 import "server-only";
 import { Liveblocks } from "@liveblocks/node";
-import { withProsemirrorDocument } from "@liveblocks/node-prosemirror";
 import { keys } from "./keys";
 import type { CommentBody, ThreadData } from "./webhook";
 import { anchorThreadToText, findAnchorText } from "./yjs-anchor";
@@ -23,6 +22,7 @@ export async function createRoom(
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
+
     if (!liveblocks) {
       // Not configured - skip room creation (RoomProvider will auto-create)
       return { success: true };
@@ -45,34 +45,6 @@ export async function createRoom(
 }
 
 /**
- * Reset a Liveblocks room.
- * This function clears the room's content and deletes all threads.
- * This function handles errors gracefully and will not throw.
- *
- * @param roomId - The ID of the room to reset
- * @returns Promise that resolves with success status and optional error message
- */
-export async function resetRoom(
-  roomId: string
-): Promise<{ success: true } | { success: false; error: string }> {
-  try {
-    const liveblocks = getLiveblocksClient();
-    if (!liveblocks) {
-      return { success: true };
-    }
-
-    await withProsemirrorDocument({ roomId, client: liveblocks }, (api) =>
-      api.clearContent()
-    );
-
-    return { success: true };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { success: false, error: errorMessage };
-  }
-}
-
-/**
  * Delete a Liveblocks room.
  * This function handles errors gracefully and will not throw.
  *
@@ -84,6 +56,7 @@ export async function deleteRoom(
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
+
     if (!liveblocks) {
       // Not an error - just not configured
       return { success: true };
@@ -114,6 +87,7 @@ export async function updateRoomMetadata(
 ): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
+
     if (!liveblocks) {
       return { success: true };
     }

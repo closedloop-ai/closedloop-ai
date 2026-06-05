@@ -240,11 +240,11 @@ https://github.com/apps/closedloop-ai-stage
 **For environment variables**, the private key must be properly formatted:
 ```bash
 # Option 1: Base64 encode it
-cat your-app.pem | base64 -w 0
+cat symphony-stage.pem | base64 -w 0
 # Then decode in your app
 
 # Option 2: Replace newlines with \n
-cat your-app.pem | awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}'
+cat symphony-stage.pem | awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}'
 
 # Option 3: Use the actual newlines in your .env file (requires quotes)
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
@@ -287,7 +287,7 @@ GITHUB_APP_PRIVATE_KEY=<base64-encoded-or-escaped-pem>
 GITHUB_APP_WEBHOOK_SECRET=<webhook-secret>
 GITHUB_APP_CLIENT_SECRET=<client-secret>
 GITHUB_APP_CLIENT_ID=<staging-client-id>
-GITHUB_APP_DISPATCH_REPO=closedloop-ai/claude-plugins
+GITHUB_APP_DISPATCH_REPO=closedloop-ai/closedloop-ai
 NEXT_PUBLIC_GITHUB_APP_SLUG=closedloop-ai-stage
 
 # Production
@@ -296,7 +296,7 @@ GITHUB_APP_PRIVATE_KEY=<base64-encoded-or-escaped-pem>
 GITHUB_APP_WEBHOOK_SECRET=<webhook-secret>
 GITHUB_APP_CLIENT_SECRET=<client-secret>
 GITHUB_APP_CLIENT_ID=<prod-client-id>
-GITHUB_APP_DISPATCH_REPO=closedloop-ai/claude-plugins
+GITHUB_APP_DISPATCH_REPO=closedloop-ai/closedloop-ai
 NEXT_PUBLIC_GITHUB_APP_SLUG=closedloop-ai
 ```
 
@@ -315,12 +315,13 @@ NEXT_PUBLIC_GITHUB_APP_SLUG=closedloop-ai
 | Environment | GitHub App Name | Slug | Webhook URL |
 |-------------|-----------------|------|-------------|
 | Local | Personal dev app | (your dev slug) | `https://{ngrok-id}.ngrok.io/webhooks/github` |
-| Production | your-org-app | `your-org-app` | `https://api.yourdomain.com/webhooks/github` |
+| Staging | closedloop-ai-stage | `closedloop-ai-stage` | `https://api.stage.symphony.closedloop.ai/webhooks/github` |
+| Production | closedloop-ai | `closedloop-ai` | `https://api.symphony.closedloop.ai/webhooks/github` |
 
 ### Shared Local Development
 
 For team development, you can share a single "dev" GitHub App:
-1. Create `closedloop-dev` owned by your organization
+1. Create `symphony-dev` owned by your organization
 2. Use a shared ngrok account or a stable tunnel URL
 3. Share credentials via 1Password/secrets manager
 

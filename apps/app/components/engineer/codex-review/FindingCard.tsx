@@ -6,7 +6,7 @@ import {
   EyeOff,
   MessageSquare,
 } from "lucide-react";
-import { MessageContent } from "@/components/chat/MessageContent";
+import { MessageContent } from "@/components/engineer/chat/MessageContent";
 import {
   parseFindingTitle,
   type ReviewFinding,
@@ -41,9 +41,7 @@ export function FindingCard({
   onSelectFinding,
 }: Readonly<FindingCardProps>) {
   const { title, description } = parseFindingTitle(finding.message);
-  const humanized = finding.humanizedBody?.trim() || undefined;
-  const hasDetails =
-    !isDismissed && (!!humanized || !!description || !!finding.suggestion);
+  const hasDetails = !isDismissed && (!!description || !!finding.suggestion);
   const displayPriority =
     finding.priority || severityToPriority(finding.severity);
 
@@ -70,12 +68,7 @@ export function FindingCard({
         onToggleExpand={onToggleExpand}
         title={title}
       />
-      {isFindingExpanded && humanized && (
-        <div className="mr-3 mb-3 ml-12 text-muted-foreground text-xs leading-relaxed">
-          <MessageContent content={humanized} />
-        </div>
-      )}
-      {isFindingExpanded && !humanized && (
+      {isFindingExpanded && (
         <div className="mr-3 mb-3 ml-12 space-y-2">
           <p className="font-semibold text-sm">{title}</p>
           {description && (
@@ -85,7 +78,7 @@ export function FindingCard({
           )}
         </div>
       )}
-      {isFindingExpanded && !humanized && finding.suggestion && (
+      {isFindingExpanded && finding.suggestion && (
         <div className="ml-12 border-muted border-l-2 px-3 pb-3 pl-3 text-muted-foreground text-xs italic">
           {finding.suggestion}
         </div>
@@ -132,37 +125,35 @@ function FindingCardButton({
   };
 
   return (
-    <div className="flex w-full items-start gap-2 p-3">
-      <button
-        className={cn(
-          "flex min-w-0 flex-1 items-start gap-2 text-left",
-          (hasDetails || chatMode) &&
-            "cursor-pointer rounded-lg transition-colors hover:bg-muted/50"
-        )}
-        onClick={handleClick}
-        type="button"
-      >
-        {!chatMode &&
-          hasDetails &&
-          (isFindingExpanded ? (
-            <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-          ))}
-        <SeverityIcon severity={finding.severity} />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <PriorityBadge priority={displayPriority} />
-            <p className="truncate font-medium text-sm">{title}</p>
-          </div>
-          {finding.file && (
-            <code className="font-mono text-muted-foreground text-xs">
-              {finding.file}
-              {finding.line ? `:${finding.line}` : ""}
-            </code>
-          )}
+    <button
+      className={cn(
+        "flex w-full items-start gap-2 p-3 text-left",
+        (hasDetails || chatMode) &&
+          "cursor-pointer rounded-lg transition-colors hover:bg-muted/50"
+      )}
+      onClick={handleClick}
+      type="button"
+    >
+      {!chatMode &&
+        hasDetails &&
+        (isFindingExpanded ? (
+          <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        ))}
+      <SeverityIcon severity={finding.severity} />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <PriorityBadge priority={displayPriority} />
+          <p className="truncate font-medium text-sm">{title}</p>
         </div>
-      </button>
+        {finding.file && (
+          <code className="font-mono text-muted-foreground text-xs">
+            {finding.file}
+            {finding.line ? `:${finding.line}` : ""}
+          </code>
+        )}
+      </div>
       <FindingCardActions
         chatMode={chatMode}
         idx={idx}
@@ -170,7 +161,7 @@ function FindingCardButton({
         onOpenChat={onOpenChat}
         onToggleDismiss={onToggleDismiss}
       />
-    </div>
+    </button>
   );
 }
 
@@ -192,33 +183,49 @@ function FindingCardActions({
   return (
     <div className="flex shrink-0 items-center gap-1">
       {!(chatMode || isDismissed) && (
-        <button
+        <span
           className="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
           onClick={(e) => {
             e.stopPropagation();
             onOpenChat(idx);
           }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.stopPropagation();
+              e.preventDefault();
+              onOpenChat(idx);
+            }
+          }}
+          role="button"
+          tabIndex={0}
           title="Discuss this finding with Claude"
-          type="button"
         >
           <MessageSquare className="size-3.5" />
-        </button>
+        </span>
       )}
-      <button
+      <span
         className="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         onClick={(e) => {
           e.stopPropagation();
           onToggleDismiss(idx);
         }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.stopPropagation();
+            e.preventDefault();
+            onToggleDismiss(idx);
+          }
+        }}
+        role="button"
+        tabIndex={0}
         title={isDismissed ? "Reopen finding" : "Dismiss finding"}
-        type="button"
       >
         {isDismissed ? (
           <Eye className="size-3.5" />
         ) : (
           <EyeOff className="size-3.5" />
         )}
-      </button>
+      </span>
     </div>
   );
 }

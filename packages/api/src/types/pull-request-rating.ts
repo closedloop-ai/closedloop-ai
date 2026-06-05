@@ -13,8 +13,8 @@ export type SubmitPullRequestRatingRequest = {
 /**
  * Individual pull request rating representation.
  * Used in responses for both GET and PUT endpoints.
- * Note: Unlike DocumentRating, pull request ratings do not include documentVersion
- * since they are tied to GitHub pull request IDs, not document versions.
+ * Note: Unlike ArtifactRating, pull request ratings do not include artifactVersion
+ * since they are tied to GitHub pull request IDs, not Symphony artifact versions.
  */
 export type PullRequestRatingResponse = {
   id: string;

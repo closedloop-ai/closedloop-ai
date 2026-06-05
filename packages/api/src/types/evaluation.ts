@@ -18,13 +18,12 @@ export const EvalStatus = {
 export type EvalStatus = (typeof EvalStatus)[keyof typeof EvalStatus];
 
 /**
- * Evaluation report type discriminator persisted with DocumentEvaluation rows.
+ * Evaluation report type discriminator persisted with ArtifactEvaluation rows.
  */
 export const EvaluationReportType = {
   Plan: "PLAN",
   Code: "CODE",
   Prd: "PRD",
-  Feature: "FEATURE",
 } as const;
 
 export type EvaluationReportType =
@@ -35,7 +34,6 @@ export const EVALUATION_REPORT_TYPE_OPTIONS = [
   EvaluationReportType.Plan,
   EvaluationReportType.Code,
   EvaluationReportType.Prd,
-  EvaluationReportType.Feature,
 ] as const;
 
 /** Statistics for a single metric produced by a judge run. */
@@ -91,7 +89,7 @@ export type JudgesFeedbackResponse =
  * Each key corresponds to one EvaluationReportType value; null means no
  * evaluation of that type exists for the entity.
  */
-export type DocumentJudgeScores = Record<
+export type ArtifactJudgeScores = Record<
   EvaluationReportType,
   JudgeFeedbackItem[] | null
 >;
@@ -99,8 +97,8 @@ export type DocumentJudgeScores = Record<
 /**
  * Batch response mapping entity IDs to their latest judge feedback items,
  * separated by report type.
- * The map key is entityId (equals documentId for all existing DOCUMENT-type
+ * The map key is entityId (equals artifactId for all existing ARTIFACT-type
  * rows, so callers are unaffected by this naming).
- * Used by the documents table to show inline judge scores.
+ * Used by the artifacts table to show inline judge scores.
  */
-export type BatchJudgeScoresResponse = Record<string, DocumentJudgeScores>;
+export type BatchJudgeScoresResponse = Record<string, ArtifactJudgeScores>;

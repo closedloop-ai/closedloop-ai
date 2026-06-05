@@ -1,10 +1,10 @@
 import { success } from "@repo/api/src/types/common";
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
-import { Status } from "@repo/api/src/types/result";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
-import { pullRequestRatingsService } from "../../ratings-service";
+import { PullRequestNotFoundError } from "../../errors";
+import { pullRequestRatingsService } from "../../service";
 import { submitPullRequestRatingSchema } from "./validators";
 
 export const GET = withAnyAuth<
@@ -13,22 +13,16 @@ export const GET = withAnyAuth<
 >(async ({ user }, _request, params) => {
   try {
     const { id } = await params;
-    const result = await pullRequestRatingsService.getRating(
+    const summary = await pullRequestRatingsService.getRating(
       id,
       user.id,
       user.organizationId
     );
-
-    if (result.ok) {
-      return NextResponse.json(success(result.value));
-    }
-
-    if (result.error === Status.NotFound) {
+    return NextResponse.json(success(summary));
+  } catch (error) {
+    if (error instanceof PullRequestNotFoundError) {
       return notFoundResponse("Pull Request");
     }
-
-    return errorResponse("Failed to fetch rating", result.error);
-  } catch (error) {
     return errorResponse("Failed to fetch rating", error);
   }
 });
@@ -51,24 +45,19 @@ export const PUT = withAnyAuth<
     const { score, comment } = body;
 
     try {
-      const result = await pullRequestRatingsService.upsertRating(
+      // Service layer verifies PR belongs to user.organizationId via denormalized organizationId field (defense-in-depth)
+      const summary = await pullRequestRatingsService.upsertRating(
         id,
         user.id,
         user.organizationId,
         score,
         comment
       );
-
-      if (result.ok) {
-        return NextResponse.json(success(result.value));
-      }
-
-      if (result.error === Status.NotFound) {
+      return NextResponse.json(success(summary));
+    } catch (error) {
+      if (error instanceof PullRequestNotFoundError) {
         return notFoundResponse("Pull Request");
       }
-
-      return errorResponse("Failed to submit rating", result.error);
-    } catch (error) {
       return errorResponse("Failed to submit rating", error);
     }
   },

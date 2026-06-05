@@ -42,11 +42,6 @@ vi.mock("@repo/database", () => ({
     ),
     { tx: vi.fn() }
   ),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
 }));
 
@@ -59,14 +54,11 @@ vi.mock("@/app/loops/service", () => ({
     cancel: vi.fn(),
     create: vi.fn(),
   },
-}));
-
-vi.mock("@/app/loops/loop-errors", () => ({
   isInvalidStatusTransitionError: vi.fn().mockReturnValue(false),
   InvalidStatusTransitionError: class extends Error {},
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
+vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn().mockResolvedValue(null),
 }));
 
@@ -80,7 +72,7 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn().mockResolvedValue("sk-test-key") },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
+vi.mock("@/lib/auth/loop-runner-jwt", () => ({
   issueLoopRunnerToken: vi.fn().mockResolvedValue("mock-token"),
 }));
 
@@ -107,7 +99,6 @@ const mockLaunchLoopOnDesktop = vi.fn().mockResolvedValue("cmd-abc");
 vi.mock("@/lib/loops/loop-desktop", () => ({
   launchLoopOnDesktop: (...args: unknown[]) => mockLaunchLoopOnDesktop(...args),
   stopDesktopLoop: vi.fn(),
-  isDispatchError: () => false,
 }));
 
 const mockRunEcsTask = vi.fn().mockResolvedValue("arn:aws:ecs:task/abc");

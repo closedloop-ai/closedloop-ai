@@ -344,7 +344,7 @@ Ensure the GitHub App is configured to send the new event:
 
 ### 6. Test Locally
 
-Use ngrok to test webhooks locally (see `~/Workspace/symphony-alpha-AI-248/CLAUDE.md` for setup):
+Use ngrok to test webhooks locally (see `~/Workspace/closedloop-ai-AI-248/CLAUDE.md` for setup):
 
 ```bash
 # Start ngrok

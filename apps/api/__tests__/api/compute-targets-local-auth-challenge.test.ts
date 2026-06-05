@@ -85,7 +85,7 @@ describe("POST /compute-targets/local-auth/challenge", () => {
       method: "POST",
       url: "http://localhost:3002/compute-targets/local-auth/challenge",
       body: { origin: "https://app.closedloop.ai" },
-      headers: { origin: "https://app-stage.preview.closedloop-stage.ai" },
+      headers: { origin: "https://app-stage.preview.localhost" },
     });
 
     const response = await POST(request, {

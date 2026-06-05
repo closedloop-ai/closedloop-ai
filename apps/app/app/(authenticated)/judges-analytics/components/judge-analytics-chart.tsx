@@ -16,7 +16,7 @@ import { TooltipRow, TooltipShell } from "./chart-tooltip";
 
 type JudgeAnalyticsChartProps = {
   data: JudgeAggregateStats[];
-  documentType: string;
+  artifactType: string;
 };
 
 type BoxPlotDataPoint = {
@@ -301,7 +301,7 @@ function computeBoxBounds(
 
 export function JudgeAnalyticsChart({
   data,
-  documentType,
+  artifactType,
 }: JudgeAnalyticsChartProps) {
   // Assumes data is pre-sorted descending by mean from API
   const boxPlotData: BoxPlotDataPoint[] = data.map((judge) => {
@@ -333,7 +333,7 @@ export function JudgeAnalyticsChart({
       median: judge.mean,
       upperBox: evalBounds.upperBox,
       upperWhisker: judge.max,
-      count: judge.documentsEvaluated,
+      count: judge.artifactsEvaluated,
       humanLowerWhisker: judge.humanMin,
       humanLowerBox: humanBounds?.lowerBox ?? null,
       humanMedian: judge.humanMean,
@@ -382,7 +382,7 @@ export function JudgeAnalyticsChart({
     <ChartContainer className="h-64 w-full" config={chartConfig}>
       <BarChart
         accessibilityLayer
-        aria-label={`Box plot showing judge score distributions for ${documentType}`}
+        aria-label={`Box plot showing judge score distributions for ${artifactType}`}
         data={boxPlotData}
         margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
       >

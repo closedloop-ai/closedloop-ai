@@ -1,5 +1,5 @@
+import type { ArtifactTitleMap } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
-import type { DocumentTitleMap } from "@repo/api/src/types/document";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { env } from "@/env";
@@ -12,7 +12,7 @@ import { env } from "@/env";
 export async function fetchBatchMeta(
   slugs: string[],
   getToken: () => Promise<string | null>
-): Promise<DocumentTitleMap> {
+): Promise<ArtifactTitleMap> {
   if (slugs.length === 0) {
     return {};
   }
@@ -29,7 +29,7 @@ export async function fetchBatchMeta(
       return {};
     }
 
-    const url = `${env.NEXT_PUBLIC_API_URL}/documents/batch-meta?slugs=${slugs.join(",")}`;
+    const url = `${env.NEXT_PUBLIC_API_URL}/artifacts/batch-meta?slugs=${slugs.join(",")}`;
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -43,7 +43,7 @@ export async function fetchBatchMeta(
       return {};
     }
 
-    const result = (await response.json()) as ApiResult<DocumentTitleMap>;
+    const result = (await response.json()) as ApiResult<ArtifactTitleMap>;
     if (!result.success) {
       log.error("Unable to fetch batch meta", { error: result.error });
       return {};

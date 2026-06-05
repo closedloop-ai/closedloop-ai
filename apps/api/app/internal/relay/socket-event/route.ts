@@ -1,7 +1,6 @@
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { validateInternalSecret } from "@/lib/internal-auth";
-import { scheduleLogFlush } from "@/lib/route-utils";
 import { isRecord } from "@/lib/type-guards";
 import { dispatchSocketEvent, extractCorrelationContext } from "./service";
 
@@ -56,12 +55,7 @@ export async function POST(request: Request): Promise<Response> {
     }
     return NextResponse.json(result.response);
   } catch (error) {
-    log.error("Internal relay socket-event handler failed", {
-      event,
-      computeTargetId: targetId ?? correlation.computeTargetId ?? null,
-      error,
-    });
-    scheduleLogFlush();
+    log.error("Internal relay socket-event handler failed", { event, error });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

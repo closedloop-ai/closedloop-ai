@@ -1,6 +1,8 @@
-import { verifyLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { z } from "zod";
-import { extractBearerToken } from "@/lib/auth/loop-runner-jwt";
+import {
+  extractBearerToken,
+  verifyLoopRunnerToken,
+} from "@/lib/auth/loop-runner-jwt";
 import {
   generateUploadUrl,
   validateKeyBelongsToLoop,

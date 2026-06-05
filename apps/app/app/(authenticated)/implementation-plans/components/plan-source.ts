@@ -1,8 +1,13 @@
+import type { EntityType } from "@repo/api/src/types/entity-link";
+
 export type PlanSource = {
   id: string;
   title: string;
+  sourceType: EntityType;
   projectId?: string | null;
   workstreamId?: string | null;
+  /** Only present for artifact sources */
+  latestVersion?: number;
   targetRepo?: string | null;
   targetBranch?: string | null;
   approver?: {

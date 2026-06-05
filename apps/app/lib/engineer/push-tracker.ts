@@ -3,7 +3,7 @@
  * Uses localStorage to persist state across page refreshes.
  */
 
-const STORAGE_KEY = "closedloop-pushed-tickets";
+const STORAGE_KEY = "symphony-pushed-tickets";
 
 /**
  * Get all tickets that have been pushed

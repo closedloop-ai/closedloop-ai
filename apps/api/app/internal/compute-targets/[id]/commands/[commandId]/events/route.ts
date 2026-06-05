@@ -23,7 +23,7 @@ export async function GET(
   const url = new URL(request.url);
   const afterSequenceParam = url.searchParams.get("afterSequence");
   const afterSequenceRaw =
-    afterSequenceParam === null ? Number.NaN : Number(afterSequenceParam);
+    afterSequenceParam !== null ? Number(afterSequenceParam) : Number.NaN;
   const afterSequence =
     Number.isInteger(afterSequenceRaw) && afterSequenceRaw >= 0
       ? afterSequenceRaw

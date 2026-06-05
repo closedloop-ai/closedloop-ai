@@ -76,7 +76,7 @@ export function useImportGoogleDocs(
         input
       ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["artifacts"] });
     },
     ...options,
   });

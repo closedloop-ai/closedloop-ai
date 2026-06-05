@@ -67,7 +67,7 @@ export type UpdateUserProfileFromClerkInput = {
   phoneNumber?: string | null;
 };
 
-import type { DocumentType } from "./document";
+import type { ArtifactType } from "./artifact";
 
 /** Contribution count for a single day in the heatmap. */
 export type ContributionDay = {
@@ -75,18 +75,18 @@ export type ContributionDay = {
   count: number;
 };
 
-/** Document counts grouped by type. */
-export type DocumentsByType = {
-  type: DocumentType;
+/** Artifact counts grouped by type. */
+export type ArtifactsByType = {
+  type: ArtifactType;
   count: number;
 };
 
 /** User profile statistics returned by GET /users/:id/stats. */
 export type UserProfileStats = {
-  /** Total documents created by this user. */
-  totalDocuments: number;
-  /** Breakdown of documents by type. */
-  documentsByType: DocumentsByType[];
+  /** Total artifacts created by this user. */
+  totalArtifacts: number;
+  /** Breakdown of artifacts by type. */
+  artifactsByType: ArtifactsByType[];
   /** Total comments authored. */
   totalComments: number;
   /** Total PRs landed (merged). */

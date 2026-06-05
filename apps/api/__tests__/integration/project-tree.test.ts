@@ -1,9 +1,11 @@
-import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { projectTreeService } from "@/app/artifacts/project-tree-service";
-import { documentService } from "@/app/documents/document-service";
+import { artifactsService } from "@/app/artifacts/service";
+import { featuresService } from "@/app/features/service";
+import { projectTreeService } from "@/app/projects/[id]/tree/service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -14,44 +16,43 @@ import {
 const env = keys();
 const hasDatabase = !!env.DATABASE_URL;
 
-/** Helper to create an artifact link between two artifacts. */
-function createArtifactLink(
+/** Helper to create an entity link between two entities. */
+function createEntityLink(
   organizationId: string,
   sourceId: string,
+  sourceType: EntityType,
   targetId: string,
+  targetType: EntityType,
   linkType: LinkType = LinkType.Produces
 ) {
   return withDb((db) =>
-    db.artifactLink.create({
+    db.entityLink.create({
       data: {
         organizationId,
         sourceId,
+        sourceType,
         targetId,
+        targetType,
         linkType,
       },
     })
   );
 }
 
-/**
- * Helper to create a DEPLOYMENT-typed artifact. Used to stand in for the
- * legacy ExternalLink seeding — both surface on the wire as
- * `EntityType.ExternalLink` via the tree service.
- */
-function createExternalLinkArtifact(
+/** Helper to create an external link in a project. */
+function createExternalLink(
   organizationId: string,
   projectId: string,
   title: string
 ) {
   return withDb((db) =>
-    db.artifact.create({
+    db.externalLink.create({
       data: {
         organizationId,
         projectId,
-        type: ArtifactType.Deployment,
-        name: title,
-        status: "ACTIVE",
-        externalUrl: `https://example.com/deployments/${Date.now()}`,
+        type: ExternalLinkType.PullRequest,
+        title,
+        externalUrl: `https://github.com/test/repo/pull/${Date.now()}`,
       },
     })
   );
@@ -67,7 +68,6 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toEqual([]);
-      expect(result.externalParents).toEqual([]);
     });
   });
 
@@ -77,32 +77,30 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      await documentService.create(orgId, user.id, {
+      await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Zebra PRD",
         content: "content",
       });
-      await documentService.create(orgId, user.id, {
+      await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         title: "Alpha Plan",
         content: "content",
       });
-      await documentService.create(orgId, user.id, {
+      await featuresService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Feature,
         title: "Middle Feature",
-        content: "",
       });
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toHaveLength(3);
       // Lexicographic sort
-      expect(result.nodes[0]!.root.name).toBe("Alpha Plan");
-      expect(result.nodes[1]!.root.name).toBe("Middle Feature");
-      expect(result.nodes[2]!.root.name).toBe("Zebra PRD");
+      expect(result.nodes[0]!.root.title).toBe("Alpha Plan");
+      expect(result.nodes[1]!.root.title).toBe("Middle Feature");
+      expect(result.nodes[2]!.root.title).toBe("Zebra PRD");
       // All orphans have empty children
       for (const node of result.nodes) {
         expect(node.children).toEqual([]);
@@ -116,28 +114,40 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const a = await documentService.create(orgId, user.id, {
+      const a = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "A - Root PRD",
         content: "content",
       });
-      const b = await documentService.create(orgId, user.id, {
+      const b = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         title: "B - Plan",
         content: "content",
       });
-      const c = await documentService.create(orgId, user.id, {
+      const c = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "C - Sub PRD",
         content: "content",
       });
 
       // A → B → C
-      await createArtifactLink(orgId, a!.id, b!.id);
-      await createArtifactLink(orgId, b!.id, c!.id);
+      await createEntityLink(
+        orgId,
+        a!.id,
+        EntityType.Artifact,
+        b!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        b!.id,
+        EntityType.Artifact,
+        c!.id,
+        EntityType.Artifact
+      );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
@@ -158,41 +168,41 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const feature = await documentService.create(orgId, user.id, {
+      const feature = await featuresService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Feature,
         title: "Root Feature",
-        content: "",
       });
-      if (!feature) {
-        throw new Error("Failed to create feature document in test");
-      }
-      const artifact = await documentService.create(orgId, user.id, {
+      const artifact = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Child Artifact",
         content: "content",
       });
-      if (!artifact) {
-        throw new Error("Failed to create artifact document in test");
-      }
-      const extLink = await createExternalLinkArtifact(
-        orgId,
-        projectId,
-        "Child PR"
-      );
+      const extLink = await createExternalLink(orgId, projectId, "Child PR");
 
-      await createArtifactLink(orgId, feature.id, artifact.id);
-      await createArtifactLink(orgId, artifact.id, extLink.id);
+      // Feature → Artifact → ExternalLink
+      await createEntityLink(
+        orgId,
+        feature.id,
+        EntityType.Feature,
+        artifact!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        artifact!.id,
+        EntityType.Artifact,
+        extLink.id,
+        EntityType.ExternalLink
+      );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toHaveLength(1);
       const node = result.nodes[0]!;
-      // Tree nodes expose Artifact rows directly — narrow on `type`.
-      expect(node.root.type).toBe(ArtifactType.Document);
-      expect(node.children[0]!.type).toBe(ArtifactType.Document);
-      expect(node.children[1]!.type).toBe(ArtifactType.Deployment);
+      expect(node.root.entityType).toBe(EntityType.Feature);
+      expect(node.children[0]!.entityType).toBe(EntityType.Artifact);
+      expect(node.children[1]!.entityType).toBe(EntityType.ExternalLink);
     });
   });
 
@@ -203,40 +213,52 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       // Chain 1: Z-Root → Z-Child
-      const z1 = await documentService.create(orgId, user.id, {
+      const z1 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Z-Root",
         content: "content",
       });
-      const z2 = await documentService.create(orgId, user.id, {
+      const z2 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Z-Child",
         content: "content",
       });
-      await createArtifactLink(orgId, z1!.id, z2!.id);
+      await createEntityLink(
+        orgId,
+        z1!.id,
+        EntityType.Artifact,
+        z2!.id,
+        EntityType.Artifact
+      );
 
       // Chain 2: A-Root → A-Child
-      const a1 = await documentService.create(orgId, user.id, {
+      const a1 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "A-Root",
         content: "content",
       });
-      const a2 = await documentService.create(orgId, user.id, {
+      const a2 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "A-Child",
         content: "content",
       });
-      await createArtifactLink(orgId, a1!.id, a2!.id);
+      await createEntityLink(
+        orgId,
+        a1!.id,
+        EntityType.Artifact,
+        a2!.id,
+        EntityType.Artifact
+      );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toHaveLength(2);
-      expect(result.nodes[0]!.root.name).toBe("A-Root");
-      expect(result.nodes[1]!.root.name).toBe("Z-Root");
+      expect(result.nodes[0]!.root.title).toBe("A-Root");
+      expect(result.nodes[1]!.root.title).toBe("Z-Root");
     });
   });
 
@@ -246,35 +268,53 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const root = await documentService.create(orgId, user.id, {
+      const root = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Root",
         content: "content",
       });
-      const child1 = await documentService.create(orgId, user.id, {
+      const child1 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Child1",
         content: "content",
       });
-      const child2 = await documentService.create(orgId, user.id, {
+      const child2 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Child2",
         content: "content",
       });
-      const grandchild = await documentService.create(orgId, user.id, {
+      const grandchild = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Grandchild",
         content: "content",
       });
 
       // root → child1, root → child2, child1 → grandchild
-      await createArtifactLink(orgId, root!.id, child1!.id);
-      await createArtifactLink(orgId, root!.id, child2!.id);
-      await createArtifactLink(orgId, child1!.id, grandchild!.id);
+      await createEntityLink(
+        orgId,
+        root!.id,
+        EntityType.Artifact,
+        child1!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        root!.id,
+        EntityType.Artifact,
+        child2!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        child1!.id,
+        EntityType.Artifact,
+        grandchild!.id,
+        EntityType.Artifact
+      );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
@@ -299,29 +339,47 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      const a = await documentService.create(orgId, user.id, {
+      const a = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "A",
         content: "content",
       });
-      const b = await documentService.create(orgId, user.id, {
+      const b = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "B",
         content: "content",
       });
-      const c = await documentService.create(orgId, user.id, {
+      const c = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "C",
         content: "content",
       });
 
       // A → B → C → A (cycle)
-      await createArtifactLink(orgId, a!.id, b!.id);
-      await createArtifactLink(orgId, b!.id, c!.id);
-      await createArtifactLink(orgId, c!.id, a!.id);
+      await createEntityLink(
+        orgId,
+        a!.id,
+        EntityType.Artifact,
+        b!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        b!.id,
+        EntityType.Artifact,
+        c!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        c!.id,
+        EntityType.Artifact,
+        a!.id,
+        EntityType.Artifact
+      );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
@@ -347,21 +405,27 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
         name: "Project 2",
       });
 
-      const inProject = await documentService.create(orgId, user.id, {
+      const inProject = await artifactsService.create(orgId, user.id, {
         projectId: project1,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "In Project 1",
         content: "content",
       });
-      const otherProject = await documentService.create(orgId, user.id, {
+      const otherProject = await artifactsService.create(orgId, user.id, {
         projectId: project2,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "In Project 2",
         content: "content",
       });
 
-      // Cross-project link: in-project source → out-of-project target.
-      await createArtifactLink(orgId, inProject!.id, otherProject!.id);
+      // Cross-project link
+      await createEntityLink(
+        orgId,
+        inProject!.id,
+        EntityType.Artifact,
+        otherProject!.id,
+        EntityType.Artifact
+      );
 
       const result = await projectTreeService.getProjectTree(project1, orgId);
 
@@ -369,109 +433,6 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       expect(result.nodes).toHaveLength(1);
       expect(result.nodes[0]!.root.id).toBe(inProject!.id);
       expect(result.nodes[0]!.children).toEqual([]);
-      // Outgoing cross-project link does not produce an external parent entry.
-      expect(result.externalParents).toEqual([]);
-    });
-  });
-
-  it("returns out-of-project parents in externalParents", async () => {
-    await autoRollbackTransaction(async () => {
-      const orgId = await createTestOrganization();
-      const user = await createTestUser(orgId);
-      const projectA = await createTestProject(orgId, user.id, {
-        name: "Project A",
-      });
-      const projectB = await createTestProject(orgId, user.id, {
-        name: "Project B",
-      });
-
-      const externalParent = await documentService.create(orgId, user.id, {
-        projectId: projectB,
-        type: DocumentType.Prd,
-        title: "External Parent PRD",
-        content: "content",
-      });
-      const inProjectChild = await documentService.create(orgId, user.id, {
-        projectId: projectA,
-        type: DocumentType.ImplementationPlan,
-        title: "In-project Child Plan",
-        content: "content",
-      });
-
-      // External parent (projectB) → in-project child (projectA).
-      await createArtifactLink(
-        orgId,
-        externalParent!.id,
-        inProjectChild!.id,
-        LinkType.Produces
-      );
-
-      const result = await projectTreeService.getProjectTree(projectA, orgId);
-
-      // The child appears in the in-project tree as an orphan root (no
-      // in-project parent links it).
-      expect(result.nodes).toHaveLength(1);
-      expect(result.nodes[0]!.root.id).toBe(inProjectChild!.id);
-
-      // The external parent surfaces in externalParents, not in nodes.
-      const nodeIds = result.nodes.flatMap((n) => [
-        n.root.id,
-        ...n.children.map((c) => c.id),
-      ]);
-      expect(nodeIds).not.toContain(externalParent!.id);
-
-      expect(result.externalParents).toHaveLength(1);
-      const entry = result.externalParents[0]!;
-      expect(entry.childId).toBe(inProjectChild!.id);
-      expect(entry.parent.id).toBe(externalParent!.id);
-      expect(entry.parent.name).toBe("External Parent PRD");
-      expect(entry.linkType).toBe(LinkType.Produces);
-    });
-  });
-
-  it("collapses duplicate external parents per child link", async () => {
-    await autoRollbackTransaction(async () => {
-      const orgId = await createTestOrganization();
-      const user = await createTestUser(orgId);
-      const projectA = await createTestProject(orgId, user.id, {
-        name: "Project A",
-      });
-      const projectB = await createTestProject(orgId, user.id, {
-        name: "Project B",
-      });
-
-      const externalParent = await documentService.create(orgId, user.id, {
-        projectId: projectB,
-        type: DocumentType.Prd,
-        title: "Shared External Parent",
-        content: "content",
-      });
-      const child1 = await documentService.create(orgId, user.id, {
-        projectId: projectA,
-        type: DocumentType.ImplementationPlan,
-        title: "Child 1",
-        content: "content",
-      });
-      const child2 = await documentService.create(orgId, user.id, {
-        projectId: projectA,
-        type: DocumentType.ImplementationPlan,
-        title: "Child 2",
-        content: "content",
-      });
-
-      await createArtifactLink(orgId, externalParent!.id, child1!.id);
-      await createArtifactLink(orgId, externalParent!.id, child2!.id);
-
-      const result = await projectTreeService.getProjectTree(projectA, orgId);
-
-      // One entry per (child, parent) link — parent fetched once but appears
-      // alongside both children.
-      expect(result.externalParents).toHaveLength(2);
-      const childIds = result.externalParents.map((e) => e.childId).sort();
-      expect(childIds).toEqual([child1!.id, child2!.id].sort());
-      for (const entry of result.externalParents) {
-        expect(entry.parent.id).toBe(externalParent!.id);
-      }
     });
   });
 
@@ -482,28 +443,40 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const projectId = await createTestProject(orgId, user.id);
 
       // Create source1 first (earliest), then source2
-      const source1 = await documentService.create(orgId, user.id, {
+      const source1 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Source 1 (earliest)",
         content: "content",
       });
-      const source2 = await documentService.create(orgId, user.id, {
+      const source2 = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Source 2 (later)",
         content: "content",
       });
-      const target = await documentService.create(orgId, user.id, {
+      const target = await artifactsService.create(orgId, user.id, {
         projectId,
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         title: "Shared Target",
         content: "content",
       });
 
       // Both source1 and source2 point to target (both have 0 incoming)
-      await createArtifactLink(orgId, source1!.id, target!.id);
-      await createArtifactLink(orgId, source2!.id, target!.id);
+      await createEntityLink(
+        orgId,
+        source1!.id,
+        EntityType.Artifact,
+        target!.id,
+        EntityType.Artifact
+      );
+      await createEntityLink(
+        orgId,
+        source2!.id,
+        EntityType.Artifact,
+        target!.id,
+        EntityType.Artifact
+      );
 
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 

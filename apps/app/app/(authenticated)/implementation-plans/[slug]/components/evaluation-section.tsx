@@ -1,4 +1,4 @@
-import { EvaluationSection as SharedEvaluationSection } from "@/components/document-editor/evaluation-section";
+import { EvaluationSection as SharedEvaluationSection } from "@/components/artifact-editor/evaluation-section";
 
 type SharedProps = Parameters<typeof SharedEvaluationSection>[0];
 

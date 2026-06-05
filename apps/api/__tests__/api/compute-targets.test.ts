@@ -1,9 +1,4 @@
-import { Result } from "@repo/api/src/types/result";
 import { vi } from "vitest";
-import {
-  GET as healthCheckGET,
-  PUT as healthCheckPUT,
-} from "@/app/compute-targets/[id]/health-check/route";
 import { POST as heartbeatPOST } from "@/app/compute-targets/[id]/heartbeat/route";
 import { DELETE, PUT } from "@/app/compute-targets/[id]/route";
 import { POST as registerPOST } from "@/app/compute-targets/register/route";
@@ -35,8 +30,6 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
       heartbeat: vi.fn(),
       updateOwned: vi.fn(),
       deleteOwned: vi.fn(),
-      getLatestHealthCheckForTarget: vi.fn(),
-      upsertHealthCheckSnapshot: vi.fn(),
       markStaleTargetsOffline: vi.fn(),
       setSharing: vi.fn(),
     },
@@ -63,7 +56,6 @@ beforeEach(() => {
   mockAuthContext = createTestAuthContext({
     user: {
       id: "user-1",
-      clerkId: "clerk-user-1",
       organizationId: "org-1",
     } as any,
   });
@@ -92,8 +84,7 @@ describe("GET /compute-targets", () => {
     });
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
-      "user-1",
-      "clerk-user-1"
+      "user-1"
     );
   });
 });
@@ -101,7 +92,7 @@ describe("GET /compute-targets", () => {
 describe("POST /compute-targets/register", () => {
   it("registers a compute target", async () => {
     vi.mocked(computeTargetsService.register).mockResolvedValue(
-      Result.ok(mockTarget)
+      mockTarget as any
     );
 
     const response = await registerPOST(
@@ -177,12 +168,10 @@ describe("POST /compute-targets/:id/heartbeat", () => {
 
 describe("PUT /compute-targets/:id", () => {
   it("updates owned compute target", async () => {
-    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
-      Result.ok({
-        ...mockTarget,
-        machineName: "Renamed-Machine",
-      })
-    );
+    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue({
+      ...mockTarget,
+      machineName: "Renamed-Machine",
+    } as any);
 
     const response = await PUT(
       createMockRequest({
@@ -216,121 +205,5 @@ describe("DELETE /compute-targets/:id", () => {
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data).toEqual({ deleted: true });
-  });
-});
-
-describe("GET /compute-targets/:id/health-check", () => {
-  it("returns the latest persisted health-check snapshot", async () => {
-    const snapshot = {
-      id: "snapshot-1",
-      organizationId: "org-1",
-      computeTargetId: "target-1",
-      checkedAt: new Date("2026-05-08T15:00:00.000Z"),
-      expectedMcpUrl: "https://mcp.example.com",
-      latestVersion: "1.2.3",
-      result: {
-        checks: [{ id: "git", label: "Git", required: true, passed: true }],
-        allRequiredPassed: true,
-      },
-      allRequiredPassed: true,
-      requiredFailureIds: [],
-      schemaVersion: 1,
-      createdAt: new Date("2026-05-08T15:00:00.000Z"),
-      updatedAt: new Date("2026-05-08T15:00:00.000Z"),
-    };
-    vi.mocked(
-      computeTargetsService.getLatestHealthCheckForTarget
-    ).mockResolvedValue(snapshot);
-
-    const response = await healthCheckGET(
-      createMockRequest({
-        url: "http://localhost:3002/compute-targets/target-1/health-check",
-      }),
-      createMockRouteContext({ id: "target-1" })
-    );
-
-    expect(response.status).toBe(200);
-    const json = await response.json();
-    expect(json.success).toBe(true);
-    expect(json.data.id).toBe("snapshot-1");
-    expect(
-      computeTargetsService.getLatestHealthCheckForTarget
-    ).toHaveBeenCalledWith("org-1", "user-1", "target-1");
-  });
-});
-
-describe("PUT /compute-targets/:id/health-check", () => {
-  it("persists a health-check snapshot for an accessible target", async () => {
-    const snapshot = {
-      id: "snapshot-1",
-      organizationId: "org-1",
-      computeTargetId: "target-1",
-      checkedAt: new Date("2026-05-08T15:00:00.000Z"),
-      expectedMcpUrl: "https://mcp.example.com",
-      latestVersion: "1.2.3",
-      result: {
-        checks: [{ id: "git", label: "Git", required: true, passed: true }],
-        allRequiredPassed: true,
-      },
-      allRequiredPassed: true,
-      requiredFailureIds: [],
-      schemaVersion: 1,
-      createdAt: new Date("2026-05-08T15:00:00.000Z"),
-      updatedAt: new Date("2026-05-08T15:00:00.000Z"),
-    };
-    vi.mocked(
-      computeTargetsService.upsertHealthCheckSnapshot
-    ).mockResolvedValue(snapshot);
-
-    const response = await healthCheckPUT(
-      createMockRequest({
-        method: "PUT",
-        url: "http://localhost:3002/compute-targets/target-1/health-check",
-        body: {
-          expectedMcpUrl: "https://mcp.example.com",
-          latestVersion: "1.2.3",
-          result: {
-            checks: [{ id: "git", label: "Git", required: true, passed: true }],
-            allRequiredPassed: true,
-          },
-        },
-      }),
-      createMockRouteContext({ id: "target-1" })
-    );
-
-    expect(response.status).toBe(200);
-    expect(
-      computeTargetsService.upsertHealthCheckSnapshot
-    ).toHaveBeenCalledWith(
-      "org-1",
-      "user-1",
-      "target-1",
-      expect.objectContaining({
-        expectedMcpUrl: "https://mcp.example.com",
-        latestVersion: "1.2.3",
-      })
-    );
-  });
-
-  it("returns not found when the target is inaccessible", async () => {
-    vi.mocked(
-      computeTargetsService.upsertHealthCheckSnapshot
-    ).mockResolvedValue(null);
-
-    const response = await healthCheckPUT(
-      createMockRequest({
-        method: "PUT",
-        url: "http://localhost:3002/compute-targets/target-2/health-check",
-        body: {
-          result: {
-            checks: [{ id: "git", label: "Git", required: true, passed: true }],
-            allRequiredPassed: true,
-          },
-        },
-      }),
-      createMockRouteContext({ id: "target-2" })
-    );
-
-    expect(response.status).toBe(404);
   });
 });

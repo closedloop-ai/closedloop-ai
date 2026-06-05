@@ -1,6 +1,10 @@
 "use client";
 
-import type { ApiKey, CreateApiKeyResponse } from "@repo/api/src/types/api-key";
+import type {
+  ApiKey,
+  ApiKeyScope,
+  CreateApiKeyResponse,
+} from "@repo/api/src/types/api-key";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -20,6 +24,10 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import {
+  RadioGroup,
+  RadioGroupItem,
+} from "@repo/design-system/components/ui/radio-group";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   Table,
@@ -32,7 +40,6 @@ import {
 import { Loader2Icon, PlusIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
-import { env } from "@/env";
 import {
   useCreatePlatformApiKey,
   usePlatformApiKeys,
@@ -77,12 +84,16 @@ type CreateApiKeyDialogProps = {
   onCreated: (response: CreateApiKeyResponse) => void;
 };
 
+const READ_ONLY_SCOPES: ApiKeyScope[] = ["read"];
+const READ_WRITE_SCOPES: ApiKeyScope[] = ["read", "write", "delete"];
+
 function CreateApiKeyDialog({
   open,
   onOpenChange,
   onCreated,
 }: Readonly<CreateApiKeyDialogProps>) {
   const [name, setName] = useState("");
+  const [scopePreset, setScopePreset] = useState<"read" | "read-write">("read");
   const createApiKey = useCreatePlatformApiKey();
 
   const handleSubmit = async (e: FormEvent) => {
@@ -91,10 +102,14 @@ function CreateApiKeyDialog({
       return;
     }
     try {
+      const scopes =
+        scopePreset === "read-write" ? READ_WRITE_SCOPES : READ_ONLY_SCOPES;
       const response = await createApiKey.mutateAsync({
         name: name.trim(),
+        scopes,
       });
       setName("");
+      setScopePreset("read");
       onOpenChange(false);
       onCreated(response);
     } catch {
@@ -109,7 +124,6 @@ function CreateApiKeyDialog({
           <DialogTitle>Create API Key</DialogTitle>
           <DialogDescription>
             Give your API key a descriptive name so you can identify it later.
-            New keys have full read, write, and delete access.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
@@ -123,6 +137,40 @@ function CreateApiKeyDialog({
                 placeholder="e.g. CI/CD pipeline"
                 value={name}
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Permissions</Label>
+              <RadioGroup
+                onValueChange={(v) =>
+                  setScopePreset(v as "read" | "read-write")
+                }
+                value={scopePreset}
+              >
+                <label
+                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary"
+                  htmlFor="scope-read"
+                >
+                  <RadioGroupItem id="scope-read" value="read" />
+                  <div>
+                    <p className="font-medium text-sm">Read only</p>
+                    <p className="text-muted-foreground text-xs">
+                      View projects, artifacts, and workstreams
+                    </p>
+                  </div>
+                </label>
+                <label
+                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-data-[state=checked]:border-primary"
+                  htmlFor="scope-read-write"
+                >
+                  <RadioGroupItem id="scope-read-write" value="read-write" />
+                  <div>
+                    <p className="font-medium text-sm">Read & Write</p>
+                    <p className="text-muted-foreground text-xs">
+                      Full access: create, update, and delete resources
+                    </p>
+                  </div>
+                </label>
+              </RadioGroup>
             </div>
           </div>
           <DialogFooter className="mt-4">
@@ -241,14 +289,15 @@ const MCP_TOOL_GROUPS = [
     tools: ["list-projects", "get-project", "create-project", "update-project"],
   },
   {
-    label: "Documents",
+    label: "Artifacts",
     tools: [
-      "list-documents",
-      "get-document",
-      "create-document",
-      "update-document",
-      "create-document-version",
-      "list-document-versions",
+      "list-artifacts",
+      "get-artifact",
+      "create-artifact",
+      "update-artifact",
+      "create-artifact-version",
+      "list-artifact-versions",
+      "get-related-artifacts",
     ],
   },
   {
@@ -261,8 +310,17 @@ const MCP_TOOL_GROUPS = [
     ],
   },
   {
+    label: "Features",
+    tools: ["list-features", "get-feature", "create-feature", "update-feature"],
+  },
+  {
     label: "Links",
-    tools: ["list-artifact-links", "create-artifact-link"],
+    tools: [
+      "list-entity-links",
+      "create-entity-link",
+      "list-external-links",
+      "create-external-link",
+    ],
   },
   {
     label: "Integrations",
@@ -283,28 +341,26 @@ const MCP_TOOL_GROUPS = [
 ] as const;
 
 function QuickStartGuide() {
-  const mcpServerUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? "MCP server URL";
-
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Quick Start</CardTitle>
         <CardDescription>
           Use your API key to connect ClosedLoop to Claude Code, Claude Desktop,
-          or your own scripts. Newly created API keys have full read, write, and
-          delete access.
+          or your own scripts.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
           <p className="font-medium text-sm">Claude Code (CLI)</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {`claude mcp add --transport http closedloop ${mcpServerUrl}`}
+            {
+              "claude mcp add --transport http closedloop https://mcp.closedloop.ai/mcp"
+            }
           </pre>
           <p className="text-muted-foreground text-xs">
-            Install it at the user/global scope so it is available across
-            projects. You&apos;ll be prompted to authenticate via OAuth when the
-            server is first used.
+            You&apos;ll be prompted to authenticate via OAuth when the server is
+            first used.
           </p>
         </div>
         <div className="space-y-2">
@@ -314,17 +370,17 @@ function QuickStartGuide() {
             <strong>
               Settings &rarr; Connectors &rarr; Add Custom Connector
             </strong>
-            . Use any connector name you want, add it at the user/global scope,
-            and set the Remote MCP server URL to:
+            . Set the name to <code className="text-xs">ClosedLoop</code> and
+            the Remote MCP server URL to:
           </p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {mcpServerUrl}
+            {"https://mcp.closedloop.ai/mcp"}
           </pre>
         </div>
         <div className="space-y-2">
           <p className="font-medium text-sm">REST API</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {`curl https://api.closedloop.ai/documents -H "Authorization: Bearer sk_live_YOUR_KEY"`}
+            {`curl https://api.closedloop.ai/artifacts -H "Authorization: Bearer sk_live_YOUR_KEY"`}
           </pre>
         </div>
         <div className="space-y-2">

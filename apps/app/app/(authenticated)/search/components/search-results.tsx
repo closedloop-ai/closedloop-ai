@@ -1,11 +1,12 @@
 "use client";
 
 import {
-  DocumentType,
+  type ArtifactType,
   getRoutePrefixForType,
-} from "@repo/api/src/types/document";
+} from "@repo/api/src/types/artifact";
 import type {
-  DocumentSearchResult,
+  ArtifactSearchResult,
+  FeatureSearchResult,
   ProjectSearchResult,
   WorkstreamSearchResult,
 } from "@repo/api/src/types/search";
@@ -21,7 +22,7 @@ import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
-  DocumentStatusBadge,
+  ArtifactStatusBadge,
   FeaturePriorityBadge,
   FeatureStatusBadge,
   WorkstreamStateBadge,
@@ -29,7 +30,7 @@ import {
 import { useGlobalSearch } from "@/hooks/queries/use-search";
 import { formatDate } from "@/lib/date-utils";
 import {
-  DOCUMENT_TYPE_LABELS,
+  ARTIFACT_TYPE_LABELS,
   PROJECT_STATUS_LABELS,
 } from "@/lib/project-constants";
 
@@ -48,21 +49,17 @@ export function SearchResults() {
   }
 
   const totalResults = data
-    ? data.documents.length + data.workstreams.length + data.projects.length
+    ? data.artifacts.length +
+      data.features.length +
+      data.workstreams.length +
+      data.projects.length
     : 0;
-
-  const notFeatures = data?.documents.filter(
-    (d) => d.type !== DocumentType.Feature
-  );
-  const features = data?.documents.filter(
-    (d) => d.type === DocumentType.Feature
-  );
 
   return (
     <>
       <div className="mb-2">
         <p className="text-muted-foreground">
-          {`${totalResults} result${totalResults === 1 ? "" : "s"} for "${query}"`}
+          {`${totalResults} result${totalResults !== 1 ? "s" : ""} for "${query}"`}
         </p>
       </div>
 
@@ -72,15 +69,21 @@ export function SearchResults() {
         </div>
       )}
 
-      {notFeatures?.length && <ArtifactsSection artifacts={notFeatures} />}
+      {data && data.artifacts.length > 0 && (
+        <ArtifactsSection artifacts={data.artifacts} />
+      )}
 
-      {features?.length && <FeaturesSection features={features} />}
+      {data && data.features.length > 0 && (
+        <FeaturesSection features={data.features} />
+      )}
 
-      {data?.workstreams.length && (
+      {data && data.workstreams.length > 0 && (
         <WorkstreamsSection workstreams={data.workstreams} />
       )}
 
-      {data?.projects.length && <ProjectsSection projects={data.projects} />}
+      {data && data.projects.length > 0 && (
+        <ProjectsSection projects={data.projects} />
+      )}
     </>
   );
 }
@@ -115,7 +118,7 @@ function TitleCell({
 
 function ArtifactsSection({
   artifacts,
-}: Readonly<{ artifacts: DocumentSearchResult[] }>) {
+}: Readonly<{ artifacts: ArtifactSearchResult[] }>) {
   return (
     <section>
       <SectionHeader count={artifacts.length} title="Artifacts" />
@@ -143,11 +146,11 @@ function ArtifactsSection({
                   <TitleCell href={href}>{artifact.title}</TitleCell>
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {DOCUMENT_TYPE_LABELS[artifact.type as DocumentType] ??
+                  {ARTIFACT_TYPE_LABELS[artifact.type as ArtifactType] ??
                     artifact.type}
                 </TableCell>
                 <TableCell>
-                  <DocumentStatusBadge status={artifact.status} />
+                  <ArtifactStatusBadge status={artifact.status} />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {artifact.projectName ?? "-"}
@@ -169,7 +172,7 @@ function ArtifactsSection({
 
 function FeaturesSection({
   features,
-}: Readonly<{ features: DocumentSearchResult[] }>) {
+}: Readonly<{ features: FeatureSearchResult[] }>) {
   return (
     <section>
       <SectionHeader count={features.length} title="Features" />
@@ -196,9 +199,7 @@ function FeaturesSection({
                 <FeatureStatusBadge status={feature.status} />
               </TableCell>
               <TableCell>
-                {feature.priority && (
-                  <FeaturePriorityBadge priority={feature.priority} />
-                )}
+                <FeaturePriorityBadge priority={feature.priority} />
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {feature.projectName ?? "-"}
@@ -286,9 +287,7 @@ function ProjectsSection({
                   {PROJECT_STATUS_LABELS[project.status] ?? project.status}
                 </TableCell>
                 <TableCell>
-                  {project.priority && (
-                    <FeaturePriorityBadge priority={project.priority} />
-                  )}
+                  <FeaturePriorityBadge priority={project.priority} />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {project.teamName ?? "-"}

@@ -1,9 +1,6 @@
 "use client";
 
-import type {
-  DocumentWithWorkstream,
-  GenerationStatus,
-} from "@repo/api/src/types/document";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -14,7 +11,6 @@ import {
 import {
   ChevronDownIcon,
   FolderInputIcon,
-  GaugeIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
   PlayIcon,
@@ -25,22 +21,18 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
-import { isCommandDisabled } from "@/lib/generation-status-utils";
 
 type FeatureEditorHeaderProps = {
-  feature: DocumentWithWorkstream;
+  feature: FeatureWithWorkstream;
   displayTitle: string;
   hasPlan: boolean;
   isReady: boolean;
-  isEvaluating?: boolean;
-  generationStatus?: GenerationStatus;
-  generationStatusLoading?: boolean;
+  showMetadataPanel: boolean;
   onToggleMetadataPanel: () => void;
   onGeneratePlan: () => void;
   onStartBuild: () => void;
   onMoveToProject: () => void;
   onDelete: () => void;
-  onEvaluateFeature: () => void;
 };
 
 export function FeatureEditorHeader({
@@ -48,15 +40,12 @@ export function FeatureEditorHeader({
   displayTitle,
   hasPlan,
   isReady,
-  isEvaluating = false,
-  generationStatus,
-  generationStatusLoading = false,
+  showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
   onStartBuild,
   onMoveToProject,
   onDelete,
-  onEvaluateFeature,
 }: Readonly<FeatureEditorHeaderProps>) {
   const teamId = feature.project?.teams?.[0]?.id;
   const projectId = feature.project?.id;
@@ -89,45 +78,15 @@ export function FeatureEditorHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            disabled={
-              !isReady ||
-              hasPlan ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "plan",
-              })
-            }
-            onClick={() => onGeneratePlan()}
+            disabled={!isReady || hasPlan}
+            onClick={onGeneratePlan}
           >
             <SparklesIcon className="h-4 w-4" />
             Generate Plan
           </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={
-              !hasPlan ||
-              isCommandDisabled({
-                generationStatus,
-                isLoading: generationStatusLoading,
-                targetCommand: "execute",
-              })
-            }
-            onClick={() => onStartBuild()}
-          >
+          <DropdownMenuItem disabled={!hasPlan} onClick={onStartBuild}>
             <PlayIcon className="h-4 w-4" />
             Start Building
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={isCommandDisabled({
-              generationStatus,
-              isLoading: generationStatusLoading,
-              targetCommand: "evaluate_feature",
-              localMutationPending: isEvaluating,
-            })}
-            onClick={() => onEvaluateFeature()}
-          >
-            <GaugeIcon className="h-4 w-4" />
-            {isEvaluating ? "Evaluating Feature..." : "Evaluate Feature"}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -138,11 +97,11 @@ export function FeatureEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[160px]">
-          <DropdownMenuItem onClick={() => onMoveToProject()}>
+          <DropdownMenuItem onClick={onMoveToProject}>
             <FolderInputIcon className="h-4 w-4" />
             Move to Project
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => onDelete()} variant="destructive">
+          <DropdownMenuItem onClick={onDelete} variant="destructive">
             <TrashIcon className="h-4 w-4" />
             Delete
           </DropdownMenuItem>
@@ -150,10 +109,10 @@ export function FeatureEditorHeader({
       </DropdownMenu>
       <Button
         aria-label="Toggle chat panel"
-        onClick={() => onToggleMetadataPanel()}
-        size="icon-sm"
+        onClick={onToggleMetadataPanel}
+        size="icon"
         title="Toggle chat panel"
-        variant="ghost"
+        variant={showMetadataPanel ? "secondary" : "ghost"}
       >
         <PanelRightIcon className="h-4 w-4" />
       </Button>

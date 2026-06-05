@@ -8,14 +8,6 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/collaboration/room-utils", () => ({
   parseArtifactRoomId: vi.fn(),
-  parseDocumentRoomId: vi.fn((roomId: string) => {
-    const parts = roomId.split(":");
-    if (parts.length < 3 || parts[1] !== "artifact") {
-      throw new Error("Invalid room ID format");
-    }
-    return { organizationId: parts[0], slug: parts[2] };
-  }),
-  generateDocumentRoomId: vi.fn(),
 }));
 
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
@@ -99,7 +91,7 @@ describe("commentsService", () => {
             source: ThreadSource.Liveblocks,
             externalId: THREAD_ID,
             roomId: ROOM_ID,
-            artifactId: "artifact-1",
+            entityId: "artifact-1",
           }),
         })
       );
@@ -124,7 +116,8 @@ describe("commentsService", () => {
       expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           create: expect.objectContaining({
-            artifactId: null,
+            entityId: null,
+            entityType: null,
           }),
         })
       );

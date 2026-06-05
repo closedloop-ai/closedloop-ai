@@ -2,12 +2,12 @@
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
 import type { Priority } from "@repo/api/src/types/common";
-import {
-  type CreateProjectInput,
-  type FavoriteResponse,
+import type {
+  CreateProjectInput,
+  FavoriteResponse,
   ProjectStatus,
-  type ProjectWithDetails,
-  type UpdateProjectInput,
+  ProjectWithDetails,
+  UpdateProjectInput,
 } from "@repo/api/src/types/project";
 import {
   type UseQueryOptions,
@@ -15,8 +15,6 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback } from "react";
-import { toast } from "sonner";
 import { useApiClient } from "@/hooks/use-api-client";
 
 // Query keys
@@ -34,24 +32,17 @@ export const projectKeys = {
   bySlug: (slug: string) => [...projectKeys.all, "by-slug", slug] as const,
 };
 
-export type ProjectListFilters = {
-  status?: ProjectStatus[];
-  excludeStatus?: ProjectStatus[];
-};
-
 // Queries
 export function useProjects(
   teamId?: string,
-  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">,
-  filters?: ProjectListFilters
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
-  const normalizedFilters = normalizeProjectListFilters(filters);
 
   return useQuery({
-    queryKey: projectKeys.list({ teamId, ...normalizedFilters }),
+    queryKey: projectKeys.list({ teamId }),
     queryFn: () => {
-      const query = buildProjectListQuery(teamId, normalizedFilters);
+      const query = teamId ? `?teamId=${teamId}` : "";
       return apiClient.get<ProjectWithDetails[]>(`/projects${query}`);
     },
     ...options,
@@ -60,18 +51,14 @@ export function useProjects(
 
 export function useProjectsByTeam(
   teamId: string,
-  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">,
-  filters?: ProjectListFilters
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
-  const normalizedFilters = normalizeProjectListFilters(filters);
 
   return useQuery({
-    queryKey: projectKeys.list({ teamId, ...normalizedFilters }),
-    queryFn: () => {
-      const query = buildProjectListQuery(teamId, normalizedFilters);
-      return apiClient.get<ProjectWithDetails[]>(`/projects${query}`);
-    },
+    queryKey: projectKeys.list({ teamId }),
+    queryFn: () =>
+      apiClient.get<ProjectWithDetails[]>(`/projects?teamId=${teamId}`),
     enabled: !!teamId,
     ...options,
   });
@@ -254,7 +241,6 @@ export function useUpdateProjectPriority() {
 }
 
 export function useUpdateProjectStatus() {
-  const queryClient = useQueryClient();
   const updateProject = useUpdateProject();
 
   return useMutation({
@@ -265,9 +251,6 @@ export function useUpdateProjectStatus() {
       projectId: string;
       status: ProjectStatus;
     }) => updateProject.mutateAsync({ id: projectId, status }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
-    },
   });
 }
 
@@ -364,104 +347,4 @@ export function useToggleFavorite() {
       return favorite.mutateAsync(projectId);
     },
   });
-}
-
-function normalizeProjectListFilters(
-  filters?: ProjectListFilters
-): ProjectListFilters {
-  return {
-    ...(filters?.status
-      ? { status: normalizeProjectStatuses(filters.status) }
-      : {}),
-    ...(filters?.excludeStatus
-      ? { excludeStatus: normalizeProjectStatuses(filters.excludeStatus) }
-      : {}),
-  };
-}
-
-type ProjectStatusHandlerOptions = {
-  /** Called after a successful archive (e.g. to redirect). */
-  onArchived?: (projectId: string) => void;
-  /** Show an Undo toast action when unarchiving. Defaults to false. */
-  showUndoOnUnarchive?: boolean;
-};
-
-/**
- * Shared handler for archive/unarchive project status mutations with
- * consistent toast + undo behaviour across pages.
- */
-export function useProjectStatusHandler(
-  options: ProjectStatusHandlerOptions = {}
-) {
-  const mutation = useUpdateProjectStatus();
-
-  const handleUpdateStatus = useCallback(
-    (
-      projectId: string,
-      status: ProjectStatus,
-      previousStatus: ProjectStatus
-    ) => {
-      mutation.mutate(
-        { projectId, status },
-        {
-          onSuccess: () => {
-            if (status === ProjectStatus.Archived) {
-              toast.success("Project archived", {
-                action: {
-                  label: "Undo",
-                  onClick: () => {
-                    mutation.mutate({
-                      projectId,
-                      status: previousStatus,
-                    });
-                  },
-                },
-              });
-              options.onArchived?.(projectId);
-              return;
-            }
-
-            if (options.showUndoOnUnarchive) {
-              toast.success("Project unarchived", {
-                action: {
-                  label: "Undo",
-                  onClick: () => {
-                    mutation.mutate({
-                      projectId,
-                      status: ProjectStatus.Archived,
-                    });
-                  },
-                },
-              });
-            } else {
-              toast.success("Project unarchived");
-            }
-          },
-        }
-      );
-    },
-    [mutation, options]
-  );
-
-  return { handleUpdateStatus, isPending: mutation.isPending };
-}
-
-function normalizeProjectStatuses(statuses: ProjectStatus[]): ProjectStatus[] {
-  return [...new Set(statuses)].sort();
-}
-
-function buildProjectListQuery(teamId?: string, filters?: ProjectListFilters) {
-  const searchParams = new URLSearchParams();
-  if (teamId) {
-    searchParams.set("teamId", teamId);
-  }
-  if (filters?.status?.length) {
-    searchParams.set("status", filters.status.join(","));
-  }
-  if (filters?.excludeStatus?.length) {
-    searchParams.set("excludeStatus", filters.excludeStatus.join(","));
-  }
-
-  const query = searchParams.toString();
-  return query ? `?${query}` : "";
 }

@@ -6,7 +6,6 @@
  */
 
 import { vi } from "vitest";
-import { documentService } from "@/app/documents/document-service";
 
 // --- Mocks (must come before imports) ---
 
@@ -20,20 +19,25 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@/app/documents/document-service", () => ({
-  documentService: {
+vi.mock("@/app/artifacts/service", () => ({
+  artifactsService: {
     findByIdSimple: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/features/service", () => ({
+  featuresService: {
     create: vi.fn(),
   },
 }));
 
-vi.mock("@/app/artifact-links/service", () => ({
-  artifactLinksService: {
+vi.mock("@/app/entity-links/service", () => ({
+  entityLinksService: {
     createLink: vi.fn(),
   },
 }));
 
-vi.mock("@/lib/loops/loop-document-ingestion", () => ({
+vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
   parseJsonArtifact: vi.fn(),
 }));
 
@@ -43,25 +47,26 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 // --- Imports (after mocks) ---
 
-import { LinkType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import type { DecomposeResult } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/database/generated/client";
 import { beforeEach, describe, expect, it } from "vitest";
-import { artifactLinksService } from "@/app/artifact-links/service";
-
+import { artifactsService } from "@/app/artifacts/service";
+import { entityLinksService } from "@/app/entity-links/service";
+import { featuresService } from "@/app/features/service";
+import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
 import { decomposeHandler } from "@/lib/loops/loop-commands/decompose-handler";
-import { parseJsonArtifact } from "@/lib/loops/loop-document-ingestion";
 import { downloadArtifactFile } from "@/lib/loops/loop-state";
 import { buildLoop } from "../fixtures/loop";
 
 type MockFn = ReturnType<typeof vi.fn>;
-const mockDocumentsService = documentService as unknown as {
+const mockArtifactsService = artifactsService as unknown as {
   findByIdSimple: MockFn;
-  create: MockFn;
 };
-const mockEntityLinksService = artifactLinksService as unknown as {
+const mockFeaturesService = featuresService as unknown as { create: MockFn };
+const mockEntityLinksService = entityLinksService as unknown as {
   createLink: MockFn;
 };
 const mockParseJsonArtifact = parseJsonArtifact as MockFn;
@@ -80,7 +85,7 @@ function buildDecomposeLoop() {
   return buildLoop({
     command: LoopCommand.DECOMPOSE,
     s3StateKey: "org/loops/loop-1/run-1",
-    documentId: "prd-artifact-1",
+    artifactId: "prd-artifact-1",
   });
 }
 
@@ -137,11 +142,11 @@ describe("decomposeHandler ingestion", () => {
     };
 
     setupDownload(result);
-    mockDocumentsService.findByIdSimple.mockResolvedValue({
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-artifact-1",
       projectId: "project-1",
     });
-    mockDocumentsService.create
+    mockFeaturesService.create
       .mockResolvedValueOnce({ id: "feature-1" })
       .mockResolvedValueOnce({ id: "feature-2" });
     mockEntityLinksService.createLink.mockResolvedValue({ id: "link-1" });
@@ -149,26 +154,23 @@ describe("decomposeHandler ingestion", () => {
     await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
     // Creates one feature per decompose entry with correct priority mapping
-    expect(mockDocumentsService.create).toHaveBeenCalledTimes(2);
-    expect(mockDocumentsService.create).toHaveBeenCalledWith(
-      "org-1",
-      "user-1",
-      {
-        projectId: "project-1",
-        type: DocumentType.Feature,
-        title: "User Registration Flow",
-        content:
-          "Users can register with email and password.\n\n## User Stories\n\n### US-001: As a user, I want to register with my email so that I can access the platform\n\n- **AC-001.1:** User can register with valid email",
-        priority: Priority.High,
-        status: DocumentStatus.Draft,
-      }
-    );
+    expect(mockFeaturesService.create).toHaveBeenCalledTimes(2);
+    expect(mockFeaturesService.create).toHaveBeenCalledWith("org-1", "user-1", {
+      projectId: "project-1",
+      title: "User Registration Flow",
+      description:
+        "Users can register with email and password.\n\n## User Stories\n\n### US-001: As a user, I want to register with my email so that I can access the platform\n\n- **AC-001.1:** User can register with valid email",
+      priority: Priority.High,
+      status: FeatureStatus.NotStarted,
+    });
 
     // Links each feature to the PRD via PRODUCES
     expect(mockEntityLinksService.createLink).toHaveBeenCalledTimes(2);
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",
+      sourceType: EntityType.Artifact,
       targetId: "feature-1",
+      targetType: EntityType.Feature,
       linkType: LinkType.Produces,
     });
   });
@@ -179,8 +181,8 @@ describe("decomposeHandler ingestion", () => {
 
     await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
-    expect(mockDocumentsService.findByIdSimple).not.toHaveBeenCalled();
-    expect(mockDocumentsService.create).not.toHaveBeenCalled();
+    expect(mockArtifactsService.findByIdSimple).not.toHaveBeenCalled();
+    expect(mockFeaturesService.create).not.toHaveBeenCalled();
   });
 
   it("skips ingestion when PRD has no projectId", async () => {
@@ -188,14 +190,14 @@ describe("decomposeHandler ingestion", () => {
     setupDownload({
       features: [{ title: "F1", description: "desc" }],
     });
-    mockDocumentsService.findByIdSimple.mockResolvedValue({
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-artifact-1",
       projectId: null,
     });
 
     await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
-    expect(mockDocumentsService.create).not.toHaveBeenCalled();
+    expect(mockFeaturesService.create).not.toHaveBeenCalled();
   });
 
   it("defaults priority to MEDIUM when not specified", async () => {
@@ -203,16 +205,16 @@ describe("decomposeHandler ingestion", () => {
     setupDownload({
       features: [{ title: "No Priority", description: "desc" }],
     });
-    mockDocumentsService.findByIdSimple.mockResolvedValue({
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-artifact-1",
       projectId: "project-1",
     });
-    mockDocumentsService.create.mockResolvedValue({ id: "feature-1" });
+    mockFeaturesService.create.mockResolvedValue({ id: "feature-1" });
     mockEntityLinksService.createLink.mockResolvedValue({ id: "link-1" });
 
     await decomposeHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
-    expect(mockDocumentsService.create).toHaveBeenCalledWith(
+    expect(mockFeaturesService.create).toHaveBeenCalledWith(
       "org-1",
       "user-1",
       expect.objectContaining({ priority: Priority.Medium })
@@ -238,30 +240,27 @@ describe("decomposeHandler uploadAndIngest", () => {
         ],
       },
     };
-    mockDocumentsService.findByIdSimple.mockResolvedValue({
+    mockArtifactsService.findByIdSimple.mockResolvedValue({
       id: "prd-artifact-1",
       projectId: "project-1",
     });
-    mockDocumentsService.create.mockResolvedValue({ id: "feature-1" });
+    mockFeaturesService.create.mockResolvedValue({ id: "feature-1" });
     mockEntityLinksService.createLink.mockResolvedValue({ id: "link-1" });
 
     await decomposeHandler.uploadAndIngest(uploaded, loop, "org-1");
 
-    expect(mockDocumentsService.create).toHaveBeenCalledWith(
-      "org-1",
-      "user-1",
-      {
-        projectId: "project-1",
-        title: "Feature A",
-        type: DocumentType.Feature,
-        content: "desc A",
-        priority: Priority.High,
-        status: DocumentStatus.Draft,
-      }
-    );
+    expect(mockFeaturesService.create).toHaveBeenCalledWith("org-1", "user-1", {
+      projectId: "project-1",
+      title: "Feature A",
+      description: "desc A",
+      priority: Priority.High,
+      status: FeatureStatus.NotStarted,
+    });
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {
       sourceId: "prd-artifact-1",
+      sourceType: EntityType.Artifact,
       targetId: "feature-1",
+      targetType: EntityType.Feature,
       linkType: LinkType.Produces,
     });
   });
@@ -271,7 +270,7 @@ describe("decomposeHandler uploadAndIngest", () => {
 
     await decomposeHandler.uploadAndIngest({}, loop, "org-1");
 
-    expect(mockDocumentsService.create).not.toHaveBeenCalled();
+    expect(mockFeaturesService.create).not.toHaveBeenCalled();
   });
 
   it("handles upload with invalid schema gracefully", async () => {
@@ -280,6 +279,6 @@ describe("decomposeHandler uploadAndIngest", () => {
 
     await decomposeHandler.uploadAndIngest(uploaded, loop, "org-1");
 
-    expect(mockDocumentsService.create).not.toHaveBeenCalled();
+    expect(mockFeaturesService.create).not.toHaveBeenCalled();
   });
 });

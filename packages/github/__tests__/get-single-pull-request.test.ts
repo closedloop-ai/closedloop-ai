@@ -40,12 +40,10 @@ function makePrData(
     title: string;
     html_url: string;
     state: string;
-    draft: boolean;
     merged_at: string | null;
     closed_at: string | null;
-    head: { ref: string; sha: string };
-    base: { ref: string; sha: string };
-    user: { login: string } | null;
+    head: { ref: string };
+    base: { ref: string };
   }> = {}
 ) {
   return {
@@ -54,12 +52,10 @@ function makePrData(
     title: "Add feature X",
     html_url: "https://github.com/acme/my-repo/pull/42",
     state: "open",
-    draft: false,
     merged_at: null,
     closed_at: null,
-    head: { ref: "feature-x", sha: "abc123" },
-    base: { ref: "main", sha: "def456" },
-    user: null,
+    head: { ref: "feature-x" },
+    base: { ref: "main" },
     ...overrides,
   };
 }
@@ -98,11 +94,7 @@ describe("getSinglePullRequest", () => {
       htmlUrl: "https://github.com/acme/my-repo/pull/42",
       headBranch: "feature-x",
       baseBranch: "main",
-      headSha: "abc123",
-      baseSha: "def456",
       state: "OPEN",
-      isDraft: false,
-      authorLogin: null,
       mergedAt: null,
       closedAt: null,
     });

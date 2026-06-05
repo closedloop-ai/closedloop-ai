@@ -12,6 +12,7 @@ type ThemeProviderProperties = {
   defaultTheme?: string;
   attribute?: string | string[];
   value?: Record<string, string>;
+  nonce?: string;
 };
 
 // next-themes@0.4.6 ThemeProviderProps inherits children via React.PropsWithChildren,

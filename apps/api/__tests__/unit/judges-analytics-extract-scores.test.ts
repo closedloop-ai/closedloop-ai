@@ -1,11 +1,11 @@
 /**
  * Unit tests for aggregateJudgeScoreRows -- the pure aggregation function that
  * converts JudgeScore rows into a nested Map keyed by
- * ArtifactType -> aggregationKey -> { scores, documentIds, promptName, metricName }.
+ * ArtifactType -> aggregationKey -> { scores, artifactIds, promptName, metricName }.
  *
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
@@ -28,8 +28,8 @@ import {
 
 /** Builds a JudgeScoreInput ready for aggregateJudgeScoreRows. */
 function buildJudgeScoreInput(
-  documentId: string,
-  type: DocumentType,
+  artifactId: string,
+  type: ArtifactType,
   caseId: string,
   score: number,
   metricName?: string,
@@ -41,9 +41,9 @@ function buildJudgeScoreInput(
     promptId: promptId ?? null,
     score,
     evaluation: {
-      documentId,
-      entityId: documentId,
-      documentType: type,
+      artifactId,
+      entityId: artifactId,
+      artifactType: type,
     },
   };
 }
@@ -53,10 +53,10 @@ function buildJudgeScoreInput(
 // ---------------------------------------------------------------------------
 
 type FlatResult = {
-  type: DocumentType;
+  type: ArtifactType;
   judgeName: string;
   scores: number[];
-  documentIds: string[];
+  artifactIds: string[];
   promptName: string;
   metricName: string;
 };
@@ -67,12 +67,12 @@ type FlatResult = {
  */
 function flattenResults(
   map: Map<
-    DocumentType,
+    ArtifactType,
     Map<
       string,
       {
         scores: number[];
-        documentIds: Set<string>;
+        artifactIds: Set<string>;
         promptName: string;
         metricName: string;
       }
@@ -86,7 +86,7 @@ function flattenResults(
         type,
         judgeName,
         scores: [...data.scores],
-        documentIds: [...data.documentIds].sort(),
+        artifactIds: [...data.artifactIds].sort(),
         promptName: data.promptName,
         metricName: data.metricName,
       });
@@ -124,14 +124,14 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     name: "single_row_single_judge",
     description: "One JudgeScore row produces a single Map entry",
     judgeScores: [
-      buildJudgeScoreInput("a1", DocumentType.Prd, "judge-A", 0.85),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "judge-A", 0.85),
     ],
     expected: [
       {
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         judgeName: "judge-A",
         scores: [0.85],
-        documentIds: ["a1"],
+        artifactIds: ["a1"],
         promptName: "judge_a",
         metricName: "judge-A",
       },
@@ -146,30 +146,30 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     judgeScores: [
       buildJudgeScoreInput(
         "a1",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "judge-B",
         0.7
       ),
       buildJudgeScoreInput(
         "a2",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "judge-B",
         0.9
       ),
-      // Duplicate artifact ID -- should NOT duplicate in documentIds set
+      // Duplicate artifact ID -- should NOT duplicate in artifactIds set
       buildJudgeScoreInput(
         "a1",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "judge-B",
         0.6
       ),
     ],
     expected: [
       {
-        type: DocumentType.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         judgeName: "judge-B",
         scores: [0.7, 0.9, 0.6],
-        documentIds: ["a1", "a2"],
+        artifactIds: ["a1", "a2"],
         promptName: "judge_b",
         metricName: "judge-B",
       },
@@ -182,37 +182,37 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     description:
       "Rows spanning different types and judges produce correctly partitioned Map entries",
     judgeScores: [
-      buildJudgeScoreInput("a1", DocumentType.Prd, "judge-A", 0.8),
-      buildJudgeScoreInput("a1", DocumentType.Prd, "judge-B", 0.75),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "judge-A", 0.8),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "judge-B", 0.75),
       buildJudgeScoreInput(
         "a2",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "judge-A",
         0.9
       ),
     ],
     expected: [
       {
-        type: DocumentType.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         judgeName: "judge-A",
         scores: [0.9],
-        documentIds: ["a2"],
+        artifactIds: ["a2"],
         promptName: "judge_a",
         metricName: "judge-A",
       },
       {
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         judgeName: "judge-A",
         scores: [0.8],
-        documentIds: ["a1"],
+        artifactIds: ["a1"],
         promptName: "judge_a",
         metricName: "judge-A",
       },
       {
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         judgeName: "judge-B",
         scores: [0.75],
-        documentIds: ["a1"],
+        artifactIds: ["a1"],
         promptName: "judge_b",
         metricName: "judge-B",
       },
@@ -225,23 +225,23 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     description:
       "Production-style case IDs (dry-judge, solid-isp-dip-judge) are used as-is for judge names",
     judgeScores: [
-      buildJudgeScoreInput("a1", DocumentType.Prd, "dry-judge", 0.92),
-      buildJudgeScoreInput("a1", DocumentType.Prd, "solid-isp-dip-judge", 0.87),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "dry-judge", 0.92),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "solid-isp-dip-judge", 0.87),
     ],
     expected: [
       {
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         judgeName: "dry-judge",
         scores: [0.92],
-        documentIds: ["a1"],
+        artifactIds: ["a1"],
         promptName: "dry",
         metricName: "dry-judge",
       },
       {
-        type: DocumentType.Prd,
+        type: ArtifactType.Prd,
         judgeName: "solid-isp-dip-judge",
         scores: [0.87],
-        documentIds: ["a1"],
+        artifactIds: ["a1"],
         promptName: "solid_isp_dip",
         metricName: "solid-isp-dip-judge",
       },
@@ -256,29 +256,29 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     judgeScores: [
       buildJudgeScoreInput(
         "a1",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "clarity-judge",
         0.8
       ),
       buildJudgeScoreInput(
         "a2",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "clarity-judge",
         0.9
       ),
       buildJudgeScoreInput(
         "a3",
-        DocumentType.ImplementationPlan,
+        ArtifactType.ImplementationPlan,
         "clarity-judge",
         0.7
       ),
     ],
     expected: [
       {
-        type: DocumentType.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         judgeName: "clarity-judge",
         scores: [0.8, 0.9, 0.7],
-        documentIds: ["a1", "a2", "a3"],
+        artifactIds: ["a1", "a2", "a3"],
         promptName: "clarity",
         metricName: "clarity-judge",
       },

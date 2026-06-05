@@ -45,7 +45,6 @@ import {
   useLoopStream,
 } from "@/hooks/queries/use-loop-stream";
 import { formatTokenCount } from "@/lib/format-utils";
-import { getLoopErrorTitle } from "@/lib/loop-error-display";
 
 type LoopProgressPanelProps = {
   loopId: string;
@@ -376,7 +375,7 @@ function ErrorEvent({ event }: { event: LoopEventError }) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="font-medium text-red-700 text-sm dark:text-red-400">
-          Error: {getLoopErrorTitle(event)}
+          Error: {event.code}
         </div>
         <div className="mt-1 text-red-600 text-xs dark:text-red-300">
           {event.message}

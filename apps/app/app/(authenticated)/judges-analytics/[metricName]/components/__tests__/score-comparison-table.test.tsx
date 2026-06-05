@@ -27,10 +27,10 @@ function makeRow(overrides?: Partial<JudgeScoreRow>): JudgeScoreRow {
   return {
     judgeScoreId: "js-1",
     metricName: "my-implementation-plan",
-    documentId: "artifact-1",
-    documentType: "IMPLEMENTATION_PLAN",
-    documentTitle: "My Implementation Plan",
-    documentSlug: "my-implementation-plan",
+    artifactId: "artifact-1",
+    artifactType: "IMPLEMENTATION_PLAN",
+    artifactTitle: "My Implementation Plan",
+    artifactSlug: "my-implementation-plan",
     judgeScore: 0.8,
     avgUserRating: 0.8,
     userRatingCount: 0,
@@ -74,9 +74,9 @@ describe("ScoreComparisonTable — artifact links", () => {
       <ScoreComparisonTable
         rows={[
           makeRow({
-            documentType: "PRD",
-            documentTitle: "Product Requirements",
-            documentSlug: "product-requirements",
+            artifactType: "PRD",
+            artifactTitle: "Product Requirements",
+            artifactSlug: "product-requirements",
           }),
         ]}
       />
@@ -92,15 +92,15 @@ describe("ScoreComparisonTable — artifact links", () => {
         rows={[
           makeRow({
             judgeScoreId: "js-a1",
-            documentId: "a1",
-            documentTitle: "Plan A",
-            documentSlug: "plan-a",
+            artifactId: "a1",
+            artifactTitle: "Plan A",
+            artifactSlug: "plan-a",
           }),
           makeRow({
             judgeScoreId: "js-a2",
-            documentId: "a2",
-            documentTitle: "Plan B",
-            documentSlug: "plan-b",
+            artifactId: "a2",
+            artifactTitle: "Plan B",
+            artifactSlug: "plan-b",
           }),
         ]}
       />
@@ -236,21 +236,21 @@ describe("ScoreComparisonTable — table structure", () => {
         rows={[
           makeRow({
             judgeScoreId: "js-a1",
-            documentId: "a1",
-            documentTitle: "Plan A",
-            documentSlug: "plan-a",
+            artifactId: "a1",
+            artifactTitle: "Plan A",
+            artifactSlug: "plan-a",
           }),
           makeRow({
             judgeScoreId: "js-a2",
-            documentId: "a2",
-            documentTitle: "Plan B",
-            documentSlug: "plan-b",
+            artifactId: "a2",
+            artifactTitle: "Plan B",
+            artifactSlug: "plan-b",
           }),
           makeRow({
             judgeScoreId: "js-a3",
-            documentId: "a3",
-            documentTitle: "Plan C",
-            documentSlug: "plan-c",
+            artifactId: "a3",
+            artifactTitle: "Plan C",
+            artifactSlug: "plan-c",
           }),
         ]}
       />

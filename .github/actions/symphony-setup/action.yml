@@ -1,0 +1,64 @@
+name: 'Symphony Setup'
+description: 'Common setup for ClosedLoop workflows: Node.js, pnpm, dependencies, and git config. NOTE: Main repo must be checked out BEFORE calling this action.'
+inputs:
+  github_token:
+    description: 'GitHub App token for authentication'
+    required: true
+  node_version:
+    description: 'Node.js version'
+    required: false
+    default: '20'
+  checkout_cross_repo:
+    description: 'Whether to checkout cross-repo (e.g., backend service)'
+    required: false
+    default: 'false'
+  cross_repo_name:
+    description: 'Cross-repo to checkout (if checkout_cross_repo is true)'
+    required: false
+    default: ''
+outputs:
+  token:
+    description: 'GitHub App token (pass-through for convenience)'
+    value: ${{ inputs.github_token }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+
+    - name: Get pnpm store directory
+      id: pnpm-cache
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Checkout cross-repo
+      if: inputs.checkout_cross_repo == 'true' && inputs.cross_repo_name != ''
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.cross_repo_name }}
+        token: ${{ inputs.github_token }}
+        path: .other-repo
+
+    - name: Configure Git for Private Marketplace
+      shell: bash
+      run: |
+        git config --global url."https://x-access-token:${{ inputs.github_token }}@github.com/".insteadOf "https://github.com/"

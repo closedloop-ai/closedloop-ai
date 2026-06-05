@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -65,34 +65,6 @@ jobs:
 
       - name: Figma Code Connect type check
         run: pnpm --filter @repo/design-system figma:typecheck
-
-  storybook-build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 20
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          # prisma generate (runs via postinstall) only needs the URL format, not a live DB
-          DATABASE_URL: postgresql://localhost:5432/placeholder
-
-      - name: Build Storybook
-        run: pnpm --filter storybook build
 
   test:
     runs-on: ubuntu-latest
@@ -120,7 +92,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -136,8 +108,8 @@ jobs:
         env:
           DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
 
-      - name: Apply database migrations
-        run: cd packages/database && pnpm prisma migrate deploy
+      - name: Setup database schema
+        run: cd packages/database && pnpm prisma db push
         env:
           DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
 
@@ -162,4 +134,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Dependency Review
-        uses: actions/dependency-review-action@v5
+        uses: actions/dependency-review-action@v4
+        continue-on-error: true
+        with:
+          config-file: ".github/vulnerability-exemptions.yml"

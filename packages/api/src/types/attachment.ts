@@ -2,12 +2,13 @@
 // These are explicitly defined to keep packages/api independent of database
 
 /**
- * Represents a file attachment associated with a document.
+ * Represents a file attachment associated with an artifact.
  * createdAt is ISO 8601 string — use .toISOString() in service mapping.
  */
 export type FileAttachment = {
   id: string;
   artifactId: string;
+  featureId?: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -17,7 +18,7 @@ export type FileAttachment = {
   previewUrl?: string;
 };
 
-const IMAGE_MIME_TYPES: readonly string[] = [
+const IMAGE_MIME_TYPES = [
   "image/jpeg",
   "image/png",
   "image/gif",
@@ -25,10 +26,10 @@ const IMAGE_MIME_TYPES: readonly string[] = [
 ] as const;
 
 export function isImageMimeType(mimeType: string): boolean {
-  return IMAGE_MIME_TYPES.includes(mimeType);
+  return IMAGE_MIME_TYPES.some((t) => mimeType === t);
 }
 
-const DOCUMENT_MIME_TYPES: readonly string[] = [
+const DOCUMENT_MIME_TYPES = [
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -37,7 +38,7 @@ const DOCUMENT_MIME_TYPES: readonly string[] = [
 ] as const;
 
 export function isDocumentMimeType(mimeType: string): boolean {
-  return DOCUMENT_MIME_TYPES.includes(mimeType);
+  return DOCUMENT_MIME_TYPES.some((t) => mimeType === t);
 }
 
 /**

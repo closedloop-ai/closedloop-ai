@@ -1,4 +1,4 @@
-import type { DocumentWithWorkstream } from "@repo/api/src/types/document";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import {
   Select,
   SelectContent,
@@ -10,7 +10,7 @@ import { getUserDisplayName } from "@/lib/user-utils";
 import type { PlanSource } from "./plan-source";
 
 type PrdSelectorProps = {
-  prds: DocumentWithWorkstream[];
+  prds: ArtifactWithWorkstream[];
   isLoading: boolean;
   selectedPrdId: string;
   onSelect: (id: string) => void;

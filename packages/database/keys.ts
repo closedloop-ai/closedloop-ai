@@ -3,7 +3,6 @@ import { z } from "zod";
 
 export const keys = () =>
   createEnv({
-    emptyStringAsUndefined: true,
     server: {
       // Local development: use DATABASE_URL with password auth
       DATABASE_URL: z.url().optional(),

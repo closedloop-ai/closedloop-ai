@@ -1,24 +1,24 @@
-# Local development services for ClosedLoop.AI
+# Local development services for Symphony
 # Usage: docker compose up -d
 
 services:
   postgres:
     image: postgres:16
-    container_name: closedloop-postgres
+    container_name: symphony-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: closedloop_ai
+      POSTGRES_DB: symphony
     ports:
       - "5432:5432"
     volumes:
-      - closedloop_postgres_data:/var/lib/postgresql/data
+      - symphony_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d closedloop_ai"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d symphony"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
-  closedloop_postgres_data:
+  symphony_postgres_data:

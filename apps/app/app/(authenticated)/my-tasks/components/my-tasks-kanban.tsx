@@ -12,81 +12,83 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import {
-  DocumentStatus,
-  type DocumentWithWorkstream,
-} from "@repo/api/src/types/document";
+import type { FeatureWithWorkstream } from "@repo/api/src/types/feature";
+import { FeatureStatus } from "@repo/api/src/types/feature";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Card } from "@repo/design-system/components/ui/card";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
-import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
-import { cn } from "@repo/design-system/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
-import { CheckSquareIcon } from "lucide-react";
+import { BoxIcon, CheckSquareIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { EmptyState } from "@/components/empty-state";
-import { documentKeys, useUpdateDocument } from "@/hooks/queries/use-documents";
-import { useElementViewportHeight } from "@/hooks/use-element-viewport-height";
-import { getDocumentRoute } from "@/lib/document-navigation";
 import {
-  DOCUMENT_STATUS_TO_ICON,
-  DOCUMENT_TYPE_ICONS,
-} from "@/lib/project-constants";
-import { buildArtifactListParams, DISPLAY_GROUPS } from "../utils";
+  featureKeys,
+  useFeatures,
+  useUpdateFeature,
+} from "@/hooks/queries/use-features";
+import { FEATURE_STATUS_TO_ICON } from "@/lib/project-constants";
+import type { MyTasksFeatureFilters } from "../types";
+import {
+  applyClientFilters,
+  buildFeatureListParams,
+  DISPLAY_GROUPS,
+} from "../utils";
 
-/** Map column (droppable) id to the status to set when an artifact is dropped there */
-const COLUMN_TO_STATUS: Record<string, DocumentStatus> = {
-  draft: DocumentStatus.Draft,
-  in_progress: DocumentStatus.InProgress,
-  in_review: DocumentStatus.InReview,
-  approved: DocumentStatus.Approved,
-  executed: DocumentStatus.Executed,
-  done: DocumentStatus.Done,
-  obsolete: DocumentStatus.Obsolete,
+/** Map column (droppable) id to the status to set when a feature is dropped there */
+const COLUMN_TO_STATUS: Record<string, FeatureStatus> = {
+  not_started: FeatureStatus.NotStarted,
+  in_progress: FeatureStatus.InProgress,
+  in_review: FeatureStatus.InReview,
+  completed: FeatureStatus.Completed,
+  obsolete: FeatureStatus.Obsolete,
 };
 
 type MyTasksKanbanProps = {
-  artifacts: DocumentWithWorkstream[];
   assigneeId: string | null;
-  isLoading: boolean;
   isUserLoading: boolean;
+  featureFilters?: MyTasksFeatureFilters;
 };
 
 export function MyTasksKanban({
-  artifacts,
   assigneeId,
-  isLoading,
   isUserLoading,
+  featureFilters,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
-  const [viewportHeight, setContainerRef] = useElementViewportHeight({
-    bottomGap: 12,
-    minHeight: 240,
-  });
   const listFilters = useMemo(
-    () => buildArtifactListParams(assigneeId),
+    () => buildFeatureListParams(assigneeId),
     [assigneeId]
   );
-  const updateArtifactMutation = useUpdateDocument();
-  const lastDraggedArtifactIdRef = useRef<string | null>(null);
+  const { data: rawFeatures = [], isLoading } = useFeatures(listFilters, {
+    enabled: !!assigneeId && !isUserLoading,
+  });
+  const features = useMemo(
+    () =>
+      featureFilters
+        ? applyClientFilters(rawFeatures, featureFilters)
+        : rawFeatures,
+    [rawFeatures, featureFilters]
+  );
+  const updateFeatureMutation = useUpdateFeature();
+  const lastDraggedFeatureIdRef = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const grouped = useMemo(() => {
-    const map = new Map<string, DocumentWithWorkstream[]>();
+    const map = new Map<string, FeatureWithWorkstream[]>();
     for (const group of DISPLAY_GROUPS) {
-      const items = artifacts.filter((i: DocumentWithWorkstream) =>
+      const items = features.filter((i: FeatureWithWorkstream) =>
         group.statuses.includes(i.status)
       );
       map.set(group.key, items);
     }
     return map;
-  }, [artifacts]);
+  }, [features]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    lastDraggedArtifactIdRef.current = String(event.active.id);
+    lastDraggedFeatureIdRef.current = String(event.active.id);
     setActiveId(String(event.active.id));
   }, []);
 
@@ -94,7 +96,7 @@ export function MyTasksKanban({
     (event: DragEndEvent) => {
       const { active, over } = event;
       setTimeout(() => {
-        lastDraggedArtifactIdRef.current = null;
+        lastDraggedFeatureIdRef.current = null;
       }, 250);
 
       if (!over || active.id === over.id) {
@@ -102,49 +104,49 @@ export function MyTasksKanban({
         return;
       }
       const overId = String(over.id);
-      let newStatus: DocumentStatus | undefined = COLUMN_TO_STATUS[overId];
+      let newStatus: FeatureStatus | undefined = COLUMN_TO_STATUS[overId];
       if (!newStatus) {
-        const targetArtifact = artifacts.find(
-          (i: DocumentWithWorkstream) => i.id === overId
+        const targetFeature = features.find(
+          (i: FeatureWithWorkstream) => i.id === overId
         );
-        if (targetArtifact) {
-          newStatus = targetArtifact.status;
+        if (targetFeature) {
+          newStatus = targetFeature.status;
         }
       }
       if (!newStatus) {
         setActiveId(null);
         return;
       }
-      const artifactId = String(active.id);
-      const artifact = artifacts.find(
-        (i: DocumentWithWorkstream) => i.id === artifactId
+      const featureId = String(active.id);
+      const feature = features.find(
+        (i: FeatureWithWorkstream) => i.id === featureId
       );
-      if (!artifact || artifact.status === newStatus) {
+      if (!feature || feature.status === newStatus) {
         setActiveId(null);
         return;
       }
       queryClient.setQueryData(
-        documentKeys.list(listFilters),
-        (old: DocumentWithWorkstream[] | undefined) => {
+        featureKeys.list(listFilters),
+        (old: FeatureWithWorkstream[] | undefined) => {
           if (!old) {
             return old;
           }
-          return old.map((i: DocumentWithWorkstream) =>
-            i.id === artifactId ? { ...i, status: newStatus } : i
+          return old.map((i: FeatureWithWorkstream) =>
+            i.id === featureId ? { ...i, status: newStatus } : i
           );
         }
       );
       setActiveId(null);
-      updateArtifactMutation.mutate(
-        { id: artifactId, status: newStatus },
+      updateFeatureMutation.mutate(
+        { id: featureId, status: newStatus },
         {
           onError: () => {
-            queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
+            queryClient.invalidateQueries({ queryKey: featureKeys.lists() });
           },
         }
       );
     },
-    [artifacts, listFilters, queryClient, updateArtifactMutation]
+    [features, listFilters, queryClient, updateFeatureMutation]
   );
 
   const sensors = useSensors(
@@ -169,7 +171,7 @@ export function MyTasksKanban({
     );
   }
 
-  if (artifacts.length === 0) {
+  if (features.length === 0) {
     return (
       <EmptyState
         description="Tasks assigned to you will appear here."
@@ -179,94 +181,73 @@ export function MyTasksKanban({
     );
   }
 
-  const activeArtifact = activeId
-    ? artifacts.find((i: DocumentWithWorkstream) => i.id === activeId)
+  const activeFeature = activeId
+    ? features.find((i: FeatureWithWorkstream) => i.id === activeId)
     : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" ref={setContainerRef}>
-      <DndContext
-        onDragEnd={handleDragEnd}
-        onDragStart={handleDragStart}
-        sensors={sensors}
-      >
-        <ScrollArea
-          className="min-h-0 shrink-0"
-          scrollbars="horizontal"
-          style={viewportHeight ? { height: viewportHeight } : undefined}
-          type="always"
-        >
-          <div
-            className="flex min-w-max gap-3 px-4 pb-4"
-            style={viewportHeight ? { height: viewportHeight } : undefined}
-          >
-            {DISPLAY_GROUPS.map((group) => {
-              const items = grouped.get(group.key) ?? [];
-              return (
-                <KanbanColumn
-                  groupKey={group.key}
-                  groupLabel={group.label}
-                  items={items}
-                  key={group.key}
-                  lastDraggedArtifactIdRef={lastDraggedArtifactIdRef}
-                  status={group.statuses[0]}
-                />
-              );
-            })}
-          </div>
-        </ScrollArea>
-        <DragOverlay>
-          {activeArtifact ? (
-            <KanbanCardPreview artifact={activeArtifact} />
-          ) : null}
-        </DragOverlay>
-      </DndContext>
-    </div>
+    <DndContext
+      onDragEnd={handleDragEnd}
+      onDragStart={handleDragStart}
+      sensors={sensors}
+    >
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
+        {DISPLAY_GROUPS.map((group) => {
+          const items = grouped.get(group.key) ?? [];
+          return (
+            <KanbanColumn
+              groupKey={group.key}
+              groupLabel={group.label}
+              items={items}
+              key={group.key}
+              lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
+            />
+          );
+        })}
+      </div>
+      <DragOverlay>
+        {activeFeature ? <KanbanCardPreview feature={activeFeature} /> : null}
+      </DragOverlay>
+    </DndContext>
   );
 }
 
 type KanbanColumnProps = {
   groupKey: string;
   groupLabel: string;
-  items: DocumentWithWorkstream[];
-  lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
-  status: DocumentStatus;
+  items: FeatureWithWorkstream[];
+  lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
 };
 
 function KanbanColumn({
   groupKey,
   groupLabel,
   items,
-  lastDraggedArtifactIdRef,
-  status,
+  lastDraggedFeatureIdRef,
 }: Readonly<KanbanColumnProps>) {
   const { isOver, setNodeRef } = useDroppable({ id: groupKey });
 
   return (
     <div
-      className="flex min-h-0 w-[270px] shrink-0 flex-col overflow-hidden rounded-md border bg-muted/30"
+      className="flex flex-col rounded-lg border bg-muted/30"
       ref={setNodeRef}
     >
-      <div className="flex shrink-0 items-center gap-2 px-2.5 py-3">
-        <StatusIcon size={16} status={DOCUMENT_STATUS_TO_ICON[status]} />
-        <span className="font-medium text-base">{groupLabel}</span>
-        <span className="text-muted-foreground text-sm">{items.length}</span>
+      <div className="border-b px-2.5 py-1.5">
+        <span className="font-medium text-sm">{groupLabel}</span>
+        <span className="ml-1.5 text-muted-foreground text-sm">
+          {items.length}
+        </span>
       </div>
       <div
-        className={cn(
-          "min-h-0 flex-1 overflow-y-auto",
-          isOver && "bg-accent/30"
-        )}
+        className={`flex flex-col gap-1.5 p-1.5 ${isOver ? "bg-accent/30" : ""}`}
       >
-        <div className="flex flex-col gap-1.5 p-1.5">
-          {items.map((artifact) => (
-            <MyTasksCard
-              artifact={artifact}
-              key={artifact.id}
-              lastDraggedArtifactIdRef={lastDraggedArtifactIdRef}
-            />
-          ))}
-        </div>
+        {items.map((feature) => (
+          <MyTasksCard
+            feature={feature}
+            key={feature.id}
+            lastDraggedFeatureIdRef={lastDraggedFeatureIdRef}
+          />
+        ))}
       </div>
     </div>
   );
@@ -274,40 +255,37 @@ function KanbanColumn({
 
 /** Shared card body for kanban cards and overlay preview */
 function KanbanCardContent({
-  artifact,
   disableAvatarLink = false,
+  feature,
 }: Readonly<{
-  artifact: DocumentWithWorkstream;
   disableAvatarLink?: boolean;
+  feature: FeatureWithWorkstream;
 }>) {
-  const TypeIcon = DOCUMENT_TYPE_ICONS[artifact.type];
-  const showSlug = isDisplayableSlug(artifact.slug);
-
   return (
     <div className="px-3 py-1">
-      <div className="min-w-0">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <div className="flex min-w-0 shrink-0 items-center gap-1 text-muted-foreground">
-            <TypeIcon className="size-3 shrink-0" />
-            {showSlug && (
-              <span className="truncate font-mono text-[11px]">
-                {artifact.slug}
+      <div className="flex min-w-0 items-start gap-2">
+        <BoxIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-baseline gap-1.5">
+            {isDisplayableSlug(feature.slug) && (
+              <span className="shrink-0 font-mono text-muted-foreground text-xs">
+                {feature.slug}
               </span>
             )}
+            <p className="min-w-0 truncate font-medium text-sm">
+              {feature.title}
+            </p>
           </div>
-          <p className="min-w-0 truncate font-medium text-sm">
-            {artifact.title}
-          </p>
         </div>
       </div>
       <div className="mt-1.5 flex items-center justify-end gap-2">
         <div className="flex shrink-0 items-center gap-1">
           <div className="flex size-6 shrink-0 items-center justify-center">
-            <PriorityIcon priority={artifact.priority} size={14} />
+            <PriorityIcon priority={feature.priority} size={14} />
           </div>
           <div className="flex size-6 shrink-0 items-center justify-center">
             <AssigneeAvatar
-              assignee={artifact.assignee}
+              assignee={feature.assignee}
               className="size-4 shrink-0"
               disableLink={disableAvatarLink}
             />
@@ -315,7 +293,7 @@ function KanbanCardContent({
           <div className="flex size-6 shrink-0 items-center justify-center">
             <StatusIcon
               size={16}
-              status={DOCUMENT_STATUS_TO_ICON[artifact.status]}
+              status={FEATURE_STATUS_TO_ICON[feature.status]}
             />
           </div>
         </div>
@@ -326,26 +304,26 @@ function KanbanCardContent({
 
 /** Card for DragOverlay so the dragging item doesn't affect layout */
 function KanbanCardPreview({
-  artifact,
-}: Readonly<{ artifact: DocumentWithWorkstream }>) {
+  feature,
+}: Readonly<{ feature: FeatureWithWorkstream }>) {
   return (
-    <Card className="cursor-grabbing rounded-md py-2 shadow-lg">
-      <KanbanCardContent artifact={artifact} />
+    <Card className="cursor-grabbing py-3 shadow-lg">
+      <KanbanCardContent feature={feature} />
     </Card>
   );
 }
 
 type MyTasksCardProps = {
-  artifact: DocumentWithWorkstream;
-  lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
+  feature: FeatureWithWorkstream;
+  lastDraggedFeatureIdRef: React.MutableRefObject<string | null>;
 };
 
 function MyTasksCard({
-  artifact,
-  lastDraggedArtifactIdRef,
+  feature,
+  lastDraggedFeatureIdRef,
 }: Readonly<MyTasksCardProps>) {
   const { attributes, isDragging, listeners, setNodeRef, transform } =
-    useDraggable({ id: artifact.id });
+    useDraggable({ id: feature.id });
 
   const style =
     !isDragging && transform
@@ -354,27 +332,25 @@ function MyTasksCard({
 
   const handleLinkClick = useCallback(
     (e: React.MouseEvent) => {
-      if (lastDraggedArtifactIdRef.current === artifact.id) {
+      if (lastDraggedFeatureIdRef.current === feature.id) {
         e.preventDefault();
-        lastDraggedArtifactIdRef.current = null;
+        lastDraggedFeatureIdRef.current = null;
       }
     },
-    [artifact.id, lastDraggedArtifactIdRef]
+    [feature.id, lastDraggedFeatureIdRef]
   );
-
-  const href = getDocumentRoute(artifact) ?? "#";
 
   return (
     <div
-      className={isDragging ? "invisible cursor-grabbing" : "cursor-grab"}
+      className={`touch-none ${isDragging ? "invisible cursor-grabbing" : "cursor-grab"}`}
       ref={setNodeRef}
       style={style}
       {...attributes}
       {...listeners}
     >
-      <Link href={href} onClick={handleLinkClick}>
-        <Card className="rounded-md py-2 shadow-none transition-colors hover:bg-accent/50">
-          <KanbanCardContent artifact={artifact} disableAvatarLink />
+      <Link href={`/features/${feature.slug}`} onClick={handleLinkClick}>
+        <Card className="py-3 transition-colors hover:bg-accent/50">
+          <KanbanCardContent disableAvatarLink feature={feature} />
         </Card>
       </Link>
     </div>

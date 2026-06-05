@@ -8,7 +8,7 @@ import { use } from "react";
 import { useUser, useUserStats } from "@/hooks/queries/use-users";
 import { formatTokenCount } from "@/lib/format-utils";
 import { Header } from "../../components/header";
-import { DocumentsByTypeChart } from "./components/documents-by-type-chart";
+import { ArtifactsByTypeChart } from "./components/artifacts-by-type-chart";
 import { UserProfileHeader } from "./components/user-profile-header";
 
 const ContributionHeatmap = dynamic(
@@ -100,7 +100,7 @@ function StatsSection({
   return (
     <>
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <StatTile label="Artifacts Created" value={stats.totalDocuments} />
+        <StatTile label="Artifacts Created" value={stats.totalArtifacts} />
         <StatTile label="PRs Landed" value={stats.totalPRsLanded} />
         <StatTile label="Comments" value={stats.totalComments} />
         <StatTile label="Loops Initiated" value={stats.totalLoops} />
@@ -132,7 +132,7 @@ function StatsSection({
       <section className="space-y-4">
         <h2 className="font-semibold text-xl">Artifacts by Type</h2>
         <Card className="p-4">
-          <DocumentsByTypeChart data={stats.documentsByType} />
+          <ArtifactsByTypeChart data={stats.artifactsByType} />
         </Card>
       </section>
     </>

@@ -1,0 +1,33 @@
+name: 'Validate Artifact Ownership'
+description: 'Validate that a ClosedLoop artifact belongs to the expected issue'
+inputs:
+  run_dir:
+    description: 'Path to the run directory from artifact download'
+    required: true
+  issue_number:
+    description: 'Expected issue number'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate Ownership
+      shell: bash
+      run: |
+        RUN_DIR="${{ inputs.run_dir }}"
+        EXPECTED_ISSUE="${{ inputs.issue_number }}"
+
+        # Extract issue number from RUN_DIR path (format: .closedloop-ai/runs/YYYYMMDD-HHMMSS-issue-NNN)
+        if [[ "$RUN_DIR" =~ issue-([0-9]+) ]]; then
+          ARTIFACT_ISSUE="${BASH_REMATCH[1]}"
+
+          if [ "$ARTIFACT_ISSUE" != "$EXPECTED_ISSUE" ]; then
+            echo "::error::Artifact ownership mismatch: artifact is for issue #$ARTIFACT_ISSUE but current issue is #$EXPECTED_ISSUE"
+            exit 1
+          fi
+
+          echo "Artifact ownership validated: issue #$ARTIFACT_ISSUE"
+        else
+          echo "::warning::Could not extract issue number from RUN_DIR path: $RUN_DIR"
+          echo "Skipping ownership validation (legacy artifact format)"
+        fi

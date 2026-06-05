@@ -10,15 +10,10 @@
             "style": "type"
           }
         },
-        "noNonNullAssertion": "off",
-        // Biome 2.4: defer substring→slice migration to separate PR
-        "noSubstr": "warn",
-        "noDescendingSpecificity": "warn"
+        "noNonNullAssertion": "off"
       },
       "suspicious": {
-        "noEmptyBlockStatements": "off",
-        // Biome 2.4: defer array-index-key fixes to separate PR
-        "noArrayIndexKey": "warn"
+        "noEmptyBlockStatements": "off"
       }
     }
   },
@@ -29,145 +24,56 @@
     {
       "includes": [
         "apps/app/components/engineer/**",
-        "apps/app/components/chat/**",
+        "apps/app/app/api/engineer/**",
         "apps/app/hooks/engineer/**",
-        // Narrowed from hooks/chat/** to the single remaining offender
-        "apps/app/hooks/chat/use-stream-dispatch.ts",
         "apps/app/lib/engineer/**",
-        "apps/app/lib/chat/**"
+        "apps/app/types/engineer.ts",
+        "apps/app/types/repos.ts",
+        "apps/app/types/run-viewer.ts",
+        "apps/app/app/(authenticated)/engineer/**"
       ],
       "linter": {
         "rules": {
-          "performance": {
-            // Keep engineer/chat noBarrel carve-out while compatibility shims and
-            // existing barrel patterns remain in this scope.
-            "noBarrelFile": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "apps/app/components/chat/CollapsibleBlock.tsx",
-        "apps/app/components/chat/MessageContent.tsx",
-        "apps/app/components/engineer/CommentChat.tsx",
-        "apps/app/components/engineer/JudgesViewer.tsx",
-        "apps/app/components/engineer/PlanViewer.tsx",
-        "apps/app/components/engineer/RepoPickerDialog.tsx",
-        "apps/app/components/engineer/ReviewChatPane.tsx",
-        "apps/app/components/engineer/ClosedLoopChat.tsx",
-        "apps/app/components/engineer/TerminalChatDialog.tsx",
-        "apps/app/components/engineer/TicketCard.tsx",
-        "apps/app/components/engineer/TicketList.tsx",
-        "apps/app/components/engineer/TicketListRow.tsx",
-        "apps/app/components/engineer/__tests__/HealthCheckDialog.test.tsx",
-        "apps/app/components/engineer/run-viewer/RunViewerDialog.tsx",
-        "apps/app/components/engineer/run-viewer/viewers/JudgesViewer.tsx",
-        "apps/app/components/engineer/run-viewer/viewers/MarkdownViewer.tsx",
-        "apps/app/hooks/engineer/use-codex-debate.ts",
-        "apps/app/hooks/engineer/use-review-chat.ts",
-        "apps/app/hooks/engineer/use-slash-commands.ts",
-        "apps/app/lib/chat/chat-markdown.tsx",
-        "apps/app/lib/chat/chat-utils.ts",
-        "apps/app/lib/engineer/codex-review-parser.ts",
-        "apps/app/lib/engineer/deploy-detect.ts",
-        "apps/app/lib/engineer/relay-client.ts",
-        "apps/app/lib/engineer/repos.ts",
-        "apps/app/lib/engineer/review-path-utils.ts",
-        "apps/app/lib/engineer/review-split.ts",
-        "apps/app/lib/engineer/worktree-utils.ts"
-      ],
-      "linter": {
-        "rules": {
-          "performance": {
-            // FEA-520: keep regex-hoisting carve-out limited to files still requiring
-            // behavior-safe parser/streaming refactors.
-            "useTopLevelRegex": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "apps/app/components/chat/SubagentBlock.tsx",
-        "apps/app/components/engineer/ActiveTicketCard.tsx",
-        "apps/app/components/engineer/CommentChat.tsx",
-        "apps/app/components/engineer/DeployDialog.tsx",
-        "apps/app/components/engineer/JsonlLogViewer.tsx",
-        "apps/app/components/engineer/LearningsDialog.tsx",
-        "apps/app/components/engineer/PRCommentCard.tsx",
-        "apps/app/components/engineer/RepoPickerDialog.tsx",
-        "apps/app/components/engineer/ReviewChatPane.tsx",
-        "apps/app/components/engineer/ClosedLoopChat.tsx",
-        "apps/app/components/engineer/ClosedLoopStatus.tsx",
-        "apps/app/components/engineer/TerminalChatDialog.tsx",
-        "apps/app/components/engineer/TicketChatDialog.tsx",
-        "apps/app/components/engineer/TicketList.tsx",
-        "apps/app/components/engineer/TicketListRow.tsx",
-        "apps/app/hooks/chat/use-stream-dispatch.ts",
-        "apps/app/hooks/engineer/use-codex-debate.ts",
-        "apps/app/hooks/engineer/use-engineer-features.ts",
-        "apps/app/hooks/engineer/use-review-chat.ts",
-        "apps/app/hooks/engineer/use-review-execution.ts",
-        "apps/app/hooks/engineer/use-start-plan-loop.ts",
-        "apps/app/hooks/engineer/useCommentChat.ts",
-        "apps/app/hooks/engineer/useClosedLoopLaunch.ts",
-        "apps/app/lib/chat/chat-utils.ts",
-        "apps/app/lib/engineer/claude-stream-utils.ts",
-        "apps/app/lib/engineer/codex-review-parser.ts",
-        "apps/app/lib/engineer/deploy-detect.ts",
-        "apps/app/lib/engineer/engineer-fetch-interceptor.ts",
-        "apps/app/lib/engineer/queries/health-check.ts",
-        "apps/app/lib/engineer/relay-client.ts",
-        "apps/app/lib/engineer/review-stream.ts",
-        "apps/app/lib/engineer/sessions.ts",
-        "apps/app/lib/engineer/stream-events.ts"
-      ],
-      "linter": {
-        "rules": {
-          "complexity": {
-            // FEA-520: keep cognitive-complexity carve-out only on current
-            // orchestration/parser hotspots that still need module-level refactors.
-            "noExcessiveCognitiveComplexity": {
-              "level": "error",
-              "options": { "maxAllowedComplexity": 106 }
-            }
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        // FEA-520: postpone PascalCase -> kebab-case migration to a dedicated rename pass.
-        "apps/app/components/chat/**",
-        "apps/app/components/engineer/**",
-        "apps/app/hooks/engineer/__tests__/useClosedLoopLaunch.test.ts",
-        "apps/app/hooks/engineer/useCommentChat.ts",
-        "apps/app/hooks/engineer/useGitOperations.ts",
-        "apps/app/hooks/engineer/useMediaQuery.ts",
-        "apps/app/hooks/engineer/useClosedLoopLaunch.ts",
-        "apps/app/hooks/engineer/useTerminalStatus.ts",
-        "apps/app/hooks/engineer/useUpdateChecker.ts",
-        "apps/app/lib/chat/runner-token/**"
-      ],
-      "linter": {
-        "rules": {
-          "style": {
-            "useFilenamingConvention": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["e2e/**", "playwright.config.ts"],
-      "linter": {
-        "rules": {
-          "performance": {
-            "noBarrelFile": "off"
-          },
           "a11y": {
             "useButtonType": "off",
-            "useSemanticElements": "off"
+            "useSemanticElements": "off",
+            "noSvgWithoutTitle": "off",
+            "useKeyWithClickEvents": "off",
+            "noStaticElementInteractions": "off",
+            "noNoninteractiveElementInteractions": "off"
+          },
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 120 }
+            },
+            "noForEach": "off"
+          },
+          "style": {
+            "useFilenamingConvention": "off",
+            "noNestedTernary": "off",
+            "useDefaultSwitchClause": "off",
+            "noEnum": "off",
+            "noExportedImports": "off"
+          },
+          "performance": {
+            "useTopLevelRegex": "off",
+            "noBarrelFile": "off",
+            "noImgElement": "off"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off",
+            "noAlert": "off",
+            "useIterableCallbackReturn": "off",
+            "noControlCharactersInRegex": "off",
+            "noExplicitAny": "off",
+            "noMisleadingCharacterClass": "off"
+          },
+          "correctness": {
+            "noUnusedFunctionParameters": "off",
+            "useImageSize": "off",
+            "useExhaustiveDependencies": "off",
+            "noInvalidUseBeforeDeclaration": "off"
           }
         }
       }
@@ -192,8 +98,6 @@
   "files": {
     "includes": [
       "**/*",
-      // shadcn/ui upstream conventions: these directories use interface declarations,
-      // barrel exports, and patterns that conflict with project Biome rules
       "!packages/design-system/components/ui",
       "!packages/design-system/lib",
       "!packages/design-system/hooks",
@@ -202,8 +106,7 @@
       "!docs/lib",
       "!docs/hooks",
       "!apps/docs/**/*.json",
-      "!apps/email/.react-email",
-      "!playwright-report"
+      "!apps/email/.react-email"
     ]
   }
 }

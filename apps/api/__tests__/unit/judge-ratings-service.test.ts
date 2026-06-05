@@ -15,19 +15,8 @@ import {
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
   EntityType: {
-    DOCUMENT: "DOCUMENT",
+    ARTIFACT: "ARTIFACT",
     FEATURE: "FEATURE",
     WORKSTREAM: "WORKSTREAM",
   },
@@ -36,8 +25,8 @@ vi.mock("@repo/database", () => ({
 import {
   getUserJudgeRatings,
   submitJudgeRating,
-} from "@/app/documents/[id]/judge-ratings/service";
-import { submitJudgeRatingValidator } from "@/app/documents/[id]/judge-ratings/validators";
+} from "@/app/artifacts/[id]/judge-ratings/service";
+import { submitJudgeRatingValidator } from "@/app/artifacts/[id]/judge-ratings/validators";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -235,7 +224,7 @@ describe("submitJudgeRating", () => {
         where: expect.objectContaining({
           id: JUDGE_SCORE_ID,
           evaluation: expect.objectContaining({
-            artifactId: ARTIFACT_ID,
+            entityId: ARTIFACT_ID,
             organizationId: ORG_ID,
           }),
         }),
@@ -382,7 +371,7 @@ describe("getUserJudgeRatings", () => {
         where: expect.objectContaining({
           organizationId: ORG_ID,
           userId: USER_ID,
-          evaluation: { artifactId: ARTIFACT_ID },
+          evaluation: { entityId: ARTIFACT_ID, entityType: "ARTIFACT" },
         }),
       })
     );

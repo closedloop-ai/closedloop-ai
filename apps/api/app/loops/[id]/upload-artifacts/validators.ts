@@ -1,26 +1,22 @@
 import { z } from "zod";
-import { jsonObjectSchema, jsonValueSchema } from "@/lib/json-schema";
 
 export const uploadArtifactsSchema = z.object({
-  artifacts: z
-    .object({
-      plan: z
-        .object({
-          content: z.string(),
-          raw: jsonObjectSchema.optional(),
-        })
-        .optional(),
-      prd: z.object({ content: z.string() }).optional(),
-      executionResult: jsonObjectSchema.optional(),
-      features: jsonObjectSchema.optional(),
-      judges: jsonObjectSchema.optional(),
-      codeJudges: jsonObjectSchema.optional(),
-      planJudges: jsonObjectSchema.optional(),
-      prdJudges: jsonObjectSchema.optional(),
-      featureJudges: jsonObjectSchema.optional(),
-      openQuestions: z.string().optional(),
-    })
-    .catchall(jsonValueSchema),
+  artifacts: z.object({
+    plan: z
+      .object({
+        content: z.string(),
+        raw: z.record(z.string(), z.unknown()).optional(),
+      })
+      .optional(),
+    prd: z.object({ content: z.string() }).optional(),
+    executionResult: z.record(z.string(), z.unknown()).optional(),
+    features: z.record(z.string(), z.unknown()).optional(),
+    judges: z.record(z.string(), z.unknown()).optional(),
+    codeJudges: z.record(z.string(), z.unknown()).optional(),
+    planJudges: z.record(z.string(), z.unknown()).optional(),
+    prdJudges: z.record(z.string(), z.unknown()).optional(),
+    openQuestions: z.string().optional(),
+  }),
   metadata: z
     .object({
       tokensInput: z.number().optional(),

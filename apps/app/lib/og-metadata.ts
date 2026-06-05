@@ -1,14 +1,13 @@
-import type { DocumentStatus } from "@repo/api/src/types/document";
-import { DocumentType } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import type { FeatureStatus } from "@repo/api/src/types/feature";
 import type { Metadata } from "next";
 import { env } from "@/env";
-import { DOCUMENT_STATUS_LABELS } from "@/lib/project-constants";
+import { FEATURE_STATUS_LABELS } from "@/lib/project-constants";
 
-const DOCUMENT_TYPE_DISPLAY: Record<DocumentType, string> = {
-  [DocumentType.Prd]: "PRD",
-  [DocumentType.ImplementationPlan]: "Plan",
-  [DocumentType.Template]: "Template",
-  [DocumentType.Feature]: "Feature",
+const ARTIFACT_TYPE_DISPLAY: Record<ArtifactType, string> = {
+  [ArtifactType.Prd]: "PRD",
+  [ArtifactType.ImplementationPlan]: "Plan",
+  [ArtifactType.Template]: "Template",
 };
 
 const FALLBACK_METADATA: Metadata = {
@@ -72,15 +71,15 @@ type OgHandler = {
  */
 const handlers: OgHandler[] = [
   {
-    pattern: /^(?:prds|implementation-plans|documents)\/([^/]+)$/,
+    pattern: /^(?:prds|implementation-plans|artifacts)\/([^/]+)$/,
     async resolve(match, apiUrl) {
       const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/documents/by-slug/${slug}/meta`);
+      const data = await fetchJson(`${apiUrl}/artifacts/by-slug/${slug}/meta`);
       if (!data) {
         return FALLBACK_METADATA;
       }
       const description =
-        DOCUMENT_TYPE_DISPLAY[data.type as DocumentType] ?? data.type;
+        ARTIFACT_TYPE_DISPLAY[data.type as ArtifactType] ?? data.type;
       return makeMetadata(data.title, description);
     },
   },
@@ -88,12 +87,12 @@ const handlers: OgHandler[] = [
     pattern: /^features\/([^/]+)$/,
     async resolve(match, apiUrl) {
       const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/documents/by-slug/${slug}/meta`);
+      const data = await fetchJson(`${apiUrl}/features/by-slug/${slug}/meta`);
       if (!data) {
         return FALLBACK_METADATA;
       }
       const description =
-        DOCUMENT_STATUS_LABELS[data.status as DocumentStatus] ??
+        FEATURE_STATUS_LABELS[data.status as FeatureStatus] ??
         data.status ??
         "Feature";
       return makeMetadata(data.title, `Feature — ${description}`);

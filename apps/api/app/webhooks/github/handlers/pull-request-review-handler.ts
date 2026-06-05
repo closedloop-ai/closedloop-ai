@@ -2,13 +2,10 @@ import type {
   PullRequestReviewDismissedEvent,
   PullRequestReviewSubmittedEvent,
 } from "@octokit/webhooks-types";
-import { LinkType } from "@repo/api/src/types/artifact";
-import { ReviewDecision } from "@repo/api/src/types/document";
-import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
+import { ReviewDecision } from "@repo/api/src/types/artifact";
+import { type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-
-import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
 
 /**
  * Union type for pull request review events we handle.
@@ -16,6 +13,18 @@ import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
 export type HandledPullRequestReviewEvent =
   | PullRequestReviewSubmittedEvent
   | PullRequestReviewDismissedEvent;
+
+/**
+ * Priority order for review decisions. Higher numbers take precedence.
+ * DISMISSED reviews are excluded from aggregate computation (filtered before this is used).
+ * Per-reviewer records still store DISMISSED for audit purposes.
+ */
+const REVIEW_DECISION_PRIORITY = {
+  [ReviewDecision.ChangesRequested]: 3,
+  [ReviewDecision.Approved]: 2,
+  [ReviewDecision.Commented]: 1,
+  null: 0,
+} as const;
 
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
@@ -40,6 +49,59 @@ function mapReviewStateToDecision(state: string): ReviewDecision | null {
 }
 
 /**
+ * Compute the aggregate review decision from a list of per-reviewer states.
+ * Filters out DISMISSED reviews (neutralized by admin action), then takes
+ * the highest-priority value across remaining active reviewers.
+ * Returns null if no active reviews exist.
+ */
+function computeAggregateReviewDecision(
+  reviewStates: ReviewDecision[]
+): ReviewDecision | null {
+  const activeStates = reviewStates.filter(
+    (s) => s !== ReviewDecision.Dismissed
+  );
+
+  if (activeStates.length === 0) {
+    return null;
+  }
+
+  let highest: ReviewDecision = activeStates[0];
+  for (const state of activeStates) {
+    if (
+      REVIEW_DECISION_PRIORITY[state as keyof typeof REVIEW_DECISION_PRIORITY] >
+      REVIEW_DECISION_PRIORITY[highest as keyof typeof REVIEW_DECISION_PRIORITY]
+    ) {
+      highest = state;
+    }
+  }
+  return highest;
+}
+
+/**
+ * Recompute aggregate reviewDecision from all per-reviewer reviews and update the PR.
+ */
+async function recomputeAndUpdateAggregate(
+  tx: TransactionClient,
+  pullRequestId: string
+): Promise<ReviewDecision | null> {
+  const allReviews = await tx.gitHubPRReview.findMany({
+    where: { pullRequestId },
+    select: { state: true },
+  });
+
+  const aggregateDecision = computeAggregateReviewDecision(
+    allReviews.map((r: { state: string }) => r.state as ReviewDecision)
+  );
+
+  await tx.gitHubPullRequest.update({
+    where: { id: pullRequestId },
+    data: { reviewDecision: aggregateDecision },
+  });
+
+  return aggregateDecision;
+}
+
+/**
  * Handle the "submitted" action for a PR review.
  * Upserts per-reviewer record, recomputes aggregate, creates workstream event.
  */
@@ -49,10 +111,10 @@ async function handleSubmittedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
-    workstreamId: string | null;
-    documentId: string | null;
+    workstreamId: string;
+    artifactId: string | null;
     reviewDecision: string | null;
-    document: { slug: string } | null;
+    artifact: { slug: string } | null;
   }
 ): Promise<void> {
   const reviewDecision = mapReviewStateToDecision(review.state);
@@ -122,30 +184,27 @@ async function handleSubmittedReview(
     }
   );
 
-  // Create workstream event for submitted review — only when the PR artifact
-  // has a workstream.
-  if (existingPr.workstreamId) {
-    await tx.workstreamEvent.create({
+  // Create workstream event for submitted review
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId: existingPr.workstreamId,
+      type: "GITHUB_PR_REVIEW_SUBMITTED",
+      actorType: "system",
       data: {
-        workstreamId: existingPr.workstreamId,
-        type: "GITHUB_PR_REVIEW_SUBMITTED",
-        actorType: "system",
-        data: {
-          reviewId: review.id,
-          reviewState: review.state,
-          reviewDecision,
-          reviewerLogin,
-          reviewBody: review.body,
-          prNumber: pull_request.number,
-          prTitle: pull_request.title,
-          prUrl: pull_request.html_url,
-          reviewUrl: review.html_url,
-          documentId: existingPr.documentId,
-          documentSlug: existingPr.document?.slug,
-        },
+        reviewId: review.id,
+        reviewState: review.state,
+        reviewDecision,
+        reviewerLogin,
+        reviewBody: review.body,
+        prNumber: pull_request.number,
+        prTitle: pull_request.title,
+        prUrl: pull_request.html_url,
+        reviewUrl: review.html_url,
+        artifactId: existingPr.artifactId,
+        artifactSlug: existingPr.artifact?.slug,
       },
-    });
-  }
+    },
+  });
 }
 
 /**
@@ -158,10 +217,10 @@ async function handleDismissedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
-    workstreamId: string | null;
-    documentId: string | null;
+    workstreamId: string;
+    artifactId: string | null;
     reviewDecision: string | null;
-    document: { slug: string } | null;
+    artifact: { slug: string } | null;
   }
 ): Promise<void> {
   const reviewerLogin = review.user?.login;
@@ -202,30 +261,27 @@ async function handleDismissedReview(
     newAggregate: aggregateDecision,
   });
 
-  // Create workstream event for dismissed review — only when the PR artifact
-  // has a workstream.
-  if (existingPr.workstreamId) {
-    await tx.workstreamEvent.create({
+  // Create workstream event for dismissed review
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId: existingPr.workstreamId,
+      type: "GITHUB_PR_REVIEW_SUBMITTED",
+      actorType: "system",
       data: {
-        workstreamId: existingPr.workstreamId,
-        type: "GITHUB_PR_REVIEW_SUBMITTED",
-        actorType: "system",
-        data: {
-          reviewId: review.id,
-          reviewState: "dismissed",
-          reviewDecision: ReviewDecision.Dismissed,
-          reviewerLogin,
-          reviewBody: review.body,
-          prNumber: pull_request.number,
-          prTitle: pull_request.title,
-          prUrl: pull_request.html_url,
-          reviewUrl: review.html_url,
-          documentId: existingPr.documentId,
-          documentSlug: existingPr.document?.slug,
-        },
+        reviewId: review.id,
+        reviewState: "dismissed",
+        reviewDecision: ReviewDecision.Dismissed,
+        reviewerLogin,
+        reviewBody: review.body,
+        prNumber: pull_request.number,
+        prTitle: pull_request.title,
+        prUrl: pull_request.html_url,
+        reviewUrl: review.html_url,
+        artifactId: existingPr.artifactId,
+        artifactSlug: existingPr.artifact?.slug,
       },
-    });
-  }
+    },
+  });
 }
 
 /**
@@ -287,7 +343,7 @@ export async function handlePullRequestReview(
       return;
     }
 
-    const prDetail = await tx.pullRequestDetail.findUnique({
+    const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -295,29 +351,15 @@ export async function handlePullRequestReview(
         },
       },
       select: {
+        id: true,
+        workstreamId: true,
         artifactId: true,
         reviewDecision: true,
-        artifact: {
-          select: {
-            workstreamId: true,
-            // PR is the TARGET of a DOCUMENT → produces → PR link.
-            targetLinks: {
-              where: {
-                linkType: LinkType.Produces,
-                source: { type: ArtifactType.DOCUMENT },
-              },
-              select: {
-                source: { select: { id: true, slug: true } },
-              },
-              orderBy: { createdAt: "asc" },
-              take: 1,
-            },
-          },
-        },
+        artifact: { select: { slug: true } },
       },
     });
 
-    if (!prDetail) {
+    if (!existingPr) {
       log.warn("[handlePullRequestReview] Pull request not found in database", {
         repositoryId: repo.id,
         prNumber: pull_request.number,
@@ -326,16 +368,6 @@ export async function handlePullRequestReview(
       });
       return;
     }
-
-    const linkedDoc = prDetail.artifact.targetLinks[0]?.source ?? null;
-    const existingPr = {
-      id: prDetail.artifactId,
-      // Preserve null — empty string is not a valid workstream id.
-      workstreamId: prDetail.artifact.workstreamId,
-      documentId: linkedDoc?.id ?? null,
-      reviewDecision: prDetail.reviewDecision,
-      document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
-    };
 
     if (action === "submitted") {
       await handleSubmittedReview(tx, review, pull_request, existingPr);

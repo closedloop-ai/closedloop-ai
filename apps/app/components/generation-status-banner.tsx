@@ -2,43 +2,27 @@
 
 import {
   type GenerationStatus,
-  getGenerationStatusRunKey,
   isActiveGenerationStatus,
-} from "@repo/api/src/types/document";
+} from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import {
-  CircleAlertIcon,
-  ExternalLinkIcon,
-  LoaderIcon,
-  XIcon,
-} from "lucide-react";
+import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusBannerProps = {
   generationStatus: GenerationStatus | undefined;
   onGenerationComplete?: () => void;
-  onDismissFailure?: (runKey: string | null) => Promise<void> | void;
-  isDismissFailurePending?: boolean;
 };
 
 export function GenerationStatusBanner({
   generationStatus,
   onGenerationComplete,
-  onDismissFailure,
-  isDismissFailurePending = false,
 }: Readonly<GenerationStatusBannerProps>) {
   const toastShownRef = useRef(false);
   const prevStatusRef = useRef<GenerationStatus["status"] | undefined>(
     undefined
   );
-  const [dismissedFailureRunKey, setDismissedFailureRunKey] = useState<
-    string | null
-  >(null);
-  const runKey = generationStatus
-    ? (generationStatus.runKey ?? getGenerationStatusRunKey(generationStatus))
-    : null;
 
   const handleGenerationComplete = useEffectEvent(() => {
     onGenerationComplete?.();
@@ -60,18 +44,11 @@ export function GenerationStatusBanner({
       handleGenerationComplete();
     }
 
-    // Reset toast guard and dismiss state when generation becomes active again
+    // Reset toast guard when generation becomes active again
     if (currentStatus && isActiveGenerationStatus(currentStatus)) {
       toastShownRef.current = false;
-      setDismissedFailureRunKey(null);
     }
   }, [generationStatus]);
-
-  useEffect(() => {
-    if (dismissedFailureRunKey && runKey && dismissedFailureRunKey !== runKey) {
-      setDismissedFailureRunKey(null);
-    }
-  }, [dismissedFailureRunKey, runKey]);
 
   // Don't render if no status or status is NONE/SUCCESS
   if (
@@ -84,9 +61,6 @@ export function GenerationStatusBanner({
 
   const isActive = isActiveGenerationStatus(generationStatus.status);
   const isFailed = generationStatus.status === "FAILURE";
-  if (isFailed && dismissedFailureRunKey && runKey === dismissedFailureRunKey) {
-    return null;
-  }
 
   return (
     <div
@@ -100,7 +74,7 @@ export function GenerationStatusBanner({
         {isActive ? (
           <LoaderIcon className="h-4 w-4 animate-spin" />
         ) : (
-          <CircleAlertIcon className="h-4 w-4" />
+          <XCircleIcon className="h-4 w-4" />
         )}
         <span>
           {getStatusMessage(
@@ -111,25 +85,7 @@ export function GenerationStatusBanner({
         </span>
       </div>
 
-      <div className="flex items-center gap-2">
-        <BannerLink generationStatus={generationStatus} />
-        {isFailed && (
-          <button
-            aria-label="Dismiss"
-            className="rounded-sm p-0.5 opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled={isDismissFailurePending}
-            onClick={() => {
-              if (runKey) {
-                setDismissedFailureRunKey(runKey);
-              }
-              onDismissFailure?.(runKey);
-            }}
-            type="button"
-          >
-            <XIcon className="h-4 w-4" />
-          </button>
-        )}
-      </div>
+      <BannerLink generationStatus={generationStatus} />
     </div>
   );
 }

@@ -100,7 +100,7 @@ describe("useCreateContextAttachment", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/documents/feature-123/context-attachments",
+      "/features/feature-123/context-attachments",
       buildCreateInput()
     );
     expect(result.current.data).toEqual(mockResponse);
@@ -122,12 +122,12 @@ describe("useCreateContextAttachment", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/documents/feature-999/context-attachments",
+      "/features/feature-999/context-attachments",
       input
     );
   });
 
-  test("invalidates artifact-link list queries on success", async () => {
+  test("invalidates entity-link list queries on success", async () => {
     mockApiClient.post.mockResolvedValueOnce(buildCreateResponse());
 
     const queryClient = createTestQueryClient();
@@ -144,7 +144,7 @@ describe("useCreateContextAttachment", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        queryKey: ["artifact-links", "list"],
+        queryKey: ["entity-links", "list"],
       })
     );
   });
@@ -206,7 +206,7 @@ describe("useImportGDriveContext", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     expect(mockApiClient.post).toHaveBeenCalledWith(
-      "/documents/feature-456/context-attachments/gdrive",
+      "/features/feature-456/context-attachments/gdrive",
       input
     );
     expect(result.current.data).toEqual(mockResponse);
@@ -240,7 +240,7 @@ describe("useImportGDriveContext", () => {
     });
   });
 
-  test("invalidates artifact-link list queries on success", async () => {
+  test("invalidates entity-link list queries on success", async () => {
     mockApiClient.post.mockResolvedValueOnce(buildImportResponse());
 
     const queryClient = createTestQueryClient();
@@ -256,7 +256,7 @@ describe("useImportGDriveContext", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        queryKey: ["artifact-links", "list"],
+        queryKey: ["entity-links", "list"],
       })
     );
   });
