@@ -1,0 +1,24 @@
+# gitleaks config for the Community Edition repo's secret scan (.github/workflows/gitleaks.yml).
+#
+# Default ruleset PLUS allowlists for known-benign test fixtures and
+# documentation placeholders. This file is PUBLIC, so it intentionally contains
+# NO proprietary identifiers — org-specific identifier rules are enforced
+# upstream in the private sync gate, before anything reaches this repo.
+
+title = "ClosedLoop CE secret scan"
+
+[extend]
+useDefault = true
+# The product documents its own REST API with curl examples (in docs and in the
+# API-keys settings UI), so an Authorization-header rule perpetually fires on
+# placeholders. Real provider credentials are still covered by the other rules.
+disabledRules = ["curl-auth-header"]
+
+[allowlist]
+description = "Test fixtures and documentation placeholders — no live secrets"
+paths = [
+  '''(^|/)__tests__/''',
+  '''\.test\.(ts|tsx|js|jsx|mjs|cts|mts)$''',
+  '''\.spec\.(ts|tsx|js|jsx|mjs|cts|mts)$''',
+  '''(^|/)docs/github-app-setup\.md$''',  # example RSA key in setup instructions
+]
