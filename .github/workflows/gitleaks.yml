@@ -1,0 +1,41 @@
+name: gitleaks
+
+# Defense-in-depth secret scan for the public Community Edition repo.
+# Independent of the upstream sync gate, so secrets are caught regardless of
+# whether they arrive via the automated sync, a manual commit, or a PR.
+#
+# Default gitleaks ruleset only (provider credentials, tokens). Org-specific
+# proprietary-identifier rules deliberately live ONLY in the private sync gate
+# — embedding them in a config committed to this public repo would itself
+# disclose the identifiers.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan for secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan working tree for secrets
+        run: gitleaks dir . --no-banner --redact --verbose
