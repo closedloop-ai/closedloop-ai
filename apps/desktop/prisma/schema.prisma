@@ -1,0 +1,706 @@
+// Desktop-local SQLite store schema (FEA-1791 / PLN-886).
+//
+// This schema is intentionally independent of the cloud schema in
+// packages/database (FEA-1736 decision 6). It models the existing
+// SQLITE_SCHEMA DDL from apps/desktop/src/main/database/sqlite.ts so that
+// the generated 0001_init migration is byte-equivalent in effect to what
+// shipped installs already have — existing installs are baselined (the
+// migration is recorded as applied without executing).
+//
+// Conventions:
+// - Field names are camelCase with @map to the existing snake_case columns.
+// - Index/constraint names are pinned with map: to the legacy names so a
+//   migrated fresh install is structurally identical to a baselined one.
+// - Timestamps are TEXT (ISO strings) in the legacy schema; they stay String
+//   here. Type tightening is a future migration, not part of the cutover.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/main/database/generated"
+  importFileExtension = "js"
+  moduleFormat        = "esm"
+  // Partial indexes shipped in 7.4 but remain preview-gated as of 7.8.
+  previewFeatures     = ["partialIndexes"]
+}
+
+datasource db {
+  // Desktop local DB is SQLite (libSQL) with WAL so the long analytics backfill
+  // can write while the UI reads concurrently. Independent of the cloud schema
+  // (Neon Postgres in packages/database).
+  provider = "sqlite"
+}
+
+model Session {
+  id                 String  @id
+  name               String?
+  status             String  @default("running")
+  cwd                String?
+  model              String?
+  startedAt          String? @map("started_at")
+  updatedAt          String? @map("updated_at")
+  endedAt            String? @map("ended_at")
+  awaitingInputSince String? @map("awaiting_input_since")
+  metadata           String?
+  harness            String?
+  billingMode        String? @map("billing_mode")
+  userId             String? @map("user_id")
+  organizationId     String? @map("organization_id")
+  tracePhaseSources  Json?   @map("trace_phase_sources")
+  throttleSources    Json?   @map("throttle_sources")
+  correctionSources  Json?   @map("correction_sources")
+  costUsdEstimated   Float?  @map("cost_usd_estimated")
+  costCurrency       String? @map("cost_currency")
+  costSource         String? @map("cost_source")
+  dataRevision       Int     @default(1) @map("data_revision")
+  // Perf: denormalized session "last activity" sort key for the Sessions-list
+  // cursor pagination — COALESCE(MAX(events.created_at), started_at floor),
+  // maintained at ingest. NOT NULL with the epoch floor default so the read path
+  // can ORDER BY the bare (indexed) column without a COALESCE wrapper; inserts
+  // omit it and rely on a same-transaction recomputeSessionLastActivityAt. See
+  // migration 0005_session_last_activity_at and listSqliteSessionCursorPage in
+  // sqlite.ts.
+  lastActivityAt     String  @default("1970-01-01T00:00:00.000Z") @map("last_activity_at")
+
+  agents                  Agent[]
+  artifactLinks           SessionArtifactLink[]
+  artifactLinkBackfillSeen ArtifactLinkBackfillSeen?
+  codexTraceSpans         CodexTraceSpan[]
+
+  @@index([startedAt(sort: Desc)], map: "idx_sessions_started_at")
+  @@index([status, startedAt(sort: Desc)], map: "idx_sessions_status_started_at")
+  @@index([userId], map: "idx_sessions_user_id", where: raw("user_id IS NOT NULL"))
+  @@index([organizationId], map: "idx_sessions_organization_id", where: raw("organization_id IS NOT NULL"))
+  // FEA-2038: index for the dashboard analytics byRepository aggregation, which
+  // groups the filtered sessions by cwd. Partial on the non-null cwd predicate.
+  @@index([cwd], map: "idx_sessions_cwd", where: raw("cwd IS NOT NULL"))
+  // Perf: index backing the Sessions-list last-activity cursor sort + tie-break.
+  @@index([lastActivityAt(sort: Desc), id(sort: Desc)], map: "idx_sessions_last_activity")
+  @@map("sessions")
+}
+
+model Agent {
+  id                 String  @id
+  sessionId          String  @map("session_id")
+  name               String?
+  type               String?
+  subagentType       String? @map("subagent_type")
+  status             String  @default("running")
+  task               String?
+  currentTool        String? @map("current_tool")
+  startedAt          String? @map("started_at")
+  updatedAt          String? @map("updated_at")
+  endedAt            String? @map("ended_at")
+  awaitingInputSince String? @map("awaiting_input_since")
+  parentAgentId      String? @map("parent_agent_id")
+  metadata           String?
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([sessionId], map: "idx_agents_session_id")
+  @@index([status], map: "idx_agents_status")
+  @@index([type], map: "idx_agents_type")
+  @@index([parentAgentId], map: "idx_agents_parent", where: raw("parent_agent_id IS NOT NULL"))
+  @@map("agents")
+}
+
+// events.session_id has no foreign key in the legacy schema (events may
+// arrive before their session row) — modeled without a relation on purpose.
+model Event {
+  id        String  @id
+  sessionId String  @map("session_id")
+  agentId   String? @map("agent_id")
+  eventType String  @map("event_type")
+  toolName  String? @map("tool_name")
+  summary   String?
+  data      String?
+  createdAt String? @map("created_at")
+
+  @@index([sessionId], map: "idx_events_session_id")
+  @@index([agentId], map: "idx_events_agent_id")
+  @@index([createdAt], map: "idx_events_created_at")
+  @@index([toolName], map: "idx_events_tool_name", where: raw("tool_name IS NOT NULL"))
+  @@index([sessionId, createdAt], map: "idx_events_session_tool", where: raw("tool_name IS NOT NULL"))
+  @@index([createdAt(sort: Desc), sessionId], map: "idx_events_user_prompt_created_session", where: raw("event_type = 'UserPromptSubmit'"))
+  @@index([createdAt, toolName], map: "idx_events_tool_created", where: raw("tool_name IS NOT NULL"))
+  // Covering index for the dashboard analytics access pattern (heatmap
+  // human/agent classification, eventsByType, eventsPerDay, autonomy): they read
+  // events by session_id and group/filter on event_type/created_at. Lets SQLite
+  // serve those from a narrow index instead of full-scanning the wide events
+  // table (which drags every row's multi-KB `data` blob through the page cache).
+  @@index([sessionId, eventType, createdAt], map: "idx_events_session_type_created")
+  // FEA-2038: covering index for the dashboard analytics byTool aggregation,
+  // which groups events by tool_name and counts distinct session_id over the
+  // tool-bearing rows. Lets SQLite serve the grouped read from a narrow index
+  // instead of full-scanning the wide events table. Partial on the same
+  // tool_name predicate the query applies.
+  @@index([toolName, sessionId], map: "idx_events_tool_session", where: raw("tool_name IS NOT NULL"))
+  @@map("events")
+}
+
+/// FEA-2038: per-session analytics rollup, computed once at ingest so dashboard
+/// insights read cheap aggregates instead of re-scanning + re-classifying events.
+model SessionAnalytics {
+  sessionId        String  @id @map("session_id")
+  startedAt        String? @map("started_at")
+  startedDay       String? @map("started_day")
+  status           String?
+  harness          String?
+  isHuman          Int     @default(0) @map("is_human")
+  humanTurns       Int     @default(0) @map("human_turns")
+  agentTurns       Int     @default(0) @map("agent_turns")
+  eventCount       Int     @default(0) @map("event_count")
+  toolInvocations  Int     @default(0) @map("tool_invocations")
+  errorEvents      Int     @default(0) @map("error_events")
+  inputTokens      Int     @default(0) @map("input_tokens")
+  outputTokens     Int     @default(0) @map("output_tokens")
+  cacheReadTokens  Int     @default(0) @map("cache_read_tokens")
+  cacheWriteTokens Int     @default(0) @map("cache_write_tokens")
+  estCost          Float   @default(0) @map("est_cost")
+  runtimeMs        Int?    @map("runtime_ms")
+  updatedAt        String? @map("updated_at")
+
+  @@index([startedDay], map: "idx_session_analytics_started_day")
+  @@map("session_analytics")
+}
+
+/// FEA-2038: per-(session, tool) invocation rollup for the byTool / toolsOverTime
+/// insights — computed at ingest so those reads never scan the events corpus.
+model SessionToolAnalytics {
+  sessionId   String  @map("session_id")
+  toolName    String  @map("tool_name")
+  invocations Int     @default(0)
+  startedDay  String? @map("started_day")
+
+  @@id([sessionId, toolName])
+  @@index([toolName], map: "idx_session_tool_analytics_tool")
+  @@index([startedDay], map: "idx_session_tool_analytics_day")
+  @@map("session_tool_analytics")
+}
+
+model TokenUsage {
+  sessionId            String  @map("session_id")
+  model                String
+  inputTokens          BigInt  @default(0) @map("input_tokens")
+  outputTokens         BigInt  @default(0) @map("output_tokens")
+  cacheReadTokens      BigInt  @default(0) @map("cache_read_tokens")
+  cacheWriteTokens     BigInt  @default(0) @map("cache_write_tokens")
+  rawInput             BigInt  @default(0) @map("raw_input")
+  rawOutput            BigInt  @default(0) @map("raw_output")
+  rawCacheRead         BigInt  @default(0) @map("raw_cache_read")
+  rawCacheWrite        BigInt  @default(0) @map("raw_cache_write")
+  baselineInput        BigInt  @default(0) @map("baseline_input")
+  baselineOutput       BigInt  @default(0) @map("baseline_output")
+  baselineCacheRead    BigInt  @default(0) @map("baseline_cache_read")
+  baselineCacheWrite   BigInt  @default(0) @map("baseline_cache_write")
+  usageSource          String  @default("jsonl_parser") @map("usage_source")
+  revisionId           Int     @default(4) @map("revision_id")
+  createdAt            String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt            String? @map("updated_at")
+  costUsdEstimated     Float?  @map("cost_usd_estimated")
+  costCurrency         String? @map("cost_currency")
+  costSource           String? @map("cost_source")
+  costObservedAt       String? @map("cost_observed_at")
+  // FEA-2085: true when `model` is a fallback placeholder (e.g. Codex's
+  // gpt-5-codex default) rather than an id extracted from the transcript.
+  inferred             Boolean @default(false)
+
+  // NOTE: token_usage.session_id has no DB foreign key in the legacy DDL (a
+  // plain session_id column, like events), so NO Prisma `@relation` is modeled
+  // here — adding one would emit a FOREIGN KEY into the schema-derived DDL that
+  // the baselined 0001_init lacks, drifting prisma-migrations-agreement and
+  // requiring a table-rebuild migration. The branch usage read instead resolves
+  // the session→billing_mode scope through the link table's real relation and a
+  // second keyed `tokenUsage.findMany` (see readBranchUsageTokenRows).
+
+  @@id([sessionId, model])
+  @@index([sessionId], map: "idx_token_usage_session")
+  @@map("token_usage")
+}
+
+model CodexTraceSpan {
+  traceId            String  @map("trace_id")
+  spanId             String  @map("span_id")
+  parentSpanId       String? @map("parent_span_id")
+  sessionId          String  @map("session_id")
+  name               String
+  startTime          String  @map("start_time")
+  endTime            String  @map("end_time")
+  durationMs         Int     @map("duration_ms")
+  status             String
+  statusMessage      String? @map("status_message")
+  toolName           String? @map("tool_name")
+  attributes         Json?
+  resourceAttributes Json?   @map("resource_attributes")
+  receivedAt         String  @map("received_at")
+  revisionId         Int     @default(4) @map("revision_id")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([traceId, spanId])
+  @@index([sessionId], map: "idx_codex_trace_span_session")
+  @@index([toolName], map: "idx_codex_trace_span_tool", where: raw("tool_name IS NOT NULL"))
+  @@index([startTime], map: "idx_codex_trace_span_start_time")
+  @@map("codex_trace_span")
+}
+
+model ClaudeCodeCostEvent {
+  id           String  @id
+  sessionId    String  @map("session_id")
+  model        String
+  costUsd      Decimal @map("cost_usd")
+  observedAt   String  @map("observed_at")
+  dataRevision Int     @default(1) @map("data_revision")
+  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt    String? @map("updated_at")
+
+  @@unique([sessionId, model, observedAt], map: "idx_claude_code_cost_event_natural")
+  @@index([sessionId], map: "idx_claude_code_cost_event_session")
+  @@index([observedAt], map: "idx_claude_code_cost_event_observed")
+  @@map("claude_code_cost_event")
+}
+
+model ClaudeCodePermissionEvent {
+  id           String  @id
+  sessionId    String  @map("session_id")
+  toolName     String  @map("tool_name")
+  decision     String
+  source       String
+  observedAt   String  @map("observed_at")
+  dataRevision Int     @default(1) @map("data_revision")
+  createdAt    String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt    String? @map("updated_at")
+
+  @@unique([sessionId, toolName, observedAt], map: "idx_claude_code_permission_event_natural")
+  @@index([sessionId], map: "idx_claude_code_permission_event_session")
+  @@index([observedAt], map: "idx_claude_code_permission_event_observed")
+  @@map("claude_code_permission_event")
+}
+
+model ClaudeCodeApiRequest {
+  id                  String  @id
+  sessionId           String  @map("session_id")
+  model               String
+  tokensInput         BigInt  @default(0) @map("tokens_input")
+  tokensOutput        BigInt  @default(0) @map("tokens_output")
+  tokensCacheRead     BigInt  @default(0) @map("tokens_cache_read")
+  tokensCacheCreation BigInt  @default(0) @map("tokens_cache_creation")
+  costUsd             Decimal @map("cost_usd")
+  startedAt           String  @map("started_at")
+  durationMs          Int     @map("duration_ms")
+  dataRevision        Int     @default(1) @map("data_revision")
+  createdAt           String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt           String? @map("updated_at")
+
+  @@unique([sessionId, startedAt, model], map: "idx_claude_code_api_request_natural")
+  @@index([sessionId], map: "idx_claude_code_api_request_session")
+  @@index([startedAt], map: "idx_claude_code_api_request_started")
+  @@map("claude_code_api_request")
+}
+
+// No primary key in the legacy schema, so the table is excluded from the
+// generated client (@@ignore) and stays on raw SQL. Adding a key is a
+// candidate follow-up migration once the runner (Phase 2) lands.
+model TokenEvent {
+  sessionId        String @map("session_id")
+  model            String
+  createdAt        String @map("created_at")
+  inputTokens      BigInt @default(0) @map("input_tokens")
+  outputTokens     BigInt @default(0) @map("output_tokens")
+  cacheReadTokens  BigInt @default(0) @map("cache_read_tokens")
+  cacheWriteTokens BigInt @default(0) @map("cache_write_tokens")
+  costUsdEstimated             Float? @map("cost_usd_estimated")
+  inputCostUsdEstimated        Float? @map("input_cost_usd_estimated")
+  outputCostUsdEstimated       Float? @map("output_cost_usd_estimated")
+  cacheReadCostUsdEstimated    Float? @map("cache_read_cost_usd_estimated")
+  cacheCreationCostUsdEstimated Float? @map("cache_creation_cost_usd_estimated")
+  costCurrency String? @map("cost_currency")
+  costSource String? @map("cost_source")
+  costObservedAt String? @map("cost_observed_at")
+
+  @@index([sessionId], map: "idx_token_events_session")
+  @@index([createdAt], map: "idx_token_events_created")
+  @@index([sessionId, createdAt], map: "idx_token_events_session_created")
+  @@map("token_events")
+  @@ignore
+}
+
+model PackCatalog {
+  packId            String  @id @map("pack_id")
+  displayName       String  @map("display_name")
+  category          String?
+  githubUrl         String  @map("github_url")
+  marketplaceUrl    String? @map("marketplace_url")
+  description       String?
+  descriptionLive   String? @map("description_live")
+  harnesses         Json?
+  installCommands   Json?   @map("install_commands")
+  uninstallCommands Json?   @map("uninstall_commands")
+  installNotes      String? @map("install_notes")
+  placeholderReason String? @map("placeholder_reason")
+  verified          Boolean @default(false)
+  readmeExcerpt     String? @map("readme_excerpt")
+  readmeFetchedAt   String? @map("readme_fetched_at")
+  stars             Int?
+  forks             Int?
+  lastRelease       String? @map("last_release")
+  lastFetchedAt     String? @map("last_fetched_at")
+  seedVersion       Int     @default(1) @map("seed_version")
+  pinOrder          Int?    @map("pin_order")
+  contents          Json?
+  contentsCache     Json?   @map("contents_cache")
+  contentsFetchedAt String? @map("contents_fetched_at")
+  detectionPatterns Json?   @map("detection_patterns")
+  harnessAgnostic   Boolean @default(false) @map("harness_agnostic")
+  projectScoped     Boolean @default(false) @map("project_scoped")
+  singleInstall     Boolean @default(false) @map("single_install")
+  postInstall       Json?   @map("post_install")
+
+  @@map("pack_catalog")
+}
+
+model ModelPricing {
+  id                          String @id
+  harness                     String
+  model                       String
+  inputPerMillionUsd          Float  @map("input_per_million_usd")
+  outputPerMillionUsd         Float  @map("output_per_million_usd")
+  cacheReadPerMillionUsd      Float  @default(0) @map("cache_read_per_million_usd")
+  cacheCreationPerMillionUsd  Float  @default(0) @map("cache_creation_per_million_usd")
+  effectiveAt                 String @map("effective_at")
+  source                      String
+  createdAt                   String @map("created_at")
+  dataRevision                Int    @map("data_revision")
+
+  @@unique([harness, model, effectiveAt, source], map: "idx_model_pricing_unique_effective")
+  @@index([harness, model, effectiveAt(sort: Desc)], map: "idx_model_pricing_lookup")
+  @@map("model_pricing")
+}
+
+model PackCatalogHistory {
+  packId    String @map("pack_id")
+  fetchedAt String @map("fetched_at")
+  stars     Int?
+  forks     Int?
+
+  @@id([packId, fetchedAt])
+  @@map("pack_catalog_history")
+}
+
+model PackInstallRun {
+  id         Int     @id @default(autoincrement())
+  packId     String  @map("pack_id")
+  harness    String?
+  action     String
+  command    String?
+  exitCode   Int?    @map("exit_code")
+  startedAt  String  @map("started_at")
+  endedAt    String? @map("ended_at")
+  stdoutTail String? @map("stdout_tail")
+  stderrTail String? @map("stderr_tail")
+
+  @@index([packId], map: "idx_install_runs_pack")
+  @@map("pack_install_runs")
+}
+
+// The legacy DDL carries CHECK (install_kind IN ('symlink', 'directory')),
+// which PSL cannot express. The constraint is hand-carried in
+// migrations/…_init/migration.sql — see the comment there.
+model AgentPack {
+  packId        String  @map("pack_id")
+  harness       String
+  installPath   String  @map("install_path")
+  installKind   String? @map("install_kind")
+  sourceUrl     String? @map("source_url")
+  version       String?
+  detectedAt    String? @map("detected_at")
+  lastSeenAt    String? @map("last_seen_at")
+  uninstalledAt String? @map("uninstalled_at")
+
+  @@id([packId, harness, installPath])
+  @@index([packId], map: "idx_agent_packs_pack")
+  @@map("agent_packs")
+}
+
+model Skill {
+  skillId       String  @id @map("skill_id")
+  packId        String? @map("pack_id")
+  harness       String?
+  installPath   String? @map("install_path")
+  name          String?
+  version       String?
+  description   String?
+  sourceUrl     String? @map("source_url")
+  detectedAt    String? @map("detected_at")
+  lastSeenAt    String? @map("last_seen_at")
+  uninstalledAt String? @map("uninstalled_at")
+
+  @@index([packId], map: "idx_skills_pack")
+  @@index([name], map: "idx_skills_name")
+  @@map("skills")
+}
+
+model ProjectPackAssociation {
+  projectPath String  @map("project_path")
+  packId      String  @map("pack_id")
+  detectedAt  String? @map("detected_at")
+  lastSeenAt  String? @map("last_seen_at")
+
+  @@id([projectPath, packId])
+  @@map("project_pack_associations")
+}
+
+model Plan {
+  id                   String  @id
+  title                String?
+  status               String  @default("active")
+  source               String?
+  captureMethod        String? @map("capture_method")
+  harness              String?
+  createdFromSessionId String? @map("created_from_session_id")
+  createdFromEventId   String? @map("created_from_event_id")
+  planKey              String? @map("plan_key")
+  filePath             String? @map("file_path")
+  sourceLogPath        String? @map("source_log_path")
+  needsConfirmation    Boolean @default(false) @map("needs_confirmation")
+  confidence           Float   @default(1.0)
+  syncState            String? @map("sync_state")
+  metadata             Json?
+  createdAt            String? @map("created_at")
+  updatedAt            String? @map("updated_at")
+
+  versions PlanVersion[]
+
+  @@unique([createdFromSessionId, planKey], map: "idx_plans_session_key", where: raw("plan_key IS NOT NULL"))
+  @@index([createdFromSessionId], map: "idx_plans_session")
+  @@index([needsConfirmation], map: "idx_plans_needs_confirmation", where: raw("needs_confirmation = TRUE"))
+  @@index([updatedAt(sort: Desc)], map: "idx_plans_updated")
+  @@map("plans")
+}
+
+model PlanVersion {
+  id              String  @id
+  planId          String  @map("plan_id")
+  versionNumber   Int     @map("version_number")
+  contentMarkdown String? @map("content_markdown")
+  contentJson     Json?   @map("content_json")
+  contentSha256   String? @map("content_sha256")
+  authorType      String? @map("author_type")
+  authorUserId    String? @map("author_user_id")
+  sourceSessionId String? @map("source_session_id")
+  sourceEventRef  String? @map("source_event_ref")
+  captureMethod   String? @map("capture_method")
+  createdAt       String? @map("created_at")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([planId], map: "idx_plan_versions_plan")
+  @@map("plan_versions")
+}
+
+// Pull Requests (FEA-1226) — PR evidence/lifecycle detail store. Stays alive
+// alongside the artifacts table; PRs exist in both places (pull_requests for
+// lifecycle detail, artifacts for session attribution and LOC enrichment).
+model PullRequest {
+  id           String  @id
+  sessionId    String? @map("session_id")
+  prUrl        String  @map("pr_url")
+  prNumber     Int?    @map("pr_number")
+  repoFullName String? @map("repo_full_name")
+  branchName   String? @map("branch_name")
+  headSha      String? @map("head_sha")
+  state        String?
+  closedAt     String? @map("closed_at")
+  mergedAt     String? @map("merged_at")
+  openedAt     String? @map("opened_at")
+  title        String?
+  harness      String?
+  observedAt   String? @map("observed_at")
+  createdAt    String? @map("created_at")
+
+  @@index([sessionId], map: "idx_pr_session")
+  @@index([repoFullName, prNumber], map: "idx_pr_repo")
+  @@index([observedAt(sort: Desc)], map: "idx_pr_observed")
+  @@index([repoFullName, branchName], map: "idx_pull_requests_branch")
+  @@map("pull_requests")
+}
+
+model PrBackfillSeen {
+  sessionId   String  @id @map("session_id")
+  filePath    String? @map("file_path")
+  fileMtimeMs BigInt? @map("file_mtime_ms")
+  scannedAt   String? @map("scanned_at")
+
+  @@map("pr_backfill_seen")
+}
+
+model Artifact {
+  id                 String  @id
+  identityKey        String  @unique(map: "artifacts_identity_key_key") @map("identity_key")
+  kind               String
+  repoFullName       String? @map("repo_full_name")
+  gitDir             String? @map("git_dir")
+  sha                String?
+  branchName         String? @map("branch_name")
+  prNumber           Int?    @map("pr_number")
+  slug               String?
+  url                String?
+  title              String?
+  committedAt        String? @map("committed_at")
+  harness            String?
+  headSha            String? @map("head_sha")
+  linesAdded         Int?    @map("lines_added")
+  linesRemoved       Int?    @map("lines_removed")
+  filesChanged       Int?    @map("files_changed")
+  enrichmentState    String? @map("enrichment_state")
+  enrichmentSource   String? @map("enrichment_source")
+  enrichmentAttempts Int     @default(0) @map("enrichment_attempts")
+  leaseAt            String? @map("lease_at")
+  enrichedAt         String? @map("enriched_at")
+  prState            String? @map("pr_state")
+  mergeCommitSha     String? @map("merge_commit_sha")
+  baseRef            String? @map("base_ref")
+  observedAt         String? @map("observed_at")
+  createdAt          String  @map("created_at")
+  lastSeenAt         String  @map("last_seen_at")
+
+  artifactLinks SessionArtifactLink[]
+
+  @@index([kind], map: "idx_artifacts_kind")
+  @@index([repoFullName, prNumber], map: "idx_artifacts_repo_pr")
+  @@index([enrichmentState], map: "idx_artifacts_sweep")
+  @@index([repoFullName, branchName], map: "idx_artifacts_branch", where: raw("kind = 'branch'"))
+  @@map("artifacts")
+}
+
+model Repo {
+  id            String  @id
+  gitDir        String  @unique(map: "repos_git_dir_key") @map("git_dir")
+  remoteUrl     String? @map("remote_url")
+  repoFullName  String? @map("repo_full_name")
+  defaultBranch String? @map("default_branch")
+  lastSeenAt    String  @map("last_seen_at")
+  createdAt     String  @map("created_at")
+
+  worktrees RepoWorktree[]
+
+  @@index([repoFullName], map: "idx_repos_full_name", where: raw("repo_full_name IS NOT NULL"))
+  @@map("repos")
+}
+
+model RepoWorktree {
+  id           String  @id
+  repoId       String  @map("repo_id")
+  worktreePath String  @unique(map: "repo_worktrees_worktree_path_key") @map("worktree_path")
+  branchName   String? @map("branch_name")
+  lastSeenAt   String  @map("last_seen_at")
+
+  repo Repo @relation(fields: [repoId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([repoId], map: "idx_repo_worktrees_repo")
+  @@map("repo_worktrees")
+}
+
+model PullRequestStatusObservation {
+  id               String   @id
+  repoFullName     String   @map("repo_full_name")
+  prNumber         Int      @map("pr_number")
+  prUrl            String?  @map("pr_url")
+  state            String
+  isDraft          Boolean? @map("is_draft")
+  headRefName      String?  @map("head_ref_name")
+  headSha          String?  @map("head_sha")
+  title            String?
+  authorLogin      String?  @map("author_login")
+  prCreatedAt      String?  @map("pr_created_at")
+  prUpdatedAt      String?  @map("pr_updated_at")
+  source           String
+  observedAt       String   @map("observed_at")
+  lastCheckedAt    String   @map("last_checked_at")
+  nextRefreshAfter String?  @map("next_refresh_after")
+  error            String?
+
+  @@unique([repoFullName, prNumber], map: "idx_pr_status_repo_number")
+  @@index([state], map: "idx_pr_status_state")
+  @@index([nextRefreshAfter], map: "idx_pr_status_next_refresh")
+  @@map("pull_request_status_observations")
+}
+// Gap 12: User-editable pricing model rate table. Seeded with known model
+// rates on first boot. Exposed via the dashboard settings surface so users
+// can adjust rates for custom / newly-released models without code changes.
+model PricingRule {
+  id                String  @id
+  modelKey          String  @map("model_key")
+  description       String?
+  inputPricePer1k   Decimal @map("input_price_per_1k")
+  outputPricePer1k  Decimal @map("output_price_per_1k")
+  cacheReadFactor   Decimal @default(0.1) @map("cache_read_factor")
+  cacheWriteFactor  Decimal @default(1.25) @map("cache_write_factor")
+  usSurcharge       Decimal @default(0.1) @map("us_surcharge")
+  batchDiscount     Decimal @default(0.5) @map("batch_discount")
+  webSearchPrice    Decimal @default(10.0) @map("web_search_price")
+  codeExecPrice     Decimal @default(0.05) @map("code_exec_price")
+  codeExecFreeHours Int     @default(1550) @map("code_exec_free_hours")
+  isDefault         Boolean @default(false) @map("is_default")
+  createdAt         String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
+  updatedAt         String? @map("updated_at")
+
+  @@unique([modelKey], map: "idx_pricing_rules_model")
+  @@map("pricing_rules")
+}
+
+model SessionArtifactLink {
+  id               String  @id @map("id")
+  sessionId        String  @map("session_id")
+  artifactId       String  @map("artifact_id")
+  relation         String
+  method           String
+  evidence         String
+  isPrimary        Boolean @default(false) @map("is_primary")
+  status           String  @default("candidate")
+  extractorVersion Int     @map("extractor_version")
+  observedAt       String  @map("observed_at")
+  createdAt        String  @map("created_at")
+
+  session  Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([sessionId, artifactId, relation], map: "session_artifact_links_session_artifact_relation_key")
+  @@index([sessionId], map: "idx_sal_session")
+  @@index([artifactId], map: "idx_sal_artifact")
+  @@map("session_artifact_links")
+}
+
+// FEA-1962: desktop-local agent-session sync cursor. Co-located in sqlite (not
+// electron-store) so it shares the lifecycle of the `sessions` rows. `sourceKey`
+// is target-scoped (sync kind + compute target; the compute-target id already
+// encodes account + machine, so org/user are deliberately NOT folded in — see
+// buildAgentSessionSyncSourceKey) so one account cannot inherit another's
+// durable cursor. `observedIdsAtTopUpdatedAt`
+// preserves the accepted ids sharing the top timestamp so same-timestamp
+// siblings are still selected on restart. `dataRevision` records the
+// DATA_REVISION the cursor was written under: a cursor stamped with a stale
+// revision is treated as absent on load, so a parser-semantics bump triggers
+// exactly one full re-backfill (preserving the pre-FEA-1962 behavior where the
+// DATA_REVISION rebuild's re-derived rows reached the cloud, but once instead
+// of on every restart).
+model SyncState {
+  sourceKey                 String  @id @map("source_key")
+  observedTopUpdatedAt      String? @map("observed_top_updated_at")
+  observedIdsAtTopUpdatedAt Json    @default("[]") @map("observed_ids_at_top_updated_at")
+  dataRevision              Int     @default(1) @map("data_revision")
+  updatedAt                 String  @map("updated_at")
+
+  @@map("sync_state")
+}
+
+model ArtifactLinkBackfillSeen {
+  sessionId        String  @id @map("session_id")
+  filePath         String? @map("file_path")
+  fileMtimeMs      BigInt? @map("file_mtime_ms")
+  extractorVersion Int     @map("extractor_version")
+  scannedAt        String? @map("scanned_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("artifact_link_backfill_seen")
+}

@@ -14,6 +14,7 @@ utilities shared across `apps/api` and `apps/relay`.
 - [Metric-tag allowlist](#metric-tag-allowlist)
 - [Call-path invariant for desktop telemetry](#call-path-invariant-for-desktop-telemetry)
 - [loop.perf.* telemetry categories](#loopperf-telemetry-categories)
+- [job.* command attribution](#job-command-attribution)
 - [`origin` vs `service` fields](#origin-vs-service-fields)
 - [One-shot startup warnings](#one-shot-startup-warnings)
 - [No kill switch](#no-kill-switch)
@@ -106,8 +107,7 @@ fields. Use them consistently:
 | `count:` | Additive (sum) | Counters — "this many things happened" | `dropped_expired_work_items`, `replay_frequency`, `command_state_transition`, `connection_churn_rate` |
 | `value:` | Gauge (last/avg) | Snapshots — "this is the current state" | `queued_command_count`, `in_flight_command_count`, `executor_saturation`, `ack_latency`, `heartbeat_freshness` |
 
-`computeMetricSnapshot()` sums both fields today (it is a test-only utility,
-not a production aggregator). The distinction matters for Datadog
+The `count:` / `value:` distinction matters for Datadog
 log-to-metrics rules configured downstream: `count:` metrics should use
 `sum` aggregation, `value:` metrics should use `last` or `avg`. Choosing the
 wrong field causes overcounting on reconnect (a gauge emitted twice with the
@@ -281,6 +281,7 @@ click-to-filter UX. This is a one-time UI configuration, not a code change.
 | `@diagnostics.loopPerf.toolName` | Tool name | Low–medium |
 | `@diagnostics.loopPerf.skillName` | Skill name | Low–medium |
 | `@diagnostics.loopPerf.model` | Model identifier used by an agent | Low |
+| `@diagnostics.lifecycle.command` | LoopCommand that triggered a `job.*` event (PLAN, EXECUTE, …) | ~14 unique values |
 
 ### Producer-compatibility notes
 
@@ -309,6 +310,106 @@ click-to-filter UX. This is a one-time UI configuration, not a code change.
    ```
    service:api @category:loop.perf.unknown_event_variant
    ```
+
+---
+
+## job.* command attribution
+
+Desktop clients emit `job.*` lifecycle events (`job.started`, `job.completed`,
+`job.failed`, and related categories) when a Loop job begins and ends. Each
+event may carry `diagnostics.lifecycle.command` — a string identifying the
+`LoopCommand` that triggered the job. This field is the per-event equivalent of
+`@diagnostics.loopPerf.command` on `loop.perf.*` events: both carry the same
+command string, nested under their respective `lifecycle` / `loopPerf` namespace
+to keep attribution co-located with other fields from the same sub-system.
+
+### Rationale for the `lifecycle` sub-object
+
+`diagnostics.lifecycle` is a passthrough object (`.passthrough()` in
+`lifecycleDiagnosticsSchema`) so unknown sibling fields added by future desktop
+versions survive parsing and reach Datadog unchanged, mirroring the
+`loopPerfEventDiagnosticsSchema` pattern used for `loop.perf.*` events
+(PRD-254 FR-6 producer-additivity). `command` is `optional()` for
+back-compatibility — older desktop clients that do not emit the field continue
+to validate without modification.
+
+### Canonical LoopCommand values
+
+`KNOWN_LOOP_COMMANDS` in `schema.ts` enumerates the 14 current canonical values.
+Unknown strings are accepted and forwarded to Datadog for forward-compatibility
+(AC-002).
+
+| Value |
+|---|
+| `PLAN` |
+| `EXECUTE` |
+| `CHAT` |
+| `EXPLORE` |
+| `REQUEST_CHANGES` |
+| `REQUEST_PRD_CHANGES` |
+| `DECOMPOSE` |
+| `EVALUATE_PRD` |
+| `GENERATE_PRD` |
+| `EVALUATE_PLAN` |
+| `EVALUATE_CODE` |
+| `EVALUATE_FEATURE` |
+| `BOOTSTRAP` |
+| `MANUAL` |
+
+### Reused diagnostic fields
+
+No new fields are introduced for success rate or wall-clock duration.
+Existing fields are reused:
+
+- **`@diagnostics.exitCode`** — success is `exitCode:0`; any non-zero value is a
+  failure.
+- **`@diagnostics.elapsedMs`** — wall-clock job duration in milliseconds.
+
+### Datadog query examples
+
+Filter all started jobs for a specific command:
+
+```
+service:api @category:job.started @diagnostics.lifecycle.command:EXECUTE
+```
+
+Count started jobs grouped by command (use the Datadog facet panel to pivot by
+`@diagnostics.lifecycle.command`):
+
+```
+service:api @category:job.started
+```
+
+Wall-clock p95 duration for PLAN jobs (aggregate on `@diagnostics.elapsedMs`
+with group-by `@diagnostics.lifecycle.command`):
+
+```
+service:api @category:job.completed @diagnostics.lifecycle.command:PLAN @diagnostics.elapsedMs:*
+```
+
+Failure rate per command — compare completed vs. failed counts or filter on
+non-zero exit code:
+
+```
+service:api @category:job.failed @diagnostics.lifecycle.command:EXECUTE
+```
+
+```
+service:api (@category:job.completed OR @category:job.failed) @diagnostics.exitCode:[1 TO *]
+```
+
+### Rollout indicator
+
+As updated desktop clients roll out, the proportion of `job.started` events
+**without** `diagnostics.lifecycle.command` will trend toward zero. Track
+rollout coverage with:
+
+```
+service:api @category:job.started -@diagnostics.lifecycle.command:*
+```
+
+A non-zero count from this query indicates desktop clients that have not yet
+been updated to emit the field (FEA-1049).
 
 ---
 

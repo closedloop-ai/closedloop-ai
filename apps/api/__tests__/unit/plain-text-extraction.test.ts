@@ -1,4 +1,4 @@
-import type { CommentBody } from "@repo/collaboration/webhook";
+import type { CommentBody } from "@repo/collaboration/server/webhook";
 import { describe, expect, it } from "vitest";
 import { extractPlainText } from "../../app/comments/plain-text";
 

@@ -5,7 +5,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Displays a color-coded badge for project priority levels.
  */
 const meta = {
-  title: "ui/PriorityBadge",
+  title: "Design System/Data Display/Priority Badge",
   component: PriorityBadge,
   tags: ["autodocs"],
   argTypes: {

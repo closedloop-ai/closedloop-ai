@@ -6,7 +6,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * displayed as a progress bar.
  */
 const meta = {
-  title: "ui/Progress",
+  title: "Design System/Primitives/Progress",
   component: Progress,
   tags: ["autodocs"],
   argTypes: {},

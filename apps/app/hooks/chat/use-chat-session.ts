@@ -1,23 +1,23 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import {
+  chatSessionReducer,
+  initialChatSessionState,
+} from "@repo/app/chat/hooks/chat-session-reducer";
+import { DEFAULT_CHAT_MODELS } from "@repo/app/chat/lib/default-models";
+import type { ChatMessage, ContentBlock } from "@repo/app/chat/lib/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useReducer } from "react";
-import type { PrCommentContext } from "@/app/(authenticated)/build/[id]/comment-context";
-import type { ChatMessage, ContentBlock } from "@/components/chat/types";
+import type { PrCommentContext } from "@/app/(authenticated)/[orgSlug]/build/[id]/comment-context";
 import { env } from "@/env";
 import { useChatRunnerToken } from "@/hooks/chat/use-chat-runner-token";
 import { useChatStream } from "@/hooks/chat/use-chat-stream";
 import { useApiClient } from "@/hooks/use-api-client";
 import type { StreamErrorEvent } from "@/lib/chat/chat-utils";
-import { DEFAULT_CHAT_MODELS } from "@/lib/chat/default-models";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
-import {
-  chatSessionReducer,
-  initialChatSessionState,
-} from "./chat-session-reducer";
 
 function buildUserMessageContent(
   draft: string,

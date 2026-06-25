@@ -5,7 +5,7 @@ import pg from "pg";
 import { PrismaClient } from "./generated/client";
 import type { TransactionClient } from "./generated/internal/prismaNamespace";
 import { keys } from "./keys";
-import { resolveSchemaName } from "./schema-utils";
+import { formatSearchPath, resolveSchemaName } from "./schema-utils";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting Prisma client types
 export * from "./generated/client";
@@ -77,9 +77,16 @@ export async function withDb<T>(
  *     data: { content, version: artifact.version + 1 }
  *   });
  * });
+ *
+ * @param options - Optional Prisma interactive-transaction options. Use
+ *   `timeout` to raise the default 5s limit for long-running transactions (e.g.
+ *   large cascade deletes), and `maxWait` to bound how long to wait for a
+ *   connection. Ignored when already inside an ambient transaction (the callback
+ *   simply joins it).
  */
 withDb.tx = async <T>(
-  fn: (tx: TransactionClient) => Promise<T>
+  fn: (tx: TransactionClient) => Promise<T>,
+  options?: { maxWait?: number; timeout?: number }
 ): Promise<T> => {
   const tx = als.getStore()?.tx;
   if (tx) {
@@ -87,7 +94,7 @@ withDb.tx = async <T>(
   }
 
   const db = await getDatabase();
-  return db.$transaction((tx) => als.run({ tx }, fn, tx));
+  return db.$transaction((tx) => als.run({ tx }, fn, tx), options);
 };
 
 // -----------------------------------------------------------------------------
@@ -95,8 +102,6 @@ withDb.tx = async <T>(
 // -----------------------------------------------------------------------------
 
 const als = new AsyncLocalStorage<{ tx: TransactionClient }>();
-const NON_IDENTIFIER_CHARS = /[^a-z0-9_]/;
-const LEADING_DIGIT = /^[0-9]/;
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | null;
@@ -223,11 +228,4 @@ async function getPool(): Promise<pg.Pool> {
   }
 
   return globalForPrisma.pool;
-}
-
-function formatSearchPath(schema: string): string {
-  const escaped = schema.replace(/"/g, '""');
-  const needsQuotes =
-    NON_IDENTIFIER_CHARS.test(schema) || LEADING_DIGIT.test(schema);
-  return needsQuotes ? `"${escaped}"` : schema;
 }

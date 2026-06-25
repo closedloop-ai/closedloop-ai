@@ -3,10 +3,10 @@ import {
   createResolveMentionSuggestions,
   createResolveUsers,
   type UserInfo,
-} from "../user-resolvers";
+} from "../client/user-resolvers";
 
 // Mock the user-colors module
-vi.mock("../user-colors", () => ({
+vi.mock("../shared/user-colors", () => ({
   getConsistentColor: (userId: string) => `color-${userId}`,
 }));
 

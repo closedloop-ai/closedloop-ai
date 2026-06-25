@@ -14,6 +14,7 @@ vi.mock("@repo/database", () => {
   return { withDb: withDbFn };
 });
 
+import { GitHubCommentThreadKind } from "@repo/api/src/types/branch-view";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
 import { withDb } from "@repo/database";
 import { commentsService } from "../service";
@@ -63,9 +64,19 @@ function makeCommentThreadFixture(
         deletedAt: null,
         createdAt: new Date("2026-01-01T00:00:00.000Z"),
         updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        reactions: [],
+        attachments: [],
         author: { id: "u-1" },
       },
     ],
+    githubProjection: {
+      pullRequestDetailId: "pr-detail-1",
+      threadKind: GitHubCommentThreadKind.ReviewThread,
+      rootCommentId: "root-comment-1",
+      reviewThreadId: "review-thread-1",
+      deletedAt: new Date("2026-01-02T00:00:00.000Z"),
+      lastSyncedAt: new Date("2026-01-03T00:00:00.000Z"),
+    },
     ...overrides,
   };
 }
@@ -119,6 +130,8 @@ describe("commentsService.findThreadsByDocument", () => {
           deletedAt: new Date(),
           createdAt: new Date(),
           updatedAt: new Date(),
+          reactions: [],
+          attachments: [],
           author: { id: "u-1" },
         },
       ],
@@ -133,9 +146,9 @@ describe("commentsService.findThreadsByDocument", () => {
     await commentsService.findThreadsByDocument("org-1", "art-1");
 
     const callArgs = mockFindMany.mock.calls[0][0] as {
-      include: { comments: { where: { deletedAt: unknown } } };
+      select: { comments: { where: { deletedAt: unknown } } };
     };
-    expect(callArgs.include.comments.where.deletedAt).toBeNull();
+    expect(callArgs.select.comments.where.deletedAt).toBeNull();
   });
 
   it("does not return threads from a different organization", async () => {
@@ -159,5 +172,95 @@ describe("commentsService.findThreadsByDocument", () => {
       organizationId: "different-org",
       artifactId: "art-1",
     });
+  });
+
+  it("excludes GitHub-only projection fields from document thread responses", async () => {
+    const thread = makeCommentThreadFixture({
+      comments: [
+        {
+          id: "c-1",
+          threadId: "thread-1",
+          authorId: "u-1",
+          body: {},
+          plainText: "hello",
+          externalId: null,
+          editedAt: null,
+          deletedAt: null,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+          reactions: [],
+          attachments: [],
+          githubProjection: {
+            githubCommentId: "github-comment-1",
+            githubInReplyToCommentId: "github-parent-1",
+            githubDeletedAt: new Date("2026-01-02T00:00:00.000Z"),
+          },
+        },
+      ],
+    });
+
+    const mockFindMany = vi.fn().mockResolvedValue([thread]);
+
+    mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+      fn({ commentThread: { findMany: mockFindMany } })
+    );
+
+    const [result] = await commentsService.findThreadsByDocument(
+      "org-1",
+      "art-1"
+    );
+
+    expect(result).toEqual({
+      id: "thread-1",
+      organizationId: "org-1",
+      source: ThreadSource.Liveblocks,
+      externalId: "ext-1",
+      roomId: "room-1",
+      artifactId: "art-1",
+      status: ThreadStatus.Open,
+      metadata: null,
+      resolvedAt: null,
+      resolvedById: null,
+      createdById: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      resolvedBy: null,
+      createdBy: null,
+      comments: [
+        {
+          id: "c-1",
+          threadId: "thread-1",
+          authorId: "u-1",
+          body: {},
+          plainText: "hello",
+          externalId: null,
+          editedAt: null,
+          deletedAt: null,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+          reactions: [],
+          attachments: [],
+        },
+      ],
+    });
+    const serializedResult = JSON.stringify(result);
+    expect(serializedResult).not.toContain("githubProjection");
+    expect(serializedResult).not.toContain("pullRequestDetailId");
+    expect(serializedResult).not.toContain("threadKind");
+    expect(serializedResult).not.toContain("rootCommentId");
+    expect(serializedResult).not.toContain("reviewThreadId");
+    expect(serializedResult).not.toContain("githubCommentId");
+    expect(serializedResult).not.toContain("githubInReplyToCommentId");
+    expect(serializedResult).not.toContain("githubDeletedAt");
+
+    const callArgs = mockFindMany.mock.calls[0][0] as {
+      select: Record<string, unknown> & {
+        comments: { select: Record<string, unknown> };
+      };
+    };
+    expect(callArgs.select).not.toHaveProperty("githubProjection");
+    expect(callArgs.select.comments.select).not.toHaveProperty(
+      "githubProjection"
+    );
   });
 });

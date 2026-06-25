@@ -1,22 +1,17 @@
 /**
  * Shared routine for ingesting per-repo execution results from multi-repo loops.
  *
- * Consolidates the PR creation/dedup logic that was previously duplicated across:
+ * Consolidates the PR creation/dedup logic used by the loop execute path:
  * - apps/api/lib/loops/loop-commands/execute-handler.ts (ingestExecutionArtifacts)
- * - apps/api/app/webhooks/github/handlers/workflow-completion-handler.ts (handleExecutionSuccess)
  */
 
-import type { RepoExecutionResult } from "@closedloop-ai/loops-api/execution-result";
 import {
   EvaluationReportType,
   type JudgesReport,
 } from "@repo/api/src/types/evaluation";
+import type { RepoExecutionResult } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import {
-  type TransactionClient,
-  WorkstreamEventType,
-  withDb,
-} from "@repo/database";
+import { type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { documentWhere } from "@/lib/artifact-adapters";
 import { upsertEvaluationWithJudgeScores } from "@/lib/loops/loop-document-ingestion";
@@ -33,11 +28,9 @@ import { upsertFromSnapshot } from "@/lib/prompts-service";
  */
 export type IngestionContext = {
   organizationId: string;
-  workstreamId: string;
   documentId: string;
   loopId?: string;
   correlationId?: string;
-  actionRunId?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -47,16 +40,14 @@ export type IngestionContext = {
 /**
  * Ingest a single successful repo result into the database within an own
  * transaction. Resolves the repo by fullName, creates the PR Artifact + detail
- * (race-safe via ensurePrLinkageRecords), and writes a workstream event.
- * Skipped entries (missing installation repo or source artifact) are
- * warn-logged and silently dropped.
+ * (race-safe via ensurePrLinkageRecords). Skipped entries (missing
+ * installation repo or source artifact) are warn-logged and silently dropped.
  */
 async function ingestSuccessEntry(
   ctx: IngestionContext,
   result: RepoExecutionResult & { status: "success" }
 ): Promise<void> {
-  const { organizationId, workstreamId, documentId, loopId, correlationId } =
-    ctx;
+  const { organizationId, documentId, loopId, correlationId } = ctx;
 
   // Look up via GitHubInstallationRepository (the canonical repo table).
   const installationRepo = await withDb((db) =>
@@ -83,7 +74,7 @@ async function ingestSuccessEntry(
 
   const prTitle =
     result.prTitle ||
-    `ClosedLoop: ${result.branchName || `PR #${result.prNumber}`}`;
+    `Closedloop: ${result.branchName || `PR #${result.prNumber}`}`;
 
   let ingested = false;
 
@@ -113,7 +104,6 @@ async function ingestSuccessEntry(
     // pull_request webhook or another command handler.
     await ensurePrLinkageRecords(tx, {
       organizationId: sourceArtifact.organizationId,
-      workstreamId,
       projectId: sourceArtifact.projectId,
       documentId,
       prUrl: result.prUrl,
@@ -123,26 +113,6 @@ async function ingestSuccessEntry(
       headBranch: result.branchName,
       baseBranch: result.baseBranch,
       commitSha: result.commitSha ?? null,
-    });
-
-    // Create workstream event (always — events are an append-only log)
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId,
-        type: WorkstreamEventType.GITHUB_PR_CREATED,
-        actorType: "system",
-        data: {
-          ...(loopId ? { loopId } : {}),
-          correlationId,
-          prNumber: result.prNumber,
-          prUrl: result.prUrl,
-          prTitle,
-          branch: result.branchName,
-          documentId,
-          slug: sourceArtifact.slug,
-          fullName: result.fullName,
-        },
-      },
     });
 
     ingested = true;
@@ -189,8 +159,7 @@ export async function ingestRepoExecutionResults(
   results: RepoExecutionResult[],
   opts: IngestRepoExecutionResultsOpts = {}
 ): Promise<void> {
-  const { organizationId, documentId, loopId, correlationId, actionRunId } =
-    ctx;
+  const { organizationId, documentId, loopId, correlationId } = ctx;
   const { codeJudgesReport = null, promptsSnapshot = null } = opts;
 
   // Process code judges report and prompts snapshot once, outside the per-repo
@@ -203,7 +172,6 @@ export async function ingestRepoExecutionResults(
       await upsertEvaluationWithJudgeScores({
         artifactId: documentId,
         ...(loopId ? { loopId } : {}),
-        ...(actionRunId ? { actionRunId } : {}),
         organizationId,
         reportType: EvaluationReportType.Code,
         report: codeJudgesReport,
@@ -220,7 +188,6 @@ export async function ingestRepoExecutionResults(
     log.info("[ingest-repo-execution-results] Persisted code judges report", {
       loopId,
       correlationId,
-      actionRunId,
       documentId,
       reportId: codeJudgesReport.report_id,
       judgesCount: codeJudgesReport.stats.length,

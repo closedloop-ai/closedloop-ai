@@ -10,7 +10,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // --- Mocks (must come before imports) ---
 
 vi.mock("@repo/database", () => ({
-  ArtifactType: { PRD: "PRD", TEMPLATE: "TEMPLATE" },
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PRD: "PRD",
+    BRANCH: "BRANCH",
+    TEMPLATE: "TEMPLATE",
+  },
   withDb: Object.assign(vi.fn(), {
     tx: vi.fn((fn: () => Promise<unknown>) => fn()),
   }),
@@ -29,6 +34,12 @@ vi.mock("@/app/documents/document-version-service", () => ({
 vi.mock("@/app/documents/document-service", () => ({
   documentService: {
     findByIdSimple: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: {
+    getDocumentPullRequest: vi.fn(),
   },
 }));
 

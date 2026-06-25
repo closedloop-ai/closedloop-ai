@@ -1,8 +1,8 @@
+import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import { z } from "zod";
 
+export type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
-export type JsonObject = { [k: string]: JsonValue };
 
 export const jsonPrimitiveValidator = z.union([
   z.string(),

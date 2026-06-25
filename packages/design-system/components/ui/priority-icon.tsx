@@ -23,7 +23,7 @@ function PriorityIcon({
       <svg
         width={size}
         height={size}
-        viewBox="0 0 16 16"
+        viewBox="-2 -2 20 20"
         fill="none"
         className={cn("shrink-0", className)}
         {...props}
@@ -63,7 +63,7 @@ function PriorityIcon({
     <svg
       width={size}
       height={size}
-      viewBox="0 0 16 16"
+      viewBox="-2 -2 20 20"
       fill="none"
       className={cn("shrink-0", className)}
       {...props}

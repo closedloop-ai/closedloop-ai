@@ -10,11 +10,19 @@ import type {
   AdditionalRepoRef,
   AdditionalRepoRefWithToken,
 } from "@closedloop-ai/loops-api/context-pack";
+import {
+  ExecutionResultV2Schema as ExecutionResultV2SchemaValue,
+  parseExecutionResultFile as parseExecutionResultFileFromLoopsApi,
+  RepoExecutionResultSchema as RepoExecutionResultSchemaValue,
+} from "@closedloop-ai/loops-api/execution-result";
 import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
+import type { z } from "zod";
 import type { ArtifactSubtype } from "./artifact";
 import { ArtifactType } from "./artifact";
 import type { JsonObject } from "./common";
-import type { PullRequestInfo } from "./document";
+import type { HarnessType } from "./compute-target";
+import type { BranchInfo, PullRequestInfo } from "./document";
+import type { TagSummary } from "./tag";
 import type { BasicUser } from "./user";
 
 // --- Re-exports from @closedloop-ai/loops-api ---
@@ -44,14 +52,17 @@ export type {
   LoopEventSupportBundleUploaded,
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
+  LoopEventTokensCleared,
   LoopEventToolCall,
 } from "@closedloop-ai/loops-api/events";
 export { LoopEventType } from "@closedloop-ai/loops-api/events";
 export type {
+  ModelPricing,
   ModelTokenUsage,
   TokenUsage,
 } from "@closedloop-ai/loops-api/tokens";
 export {
+  DEFAULT_PRICING,
   MODEL_PRICING,
   ModelTokenUsageSchema,
   TokensByModelSchema,
@@ -94,8 +105,8 @@ export type Loop = {
   userId: string;
   status: LoopStatus;
   command: LoopCommand;
+  harness: HarnessType;
   documentId: string | null;
-  workstreamId: string | null;
   parentLoopId: string | null;
   computeTargetId: string | null;
   prompt: string | null;
@@ -121,6 +132,7 @@ export type Loop = {
   error: LoopError | null;
   documentVersion: number | null;
   metadata: JsonObject;
+  activeTokenJti: string | null;
   uploadedArtifacts: JsonObject | null;
   createdAt: Date;
   updatedAt: Date;
@@ -136,10 +148,12 @@ export type LoopWithUser = Loop & {
     email: string;
   };
   computeTarget: ComputeTargetSummary | null;
+  tags?: TagSummary[];
 };
 
-// AdditionalRepoRef augmented with an optional pull request (for loop detail views)
+// AdditionalRepoRef augmented with optional branch/PR projections for loop detail views.
 export type AdditionalRepoRefWithPr = AdditionalRepoRef & {
+  branchArtifact?: BranchInfo | null;
   pullRequest?: PullRequestInfo | null;
 };
 
@@ -153,6 +167,7 @@ export type LoopSupportArtifact = {
 // Loop detail view — same as LoopWithUser but with PR-enriched additional repos
 export type LoopDetail = Omit<LoopWithUser, "additionalRepos"> & {
   additionalRepos: AdditionalRepoRefWithPr[] | null;
+  primaryBranch: BranchInfo | null;
   primaryPullRequest: PullRequestInfo | null;
   supportArtifacts?: LoopSupportArtifact[];
 };
@@ -163,16 +178,22 @@ export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
 
 export const MAX_ADDITIONAL_REPOS = 5;
 
+export const INHERITANCE_ANCESTOR_MAX_DEPTH = 3;
+
 export type InheritedAdditionalRepos = {
   additionalRepos: AdditionalRepoRef[];
-  source: { loopId: string; command: LoopCommand } | null;
+  source: {
+    loopId: string;
+    command: LoopCommand;
+    artifactId: string;
+  } | null;
 };
 
 // Request/Response types
 export type CreateLoopRequest = {
   command: LoopCommand;
+  harness?: HarnessType;
   documentId?: string;
-  workstreamId?: string;
   parentLoopId?: string;
   computeTargetId?: string;
   prompt?: string;
@@ -204,7 +225,6 @@ export type LoopListFilters = {
   status?: LoopStatus;
   command?: LoopCommand;
   documentId?: string;
-  workstreamId?: string;
   projectId?: string;
   userId?: string;
   limit?: number;
@@ -236,10 +256,6 @@ export type LoopSummary = {
 };
 
 export type LoopSummariesResponse = Record<string, LoopSummary>;
-
-export type LoopSummariesRequest = {
-  documentIds: string[];
-};
 
 export const LOOP_SUMMARIES_MAX_DOCUMENT_IDS = 100;
 export const LOOP_SUMMARIES_MAX_DEPTH = 10;
@@ -307,11 +323,33 @@ export {
   BootstrapRepoResultSchema,
 } from "@closedloop-ai/loops-api/bootstrap-result";
 
-export type {
-  ExecutionResultV2,
-  ParsedExecutionResult,
-  RepoExecutionResult,
-} from "@closedloop-ai/loops-api/execution-result";
+export type RepoExecutionResult = z.infer<
+  typeof RepoExecutionResultSchemaValue
+>;
+export type ExecutionResultV2 = z.infer<typeof ExecutionResultV2SchemaValue>;
+export type ParsedExecutionResult =
+  | {
+      ok: true;
+      results: RepoExecutionResult[];
+      schemaVersion: 1 | 2;
+      repoCount: number;
+    }
+  | {
+      ok: false;
+      error: string;
+      schemaVersion?: number;
+    };
+
+/**
+ * Parses execution-result.json payloads and returns the API facade's stable
+ * RepoExecutionResult type, insulating API consumers from generated package
+ * declaration drift in @closedloop-ai/loops-api.
+ */
+export const parseExecutionResultFile =
+  parseExecutionResultFileFromLoopsApi as (
+    data: unknown,
+    fullName?: string
+  ) => ParsedExecutionResult;
 export {
   BRANCH_NAME_REGEX,
   createRepoExecutionResultsSchema,
@@ -339,3 +377,15 @@ export const ManualLoopEventType = {
 } as const;
 export type ManualLoopEventType =
   (typeof ManualLoopEventType)[keyof typeof ManualLoopEventType];
+
+// --- Loop runner JWT refresh and heartbeat types (re-exported from @closedloop-ai/loops-api) ---
+
+export type {
+  RefreshError,
+  RefreshResult,
+  RefreshSuccess,
+} from "@closedloop-ai/loops-api/token-refresh";
+export {
+  HeartbeatErrorCode,
+  RefreshTokenErrorCode,
+} from "@closedloop-ai/loops-api/token-refresh";

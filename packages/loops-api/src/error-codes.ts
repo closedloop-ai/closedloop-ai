@@ -41,6 +41,7 @@ export const LoopErrorCode = {
   ContextLimitExceeded: "CONTEXT_LIMIT_EXCEEDED",
   PlanStateUnavailable: "PLAN_STATE_UNAVAILABLE",
   StaleDispatch: "STALE_DISPATCH",
+  RepoNotInProjectPool: "REPO_NOT_IN_PROJECT_POOL",
 } as const;
 export type LoopErrorCode = (typeof LoopErrorCode)[keyof typeof LoopErrorCode];
 
@@ -56,6 +57,7 @@ export const RunnerErrorSubcode = {
   BadPlanState: "BAD_PLAN_STATE",
   ClaudeAuthChallenge: "CLAUDE_AUTH_CHALLENGE",
   ClaudeContextLimit: "CLAUDE_CONTEXT_LIMIT",
+  ClaudeUnknownSkill: "CLAUDE_UNKNOWN_SKILL",
   ClaudeRateLimit: "CLAUDE_RATE_LIMIT",
   PendingTasksAtCompletion: "PENDING_TASKS_AT_COMPLETION",
   PendingTasksBlockedByQuestions: "PENDING_TASKS_BLOCKED_BY_QUESTIONS",

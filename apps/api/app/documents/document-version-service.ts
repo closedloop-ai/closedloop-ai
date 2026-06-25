@@ -98,32 +98,35 @@ export const documentVersionService = {
     return withDb.tx(async (tx) => {
       const detail = await tx.documentDetail.findFirst({
         where: { artifactId: documentId, artifact: { organizationId } },
-        select: { latestVersion: true },
+        select: { artifactId: true },
       });
 
       if (!detail) {
         return null;
       }
 
-      const nextVersion = detail.latestVersion + 1;
+      // Atomically claim the next version number by incrementing the counter
+      // first, then use the returned value for the new row. This avoids the
+      // read-then-compute race where two concurrent transactions both read N
+      // and both attempt to create version N+1, violating the
+      // `@@unique([documentId, version])` constraint.
+      const updatedDetail = await tx.documentDetail.update({
+        where: { artifactId: documentId },
+        data: { latestVersion: { increment: 1 } },
+        select: { latestVersion: true },
+      });
+
+      const nextVersion = updatedDetail.latestVersion;
       const sanitizedContent = sanitizeAndLog(content, documentId);
 
-      const [version] = await Promise.all([
-        tx.documentVersion.create({
-          data: {
-            documentId,
-            version: nextVersion,
-            content: sanitizedContent,
-            createdById: userId,
-          },
-        }),
-        tx.documentDetail.update({
-          where: { artifactId: documentId },
-          data: { latestVersion: nextVersion },
-        }),
-      ]);
-
-      return version;
+      return tx.documentVersion.create({
+        data: {
+          documentId,
+          version: nextVersion,
+          content: sanitizedContent,
+          createdById: userId,
+        },
+      });
     });
   },
 
@@ -155,7 +158,11 @@ export const documentVersionService = {
       if (artifact?.type !== ArtifactType.DOCUMENT || !newVersion) {
         return null;
       }
-      return { ...toDocument(artifact), version: newVersion };
+      return {
+        ...toDocument(artifact),
+        latestVersionContent: newVersion.content,
+        version: newVersion,
+      };
     });
   },
 };

@@ -1,7 +1,7 @@
 import { keys as ai } from "@repo/ai/keys";
 import { keys as analytics } from "@repo/analytics/keys";
 import { keys as auth } from "@repo/auth/keys";
-import { keys as collaboration } from "@repo/collaboration/keys";
+import { keys as collaboration } from "@repo/collaboration/server/keys";
 import { keys as database } from "@repo/database/keys";
 import { keys as email } from "@repo/email/keys";
 import { keys as google } from "@repo/google/keys";
@@ -44,6 +44,7 @@ export const env = createEnv({
       })
       .optional(),
     RELAY_API_URL: z.url().optional(),
+    SLACK_BOT_TOKEN: z.string().optional(),
     SLACK_SIGNING_SECRET: z.string().optional(),
   },
   client: {},
@@ -51,6 +52,7 @@ export const env = createEnv({
     INTERNAL_API_SECRET: process.env.INTERNAL_API_SECRET,
     LOCAL_GATEWAY_JWT_SECRET: process.env.LOCAL_GATEWAY_JWT_SECRET,
     RELAY_API_URL: process.env.RELAY_API_URL,
+    SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
     SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
   },
 });

@@ -6,7 +6,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -95,16 +95,14 @@ describe("artifactService", () => {
     it("adds workstreamId, type, and assigneeId filters when provided", async () => {
       await artifactService.list({
         organizationId: ORG_ID,
-        workstreamId: "ws-1",
-        type: ArtifactType.PULL_REQUEST,
+        type: ArtifactType.BRANCH,
         assigneeId: "user-1",
       });
 
       expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
-          workstreamId: "ws-1",
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
           assigneeId: "user-1",
           subtype: { not: ArtifactSubtype.Template },
         },
@@ -116,7 +114,6 @@ describe("artifactService", () => {
       await artifactService.list({
         organizationId: ORG_ID,
         projectId: undefined,
-        workstreamId: undefined,
         type: undefined,
         assigneeId: undefined,
       });

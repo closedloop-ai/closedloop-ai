@@ -1,4 +1,5 @@
-import { vi } from "vitest";
+import { DocumentType } from "@repo/api/src/types/document";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/documents/batch-meta/route";
 import { documentService } from "@/app/documents/document-service";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -74,8 +75,11 @@ describe("GET /api/artifacts/batch-meta", () => {
 
   describe("success path", () => {
     it("returns title map for valid slugs", async () => {
-      const titleMap = { "prd-abc": "My PRD", "plan-xyz": "My Plan" };
-      vi.mocked(documentService.batchFetchDocumentTitles).mockResolvedValue(
+      const titleMap = {
+        "prd-abc": { title: "My PRD", type: DocumentType.Prd },
+        "plan-xyz": { title: "My Plan", type: DocumentType.ImplementationPlan },
+      };
+      vi.mocked(documentService.batchFetchDocumentMeta).mockResolvedValue(
         titleMap
       );
 
@@ -91,35 +95,35 @@ describe("GET /api/artifacts/batch-meta", () => {
     });
 
     it("passes organizationId from auth context to service", async () => {
-      vi.mocked(documentService.batchFetchDocumentTitles).mockResolvedValue({});
+      vi.mocked(documentService.batchFetchDocumentMeta).mockResolvedValue({});
 
       const request = createMockRequest({
         url: "http://localhost:3002/api/artifacts/batch-meta?slugs=prd-abc",
       });
       await GET(request, createMockRouteContext({}));
 
-      expect(documentService.batchFetchDocumentTitles).toHaveBeenCalledWith(
+      expect(documentService.batchFetchDocumentMeta).toHaveBeenCalledWith(
         mockAuthContext.user.organizationId,
         ["prd-abc"]
       );
     });
 
     it("trims whitespace from individual slugs", async () => {
-      vi.mocked(documentService.batchFetchDocumentTitles).mockResolvedValue({});
+      vi.mocked(documentService.batchFetchDocumentMeta).mockResolvedValue({});
 
       const request = createMockRequest({
         url: "http://localhost:3002/api/artifacts/batch-meta?slugs=prd-abc%20%2C%20plan-xyz",
       });
       await GET(request, createMockRouteContext({}));
 
-      expect(documentService.batchFetchDocumentTitles).toHaveBeenCalledWith(
+      expect(documentService.batchFetchDocumentMeta).toHaveBeenCalledWith(
         expect.any(String),
         ["prd-abc", "plan-xyz"]
       );
     });
 
     it("returns empty map when no slugs match artifacts in org", async () => {
-      vi.mocked(documentService.batchFetchDocumentTitles).mockResolvedValue({});
+      vi.mocked(documentService.batchFetchDocumentMeta).mockResolvedValue({});
 
       const request = createMockRequest({
         url: "http://localhost:3002/api/artifacts/batch-meta?slugs=does-not-exist",
@@ -133,7 +137,7 @@ describe("GET /api/artifacts/batch-meta", () => {
     });
 
     it("accepts exactly 50 slugs (boundary check)", async () => {
-      vi.mocked(documentService.batchFetchDocumentTitles).mockResolvedValue({});
+      vi.mocked(documentService.batchFetchDocumentMeta).mockResolvedValue({});
 
       const slugs = Array.from({ length: 50 }, (_, i) => `slug-${i}`).join(",");
       const request = createMockRequest({
@@ -149,7 +153,7 @@ describe("GET /api/artifacts/batch-meta", () => {
 
   describe("error handling", () => {
     it("returns 500 when service throws", async () => {
-      vi.mocked(documentService.batchFetchDocumentTitles).mockRejectedValue(
+      vi.mocked(documentService.batchFetchDocumentMeta).mockRejectedValue(
         new Error("Database connection failed")
       );
 

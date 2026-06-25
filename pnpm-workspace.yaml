@@ -1,3 +1,123 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# Catalog: single source of truth for versions shared across the workspace,
+# referenced via the `catalog:` protocol. `next` lives here so the apps and the
+# dedupe override below all pin one version — replacing the `next: "$next"`
+# override, whose `$<name>` syntax pnpm 11.7 deprecated in favour of catalogs.
+catalog:
+  next: 16.2.6
+
+# Supply-chain hardening (Shai-Hulud / TanStack-style npm worm mitigations).
+# minimumReleaseAge: refuse to install package versions younger than 7 days
+# (10080 minutes), giving the registry time to detect and yank compromised
+# releases before they land in our lockfile.
+minimumReleaseAge: 10080
+# blockExoticSubdeps: refuse non-registry specifiers (git:, github:, http(s):,
+# file:, link:) introduced via transitive deps — closes the github-ref bypass.
+blockExoticSubdeps: true
+allowBuilds:
+  '@scarf/scarf': false
+  '@clerk/shared': true
+  '@prisma/engines': true
+  better-sqlite3: false
+  bufferutil: true
+  core-js: true
+  core-js-pure: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  keytar: true
+  prisma: true
+  protobufjs: true
+  puppeteer: true
+  sharp: true
+  utf-8-validate: true
+overrides:
+  # Pin a single TypeScript across the workspace. A transitive dep declares a
+  # loose `typescript` range that otherwise floats to 6.0.x for some packages,
+  # which turns the (still-valid) `baseUrl` tsconfig option into a hard TS5101
+  # error. Pin to the workspace devDependency version so every package
+  # typechecks under one compiler.
+  typescript: "5.9.3"
+  # Force transitive `next` to the workspace version (the catalog entry above).
+  next: "catalog:"
+  # Pin a single React instance across the workspace. Caret peer ranges
+  # (^19.2.0) otherwise float react/react-dom to multiple patch versions
+  # (19.2.3/19.2.5/19.2.6), which makes pnpm emit peer-keyed duplicate copies
+  # of context libraries like next-themes — each with its own React context.
+  # The provider then populates one context while useTheme() reads another,
+  # silently breaking the theme toggle. Keep these aligned with the apps'
+  # pinned react/react-dom version.
+  react: "19.2.5"
+  react-dom: "19.2.5"
+  # Pin one react-hook-form across the workspace (FEA-1510). Caret ranges
+  # (apps/app ^7.71.1, apps/desktop ^7.76.1) otherwise resolve to two copies,
+  # which splits design-system's FormField Control<> from its consumers
+  # (packages/app/custom-fields) and breaks typecheck. 7.76.1 satisfies every
+  # declared range and survives lockfile churn that a per-package pin would not.
+  react-hook-form: "7.76.1"
+  # >=7.3.5 closes GHSA-fx9v-vv6r-65h4 (server.fs.deny bypass; 7.0.0-7.3.4).
+  # The <8.0.0 bound is required: an unbounded floor floats vite to 8.x, a
+  # breaking major (vitest JSX import-analysis failures).
+  vite: ">=7.3.5 <8.0.0"
+  # >=4.12.25 closes GHSA-88fw-hqm2-52qc (CORS reflects any Origin with
+  # Access-Control-Allow-Credentials; affects <4.12.25). hono is in a production
+  # runtime closure via @modelcontextprotocol/sdk (apps/mcp).
+  hono: ">=4.12.25"
+  "@hono/node-server": ">=1.19.13"
+  handlebars: ">=4.7.9"
+  fast-xml-parser: ">=5.7.0"
+  defu: ">=6.1.5"
+  dompurify: ">=3.4.0"
+  # >=7.6.1 closes GHSA-76w4-37v2-3rm6 (Any-expansion DoS; affects <=7.6.0).
+  protobufjs: ">=7.6.1 <8.0.0"
+  # Deferred: the fix for GHSA-xvwp-j846-p89q / GHSA-hm92-r4w5-c3mj
+  # (undici 7.23.0-7.27.x) and GHSA-f7r6-5fcg-jx25 (7.0.0-7.27.x) is 7.28.0, but
+  # it is still within this repo's minimumReleaseAge supply-chain window. The
+  # pre-existing >=7.24.0 floor already blocks 7.0.0-7.23.x. Raise to
+  # ">=7.28.0 <8.0.0" once 7.28.0 matures.
+  undici: ">=7.24.0 <8.0.0"
+  flatted: ">=3.4.0"
+  socket.io-parser: ">=4.2.6"
+  express-rate-limit: ">=8.2.2"
+  effect: ">=3.20.0"
+  yaml: ">=2.8.3"
+  minimatch: ">=10.2.3"
+  picomatch: ">=4.0.4"
+  brace-expansion: ">=5.0.6"
+  lodash: ">=4.18.0"
+  lodash-es: ">=4.18.0"
+  axios: ">=1.15.2"
+  # Deferred: GHSA-r628-mhmh-5j3r (tar hardlink path traversal) has no patched
+  # 6.x release; the fix requires tar@>=7.5.7 (a breaking major). The sole
+  # consumer is a dev/CI build script. Raise the <7.0.0 bound to ">=7.5.7" in a
+  # follow-up once 6.x->7.x compatibility is verified.
+  tar: ">=6.2.1 <7.0.0"
+  # >=0.2.6 closes GHSA-ph9p-34f9-6g65 / CVE-2026-44705 (path traversal via
+  # symlinked tmp dir; affects <0.2.6). Pulled dev-only via
+  # @turbo/gen > node-plop > inquirer > external-editor > tmp@0.0.33.
+  tmp: ">=0.2.6"
+  postcss: ">=8.5.10"
+  ip-address: ">=10.1.1"
+  fast-uri: ">=3.1.2"
+  "@babel/plugin-transform-modules-systemjs": ">=7.29.4"
+  mermaid: ">=11.15.0"
+  "@protobufjs/utf8": ">=1.1.1"
+  # >=8.21.0 closes GHSA-6fc8-4gx4-v683 (fragment/data-chunk DoS; 8.0.0-8.20.x).
+  ws: ">=8.21.0"
+  "@ungap/structured-clone": ">=1.3.1"
+  # >=4.0.6 closes GHSA-fghf-79q3-925c (CRLF injection in multipart fields).
+  form-data: ">=4.0.6"
+  # 8.x only — closes GHSA-9v7q-3xwr-p43x (ReDoS; 8.0.0-8.3.x). The 0.1.x/6.x
+  # majors used elsewhere are unaffected and must not be forced to 8.x.
+  "path-to-regexp@8": ">=8.4.0"
+  # >=4.59.0 closes GHSA-39p9-2w85-4w57 (path-traversal file write; 4.0.0-4.58.x).
+  rollup: ">=4.59.0"
+  # >=3.0.6 closes GHSA-f2pg-3vh2-46f8 (prototype hijack in assign()).
+  js-cookie: ">=3.0.6"
+  # 4.x only — closes GHSA-5xrq-8626-4rwp (CRITICAL: Vitest UI server file
+  # read/exec; 4.0.x). Scoped to 4.x so packages/shared-platform's vitest@3
+  # (^3.2.4) pin is untouched.
+  "vitest@4": ">=4.1.0"

@@ -1,14 +1,23 @@
+import { log } from "@repo/observability/log";
+import { REQUEST_COMPLETED_CONTRACT_EVENT_NAME } from "@repo/observability/telemetry/request-completed";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   badRequestResponse,
   deleteResponse,
   errorResponse,
   forbiddenResponse,
+  logRequestCompleted,
   notFoundResponse,
   parseBody,
+  parseQueryParams,
   successResponse,
   unauthorizedResponse,
 } from "@/lib/route-utils";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("parseBody", () => {
   const testSchema = z.object({
@@ -60,6 +69,51 @@ describe("parseBody", () => {
       expect(json.success).toBe(false);
       expect(json.error).toBe("Invalid JSON body");
     }
+  });
+});
+
+describe("parseQueryParams", () => {
+  it("preserves repeated query parameters as arrays", () => {
+    const url = new URL("http://localhost?targetIds=a&targetIds=b&mode=direct");
+    const result = parseQueryParams(
+      { nextUrl: { searchParams: url.searchParams } },
+      z.object({
+        targetIds: z.array(z.string()),
+        mode: z.string(),
+      })
+    );
+
+    expect(result.errorResponse).toBeNull();
+    expect(result.params).toEqual({
+      targetIds: ["a", "b"],
+      mode: "direct",
+    });
+  });
+});
+
+describe("logRequestCompleted", () => {
+  it("emits the legacy request_completed log and the contract span log", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    vi.spyOn(globalThis.performance, "now").mockReturnValue(150);
+
+    logRequestCompleted(
+      new Request("https://api.test/loops?secret=redacted", {
+        method: "POST",
+      }),
+      125,
+      201
+    );
+
+    expect(info).toHaveBeenCalledWith("request_completed", {
+      path: "/loops",
+      method: "POST",
+      status_code: 201,
+      duration_ms: 25,
+    });
+    expect(info).toHaveBeenCalledWith(
+      REQUEST_COMPLETED_CONTRACT_EVENT_NAME,
+      expect.any(Object)
+    );
   });
 });
 

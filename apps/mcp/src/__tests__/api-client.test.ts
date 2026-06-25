@@ -92,6 +92,51 @@ describe.sequential("ApiClient", () => {
     );
   });
 
+  it("preserves structured ApiResult failure metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              code: "PROCESS_FAILED",
+              details: {
+                action: "commit",
+                category: "pre_commit_hook",
+                stderrExcerpt: "lint failed",
+              },
+              error: "Pre-commit hook failed",
+              success: false,
+              timestamp: "2026-05-08T12:00:00.000Z",
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }
+          )
+      )
+    );
+
+    const { createApiClient } = await import("../api-client.js");
+    const { McpApiError } = await import("../api-error.js");
+    const client = createApiClient(
+      { userId: "u1", organizationId: "o1", scopes: ["read"] },
+      "sk_live_test"
+    );
+
+    await expect(client.get("/artifacts")).rejects.toMatchObject({
+      code: "PROCESS_FAILED",
+      details: {
+        action: "commit",
+        category: "pre_commit_hook",
+        stderrExcerpt: "lint failed",
+      },
+      message: "Pre-commit hook failed",
+      timestamp: "2026-05-08T12:00:00.000Z",
+    });
+    await expect(client.get("/artifacts")).rejects.toBeInstanceOf(McpApiError);
+  });
+
   it("surfaces structured ApiResult errors", async () => {
     vi.stubGlobal(
       "fetch",
@@ -145,6 +190,35 @@ describe.sequential("ApiClient", () => {
     await expect(
       client.get<Array<{ id: string }>>("/artifacts")
     ).resolves.toEqual([{ id: "legacy" }]);
+  });
+
+  it("appends array query values as repeated parameters", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ success: true, data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createApiClient } = await import("../api-client.js");
+    const client = createApiClient(
+      { userId: "u1", organizationId: "o1", scopes: ["read"] },
+      "sk_live_test"
+    );
+
+    await client.get("/artifact-links/parents", {
+      targetIds: ["doc-1", "doc-2"],
+      linkType: "PRODUCES",
+    });
+
+    const requestedUrl = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(requestedUrl.searchParams.getAll("targetIds")).toEqual([
+      "doc-1",
+      "doc-2",
+    ]);
+    expect(requestedUrl.searchParams.get("linkType")).toBe("PRODUCES");
   });
 
   it("falls back to default timeout when MCP_VERIFY_API_KEY_TIMEOUT_MS is invalid", async () => {

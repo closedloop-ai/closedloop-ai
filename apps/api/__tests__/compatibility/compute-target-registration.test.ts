@@ -7,7 +7,7 @@
  */
 
 import { Result } from "@repo/api/src/types/result";
-import { vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports that transitively pull in the mocked modules) ---
 
@@ -70,9 +70,9 @@ vi.mock("@repo/observability/log", () => ({
 
 import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
 import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
 import { Origin } from "@repo/observability/telemetry/origin";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { POST } from "@/app/internal/relay/socket-event/route";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -80,6 +80,7 @@ import { relayEventBus } from "@/lib/relay-event-bus";
 import {
   INTERNAL_SECRET,
   makeSocketEventRequest,
+  mockGatewayOwnerAuthContext,
   mockTarget,
 } from "./utils/test-fixtures";
 
@@ -175,6 +176,30 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
     );
   });
 
+  it("keeps gateway-owner identity out of registration ack", async () => {
+    const request = makeSocketEventRequest("desktop.hello", helloPayload, {
+      auth: mockGatewayOwnerAuthContext,
+    });
+
+    const response = await POST(request);
+    const result = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(computeTargetsService.register).toHaveBeenCalledWith(
+      "org-1",
+      "user_db_1",
+      expect.any(Object)
+    );
+    expect(result.emit[0].payload).toEqual(
+      expect.objectContaining({
+        computeTargetId: "new-target-1",
+      })
+    );
+    expect(result.emit[0].payload.clerkUserId).toBeUndefined();
+    expect(result.emit[0].payload.organizationId).toBeUndefined();
+    expect(result.emit[0].payload.userId).toBeUndefined();
+  });
+
   it("emits queued_command_count metric with the queued count (AC-001)", async () => {
     vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
       (_targetId, statuses) => {
@@ -197,6 +222,7 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
         value: 2,
         computeTargetId: COMPUTE_TARGET_ID,
         origin: Origin.Api,
+        filterToken: FilterToken.CommandQueued,
       })
     );
   });
@@ -223,6 +249,7 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
         value: 1,
         computeTargetId: COMPUTE_TARGET_ID,
         origin: Origin.Api,
+        filterToken: FilterToken.CommandDispatched,
       })
     );
   });

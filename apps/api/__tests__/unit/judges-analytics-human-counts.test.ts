@@ -5,16 +5,16 @@
  * - document → artifact (with `subtype` instead of `type`)
  * - documentRating → artifactRating (field: artifactId)
  * - pullRequestRating → artifactRating (merged, same table, rows for PR-typed artifacts)
- * - gitHubPullRequest → artifact (type=PULL_REQUEST) linked via ArtifactLink
+ * - gitHubPullRequest → artifact (type=BRANCH) linked via ArtifactLink
  */
 import { DocumentType } from "@repo/api/src/types/document";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {

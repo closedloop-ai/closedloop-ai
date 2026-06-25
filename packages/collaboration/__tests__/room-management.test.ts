@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createArtifactThread } from "../room-management";
+import {
+  broadcastRoomEvent,
+  createArtifactThread,
+} from "../server/room-management";
+import { RoomEventType } from "../shared/room-events";
 
 // Mock yjs-anchor
 const mockFindAnchorText = vi.fn();
 const mockAnchorThreadToText = vi.fn();
 
-vi.mock("../yjs-anchor", () => ({
+vi.mock("../server/yjs-anchor", () => ({
   findAnchorText: (...args: unknown[]) => mockFindAnchorText(...args),
   anchorThreadToText: (...args: unknown[]) => mockAnchorThreadToText(...args),
 }));
@@ -13,11 +17,13 @@ vi.mock("../yjs-anchor", () => ({
 // Mock @liveblocks/node
 const mockCreateThread = vi.fn();
 const mockDeleteThread = vi.fn();
+const mockBroadcastEvent = vi.fn();
 
 vi.mock("@liveblocks/node", () => {
   class MockLiveblocks {
     createThread = mockCreateThread;
     deleteThread = mockDeleteThread;
+    broadcastEvent = mockBroadcastEvent;
   }
 
   return {
@@ -26,7 +32,7 @@ vi.mock("@liveblocks/node", () => {
 });
 
 // Mock keys
-vi.mock("../keys", () => ({
+vi.mock("../server/keys", () => ({
   keys: () => ({ LIVEBLOCKS_SECRET: "sk_test-secret-key" }),
 }));
 
@@ -105,12 +111,12 @@ describe("createArtifactThread", () => {
   describe("secret not configured", () => {
     it("throws a descriptive error when LIVEBLOCKS_SECRET is not set", async () => {
       vi.resetModules();
-      vi.doMock("../keys", () => ({
+      vi.doMock("../server/keys", () => ({
         keys: () => ({ LIVEBLOCKS_SECRET: undefined }),
       }));
 
       const { createArtifactThread: createArtifactThreadNoSecret } =
-        await import("../room-management");
+        await import("../server/room-management");
 
       await expect(
         createArtifactThreadNoSecret({
@@ -220,5 +226,69 @@ describe("createArtifactThread", () => {
 
       expect(mockCreateThread).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("broadcastRoomEvent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls Liveblocks.broadcastEvent with the room id and payload", async () => {
+    mockBroadcastEvent.mockResolvedValueOnce(undefined);
+
+    const result = await broadcastRoomEvent("org:artifact:slug", {
+      type: RoomEventType.DocumentVersionPublished,
+      version: 7,
+      publisherId: "user-1",
+      publishedAt: "2026-05-26T18:00:00.000Z",
+    });
+
+    expect(mockBroadcastEvent).toHaveBeenCalledWith("org:artifact:slug", {
+      type: "document-version-published",
+      version: 7,
+      publisherId: "user-1",
+      publishedAt: "2026-05-26T18:00:00.000Z",
+    });
+    expect(result).toEqual({ success: true });
+  });
+
+  it("returns an error result when the SDK throws (does not propagate)", async () => {
+    mockBroadcastEvent.mockRejectedValueOnce(
+      new Error("Liveblocks rate limit")
+    );
+
+    const result = await broadcastRoomEvent("org:artifact:slug", {
+      type: RoomEventType.DocumentVersionPublished,
+      version: 1,
+      publisherId: null,
+      publishedAt: "2026-05-26T18:00:00.000Z",
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: "Liveblocks rate limit",
+    });
+  });
+
+  it("no-ops successfully when LIVEBLOCKS_SECRET is not configured", async () => {
+    vi.resetModules();
+    vi.doMock("../server/keys", () => ({
+      keys: () => ({ LIVEBLOCKS_SECRET: undefined }),
+    }));
+
+    const { broadcastRoomEvent: broadcastNoSecret } = await import(
+      "../server/room-management"
+    );
+
+    const result = await broadcastNoSecret("org:artifact:slug", {
+      type: RoomEventType.DocumentVersionPublished,
+      version: 1,
+      publisherId: null,
+      publishedAt: "2026-05-26T18:00:00.000Z",
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(mockBroadcastEvent).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,7 @@ import type {
   CreateDesktopCommandInput,
   CreateDesktopCommandResponse,
   DesktopCommandSummary,
+  HarnessType,
   SetComputeTargetSharingResponse,
   StartDesktopSecurityUpgradeResponse,
 } from "@repo/api/src/types/compute-target";
@@ -13,6 +14,7 @@ import {
   isTerminalStatus,
   UPDATE_AND_RESTART_OPERATION_ID,
 } from "@repo/api/src/types/compute-target";
+import { computePreferenceKeys } from "@repo/app/compute/hooks/use-compute-preference";
 import {
   type UseMutationResult,
   type UseQueryOptions,
@@ -20,8 +22,13 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { computePreferenceKeys } from "@/hooks/queries/use-compute-preference";
 import { useApiClient } from "@/hooks/use-api-client";
+import {
+  hasEffectiveCommandSigningSupport,
+  signDesktopCommand,
+} from "@/lib/desktop-command-signing/command-signer";
+import { cacheComputeTargetsForSigning } from "@/lib/desktop-command-signing/compute-target-signing-cache";
+import { computeTargetKeys } from "./compute-target-query-keys";
 
 type ApiClient = ReturnType<typeof useApiClient>;
 
@@ -52,6 +59,16 @@ function toComputeTarget(target: ComputeTargetWire): ComputeTarget {
   };
 }
 
+/** Fetches and materializes a full compute-target snapshot for cache/signing use. */
+export async function fetchComputeTargetsSnapshot(
+  apiClient: Pick<ApiClient, "get">
+): Promise<ComputeTarget[]> {
+  const targets = await apiClient.get<ComputeTargetWire[]>("/compute-targets");
+  const parsedTargets = targets.map(toComputeTarget);
+  cacheComputeTargetsForSigning(parsedTargets);
+  return parsedTargets;
+}
+
 function toHealthCheckSnapshot(
   snapshot: ComputeTargetHealthCheckSnapshotWire | null
 ): ComputeTargetHealthCheckSnapshot | null {
@@ -60,20 +77,12 @@ function toHealthCheckSnapshot(
   }
   return {
     ...snapshot,
+    pluginAutoUpdateEnabled: snapshot.pluginAutoUpdateEnabled ?? false,
     checkedAt: new Date(snapshot.checkedAt),
     createdAt: new Date(snapshot.createdAt),
     updatedAt: new Date(snapshot.updatedAt),
   };
 }
-
-export const computeTargetKeys = {
-  all: ["compute-targets"] as const,
-  list: () => [...computeTargetKeys.all, "list"] as const,
-  healthCheck: (targetId: string) =>
-    [...computeTargetKeys.all, targetId, "health-check"] as const,
-  commandKeys: (targetId: string, commandId: string) =>
-    [...computeTargetKeys.all, targetId, "commands", commandId] as const,
-};
 
 export function useComputeTargets(
   options?: Omit<UseQueryOptions<ComputeTarget[]>, "queryKey" | "queryFn">
@@ -82,21 +91,21 @@ export function useComputeTargets(
 
   return useQuery({
     queryKey: computeTargetKeys.list(),
-    queryFn: async () => {
-      const targets =
-        await apiClient.get<ComputeTargetWire[]>("/compute-targets");
-      return targets.map(toComputeTarget);
-    },
+    queryFn: () => fetchComputeTargetsSnapshot(apiClient),
     ...options,
   });
 }
 
 export function computeTargetHealthCheckSnapshotQueryOptions(
   apiClient: ApiClient,
-  targetId: string | null | undefined
+  targetId: string | null | undefined,
+  pluginAutoUpdateEnabled = false
 ) {
   return {
-    queryKey: computeTargetKeys.healthCheck(targetId ?? ""),
+    queryKey: computeTargetKeys.healthCheckMode(
+      targetId ?? "",
+      pluginAutoUpdateEnabled
+    ),
     queryFn: async () => {
       if (!targetId) {
         return null;
@@ -113,16 +122,34 @@ export function computeTargetHealthCheckSnapshotQueryOptions(
 
 export function useComputeTargetHealthCheckSnapshot(
   targetId: string | null | undefined,
+  pluginAutoUpdateEnabledOrOptions?:
+    | boolean
+    | Omit<
+        UseQueryOptions<ComputeTargetHealthCheckSnapshot | null>,
+        "queryKey" | "queryFn"
+      >,
   options?: Omit<
     UseQueryOptions<ComputeTargetHealthCheckSnapshot | null>,
     "queryKey" | "queryFn"
   >
 ) {
   const apiClient = useApiClient();
+  const pluginAutoUpdateEnabled =
+    typeof pluginAutoUpdateEnabledOrOptions === "boolean"
+      ? pluginAutoUpdateEnabledOrOptions
+      : false;
+  const queryOptionsOverride =
+    typeof pluginAutoUpdateEnabledOrOptions === "boolean"
+      ? options
+      : pluginAutoUpdateEnabledOrOptions;
 
   return useQuery({
-    ...computeTargetHealthCheckSnapshotQueryOptions(apiClient, targetId),
-    ...options,
+    ...computeTargetHealthCheckSnapshotQueryOptions(
+      apiClient,
+      targetId,
+      pluginAutoUpdateEnabled
+    ),
+    ...queryOptionsOverride,
   });
 }
 
@@ -199,7 +226,7 @@ export function useDesktopCommandStatus(
 }
 
 export function useDispatchDesktopCommand(
-  targetId: string
+  target: ComputeTarget
 ): UseMutationResult<
   CreateDesktopCommandResponse,
   Error,
@@ -209,15 +236,33 @@ export function useDispatchDesktopCommand(
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: ({ idempotencyKey }: { idempotencyKey: string }) => {
+    mutationFn: async ({ idempotencyKey }: { idempotencyKey: string }) => {
       const payload: UpdateAndRestartCommandInput = {
         operationId: UPDATE_AND_RESTART_OPERATION_ID,
         idempotencyKey,
         path: "/api/gateway/update-and-restart",
         method: "POST",
       };
+      if (hasEffectiveCommandSigningSupport(target)) {
+        const signed = await signDesktopCommand(
+          {
+            method: payload.method,
+            pathWithQuery: payload.path,
+            body: undefined,
+          },
+          target
+        );
+        Object.assign(payload, {
+          commandId: signed.commandId,
+          path: signed.path,
+          ...(signed.query ? { query: signed.query } : {}),
+          signature: signed.signature,
+          signaturePayload: signed.signaturePayload,
+          publicKeyFingerprint: signed.publicKeyFingerprint,
+        });
+      }
       return apiClient.post<CreateDesktopCommandResponse>(
-        `/compute-targets/${targetId}/commands`,
+        `/compute-targets/${target.id}/commands`,
         payload
       );
     },
@@ -225,6 +270,21 @@ export function useDispatchDesktopCommand(
       queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
     },
     retry: 0,
+  });
+}
+
+export function useUpdateComputeTargetHarness() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({ id, harness }: { id: string; harness: HarnessType }) =>
+      apiClient.put<ComputeTarget>(`/compute-targets/${id}`, {
+        selectedHarness: harness,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: computeTargetKeys.list() });
+    },
   });
 }
 

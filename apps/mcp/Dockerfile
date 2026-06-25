@@ -8,21 +8,28 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Builder — install deps & compile TypeScript
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS builder
+FROM node:24-slim AS builder
 
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+RUN corepack enable
 
 WORKDIR /app
 
-# Copy workspace root files needed for pnpm install
+# Copy workspace root files needed for pnpm install (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack prepare --activate
 COPY tsconfig.json ./
 
 # Copy only the packages the MCP server depends on
 COPY apps/mcp/package.json apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/ packages/api/
 COPY packages/loops-api/ packages/loops-api/
+# shared-platform is a transitive workspace dep of @repo/api (which re-exports
+# its EngineerRoutingMode SSOT); pnpm needs its manifest on disk to resolve the
+# workspace symlink even though mcp does not import it directly. No dist/src is
+# needed until something in mcp's import graph actually resolves the module.
+COPY packages/shared-platform/package.json packages/shared-platform/
 COPY packages/database/ packages/database/
+COPY packages/redis/ packages/redis/
 COPY packages/typescript-config/ packages/typescript-config/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
@@ -40,14 +47,15 @@ RUN pnpm --filter mcp build
 # ---------------------------------------------------------------------------
 # Stage 2: Runtime — minimal image with compiled output
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS runtime
+FROM node:24-slim AS runtime
 
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+RUN corepack enable
 
 WORKDIR /app
 
-# Copy workspace root files
+# Copy workspace root files (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack prepare --activate
 COPY tsconfig.json ./
 
 # Copy package manifests for production install
@@ -55,7 +63,11 @@ COPY apps/mcp/package.json apps/mcp/
 COPY --from=builder /app/apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/package.json packages/api/
 COPY packages/loops-api/package.json packages/loops-api/
+# shared-platform manifest needed for the prod workspace-symlink resolution of
+# @repo/api (see builder stage); mcp does not import it, so no dist is copied.
+COPY packages/shared-platform/package.json packages/shared-platform/
 COPY packages/database/package.json packages/database/
+COPY packages/redis/package.json packages/redis/
 
 # Copy typescript-config (tsconfig bases) — needed by tsx for .ts resolution
 COPY --from=builder /app/packages/typescript-config/ packages/typescript-config/
@@ -70,6 +82,7 @@ COPY --from=builder /app/apps/mcp/src/ apps/mcp/src/
 COPY --from=builder /app/packages/api/src/ packages/api/src/
 COPY --from=builder /app/packages/loops-api/dist/ packages/loops-api/dist/
 COPY --from=builder /app/packages/database/ packages/database/
+COPY --from=builder /app/packages/redis/src/ packages/redis/src/
 
 ENV NODE_ENV=production
 ENV MCP_PORT=3010

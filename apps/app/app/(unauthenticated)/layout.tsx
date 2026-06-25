@@ -12,16 +12,16 @@ function AuthLayout({ children }: AuthLayoutProps) {
       <div className="flex h-full flex-col px-6 py-10 lg:px-10">
         <div>
           <Image
-            alt="ClosedLoop logo"
+            alt="Closedloop logo"
             className="dark:hidden"
-            height={60}
+            height={30}
             src="/logo.svg"
             width={200}
           />
           <Image
-            alt="ClosedLoop logo"
+            alt="Closedloop logo"
             className="hidden dark:block"
-            height={60}
+            height={30}
             src="/logo-dark.svg"
             width={200}
           />
@@ -41,7 +41,7 @@ function AuthLayout({ children }: AuthLayoutProps) {
           }}
         >
           <Image
-            alt="ClosedLoop product screenshot"
+            alt="Closedloop product screenshot"
             className="max-h-full w-auto object-contain"
             height={1191}
             priority

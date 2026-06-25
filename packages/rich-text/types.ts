@@ -1,3 +1,4 @@
+import type { ResolvedInlineImage as ApiResolvedInlineImage } from "@repo/api/src/types/attachment";
 import type { AnyExtension, Editor } from "@tiptap/react";
 
 export type TiptapEditor = Editor & {
@@ -7,7 +8,24 @@ export type TiptapEditor = Editor & {
    * so the command succeeds even in view mode.
    */
   resetContent: (markdown: string) => void;
+  /**
+   * Insert an inline image through the editor-owned placeholder/upload flow.
+   * The editor adds a durable node only after the app upload callback returns
+   * an `attachment://...` reference.
+   */
+  insertInlineImageFile?: (file: File) => Promise<void>;
 };
+
+export type InlineImageUploadResult = {
+  src: string;
+  alt?: string;
+};
+
+export type ResolvedInlineImage = ApiResolvedInlineImage;
+
+export type InlineImageResolver = (
+  attachmentIds: string[]
+) => Promise<{ images: ResolvedInlineImage[] }>;
 
 export type RichTextEditorProps = {
   value: string;
@@ -46,4 +64,24 @@ export type RichTextEditorProps = {
    * feature flag at call sites.
    */
   mermaidEnhancementsEnabled?: boolean;
+  /**
+   * Enables document inline-image controls and URL resolution. The image schema
+   * stays registered even when this is false so collaborators do not drop refs.
+   */
+  inlineImagesEnabled?: boolean;
+  /**
+   * App-owned upload callback. Rich text stays document-agnostic and only
+   * inserts the returned durable `attachment://...` reference.
+   */
+  uploadInlineImage?: (file: File) => Promise<InlineImageUploadResult>;
+  /**
+   * App-owned resolver for turning durable attachment refs into display URLs.
+   */
+  resolveInlineImages?: InlineImageResolver;
+  /**
+   * Validates the exact file that will be uploaded. Return null when accepted,
+   * otherwise a user-facing rejection reason.
+   */
+  validateInlineImageFile?: (file: File) => string | null;
+  onInlineImageUploadError?: (message: string) => void;
 };

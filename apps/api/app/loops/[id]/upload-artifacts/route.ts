@@ -1,6 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
-import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";
 import { shortContentHash } from "@/lib/content-hash";
 import { parseJsonObject } from "@/lib/json-schema";
 import {
@@ -68,9 +68,13 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const auth = await authenticateLoopRunner(request, loopId);
-    if (!auth.ok) {
-      return auth.response;
+    const claims = await authenticateLoopRunnerRequest(
+      request,
+      loopId,
+      "loops/[id]/upload-artifacts"
+    );
+    if (claims instanceof Response) {
+      return claims;
     }
 
     const { body, errorResponse: parseError } = await parseBody(
@@ -84,7 +88,7 @@ export async function POST(
     // Store artifacts on the loop record
     const updatedCount = await loopsService.updateUploadedArtifacts(
       loopId,
-      auth.claims.organizationId,
+      claims.organizationId,
       body.artifacts
     );
     if (updatedCount === 0) {
@@ -93,13 +97,10 @@ export async function POST(
       });
     }
 
-    const loop = await loopsService.findById(
-      loopId,
-      auth.claims.organizationId
-    );
+    const loop = await loopsService.findById(loopId, claims.organizationId);
     log.info("[upload-artifacts] Desktop artifacts stored", {
       loopId,
-      organizationId: auth.claims.organizationId,
+      organizationId: claims.organizationId,
       computeTargetId: loop?.computeTargetId ?? null,
       updatedCount,
       artifactKeys: Object.keys(body.artifacts),
@@ -115,7 +116,7 @@ export async function POST(
       } satisfies JsonObject;
       await loopsService.updateMetadata(
         loopId,
-        auth.claims.organizationId,
+        claims.organizationId,
         mergedMetadata
       );
     }

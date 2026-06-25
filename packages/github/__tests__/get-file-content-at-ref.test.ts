@@ -2,6 +2,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockReposGetContent = vi.fn();
 const mockGitGetBlob = vi.fn();
+const mockCompareCommitsWithBasehead = vi.fn();
+const mockPaginate = vi.fn();
 
 vi.mock("@octokit/auth-app", () => ({
   createAppAuth: vi.fn(() => async (_opts: unknown) => ({
@@ -11,6 +13,12 @@ vi.mock("@octokit/auth-app", () => ({
 
 vi.mock("@octokit/rest", () => ({
   Octokit: class {
+    paginate = mockPaginate;
+    rest = {
+      repos: {
+        compareCommitsWithBasehead: mockCompareCommitsWithBasehead,
+      },
+    };
     repos = {
       getContent: mockReposGetContent,
     };
@@ -29,9 +37,9 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { getFileContentAtRef } from "../index";
+import { compareBranchFileChanges, getBoundedFileContentAtRef } from "../index";
 
-describe("getFileContentAtRef", () => {
+describe("getBoundedFileContentAtRef", () => {
   beforeAll(() => {
     process.env.GITHUB_APP_ID = "1";
     process.env.GITHUB_APP_PRIVATE_KEY = "test-key";
@@ -45,58 +53,104 @@ describe("getFileContentAtRef", () => {
   beforeEach(() => {
     mockReposGetContent.mockReset();
     mockGitGetBlob.mockReset();
+    mockCompareCommitsWithBasehead.mockReset();
+    mockPaginate.mockReset();
   });
 
-  it("decodes inline base64 content from the contents API", async () => {
-    mockReposGetContent.mockResolvedValueOnce({
-      data: {
-        type: "file",
-        encoding: "base64",
-        content: Buffer.from("hello world", "utf-8").toString("base64"),
-      },
-    });
-
-    const result = await getFileContentAtRef(
-      "12345",
-      "acme",
-      "repo",
-      "README.md",
-      "head-sha"
-    );
-
-    expect(result).toBe("hello world");
-    expect(mockGitGetBlob).not.toHaveBeenCalled();
-  });
-
-  it("falls back to the blob API when GitHub omits inline content", async () => {
+  it("returns too_large before falling back to blob content for oversized files", async () => {
     mockReposGetContent.mockResolvedValueOnce({
       data: {
         type: "file",
         encoding: "none",
         content: "",
         sha: "blob-sha-1",
-      },
-    });
-    mockGitGetBlob.mockResolvedValueOnce({
-      data: {
-        content: Buffer.from("large file body", "utf-8").toString("base64"),
-        encoding: "base64",
+        size: 1024 * 1024 + 1,
       },
     });
 
-    const result = await getFileContentAtRef(
+    const result = await getBoundedFileContentAtRef(
       "12345",
       "acme",
       "repo",
       "pnpm-lock.yaml",
+      "head-sha",
+      1024 * 1024
+    );
+
+    expect(result).toEqual({ status: "too_large" });
+    expect(mockGitGetBlob).not.toHaveBeenCalled();
+  });
+});
+
+describe("compareBranchFileChanges", () => {
+  beforeEach(() => {
+    mockPaginate.mockReset();
+  });
+
+  it("paginates compare files up to the 500-file cache boundary", async () => {
+    mockPaginate.mockImplementation(
+      (
+        _endpoint: unknown,
+        _params: unknown,
+        mapFn: (
+          response: {
+            data: {
+              files: Array<{
+                filename: string;
+                previous_filename: undefined;
+                status: string;
+                additions: number;
+                deletions: number;
+                changes: number;
+                patch: string;
+              }>;
+            };
+          },
+          done: () => void
+        ) => unknown
+      ) => {
+        for (let page = 0; page < 6; page += 1) {
+          const pageFiles = Array.from({ length: 100 }, (_, index) => {
+            const fileNumber = page * 100 + index + 1;
+            return {
+              filename: `src/file-${fileNumber}.ts`,
+              previous_filename: undefined,
+              status: "modified",
+              additions: 1,
+              deletions: 0,
+              changes: 1,
+              patch: `@@ file ${fileNumber}`,
+            };
+          });
+          mapFn({ data: { files: pageFiles } }, vi.fn());
+        }
+        return [];
+      }
+    );
+
+    const result = await compareBranchFileChanges(
+      "12345",
+      "acme",
+      "repo",
+      "main",
       "head-sha"
     );
 
-    expect(result).toBe("large file body");
-    expect(mockGitGetBlob).toHaveBeenCalledWith({
-      owner: "acme",
-      repo: "repo",
-      file_sha: "blob-sha-1",
-    });
+    expect(result).toHaveLength(500);
+    expect(result?.[100]?.filename).toBe("src/file-101.ts");
+    expect(result?.[499]?.filename).toBe("src/file-500.ts");
+    expect(result?.some((file) => file.filename === "src/file-501.ts")).toBe(
+      false
+    );
+    expect(mockPaginate).toHaveBeenCalledWith(
+      mockCompareCommitsWithBasehead,
+      {
+        owner: "acme",
+        repo: "repo",
+        basehead: "main...head-sha",
+        per_page: 100,
+      },
+      expect.any(Function)
+    );
   });
 });

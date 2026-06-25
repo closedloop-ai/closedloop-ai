@@ -1,3 +1,19 @@
+/**
+ * Canonical status set for the Desktop-first browser-approval device session
+ * state machine (`apps/api/app/desktop/device-onboarding/service.ts`). Shared
+ * with the web approval UI (`useDesktopDeviceSession`), which gates its
+ * approve/deny buttons on the `pending` value — so the contract lives here in
+ * `@repo/api/src/types` rather than co-located in `apps/api`.
+ */
+export const DesktopDeviceSessionStatus = {
+  Pending: "pending",
+  Approved: "approved",
+  Denied: "denied",
+  Expired: "expired",
+} as const;
+export type DesktopDeviceSessionStatus =
+  (typeof DesktopDeviceSessionStatus)[keyof typeof DesktopDeviceSessionStatus];
+
 export const OnboardingStep = {
   Welcome: "WELCOME",
   CreateTeam: "CREATE_TEAM",
@@ -6,6 +22,7 @@ export const OnboardingStep = {
   AddAnthropicKey: "ADD_ANTHROPIC_KEY",
   ConnectOptionalIntegrations: "CONNECT_OPTIONAL_INTEGRATIONS",
   DownloadElectronApp: "DOWNLOAD_ELECTRON_APP",
+  InviteTeammates: "INVITE_TEAMMATES",
   Complete: "COMPLETE",
 } as const;
 export type OnboardingStep =

@@ -7,7 +7,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * a "thinking" spinner overlay for AI/agent processing.
  */
 const meta = {
-  title: "ui/StatusPercentageIcon",
+  title: "Design System/Data Display/Status Percentage Icon",
   component: StatusPercentageIcon,
   tags: ["autodocs"],
   argTypes: {

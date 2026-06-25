@@ -410,16 +410,3 @@ export async function createIssues(
 
   return results;
 }
-
-/**
- * Check if Linear integration is configured.
- * Returns true only if both CLIENT_ID and CLIENT_SECRET are set.
- */
-export function isLinearConfigured(): boolean {
-  try {
-    getRequiredCredentials();
-    return true;
-  } catch {
-    return false;
-  }
-}

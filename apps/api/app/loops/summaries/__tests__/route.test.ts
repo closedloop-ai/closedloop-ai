@@ -4,7 +4,7 @@
  * Covers Zod body validation (UUID format, length bounds), auth wrapping,
  * and service-result passthrough.
  */
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -36,7 +36,6 @@ vi.mock("@repo/observability/log", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import {
   createMockRequest,
   createMockRouteContext,

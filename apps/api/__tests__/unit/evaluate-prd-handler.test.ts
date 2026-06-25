@@ -11,7 +11,7 @@ import { vi } from "vitest";
 vi.mock("@repo/database", () => ({
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),

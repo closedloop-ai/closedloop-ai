@@ -10,6 +10,7 @@
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import { LinkType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { describe, expect, it } from "vitest";
 import { loopSummaryService } from "@/app/loops/loop-summary-service";
 import { createTestOrganization, createTestUser } from "../utils/db-helpers";
 

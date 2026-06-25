@@ -15,8 +15,8 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A modal dialog that interrupts the user with important content and expects
  * a response.
  */
-const meta = {
-  title: "ui/AlertDialog",
+const meta: Meta<typeof AlertDialog> = {
+  title: "Design System/Primitives/Alert Dialog",
   component: AlertDialog,
   tags: ["autodocs"],
   argTypes: {},
@@ -41,7 +41,7 @@ const meta = {
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof AlertDialog>;
+};
 
 export default meta;
 

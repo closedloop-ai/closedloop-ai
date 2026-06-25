@@ -17,7 +17,7 @@ export const blogPosts: BlogPost[] = [
     readingTime: "5 min read",
     body: [
       "Most AI tooling is optimized for a single contributor sitting in one editor. That is useful, but it misses where work actually stalls in real organizations: handoffs, review loops, and missing context between people and systems.",
-      "ClosedLoop.ai treats the team as the unit of optimization. PRDs become plans, plans become loops, and loops stay attached to the artifacts that define the work. That reduces ambiguity at the coordination layer instead of only increasing local coding speed.",
+      "Closedloop.ai treats the team as the unit of optimization. PRDs become plans, plans become loops, and loops stay attached to the artifacts that define the work. That reduces ambiguity at the coordination layer instead of only increasing local coding speed.",
       "The result is a system where agents can operate inside a shared delivery process rather than outside it.",
     ],
   },

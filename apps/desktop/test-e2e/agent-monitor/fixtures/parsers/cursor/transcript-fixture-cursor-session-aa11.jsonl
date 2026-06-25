@@ -1,0 +1,7 @@
+{"type":"session_meta","payload":{"cwd":"/Users/dev/repo","model":"claude-sonnet-4","version":"0.42.0","git_branch":"main"},"timestamp":"2026-05-20T10:00:00.000Z"}
+{"type":"user_message","payload":{"content":"refactor the auth flow"},"timestamp":"2026-05-20T10:00:05.000Z"}
+{"type":"assistant_message","payload":{"content":"I'll start by reading the auth files."},"timestamp":"2026-05-20T10:00:08.000Z"}
+{"type":"tool_call","payload":{"name":"read_file","args":{"path":"src/auth.ts"}},"timestamp":"2026-05-20T10:00:10.000Z"}
+{"type":"tool_call","payload":{"name":"edit_file","args":{"path":"src/auth.ts"}},"timestamp":"2026-05-20T10:00:20.000Z"}
+{"type":"assistant_message","payload":{"content":"Done. The auth flow now validates tokens."},"timestamp":"2026-05-20T10:00:25.000Z"}
+{"type":"usage","payload":{"input_tokens":1200,"output_tokens":340,"cache_read_tokens":5000,"cache_write_tokens":800,"model":"claude-sonnet-4"},"timestamp":"2026-05-20T10:00:25.000Z"}

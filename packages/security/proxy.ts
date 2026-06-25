@@ -1,4 +1,4 @@
-import { defaults, type Options, withVercelToolbar } from "@nosecone/next";
+import { defaults, type Options } from "@nosecone/next";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting security middleware
 export { createMiddleware as securityMiddleware } from "@nosecone/next";
@@ -16,6 +16,3 @@ export const noseconeOptions: Options = {
     policy: "credentialless",
   },
 };
-
-export const noseconeOptionsWithToolbar: Options =
-  withVercelToolbar(noseconeOptions);

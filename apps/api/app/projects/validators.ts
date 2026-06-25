@@ -1,6 +1,5 @@
 import { Priority } from "@repo/api/src/types/common";
 import {
-  defaultRepositoryValidator,
   ProjectStatus,
   repositoryOverridesValidator,
 } from "@repo/api/src/types/project";
@@ -15,7 +14,6 @@ const projectStatusEnum = z.enum(ProjectStatus);
 // to their declared shapes. Unknown keys pass through untouched.
 const projectSettingsBodyValidator = z
   .object({
-    defaultRepository: defaultRepositoryValidator.optional(),
     repositoryOverrides: repositoryOverridesValidator.optional(),
   })
   .catchall(jsonValueValidator);
@@ -33,10 +31,6 @@ export const createProjectValidator = z.object({
     .optional()
     .transform(transformIsoDateTime),
   teamIds: z.array(z.uuid()).optional(),
-});
-
-export const reorderProjectsValidator = z.object({
-  projectIds: z.array(z.uuid()),
 });
 
 export const updateProjectValidator = z.object({

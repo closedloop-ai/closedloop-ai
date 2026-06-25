@@ -106,13 +106,14 @@ Describe the key interactions and design considerations. For developer-facing or
 
 ## Technical Considerations
 
-Highlight important technical constraints, dependencies, and architecture choices. This should inform implementation without turning the PRD into a full design doc.
+Describe feasibility, constraints, and dependencies that affect whether and how this work can be delivered. Do NOT describe implementation choices, code structure, or "how to build" details — those belong in the implementation plan.
 
-- **System Dependencies:** [External services, APIs, libraries]
+- **Existing capabilities this depends on:** [What the product already does that this feature relies on or extends, described at the product level]
+- **System Dependencies:** [External services or APIs the feature must integrate with, described at the capability level]
 - **Team Dependencies:** [Other teams whose work this depends on or blocks]
-- **Constraints:** [Technical limitations, browser support, etc.]
-- **Architecture:** [High-level technical approach]
-- **Migration / Backfill:** [Data migrations, compatibility constraints, rollout coordination]
+- **Constraints:** [Hard limits the implementation must respect — compliance, browser/platform support, performance ceilings, etc.]
+- **Compatibility / Rollout Coordination:** [Backward compatibility concerns, coordinated rollout requirements with other surfaces, data continuity expectations]
+- **Feasibility Risks:** [Anything that could make this infeasible or significantly more expensive; if uncertain, restate under Open Questions]
 
 ## Alternatives Considered *(optional)*
 

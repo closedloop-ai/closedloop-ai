@@ -5,7 +5,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Renders a signal-bar SVG icon representing a priority level.
  */
 const meta = {
-  title: "ui/PriorityIcon",
+  title: "Design System/Data Display/Priority Icon",
   component: PriorityIcon,
   tags: ["autodocs"],
   argTypes: {

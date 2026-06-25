@@ -8,8 +8,13 @@ import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
-import { logRequestCompleted, unauthorizedResponse } from "../route-utils";
+import {
+  forbiddenResponse,
+  logRequestCompleted,
+  unauthorizedResponse,
+} from "../route-utils";
 import { findOrCreateUser } from "./find-or-create-user";
+import { resolveOrgHeader } from "./resolve-org-header";
 
 /**
  * Next.js route context - matches generated type from @/.next/types/routes
@@ -96,7 +101,20 @@ export function withAuth<TResponse, TRoute extends string = string>(
         return response;
       }
 
-      const user = await findOrCreateUser(clerkUserId, clerkOrgId);
+      const orgResolution = await resolveOrgHeader(
+        request,
+        clerkUserId,
+        clerkOrgId,
+        orgRole ?? undefined
+      );
+      if (orgResolution.kind === "forbidden") {
+        response = forbiddenResponse();
+        return response;
+      }
+      const effectiveClerkOrgId = orgResolution.clerkOrgId;
+      const effectiveOrgRole = orgResolution.orgRole;
+
+      const user = await findOrCreateUser(clerkUserId, effectiveClerkOrgId);
 
       if (!user?.active) {
         response = unauthorizedResponse();
@@ -106,8 +124,8 @@ export function withAuth<TResponse, TRoute extends string = string>(
       const authContext: AuthContext = {
         user,
         clerkUserId,
-        clerkOrgId,
-        orgRole: orgRole ?? undefined,
+        clerkOrgId: effectiveClerkOrgId,
+        orgRole: effectiveOrgRole,
         authMethod: "session",
         apiKeyScopes: undefined,
       };

@@ -9,6 +9,9 @@ export const LoopStatus = {
   Failed: "FAILED",
   Cancelled: "CANCELLED",
   TimedOut: "TIMED_OUT",
+  // Dispatch was deferred because a linked blocking artifact is still
+  // non-terminal; reconciliation flips this back to PENDING once unblocked.
+  Blocked: "BLOCKED",
 } as const;
 export type LoopStatus = (typeof LoopStatus)[keyof typeof LoopStatus];
 

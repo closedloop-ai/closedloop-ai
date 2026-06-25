@@ -11,12 +11,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@closedloop-ai/shared-platform": "workspace:*",
     "@repo/api": "workspace:*",
     "@repo/observability": "workspace:*",
+    "@repo/redis": "workspace:*",
     "socket.io": "^4.8.1",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "socket.io-client": "^4.8.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

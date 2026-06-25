@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/projects/by-slug/[slug]/route";
 import { projectsService } from "@/app/projects/service";
 import type { AuthContext } from "@/lib/auth/with-auth";

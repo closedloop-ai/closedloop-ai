@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { DesktopDeviceSessionStatus } from "@repo/api/src/types/onboarding";
 import { withDb } from "@repo/database";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
 import { getPrismaErrorCode } from "@/lib/db-utils";
@@ -100,7 +101,7 @@ export const desktopDeviceOnboardingService = {
     const activeSessionCount = await withDb((db) =>
       db.desktopOnboardingDeviceSession.count({
         where: {
-          status: "pending",
+          status: DesktopDeviceSessionStatus.Pending,
           expiresAt: { gt: new Date() },
           OR: [
             { gatewayId: input.gatewayId },
@@ -130,7 +131,7 @@ export const desktopDeviceOnboardingService = {
               desktopVersion: input.desktopVersion,
               desktopSecurityUpgradeProtocolVersion:
                 input.desktopSecurityUpgradeProtocolVersion,
-              status: "pending",
+              status: DesktopDeviceSessionStatus.Pending,
               expiresAt,
             },
           })
@@ -175,8 +176,7 @@ export const desktopDeviceOnboardingService = {
       });
       const now = new Date();
       if (
-        !session ||
-        session.status !== "pending" ||
+        session?.status !== DesktopDeviceSessionStatus.Pending ||
         session.expiresAt <= now
       ) {
         return null;
@@ -185,11 +185,11 @@ export const desktopDeviceOnboardingService = {
       const claimed = await db.desktopOnboardingDeviceSession.updateMany({
         where: {
           id: session.id,
-          status: "pending",
+          status: DesktopDeviceSessionStatus.Pending,
           expiresAt: { gt: now },
         },
         data: {
-          status: "approved",
+          status: DesktopDeviceSessionStatus.Approved,
           userId: input.userId,
           organizationId: input.organizationId,
           approvedAt: now,
@@ -226,7 +226,7 @@ export const desktopDeviceOnboardingService = {
       db.desktopOnboardingDeviceSession.updateMany({
         where: {
           userCode: input.userCode,
-          status: "pending",
+          status: DesktopDeviceSessionStatus.Pending,
           expiresAt: { gt: now },
           OR: [
             { userId: null, organizationId: null },
@@ -234,7 +234,7 @@ export const desktopDeviceOnboardingService = {
           ],
         },
         data: {
-          status: "denied",
+          status: DesktopDeviceSessionStatus.Denied,
           userId: input.userId,
           organizationId: input.organizationId,
           deniedAt: now,
@@ -253,9 +253,14 @@ export const desktopDeviceOnboardingService = {
     deviceSessionId: string;
     deviceSessionSecret: string;
   }): Promise<
-    | { status: "pending" | "denied" | "expired" }
     | {
-        status: "approved";
+        status:
+          | typeof DesktopDeviceSessionStatus.Pending
+          | typeof DesktopDeviceSessionStatus.Denied
+          | typeof DesktopDeviceSessionStatus.Expired;
+      }
+    | {
+        status: typeof DesktopDeviceSessionStatus.Approved;
         onboardingAttemptId: string;
         webAppOrigin: string;
         expiresAt: string;
@@ -273,29 +278,35 @@ export const desktopDeviceOnboardingService = {
     if (!row) {
       return null;
     }
-    if (row.expiresAt <= new Date() && row.status === "pending") {
+    if (
+      row.expiresAt <= new Date() &&
+      row.status === DesktopDeviceSessionStatus.Pending
+    ) {
       await withDb((db) =>
         db.desktopOnboardingDeviceSession.update({
           where: { id: row.id },
-          data: { status: "expired" },
+          data: { status: DesktopDeviceSessionStatus.Expired },
         })
       );
-      return { status: "expired" };
+      return { status: DesktopDeviceSessionStatus.Expired };
     }
-    if (row.status === "approved" && row.onboardingAttemptId) {
+    if (
+      row.status === DesktopDeviceSessionStatus.Approved &&
+      row.onboardingAttemptId
+    ) {
       return {
-        status: "approved",
+        status: DesktopDeviceSessionStatus.Approved,
         onboardingAttemptId: row.onboardingAttemptId,
         webAppOrigin: row.webAppOrigin,
         expiresAt: row.expiresAt.toISOString(),
       };
     }
-    if (row.status === "denied") {
-      return { status: "denied" };
+    if (row.status === DesktopDeviceSessionStatus.Denied) {
+      return { status: DesktopDeviceSessionStatus.Denied };
     }
-    if (row.status === "expired") {
-      return { status: "expired" };
+    if (row.status === DesktopDeviceSessionStatus.Expired) {
+      return { status: DesktopDeviceSessionStatus.Expired };
     }
-    return { status: "pending" };
+    return { status: DesktopDeviceSessionStatus.Pending };
   },
 };

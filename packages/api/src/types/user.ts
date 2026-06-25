@@ -67,7 +67,7 @@ export type UpdateUserProfileFromClerkInput = {
   phoneNumber?: string | null;
 };
 
-import type { DocumentType } from "./document";
+import type { DocumentType } from "./document.js";
 
 /** Contribution count for a single day in the heatmap. */
 export type ContributionDay = {
@@ -93,8 +93,6 @@ export type UserProfileStats = {
   totalPRsLanded: number;
   /** Total loops initiated. */
   totalLoops: number;
-  /** Total workstreams created or assigned. */
-  totalWorkstreams: number;
   /** Average concurrent running loops (when loops are active). */
   avgConcurrency: number;
   /** Daily contribution counts for the last 52 weeks (heatmap). */

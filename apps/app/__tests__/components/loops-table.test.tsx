@@ -9,12 +9,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Must be declared before vi.mock factories reference them
 const mockMutateAsync = vi.fn();
-const mockCancelMutateAsync = vi.fn();
+const mockCancelMutate = vi.fn();
 const mockPush = vi.fn();
+const mockUseFeatureFlagEnabled = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
   usePathname: vi.fn(() => "/loops"),
+  useParams: vi.fn(() => ({ orgSlug: "test-org" })),
   useSearchParams: vi.fn(
     () =>
       new URLSearchParams() as unknown as ReturnType<
@@ -23,14 +25,17 @@ vi.mock("next/navigation", () => ({
   ),
 }));
 
-vi.mock("@/hooks/queries/use-loops", () => ({
+vi.mock("@repo/app/loops/hooks/use-loops", () => ({
   useLoops: vi.fn(() => ({ data: [], isLoading: false, error: null })),
   useResumeLoop: vi.fn(() => ({
     mutateAsync: mockMutateAsync,
     isPending: false,
   })),
+}));
+
+vi.mock("@/hooks/queries/use-loops", () => ({
   useCancelLoop: vi.fn(() => ({
-    mutateAsync: mockCancelMutateAsync,
+    mutate: mockCancelMutate,
     isPending: false,
   })),
 }));
@@ -39,18 +44,23 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-import { LoopsTable } from "@/app/(authenticated)/loops/components/loops-table";
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
+}));
+
 // Import after mocks
-import {
-  useCancelLoop,
-  useLoops,
-  useResumeLoop,
-} from "@/hooks/queries/use-loops";
-import { createMockLoopWithUser } from "../fixtures/loops";
+import { useLoops, useResumeLoop } from "@repo/app/loops/hooks/use-loops";
+import { createMockLoopWithUser } from "@repo/app/shared/test-fixtures/loops";
+import { LoopsTable } from "@/app/(authenticated)/[orgSlug]/loops/components/loops-table";
+import { useCancelLoop } from "@/hooks/queries/use-loops";
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  mockUseFeatureFlagEnabled.mockReturnValue(false);
+});
 
 describe("LoopsTable — restart button visibility", () => {
   beforeEach(() => {
@@ -187,6 +197,62 @@ describe("LoopsTable — restart button interaction", () => {
     });
   });
 
+  it("preserves legacy restart payload when explicit compute selection is disabled", async () => {
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          id: "loop-001",
+          status: LoopStatus.Failed,
+          computeTarget: {
+            id: "target-1",
+            machineName: "danielochoa-MacBook-Pro",
+            isOnline: false,
+          } as never,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart loop" }));
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({ id: "loop-001" });
+    });
+  });
+
+  it("passes the displayed compute target id when restarting a targeted loop with explicit selection enabled", async () => {
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    vi.mocked(useLoops).mockReturnValue({
+      data: [
+        createMockLoopWithUser({
+          id: "loop-001",
+          status: LoopStatus.Failed,
+          computeTarget: {
+            id: "target-1",
+            machineName: "danielochoa-MacBook-Pro",
+            isOnline: false,
+          } as never,
+        }),
+      ],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart loop" }));
+
+    await waitFor(() => {
+      expect(mockMutateAsync).toHaveBeenCalledWith({
+        id: "loop-001",
+        computeTargetId: "target-1",
+      });
+    });
+  });
+
   it("navigates to the new loop id returned by the resume response", async () => {
     mockMutateAsync.mockResolvedValueOnce({
       loopId: "new-loop-999",
@@ -198,7 +264,7 @@ describe("LoopsTable — restart button interaction", () => {
     fireEvent.click(screen.getByRole("button", { name: "Restart loop" }));
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/loops/new-loop-999");
+      expect(mockPush).toHaveBeenCalledWith("/test-org/loops/new-loop-999");
     });
   });
 
@@ -216,7 +282,7 @@ describe("LoopsTable — restart button interaction", () => {
       expect(mockPush).toHaveBeenCalled();
     });
 
-    expect(mockPush).not.toHaveBeenCalledWith("/loops/loop-001");
+    expect(mockPush).not.toHaveBeenCalledWith("/test-org/loops/loop-001");
   });
 });
 
@@ -224,7 +290,7 @@ describe("LoopsTable — cancel button visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutateAsync: mockCancelMutateAsync,
+      mutate: mockCancelMutate,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
     vi.mocked(useResumeLoop).mockReturnValue({
@@ -312,7 +378,7 @@ describe("LoopsTable — compute target column", () => {
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutateAsync: mockCancelMutateAsync,
+      mutate: mockCancelMutate,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
   });
@@ -379,9 +445,12 @@ describe("LoopsTable — compute target column", () => {
 describe("LoopsTable — cancel button interaction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCancelMutateAsync.mockResolvedValue({});
+    mockCancelMutate.mockImplementation((_input, options) => {
+      options?.onSuccess?.();
+      options?.onSettled?.();
+    });
     vi.mocked(useCancelLoop).mockReturnValue({
-      mutateAsync: mockCancelMutateAsync,
+      mutate: mockCancelMutate,
       isPending: false,
     } as unknown as ReturnType<typeof useCancelLoop>);
     vi.mocked(useResumeLoop).mockReturnValue({
@@ -397,7 +466,7 @@ describe("LoopsTable — cancel button interaction", () => {
     } as ReturnType<typeof useLoops>);
   });
 
-  it("calls mutateAsync with the loop id after confirming the stop dialog", async () => {
+  it("calls mutate with the loop identity after confirming the stop dialog", async () => {
     render(<LoopsTable />);
 
     fireEvent.click(screen.getByRole("button", { name: "Stop loop" }));
@@ -409,7 +478,53 @@ describe("LoopsTable — cancel button interaction", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
-      expect(mockCancelMutateAsync).toHaveBeenCalledWith("loop-001");
+      expect(mockCancelMutate).toHaveBeenCalledWith(
+        {
+          id: "loop-001",
+          computeTargetId: null,
+        },
+        expect.objectContaining({
+          onSuccess: expect.any(Function),
+          onSettled: expect.any(Function),
+        })
+      );
+    });
+  });
+
+  it("uses the selected loop snapshot when the table refetches before confirm", async () => {
+    const selectedLoop = createMockLoopWithUser({
+      id: "loop-001",
+      status: LoopStatus.Running,
+    });
+    vi.mocked(useLoops).mockReturnValue({
+      data: [selectedLoop],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+
+    const { rerender } = render(<LoopsTable />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop loop" }));
+    vi.mocked(useLoops).mockReturnValue({
+      data: [] as (typeof selectedLoop)[],
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoops>);
+    rerender(<LoopsTable />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop Loop" }));
+
+    await waitFor(() => {
+      expect(mockCancelMutate).toHaveBeenCalledWith(
+        {
+          id: "loop-001",
+          computeTargetId: null,
+        },
+        expect.objectContaining({
+          onSuccess: expect.any(Function),
+          onSettled: expect.any(Function),
+        })
+      );
     });
   });
 });

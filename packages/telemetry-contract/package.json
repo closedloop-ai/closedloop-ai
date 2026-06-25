@@ -1,0 +1,202 @@
+{
+  "name": "@closedloop-ai/telemetry-contract",
+  "version": "0.5.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/closedloop-ai/symphony-alpha.git",
+    "directory": "packages/telemetry-contract"
+  },
+  "exports": {
+    "./attributes": {
+      "import": {
+        "types": "./dist/attributes.d.ts",
+        "default": "./dist/attributes.js"
+      },
+      "require": {
+        "types": "./dist/attributes.d.cts",
+        "default": "./dist/attributes.cjs"
+      }
+    },
+    "./app": {
+      "import": {
+        "types": "./dist/app.d.ts",
+        "default": "./dist/app.js"
+      },
+      "require": {
+        "types": "./dist/app.d.cts",
+        "default": "./dist/app.cjs"
+      }
+    },
+    "./app-exception-origin": {
+      "import": {
+        "types": "./dist/app-exception-origin.d.ts",
+        "default": "./dist/app-exception-origin.js"
+      },
+      "require": {
+        "types": "./dist/app-exception-origin.d.cts",
+        "default": "./dist/app-exception-origin.cjs"
+      }
+    },
+    "./resource": {
+      "import": {
+        "types": "./dist/resource.d.ts",
+        "default": "./dist/resource.js"
+      },
+      "require": {
+        "types": "./dist/resource.d.cts",
+        "default": "./dist/resource.cjs"
+      }
+    },
+    "./span": {
+      "import": {
+        "types": "./dist/span.d.ts",
+        "default": "./dist/span.js"
+      },
+      "require": {
+        "types": "./dist/span.d.cts",
+        "default": "./dist/span.cjs"
+      }
+    },
+    "./gen-ai": {
+      "import": {
+        "types": "./dist/gen-ai.d.ts",
+        "default": "./dist/gen-ai.js"
+      },
+      "require": {
+        "types": "./dist/gen-ai.d.cts",
+        "default": "./dist/gen-ai.cjs"
+      }
+    },
+    "./sync": {
+      "import": {
+        "types": "./dist/sync.d.ts",
+        "default": "./dist/sync.js"
+      },
+      "require": {
+        "types": "./dist/sync.d.cts",
+        "default": "./dist/sync.cjs"
+      }
+    },
+    "./permission": {
+      "import": {
+        "types": "./dist/permission.d.ts",
+        "default": "./dist/permission.js"
+      },
+      "require": {
+        "types": "./dist/permission.d.cts",
+        "default": "./dist/permission.cjs"
+      }
+    },
+    "./schema-name": {
+      "import": {
+        "types": "./dist/schema-name.d.ts",
+        "default": "./dist/schema-name.js"
+      },
+      "require": {
+        "types": "./dist/schema-name.d.cts",
+        "default": "./dist/schema-name.cjs"
+      }
+    },
+    "./schema-shape": {
+      "import": {
+        "types": "./dist/schema-shape.d.ts",
+        "default": "./dist/schema-shape.js"
+      },
+      "require": {
+        "types": "./dist/schema-shape.d.cts",
+        "default": "./dist/schema-shape.cjs"
+      }
+    },
+    "./validate": {
+      "import": {
+        "types": "./dist/validate.d.ts",
+        "default": "./dist/validate.js"
+      },
+      "require": {
+        "types": "./dist/validate.d.cts",
+        "default": "./dist/validate.cjs"
+      }
+    },
+    "./emit": {
+      "import": {
+        "types": "./dist/emit.d.ts",
+        "default": "./dist/emit.js"
+      },
+      "require": {
+        "types": "./dist/emit.d.cts",
+        "default": "./dist/emit.cjs"
+      }
+    },
+    "./test-fixtures": {
+      "import": {
+        "types": "./dist/test-fixtures.d.ts",
+        "default": "./dist/test-fixtures.js"
+      },
+      "require": {
+        "types": "./dist/test-fixtures.d.cts",
+        "default": "./dist/test-fixtures.cjs"
+      }
+    },
+    "./schemas/resource.schema.json": {
+      "default": "./dist/schemas/resource.schema.json"
+    },
+    "./schemas/app.schema.json": {
+      "default": "./dist/schemas/app.schema.json"
+    },
+    "./schemas/span.schema.json": {
+      "default": "./dist/schemas/span.schema.json"
+    },
+    "./schemas/gen-ai.schema.json": {
+      "default": "./dist/schemas/gen-ai.schema.json"
+    },
+    "./schemas/sync.schema.json": {
+      "default": "./dist/schemas/sync.schema.json"
+    },
+    "./schemas/permission.schema.json": {
+      "default": "./dist/schemas/permission.schema.json"
+    },
+    "./samples/validate-perf-jsonl.sh": {
+      "default": "./dist/samples/validate-perf-jsonl.sh"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsup && pnpm run generate:schemas && pnpm run check:schemas && pnpm run copy:samples",
+    "generate:schemas": "tsx scripts/generate-json-schemas.ts",
+    "check:schemas": "tsx scripts/check-json-schemas.ts",
+    "check:schema-update": "tsx scripts/check-schema-update-gates.ts",
+    "copy:samples": "tsx scripts/copy-samples.ts",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "test": "vitest run",
+    "test:types": "tsc --noEmit --project tsconfig.type-tests.json",
+    "test:samples:source": "tsx scripts/test-perf-jsonl-sample.ts --mode source",
+    "test:samples": "tsx scripts/test-perf-jsonl-sample.ts --mode dist",
+    "test:package-resolution": "pnpm run build && tsx scripts/test-package-resolution.ts",
+    "test:package-content": "pnpm run build && tsx scripts/test-package-content.ts",
+    "validate": "pnpm run test:samples:source && pnpm run typecheck && pnpm run test && pnpm run test:types && pnpm run build && pnpm run test:samples && pnpm run test:package-resolution && pnpm run test:package-content"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/semantic-conventions": "1.39.0",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.9.1",
+    "ajv": "^8.18.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
+    "yaml": ">=2.8.3",
+    "zod": "^4.3.6"
+  },
+  "telemetryContract": {
+    "otelSemanticConventionsVersion": "1.39.0"
+  }
+}

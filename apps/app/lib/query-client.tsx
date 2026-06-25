@@ -1,9 +1,8 @@
 "use client";
 
-import { toast } from "@repo/design-system/components/ui/sonner";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { makeQueryClient } from "@repo/app/shared/query/query-client";
+import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
-import { ApiError, getErrorMessage } from "./api-error";
 
 type QueryProviderProps = {
   children: ReactNode;
@@ -19,39 +18,6 @@ export function QueryProvider({ children }: Readonly<QueryProviderProps>) {
       {children}
     </QueryClientProvider>
   );
-}
-
-function makeQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 60 * 1000, // 1 minute
-        refetchOnWindowFocus: false,
-        refetchOnReconnect: false,
-        retry: (failureCount, error) => {
-          // Retry once on network instability. If we received a response from the API, don't retry.
-          if (
-            error instanceof ApiError &&
-            (error.isClientError() || error.isServerError())
-          ) {
-            return false;
-          }
-          return failureCount < 1;
-        },
-        retryDelay: 1000,
-      },
-      mutations: {
-        retry: false,
-        onError: (error, _variables, _onMutateResult, mutation) => {
-          if (mutation?.meta?.suppressDefaultErrorToast === true) {
-            return;
-          }
-          const message = getErrorMessage(error);
-          toast.error(message);
-        },
-      },
-    },
-  });
 }
 
 let browserQueryClient: QueryClient | undefined;

@@ -7,19 +7,24 @@
  * - null documentId guard: returns false without calling mutate
  */
 
+import {
+  COMMAND_SIGNING_CAPABILITY_KEY,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { ApiError } from "@repo/app/shared/api/api-error";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { usePrdActions } from "@/hooks/document-editing/use-prd-actions";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
-import { ApiError } from "@/lib/api-error";
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
 
 const mockMutate = vi.fn();
+const mockApiGet = vi.fn();
 
 vi.mock("@/hooks/queries/use-loops", () => ({
   useRunLoop: () => ({
@@ -30,14 +35,14 @@ vi.mock("@/hooks/queries/use-loops", () => ({
 
 const mockHandleRunLoopResponse = vi.fn();
 
-vi.mock("@/lib/run-loop-response", () => ({
+vi.mock("@repo/app/loops/lib/run-loop-response", () => ({
   handleRunLoopResponse: (...args: unknown[]) =>
     mockHandleRunLoopResponse(...args),
 }));
 
 vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => ({
-    get: vi.fn(),
+    get: mockApiGet,
     post: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
@@ -60,7 +65,8 @@ vi.mock("next/navigation", () => ({
     refresh: vi.fn(),
     prefetch: vi.fn(),
   }),
-  usePathname: () => "/",
+  useParams: () => ({ orgSlug: "test-org" }),
+  usePathname: () => "/test-org",
   useSearchParams: () => new URLSearchParams(),
 }));
 
@@ -92,6 +98,7 @@ describe("usePrdActions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApiGet.mockResolvedValue([makeComputeTargetWire("ct-1")]);
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -173,4 +180,107 @@ describe("usePrdActions", () => {
       });
     });
   });
+
+  describe("handleDecomposeFeatures — selected target replay", () => {
+    test("restores selector state and blocks mutation when refresh fails after editor pre-clear", async () => {
+      const conflict = makeMultipleTargetsConflict();
+      const apiError = new ApiError(
+        "Conflict",
+        409,
+        undefined,
+        wrapInApiResult(conflict)
+      );
+      mockMutate.mockImplementationOnce((_params, options) => {
+        options?.onError?.(apiError);
+      });
+
+      const { result } = renderHook(
+        () => usePrdActions({ documentId: "test-id" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      await act(async () => {
+        await result.current.handleDecomposeFeatures();
+      });
+
+      await waitFor(() => {
+        expect(result.current.decomposeTargetState).toEqual({
+          availableTargets: conflict.availableTargets,
+        });
+      });
+
+      mockApiGet.mockRejectedValueOnce(new Error("refresh failed"));
+      act(() => {
+        result.current.clearDecomposeTargetState();
+      });
+      await act(async () => {
+        await result.current.handleDecomposeFeatures("ct-1");
+      });
+
+      expect(mockMutate).toHaveBeenCalledOnce();
+      expect(result.current.decomposeTargetState).toEqual({
+        availableTargets: conflict.availableTargets,
+      });
+    });
+
+    test("restores selector state and blocks mutation when refreshed targets omit the selected target", async () => {
+      const conflict = makeMultipleTargetsConflict();
+      const apiError = new ApiError(
+        "Conflict",
+        409,
+        undefined,
+        wrapInApiResult(conflict)
+      );
+      mockMutate.mockImplementationOnce((_params, options) => {
+        options?.onError?.(apiError);
+      });
+
+      const { result } = renderHook(
+        () => usePrdActions({ documentId: "test-id" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      await act(async () => {
+        await result.current.handleDecomposeFeatures();
+      });
+
+      await waitFor(() => {
+        expect(result.current.decomposeTargetState).toEqual({
+          availableTargets: conflict.availableTargets,
+        });
+      });
+
+      mockApiGet.mockResolvedValueOnce([makeComputeTargetWire("ct-2")]);
+      act(() => {
+        result.current.clearDecomposeTargetState();
+      });
+      await act(async () => {
+        await result.current.handleDecomposeFeatures("ct-1");
+      });
+
+      expect(mockMutate).toHaveBeenCalledOnce();
+      expect(result.current.decomposeTargetState).toEqual({
+        availableTargets: conflict.availableTargets,
+      });
+    });
+  });
 });
+
+function makeComputeTargetWire(id: string) {
+  return {
+    id,
+    organizationId: "org-1",
+    userId: "user-1",
+    machineName: "Test-MBP",
+    platform: "darwin",
+    capabilities: { [COMMAND_SIGNING_CAPABILITY_KEY]: false },
+    supportedOperations: [],
+    lastSeenAt: "2026-05-10T12:00:00.000Z",
+    isOnline: true,
+    isSharedWithOrg: false,
+    serverCapabilities: { computeTargetSigning: false },
+    selectedHarness: HarnessType.Claude,
+    createdAt: "2026-05-10T12:00:00.000Z",
+    updatedAt: "2026-05-10T12:00:00.000Z",
+  };
+}

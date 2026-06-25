@@ -10,12 +10,16 @@ import type {
   LoopAlreadyActiveBody,
 } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { getCommandLabels } from "@repo/app/loops/lib/loop-display";
+import { handleRunLoopResponse } from "@repo/app/loops/lib/run-loop-response";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useRouter } from "next/navigation";
+import { useNavigation } from "@repo/navigation/use-navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { refreshComputeTargetForReplay } from "@/hooks/queries/compute-target-replay-refresh";
 import { useRunLoop } from "@/hooks/queries/use-loops";
-import { getCommandLabels } from "@/lib/loop-display";
-import { handleRunLoopResponse } from "@/lib/run-loop-response";
+import { useApiClient } from "@/hooks/use-api-client";
+import { useOrgSlug } from "@/hooks/use-org-slug";
 import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 
@@ -37,6 +41,17 @@ type RunLoopMutationOptions = Parameters<
   ReturnType<typeof useRunLoop>["mutate"]
 >[1];
 type RequestChangesResolver = (result: boolean) => void;
+type PendingReplayAction = (
+  targetId: string,
+  previousState?: {
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+  } | null
+) => void;
+type PendingBackendMismatchAction = (
+  targetId: string | null,
+  backendOverride: boolean,
+  previousState?: BackendMismatchBody | null
+) => void;
 
 /**
  * Generic conflict-resolution machinery for run-loop operations.
@@ -72,7 +87,10 @@ type RequestChangesResolver = (result: boolean) => void;
 export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   // TanStack Query mutation — all loop operations route through run-loop
   const runLoop = useRunLoop();
-  const router = useRouter();
+  const apiClient = useApiClient();
+  const queryClient = useQueryClient();
+  const orgSlug = useOrgSlug();
+  const navigation = useNavigation();
   const preLoopGate = useOptionalPreLoopSystemCheckGate();
 
   // Multi-target conflict state
@@ -86,10 +104,10 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
 
   /** Command last passed to `prepareConflictRefs` — used to restore evaluate loading state on conflict replay. */
   const pendingConflictCommandRef = useRef<RunLoopCommand | null>(null);
-  const pendingActionRef = useRef<((targetId: string) => void) | null>(null);
-  const pendingMismatchActionRef = useRef<
-    ((targetId: string | null, backendOverride: boolean) => void) | null
-  >(null);
+  const pendingActionRef = useRef<PendingReplayAction | null>(null);
+  const pendingMismatchActionRef = useRef<PendingBackendMismatchAction | null>(
+    null
+  );
   const requestChangesResolversRef = useRef<Set<RequestChangesResolver>>(
     new Set()
   );
@@ -107,20 +125,30 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     []
   );
 
-  /** Route conflict errors (409) from a run-loop call to the appropriate state setter. */
-  const routeConflictError = useCallback(
-    (error: unknown): void => {
+  /**
+   * Route run-loop errors to the appropriate state setter. Replay callers can
+   * provide a restore callback so non-conflict failures reopen the previous
+   * selector instead of stranding the user after the selector was dismissed.
+   */
+  const routeRunLoopError = useCallback(
+    (error: unknown, restorePreviousConflictState?: () => void): void => {
+      let routedToRetryableConflict = false;
       handleRunLoopResponse(error, {
-        onMultipleTargets: (conflict) =>
-          setMultiTargetState({ availableTargets: conflict.availableTargets }),
-        onBackendMismatch: (body) => setBackendMismatchState(body),
+        onMultipleTargets: (conflict) => {
+          routedToRetryableConflict = true;
+          setMultiTargetState({ availableTargets: conflict.availableTargets });
+        },
+        onBackendMismatch: (body) => {
+          routedToRetryableConflict = true;
+          setBackendMismatchState(body);
+        },
         onLoopAlreadyActive: (payload: LoopAlreadyActiveBody) => {
           const label = getCommandLabels(payload.command).noun;
           toast.error(`${label} is already running on this document`, {
             action: {
               label: "View Loop",
               onClick: () => {
-                router.push(`/loops/${payload.loopId}`);
+                navigation.navigate(`/${orgSlug}/loops/${payload.loopId}`);
               },
             },
           });
@@ -130,8 +158,15 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
         },
         onRateLimited: (message) => toast.error(message),
       });
+      if (!routedToRetryableConflict) {
+        restorePreviousConflictState?.();
+      }
     },
-    [router]
+    [orgSlug, navigation]
+  );
+  const routeConflictError = useCallback(
+    (error: unknown): void => routeRunLoopError(error),
+    [routeRunLoopError]
   );
 
   const runLoopMutationWithOptionalPreLoopCheck = useCallback(
@@ -178,6 +213,12 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
     []
   );
 
+  const refreshReplayTarget = useCallback(
+    (targetId: string) =>
+      refreshComputeTargetForReplay(apiClient, queryClient, targetId),
+    [apiClient, queryClient]
+  );
+
   /**
    * Set up pending-action refs so that selectTarget / confirmOriginalBackend /
    * confirmPreferredBackend can replay the same command with the resolved target.
@@ -200,13 +241,17 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           activeCommandRef.current = null;
         }
       };
-      const replayRunLoop = (replayParams: RunLoopMutationParams): void => {
+      const replayRunLoop = (
+        replayParams: RunLoopMutationParams,
+        restorePreviousConflictState?: () => void
+      ): void => {
         runLoop.mutate(replayParams, {
-          onError: routeConflictError,
+          onError: (error) =>
+            routeRunLoopError(error, restorePreviousConflictState),
           onSettled: clearEvaluateActiveCommandAfterReplay,
         });
       };
-      pendingActionRef.current = (targetId: string) => {
+      pendingActionRef.current = (targetId: string, previousState) => {
         if (!documentId) {
           return;
         }
@@ -216,17 +261,21 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           documentId,
           computeTargetId: targetId,
         };
+        const restorePreviousConflictState = previousState
+          ? () => setMultiTargetState(previousState)
+          : undefined;
         const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
           replayParams,
-          () => replayRunLoop(replayParams)
+          () => replayRunLoop(replayParams, restorePreviousConflictState)
         );
         if (!queuedPreLoopCheck) {
-          replayRunLoop(replayParams);
+          replayRunLoop(replayParams, restorePreviousConflictState);
         }
       };
       pendingMismatchActionRef.current = (
         targetId: string | null,
-        backendOverride: boolean
+        backendOverride: boolean,
+        previousState
       ) => {
         if (!documentId) {
           return;
@@ -238,18 +287,21 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           computeTargetId: targetId,
           backendOverride,
         };
+        const restorePreviousConflictState = previousState
+          ? () => setBackendMismatchState(previousState)
+          : undefined;
         const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
           replayParams,
-          () => replayRunLoop(replayParams)
+          () => replayRunLoop(replayParams, restorePreviousConflictState)
         );
         if (!queuedPreLoopCheck) {
-          replayRunLoop(replayParams);
+          replayRunLoop(replayParams, restorePreviousConflictState);
         }
       };
     },
     [
       documentId,
-      routeConflictError,
+      routeRunLoopError,
       runLoop,
       runLoopMutationWithOptionalPreLoopCheck,
     ]
@@ -260,17 +312,29 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
    * Pass `activeCommandRef` when the caller tracks EvaluatePlan/EvaluateCode loading state.
    */
   const selectTarget = useCallback(
-    (
+    async (
       targetId: string,
       activeCommandRef?: React.MutableRefObject<RunLoopCommand | null>
     ) => {
+      const previousState = multiTargetState;
       setMultiTargetState(null);
+      try {
+        await refreshReplayTarget(targetId);
+      } catch (error) {
+        setMultiTargetState(previousState);
+        toast.error(error instanceof Error ? error.message : "Failed to retry");
+        return;
+      }
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingActionRef.current?.(targetId);
+      pendingActionRef.current?.(targetId, previousState);
     },
-    [restoreEvaluateActiveCommandBeforeReplay]
+    [
+      multiTargetState,
+      refreshReplayTarget,
+      restoreEvaluateActiveCommandBeforeReplay,
+    ]
   );
 
   /**
@@ -278,18 +342,36 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
    * Pass `activeCommandRef` when the caller tracks EvaluatePlan/EvaluateCode loading state.
    */
   const confirmOriginalBackend = useCallback(
-    (activeCommandRef?: React.MutableRefObject<RunLoopCommand | null>) => {
+    async (
+      activeCommandRef?: React.MutableRefObject<RunLoopCommand | null>
+    ) => {
       if (!backendMismatchState) {
         return;
       }
+      const previousState = backendMismatchState;
       const targetId = backendMismatchState.originalComputeTargetId;
       setBackendMismatchState(null);
+      if (targetId !== null) {
+        try {
+          await refreshReplayTarget(targetId);
+        } catch (error) {
+          setBackendMismatchState(previousState);
+          toast.error(
+            error instanceof Error ? error.message : "Failed to retry"
+          );
+          return;
+        }
+      }
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingMismatchActionRef.current?.(targetId, true);
+      pendingMismatchActionRef.current?.(targetId, true, previousState);
     },
-    [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]
+    [
+      backendMismatchState,
+      refreshReplayTarget,
+      restoreEvaluateActiveCommandBeforeReplay,
+    ]
   );
 
   /**
@@ -297,18 +379,36 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
    * Pass `activeCommandRef` when the caller tracks EvaluatePlan/EvaluateCode loading state.
    */
   const confirmPreferredBackend = useCallback(
-    (activeCommandRef?: React.MutableRefObject<RunLoopCommand | null>) => {
+    async (
+      activeCommandRef?: React.MutableRefObject<RunLoopCommand | null>
+    ) => {
       if (!backendMismatchState) {
         return;
       }
+      const previousState = backendMismatchState;
       const targetId = backendMismatchState.preferredComputeTargetId;
       setBackendMismatchState(null);
+      if (targetId !== null) {
+        try {
+          await refreshReplayTarget(targetId);
+        } catch (error) {
+          setBackendMismatchState(previousState);
+          toast.error(
+            error instanceof Error ? error.message : "Failed to retry"
+          );
+          return;
+        }
+      }
       if (activeCommandRef) {
         restoreEvaluateActiveCommandBeforeReplay(activeCommandRef);
       }
-      pendingMismatchActionRef.current?.(targetId, true);
+      pendingMismatchActionRef.current?.(targetId, true, previousState);
     },
-    [backendMismatchState, restoreEvaluateActiveCommandBeforeReplay]
+    [
+      backendMismatchState,
+      refreshReplayTarget,
+      restoreEvaluateActiveCommandBeforeReplay,
+    ]
   );
 
   const dismissBackendMismatch = useCallback(() => {

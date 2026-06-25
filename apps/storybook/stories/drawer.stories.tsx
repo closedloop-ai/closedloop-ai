@@ -14,7 +14,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A drawer component for React.
  */
 const meta: Meta<typeof Drawer> = {
-  title: "ui/Drawer",
+  title: "Design System/Primitives/Drawer",
   component: Drawer,
   tags: ["autodocs"],
   argTypes: {},

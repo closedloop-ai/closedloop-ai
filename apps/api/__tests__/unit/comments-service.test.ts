@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
@@ -6,7 +6,7 @@ vi.mock("@repo/database", () => ({
   Prisma: { JsonNull: "DbNull", InputJsonValue: {} },
 }));
 
-vi.mock("@repo/collaboration/room-utils", () => ({
+vi.mock("@repo/collaboration/shared/room-utils", () => ({
   parseArtifactRoomId: vi.fn(),
   parseDocumentRoomId: vi.fn((roomId: string) => {
     const parts = roomId.split(":");
@@ -19,9 +19,15 @@ vi.mock("@repo/collaboration/room-utils", () => ({
 }));
 
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
-import type { CommentData, ThreadData } from "@repo/collaboration/webhook";
-import { commentsService } from "@/app/comments/service";
+import type {
+  CommentData,
+  ThreadData,
+} from "@repo/collaboration/server/webhook";
+import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
+import {
+  commentsService,
+  GitHubReviewThreadResolutionAttributionKind,
+} from "@/app/comments/service";
 
 const ORG_ID = "org-123";
 const THREAD_ID = "th_abc";
@@ -71,35 +77,55 @@ describe("commentsService", () => {
   });
 
   describe("upsertThreadFromLiveblocks", () => {
-    it("upserts a thread with entity from room lookup", async () => {
+    it("prefers thread.metadata.version over the artifact's latestVersion", async () => {
       const mockDb = {
         commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
         artifact: {
-          findUnique: vi.fn().mockResolvedValue({ id: "artifact-1" }),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "artifact-1",
+            document: { latestVersion: 5 },
+          }),
         },
       };
       mockWithDbCall(mockDb);
 
-      const result = await commentsService.upsertThreadFromLiveblocks(
+      await commentsService.upsertThreadFromLiveblocks(
         ORG_ID,
-        makeThread()
+        makeThread({ metadata: { version: 2 } as never })
       );
 
-      expect(result).toEqual({ id: "db-th-1" });
       expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: {
-            organizationId_externalId: {
-              organizationId: ORG_ID,
-              externalId: THREAD_ID,
-            },
-          },
           create: expect.objectContaining({
             organizationId: ORG_ID,
             source: ThreadSource.Liveblocks,
             externalId: THREAD_ID,
             roomId: ROOM_ID,
             artifactId: "artifact-1",
+            createdAtVersion: 2,
+          }),
+        })
+      );
+    });
+
+    it("falls back to latestVersion when metadata.version is absent", async () => {
+      const mockDb = {
+        commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "artifact-1",
+            document: { latestVersion: 3 },
+          }),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      await commentsService.upsertThreadFromLiveblocks(ORG_ID, makeThread());
+
+      expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            createdAtVersion: 3,
           }),
         })
       );
@@ -115,19 +141,61 @@ describe("commentsService", () => {
       };
       mockWithDbCall(mockDb);
 
-      const result = await commentsService.upsertThreadFromLiveblocks(
+      await commentsService.upsertThreadFromLiveblocks(
         ORG_ID,
         makeThread({ roomId: "some-other-room" })
       );
 
-      expect(result).toEqual({ id: "db-th-1" });
       expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           create: expect.objectContaining({
             artifactId: null,
+            createdAtVersion: null,
           }),
         })
       );
+    });
+
+    it("yields createdAtVersion null when the artifact has no document row", async () => {
+      const mockDb = {
+        commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "artifact-1",
+            document: null,
+          }),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      await commentsService.upsertThreadFromLiveblocks(ORG_ID, makeThread());
+
+      expect(mockDb.commentThread.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            artifactId: "artifact-1",
+            createdAtVersion: null,
+          }),
+        })
+      );
+    });
+
+    it("does NOT overwrite createdAtVersion on update", async () => {
+      const mockDb = {
+        commentThread: { upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }) },
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "artifact-1",
+            document: { latestVersion: 5 },
+          }),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      await commentsService.upsertThreadFromLiveblocks(ORG_ID, makeThread());
+
+      const call = mockDb.commentThread.upsert.mock.calls[0][0];
+      expect(call.update).not.toHaveProperty("createdAtVersion");
     });
   });
 
@@ -290,17 +358,46 @@ describe("commentsService", () => {
   });
 
   describe("resolveThread", () => {
-    it("marks a thread as resolved", async () => {
+    it("returns null when the target thread is missing", async () => {
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          update: vi.fn(),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.resolveThread(
+        ORG_ID,
+        THREAD_ID,
+        new Date("2025-06-01")
+      );
+
+      expect(result).toBeNull();
+      expect(mockDb.commentThread.update).not.toHaveBeenCalled();
+    });
+
+    it("marks a Liveblocks thread as resolved without GitHub attribution", async () => {
       const resolvedAt = new Date("2025-06-01");
       const mockDb = {
         commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: null,
+          }),
           update: vi.fn().mockResolvedValue({
             id: "db-th-1",
             status: ThreadStatus.Resolved,
+            resolvedAt,
+            resolvedById: null,
+            metadata: {},
           }),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbTx(mockDb);
 
       const result = await commentsService.resolveThread(
         ORG_ID,
@@ -308,19 +405,399 @@ describe("commentsService", () => {
         resolvedAt
       );
 
-      expect(result).toEqual({ id: "db-th-1", status: ThreadStatus.Resolved });
-      expect(mockDb.commentThread.update).toHaveBeenCalledWith({
-        where: {
-          organizationId_externalId: {
-            organizationId: ORG_ID,
-            externalId: THREAD_ID,
-          },
+      expect(result).toEqual({
+        kind: "transition",
+        thread: {
+          id: "db-th-1",
+          status: ThreadStatus.Resolved,
+          resolvedAt,
+          resolvedById: null,
+          metadata: {},
         },
+      });
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith({
+        where: { id: "db-th-1" },
         data: {
           status: ThreadStatus.Resolved,
           resolvedAt,
+          resolvedById: null,
+          metadata: {},
+        },
+        select: {
+          id: true,
+          status: true,
+          resolvedAt: true,
+          resolvedById: true,
+          metadata: true,
         },
       });
     });
+
+    it("overwrites stale open resolution fields with provider-confirmed GitHub attribution", async () => {
+      const staleResolvedAt = new Date("2025-05-01");
+      const resolvedAt = new Date("2025-06-01");
+      const attribution = githubAttribution({
+        kind: GitHubReviewThreadResolutionAttributionKind.ConnectedUser,
+        recordedAt: resolvedAt.toISOString(),
+      });
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: staleResolvedAt,
+            resolvedById: "stale-user",
+            metadata: {
+              githubReviewThreadResolutionAttribution: githubAttribution({
+                githubLogin: "stale",
+              }),
+            },
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt,
+            resolvedById: "user-1",
+            metadata: {
+              githubReviewThreadResolutionAttribution: attribution,
+            },
+          }),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.resolveThread(
+        ORG_ID,
+        THREAD_ID,
+        resolvedAt,
+        { resolvedById: "user-1", attribution }
+      );
+
+      expect(result?.kind).toBe("transition");
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            resolvedAt,
+            resolvedById: "user-1",
+            metadata: {
+              githubReviewThreadResolutionAttribution: attribution,
+            },
+          }),
+        })
+      );
+    });
+
+    it("repairs already-resolved legacy-missing attribution without a transition", async () => {
+      const existingResolvedAt = new Date("2025-05-01");
+      const resolvedAt = new Date("2025-06-01");
+      const attribution = githubAttribution({
+        kind: GitHubReviewThreadResolutionAttributionKind.ExternalUnconnected,
+        githubLogin: "external-user",
+      });
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt: existingResolvedAt,
+            resolvedById: null,
+            metadata: {
+              githubReviewThreadResolutionAttribution: githubAttribution({
+                kind: GitHubReviewThreadResolutionAttributionKind.LegacyMissing,
+              }),
+            },
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt: existingResolvedAt,
+            resolvedById: null,
+            metadata: {
+              githubReviewThreadResolutionAttribution: attribution,
+            },
+          }),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.resolveThread(
+        ORG_ID,
+        THREAD_ID,
+        resolvedAt,
+        { resolvedById: null, attribution }
+      );
+
+      expect(result?.kind).toBe("metadata_repair");
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            resolvedAt: existingResolvedAt,
+            resolvedById: null,
+            metadata: {
+              githubReviewThreadResolutionAttribution: attribution,
+            },
+          }),
+        })
+      );
+    });
+
+    it("repairs already-resolved malformed attribution instead of trusting JSON shape", async () => {
+      const existingResolvedAt = new Date("2025-05-01");
+      const resolvedAt = new Date("2025-06-01");
+      const attribution = githubAttribution({
+        kind: GitHubReviewThreadResolutionAttributionKind.ConnectedUser,
+        githubLogin: "connected-user",
+      });
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt: existingResolvedAt,
+            resolvedById: null,
+            metadata: {
+              githubReviewThreadResolutionAttribution: {
+                kind: "connected_user",
+                source: "pull_request_review_thread",
+              },
+            },
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt: existingResolvedAt,
+            resolvedById: "user-1",
+            metadata: {
+              githubReviewThreadResolutionAttribution: attribution,
+            },
+          }),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.resolveThread(
+        ORG_ID,
+        THREAD_ID,
+        resolvedAt,
+        { resolvedById: "user-1", attribution }
+      );
+
+      expect(result?.kind).toBe("metadata_repair");
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            metadata: {
+              githubReviewThreadResolutionAttribution: attribution,
+            },
+          }),
+        })
+      );
+    });
+
+    it("does not overwrite authoritative attribution on already-resolved replay", async () => {
+      const resolvedAt = new Date("2025-06-01");
+      const authoritativeAttribution = githubAttribution({
+        kind: GitHubReviewThreadResolutionAttributionKind.ExternalUnconnected,
+        githubLogin: "external-user",
+      });
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt,
+            resolvedById: null,
+            metadata: {
+              githubReviewThreadResolutionAttribution: authoritativeAttribution,
+            },
+          }),
+          update: vi.fn(),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.resolveThread(
+        ORG_ID,
+        THREAD_ID,
+        new Date("2025-06-02"),
+        {
+          resolvedById: "connected-user",
+          attribution: githubAttribution({
+            kind: GitHubReviewThreadResolutionAttributionKind.ConnectedUser,
+            githubLogin: "connected-user",
+          }),
+        }
+      );
+
+      expect(result).toEqual({
+        kind: "noop",
+        thread: {
+          id: "db-th-1",
+          status: ThreadStatus.Resolved,
+          resolvedAt,
+          resolvedById: null,
+          metadata: {
+            githubReviewThreadResolutionAttribution: authoritativeAttribution,
+          },
+        },
+      });
+      expect(mockDb.commentThread.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("unresolveThread", () => {
+    it("returns null when the target thread is missing", async () => {
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          update: vi.fn(),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.unresolveThread(ORG_ID, THREAD_ID);
+
+      expect(result).toBeNull();
+      expect(mockDb.commentThread.update).not.toHaveBeenCalled();
+    });
+
+    it("transitions a resolved thread to open and clears resolution data", async () => {
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt: new Date("2025-06-01"),
+            resolvedById: "user-1",
+            metadata: {
+              keep: "value",
+              githubReviewThreadResolutionAttribution: githubAttribution(),
+            },
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: { keep: "value" },
+          }),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.unresolveThread(ORG_ID, THREAD_ID);
+
+      expect(result).toEqual({
+        kind: "transition",
+        thread: {
+          id: "db-th-1",
+          status: ThreadStatus.Open,
+          resolvedAt: null,
+          resolvedById: null,
+          metadata: { keep: "value" },
+        },
+      });
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: { keep: "value" },
+          },
+        })
+      );
+    });
+
+    it("clears stale open resolution metadata without a transition", async () => {
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: new Date("2025-06-01"),
+            resolvedById: "stale-user",
+            metadata: {
+              keep: "value",
+              githubReviewThreadResolutionAttribution: githubAttribution(),
+            },
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: { keep: "value" },
+          }),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.unresolveThread(ORG_ID, THREAD_ID);
+
+      expect(result?.kind).toBe("metadata_repair");
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: { keep: "value" },
+          },
+        })
+      );
+    });
+
+    it("leaves a clean open thread unchanged", async () => {
+      const metadata = { keep: "value" };
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata,
+          }),
+          update: vi.fn(),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.unresolveThread(ORG_ID, THREAD_ID);
+
+      expect(result).toEqual({
+        kind: "noop",
+        thread: {
+          id: "db-th-1",
+          status: ThreadStatus.Open,
+          resolvedAt: null,
+          resolvedById: null,
+          metadata,
+        },
+      });
+      expect(mockDb.commentThread.update).not.toHaveBeenCalled();
+    });
   });
 });
+
+function githubAttribution(
+  overrides: Partial<{
+    kind: GitHubReviewThreadResolutionAttributionKind;
+    githubUserId: string | null;
+    githubNodeId: string | null;
+    githubLogin: string | null;
+    recordedAt: string;
+  }> = {}
+) {
+  return {
+    kind:
+      overrides.kind ??
+      GitHubReviewThreadResolutionAttributionKind.ExternalUnconnected,
+    githubUserId: overrides.githubUserId ?? null,
+    githubNodeId: overrides.githubNodeId ?? null,
+    githubLogin: overrides.githubLogin ?? "octocat",
+    source: "pull_request_review_thread" as const,
+    recordedAt: overrides.recordedAt ?? "2025-06-01T00:00:00.000Z",
+  };
+}

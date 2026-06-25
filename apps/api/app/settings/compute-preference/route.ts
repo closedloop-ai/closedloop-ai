@@ -1,12 +1,14 @@
 import {
   ComputePreference,
   type ComputePreferenceResponse,
+  setComputePreferenceRequestValidator,
 } from "@repo/api/src/types/compute-target";
 import { type PreferredComputeMode, withDb } from "@repo/database";
-import { z } from "zod";
+import { parseSelectedHarness } from "@/app/compute-targets/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveEffectiveComputePreference } from "@/lib/loops/compute-target-resolver";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { computePreferenceService } from "./compute-preference-service";
 
 /**
  * Maps a Prisma PreferredComputeMode enum value to the API ComputePreference type.
@@ -19,11 +21,6 @@ function toComputePreference(mode: PreferredComputeMode): ComputePreference {
   };
   return mapping[mode];
 }
-
-const computePreferenceValidator = z.object({
-  mode: z.enum(["LOCAL", "CLOUD"]),
-  computeTargetId: z.string().uuid().optional(),
-});
 
 /**
  * GET /settings/compute-preference
@@ -40,16 +37,30 @@ export const GET = withAnyAuth<
     const dbUser = await withDb((db) =>
       db.user.findUnique({
         where: { id: user.id },
-        select: { preferredComputeMode: true, preferredComputeTargetId: true },
+        select: {
+          preferredComputeMode: true,
+          preferredComputeTargetId: true,
+          preferredHarness: true,
+        },
       })
     );
+
+    // Coerce the raw column to a valid HarnessType only when set; omit when
+    // null so the client falls back to the Claude default (mirrors how
+    // computeTargetId is conditionally returned).
+    const harnessField =
+      dbUser?.preferredHarness == null
+        ? {}
+        : { selectedHarness: parseSelectedHarness(dbUser.preferredHarness) };
 
     if (dbUser?.preferredComputeMode != null) {
       return successResponse({
         preferredComputeMode: toComputePreference(dbUser.preferredComputeMode),
+        isExplicit: true,
         ...(dbUser.preferredComputeTargetId != null && {
           computeTargetId: dbUser.preferredComputeTargetId,
         }),
+        ...harnessField,
       });
     }
 
@@ -59,6 +70,8 @@ export const GET = withAnyAuth<
     );
     return successResponse({
       preferredComputeMode: effectiveMode,
+      isExplicit: false,
+      ...harnessField,
     });
   } catch (error) {
     return errorResponse("Failed to fetch compute preference", error);
@@ -76,28 +89,28 @@ export const PUT = withAnyAuth<
   try {
     const { body, errorResponse: parseError } = await parseBody(
       request,
-      computePreferenceValidator
+      setComputePreferenceRequestValidator
     );
     if (parseError || !body) {
       return parseError;
     }
 
-    await withDb((db) =>
-      db.user.update({
-        where: { id: user.id, organizationId: user.organizationId },
-        data: {
-          preferredComputeMode: body.mode,
-          ...(body.computeTargetId !== undefined && {
-            preferredComputeTargetId: body.computeTargetId,
-          }),
-        },
-      })
-    );
+    await computePreferenceService.setPreference({
+      userId: user.id,
+      organizationId: user.organizationId,
+      mode: body.mode,
+      computeTargetId: body.computeTargetId,
+      selectedHarness: body.selectedHarness,
+    });
 
     return successResponse({
       preferredComputeMode: toComputePreference(body.mode),
+      isExplicit: true,
       ...(body.computeTargetId !== undefined && {
         computeTargetId: body.computeTargetId,
+      }),
+      ...(body.selectedHarness !== undefined && {
+        selectedHarness: parseSelectedHarness(body.selectedHarness),
       }),
     });
   } catch (error) {

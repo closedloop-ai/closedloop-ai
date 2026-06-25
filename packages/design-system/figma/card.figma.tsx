@@ -9,7 +9,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=149-2500";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=149-2500";
 
 figma.connect(Card, FIGMA_URL, {
   props: {

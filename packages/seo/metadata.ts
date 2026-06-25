@@ -7,12 +7,12 @@ type MetadataGenerator = Omit<Metadata, "description" | "title"> & {
   image?: string;
 };
 
-const applicationName = "ClosedLoop.ai";
+const applicationName = "Closedloop.ai";
 const author: Metadata["authors"] = {
-  name: "ClosedLoop.ai",
+  name: "Closedloop.ai",
   url: "https://closedloop.ai",
 };
-const publisher = "ClosedLoop.ai";
+const publisher = "Closedloop.ai";
 const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
 const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
 

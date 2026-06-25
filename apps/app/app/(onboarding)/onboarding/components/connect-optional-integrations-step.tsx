@@ -2,19 +2,14 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import { useGoogleIntegrationStatus } from "@repo/app/google/hooks/use-google-integration";
 import { Button } from "@repo/design-system/components/ui/button";
+import { useNavigation } from "@repo/navigation/use-navigation";
+import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
-import {
-  getGoogleOAuthUrl,
-  useGoogleIntegrationStatus,
-} from "@/hooks/queries/use-google-integration";
-import {
-  getLinearOAuthUrl,
-  useLinearIntegrationStatus,
-} from "@/hooks/queries/use-linear";
+import { getGoogleOAuthUrl } from "@/lib/integration-connect-urls";
 import { setOnboardingReturnCookie } from "../lib/onboarding-constants";
 
 type ConnectOptionalIntegrationsStepProps = {
@@ -24,33 +19,35 @@ type ConnectOptionalIntegrationsStepProps = {
 export function ConnectOptionalIntegrationsStep({
   onNext,
 }: ConnectOptionalIntegrationsStepProps) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const navigation = useNavigation();
+  const searchParams = useSearchParamsValue();
   const toastedRef = useRef(false);
+  const skippedRef = useRef(false);
 
-  const { data: linearStatus, isLoading: linearLoading } =
-    useLinearIntegrationStatus();
   const gdriveFlag = useFeatureFlag("google-drive");
+  const gdriveFlagLoaded = gdriveFlag !== undefined;
   const gdriveEnabled = Boolean((gdriveFlag as { enabled?: boolean })?.enabled);
   const { data: googleStatus, isLoading: googleLoading } =
     useGoogleIntegrationStatus({ enabled: gdriveEnabled });
+
+  // The only integration this step can offer right now is Google Drive (gated
+  // behind the `google-drive` flag). When the flag is loaded and disabled,
+  // there is nothing to show — auto-advance instead of rendering an empty step.
+  useEffect(() => {
+    if (skippedRef.current || !gdriveFlagLoaded || gdriveEnabled) {
+      return;
+    }
+    skippedRef.current = true;
+    onNext();
+  }, [gdriveFlagLoaded, gdriveEnabled, onNext]);
 
   // Handle OAuth callback results via URL params (fire once, then strip params)
   useEffect(() => {
     if (toastedRef.current) {
       return;
     }
-    const linear = searchParams.get("linear");
     const google = searchParams.get("google");
     let fired = false;
-
-    if (linear === "connected") {
-      toast.success("Linear connected successfully");
-      fired = true;
-    } else if (linear === "error") {
-      toast.error("Failed to connect Linear");
-      fired = true;
-    }
 
     if (google === "success") {
       toast.success("Google Drive connected successfully");
@@ -62,41 +59,42 @@ export function ConnectOptionalIntegrationsStep({
 
     if (fired) {
       toastedRef.current = true;
-      router.replace("/onboarding", { scroll: false });
+      navigation.replace("/onboarding", { scroll: false });
     }
-  }, [searchParams, router]);
+  }, [searchParams, navigation]);
 
   const handleConnect = (url: string) => {
     setOnboardingReturnCookie();
     window.location.href = url;
   };
 
-  const connectedCount = [
-    linearStatus?.connected,
-    gdriveEnabled && googleStatus?.connected,
-  ].filter(Boolean).length;
+  const connectedCount = [gdriveEnabled && googleStatus?.connected].filter(
+    Boolean
+  ).length;
+
+  if (!gdriveFlagLoaded) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!gdriveEnabled) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="font-semibold text-lg">Connect additional tools</h2>
         <p className="text-muted-foreground text-sm">
-          {gdriveEnabled
-            ? "Optionally link Linear or Google Drive. You can always do this later from settings."
-            : "Optionally link Linear. You can always do this later from settings."}
+          Optionally link Google Drive. You can always do this later from
+          settings.
         </p>
       </div>
 
       <div className="space-y-3">
-        <IntegrationRow
-          connected={linearStatus?.connected ?? false}
-          description="Sync issues and project tracking"
-          icon={<LinearIcon />}
-          loading={linearLoading}
-          name="Linear"
-          onConnect={() => handleConnect(getLinearOAuthUrl())}
-        />
-
         <FeatureFlagged flag="google-drive">
           <IntegrationRow
             connected={googleStatus?.connected ?? false}
@@ -173,7 +171,7 @@ function IntegrationAction({
 
   if (connected) {
     return (
-      <div className="flex items-center gap-1 text-green-500 text-sm">
+      <div className="flex items-center gap-1 text-sm text-success">
         <Check className="h-4 w-4" />
         Connected
       </div>
@@ -185,20 +183,6 @@ function IntegrationAction({
       <ExternalLink className="h-3 w-3" />
       Connect
     </Button>
-  );
-}
-
-function LinearIcon() {
-  return (
-    <svg
-      aria-label="Linear"
-      className="h-5 w-5"
-      fill="currentColor"
-      role="img"
-      viewBox="0 0 24 24"
-    >
-      <path d="M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z" />
-    </svg>
   );
 }
 

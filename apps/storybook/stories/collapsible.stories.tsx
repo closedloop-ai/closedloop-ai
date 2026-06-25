@@ -9,8 +9,8 @@ import { Info } from "lucide-react";
 /**
  * An interactive component which expands/collapses a panel.
  */
-const meta = {
-  title: "ui/Collapsible",
+const meta: Meta<typeof Collapsible> = {
+  title: "Design System/Primitives/Collapsible",
   component: Collapsible,
   tags: ["autodocs"],
   argTypes: {},
@@ -33,7 +33,7 @@ const meta = {
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof Collapsible>;
+};
 
 export default meta;
 

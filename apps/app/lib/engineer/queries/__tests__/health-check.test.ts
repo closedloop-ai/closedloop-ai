@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { COMPUTE_TARGET_HEADER } from "@/lib/desktop-command-signing/constants";
 import {
-  COMPUTE_TARGET_HEADER,
   GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_RELAY_HEALTH_CHECK_PATH,
 } from "@/lib/engineer/constants";
 import {
   buildHealthCheckRequest,
   getRenderableHealthChecks,
+  HEALTH_CHECK_QUERY_STALE_TIME_MS,
   healthCheckOptions,
 } from "../health-check";
 
@@ -155,7 +156,16 @@ describe("getRenderableHealthChecks", () => {
             passed: false,
             version: "0.14.10",
             error: "Update available: 0.14.11",
-            remediation: "Open the ClosedLoop Gateway app to update",
+            remediation: "Open the Closedloop Gateway app to update",
+            updateAttempted: true,
+            updateOutcome: "failed",
+            updatePluginIds: ["plugin-code"],
+            remediationLinks: [
+              {
+                label: "Update Closedloop plugins manually",
+                url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+              },
+            ],
           },
         ],
         allRequiredPassed: true,
@@ -171,7 +181,16 @@ describe("getRenderableHealthChecks", () => {
         passed: false,
         version: "0.14.10",
         error: "Update available: 0.14.11",
-        remediation: "Open the ClosedLoop Gateway app to update",
+        remediation: "Open the Closedloop Gateway app to update",
+        updateAttempted: true,
+        updateOutcome: "failed",
+        updatePluginIds: ["plugin-code"],
+        remediationLinks: [
+          {
+            label: "Update Closedloop plugins manually",
+            url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+          },
+        ],
       },
     ]);
   });
@@ -216,6 +235,7 @@ describe("healthCheckOptions", () => {
       "cloud-relay:target-1",
       "https://example.com/mcp",
       "9.9.9",
+      "plugin-no-auto-update",
     ]);
 
     const request = buildHealthCheckRequest({
@@ -279,6 +299,82 @@ describe("healthCheckOptions", () => {
       "cloud-relay:target-1",
       null,
       null,
+      "plugin-no-auto-update",
     ]);
+  });
+
+  it("includes plugin auto-update mode in the key and request URL only when enabled", () => {
+    const enabledOptions = healthCheckOptions(
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      {
+        latestVersion: "9.9.9",
+        pluginAutoUpdateEnabled: true,
+        relayTargetId: "target-1",
+      }
+    );
+    const enabledRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: "9.9.9",
+      pluginAutoUpdateEnabled: true,
+      relayTargetId: "target-1",
+    });
+    const disabledRequest = buildHealthCheckRequest({
+      expectedMcpUrl: "https://example.com/mcp",
+      latestVersion: "9.9.9",
+      pluginAutoUpdateEnabled: false,
+      relayTargetId: "target-1",
+    });
+
+    expect(enabledOptions.queryKey).toEqual([
+      "health-check",
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      "9.9.9",
+      "plugin-auto-update",
+    ]);
+    expect(enabledRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp&latestVersion=9.9.9&pluginAutoUpdate=1`
+    );
+    expect(disabledRequest.url).toBe(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp&latestVersion=9.9.9`
+    );
+  });
+
+  /** Extract the staleTime function and invoke it with the given cached data. */
+  function getStaleTime(data: unknown): number {
+    const options = healthCheckOptions("default", null);
+    const staleTimeFn = options.staleTime as (query: {
+      state: { data: unknown };
+    }) => number;
+    return staleTimeFn({ state: { data } });
+  }
+
+  it("staleTime returns 0 when cached response has any failing check", () => {
+    const result = getStaleTime({
+      checks: [
+        { id: "git", label: "Git", required: true, passed: true },
+        { id: "node", label: "Node", required: true, passed: false },
+      ],
+      allRequiredPassed: false,
+    });
+
+    expect(result).toBe(0);
+  });
+
+  it("staleTime returns 24h when all checks pass", () => {
+    const result = getStaleTime({
+      checks: [
+        { id: "git", label: "Git", required: true, passed: true },
+        { id: "node", label: "Node", required: true, passed: true },
+      ],
+      allRequiredPassed: true,
+    });
+
+    expect(result).toBe(HEALTH_CHECK_QUERY_STALE_TIME_MS);
+  });
+
+  it("staleTime returns 24h when there is no cached data", () => {
+    expect(getStaleTime(undefined)).toBe(HEALTH_CHECK_QUERY_STALE_TIME_MS);
   });
 });

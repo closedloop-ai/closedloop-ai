@@ -361,16 +361,6 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
     "codebase summary",
     "slug",
   ]),
-  [CustomFieldEntityType.Workstream]: new Set([
-    "title",
-    "description",
-    "type",
-    "state",
-    "status",
-    "priority",
-    "assignee",
-    "slug",
-  ]),
   [CustomFieldEntityType.Document]: new Set([
     "title",
     "description",
@@ -388,7 +378,6 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
 /** Friendly display labels for entity types shown in error messages. */
 const ENTITY_TYPE_DISPLAY_NAMES: Record<CustomFieldEntityType, string> = {
   [CustomFieldEntityType.Project]: "Project",
-  [CustomFieldEntityType.Workstream]: "Workstream",
   [CustomFieldEntityType.Document]: "Document",
 };
 

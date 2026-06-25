@@ -5,6 +5,7 @@ import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
+import { usersService } from "@/app/users/service";
 import { env } from "@/env";
 import { getDesktopManagedPopRequestFailure } from "@/lib/auth/desktop-managed-pop";
 import {
@@ -53,9 +54,14 @@ export async function POST(request: Request) {
       return unauthorizedResponse();
     }
 
+    const user = await usersService.findById(
+      context.userId,
+      context.organizationId
+    );
+
     if (shouldApplyDesktopManagedPop(body.desktopPopRequired, request)) {
       const popFailure = await getDesktopManagedPopRequestFailure({
-        keyContext: context,
+        keyContext: { ...context, clerkUserId: user?.clerkId },
         request,
       });
       if (popFailure) {
@@ -70,6 +76,7 @@ export async function POST(request: Request) {
     return successResponse({
       userId: context.userId,
       organizationId: context.organizationId,
+      clerkUserId: user?.clerkId ?? null,
       scopes: context.scopes,
     });
   } catch (error) {

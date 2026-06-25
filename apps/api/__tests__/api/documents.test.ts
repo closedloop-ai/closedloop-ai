@@ -1,6 +1,6 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { v7 as uuidv7 } from "uuid";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { documentService } from "@/app/documents/document-service";
 import { GET, POST } from "@/app/documents/route";
 import { projectsService } from "@/app/projects/service";
@@ -56,7 +56,9 @@ describe("GET /api/artifacts", () => {
       },
     ];
 
-    vi.mocked(documentService.findAll).mockResolvedValue(mockArtifacts as any);
+    vi.mocked(documentService.findAllWithCustomFields).mockResolvedValue(
+      mockArtifacts as any
+    );
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -67,13 +69,11 @@ describe("GET /api/artifacts", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual(
-      mockArtifacts.map((a) => ({ ...a, customFields: [] }))
-    );
+    expect(json.data).toEqual(mockArtifacts);
   });
 
   it("filters by type query param", async () => {
-    vi.mocked(documentService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAllWithCustomFields).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts?type=PRD",
@@ -81,28 +81,13 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(documentService.findAll).toHaveBeenCalledWith(
+    expect(documentService.findAllWithCustomFields).toHaveBeenCalledWith(
       expect.objectContaining({ type: "PRD" })
     );
   });
 
-  it("filters by workstreamId", async () => {
-    vi.mocked(documentService.findAll).mockResolvedValue([]);
-
-    const workstreamId = uuidv7();
-    const request = createMockRequest({
-      url: `http://localhost:3002/api/artifacts?workstreamId=${workstreamId}`,
-    });
-    const routeContext = createMockRouteContext({});
-    await GET(request, routeContext);
-
-    expect(documentService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ workstreamId })
-    );
-  });
-
   it("returns error response on service failure", async () => {
-    vi.mocked(documentService.findAll).mockRejectedValue(
+    vi.mocked(documentService.findAllWithCustomFields).mockRejectedValue(
       new Error("Database connection failed")
     );
 
@@ -119,7 +104,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("returns empty array when no artifacts exist", async () => {
-    vi.mocked(documentService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAllWithCustomFields).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -133,7 +118,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("validates response includes correct Content-Type header", async () => {
-    vi.mocked(documentService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAllWithCustomFields).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -145,7 +130,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("filters by type and projectId together", async () => {
-    vi.mocked(documentService.findAll).mockResolvedValue([]);
+    vi.mocked(documentService.findAllWithCustomFields).mockResolvedValue([]);
 
     const projectId = uuidv7();
     const request = createMockRequest({
@@ -154,7 +139,7 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(documentService.findAll).toHaveBeenCalledWith(
+    expect(documentService.findAllWithCustomFields).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "IMPLEMENTATION_PLAN",
         projectId,

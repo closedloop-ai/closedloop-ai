@@ -9,9 +9,10 @@ import {
   LoopEventSupportBundleUploadedSchema,
   LoopEventType,
   LoopEventTypeSchema,
+  RunnerLoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
-import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import { HarnessType } from "@repo/api/src/types/compute-target";
 import type { LoopEvent } from "@repo/api/src/types/loop";
 import {
   LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
@@ -21,24 +22,19 @@ import {
 } from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
+import {
+  repoBranchSchema,
+  repoFullNameSchema,
+} from "@/lib/repo-validator-helpers";
 
 function jsonSizeWithinLimit(value: unknown, maxBytes: number): boolean {
   return Buffer.byteLength(JSON.stringify(value), "utf-8") <= maxBytes;
 }
 
-const BRANCH_NAME_ERROR = "Branch name contains invalid characters";
-
 /** Validated repo schema — reuse wherever repo input is accepted. */
 export const repoSchema = z.object({
-  // "owner/repo" format — alphanumeric, dots, hyphens, underscores
-  fullName: z
-    .string()
-    .max(256)
-    .regex(
-      /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/,
-      "Must be in 'owner/repo' format"
-    ),
-  branch: z.string().max(256).regex(BRANCH_NAME_REGEX, BRANCH_NAME_ERROR),
+  fullName: repoFullNameSchema,
+  branch: repoBranchSchema,
 });
 
 /**
@@ -47,22 +43,7 @@ export const repoSchema = z.object({
  */
 const additionalReposArraySchema = z
   .array(repoSchema)
-  .max(MAX_ADDITIONAL_REPOS)
-  .superRefine((repos, ctx) => {
-    const seen = new Set<string>();
-    for (let i = 0; i < repos.length; i++) {
-      const { fullName } = repos[i];
-      if (seen.has(fullName)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Duplicate repository: "${fullName}"`,
-          path: [i, "fullName"],
-        });
-      } else {
-        seen.add(fullName);
-      }
-    }
-  });
+  .max(MAX_ADDITIONAL_REPOS);
 
 export const additionalReposSchema = additionalReposArraySchema
   .optional()
@@ -78,8 +59,8 @@ export const tokenRefreshAdditionalReposSchema =
 
 export const createLoopValidator = z.object({
   command: LoopCommandSchema,
+  harness: z.enum([HarnessType.Claude, HarnessType.Codex]).optional(),
   documentId: uuidOrSlug().optional(),
-  workstreamId: uuidOrSlug().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   additionalRepos: additionalReposSchema,
@@ -102,8 +83,10 @@ export const resumeLoopValidator = z.object({
 /**
  * Known event types from the container harness.
  * Restricts what the runner can send to prevent arbitrary data injection.
+ * Omits system-internal audit events (`tokens_cleared`, `token_refreshed`)
+ * that are emitted exclusively by the orchestrator.
  */
-const loopEventType = LoopEventTypeSchema;
+const loopEventType = RunnerLoopEventTypeSchema;
 
 /**
  * Build envelope + flattened payload validators for a given event type enum.
@@ -180,17 +163,24 @@ const eventSchemaByType: Record<
   },
 };
 
-export function validateNormalizedEvent(
-  event: LoopEvent | Record<string, unknown>
-): string | null {
-  const entry = eventSchemaByType[event.type as string];
+const normalizedEventShape = z
+  .object({ type: z.string().optional() })
+  .passthrough();
+
+export function validateNormalizedEvent(event: unknown): string | null {
+  const parsed = normalizedEventShape.safeParse(event);
+  const eventObj: Record<string, unknown> = parsed.success ? parsed.data : {};
+  const entry =
+    typeof eventObj.type === "string"
+      ? eventSchemaByType[eventObj.type]
+      : undefined;
   if (entry) {
-    const result = entry.schema.safeParse(event);
+    const result = entry.schema.safeParse(eventObj);
     if (!result.success) {
       return firstZodIssue(result.error.issues, entry.fallback);
     }
   }
-  if (event.type === "cancelled" && typeof event.timestamp !== "string") {
+  if (eventObj.type === "cancelled" && typeof eventObj.timestamp !== "string") {
     return "cancelled event requires a timestamp string";
   }
   return null;
@@ -222,11 +212,7 @@ export const manualEventPayloadValidator =
 export const loopMetadataUpdateValidator = z
   .object({
     prUrl: z.string().url().max(2048).optional(),
-    branchName: z
-      .string()
-      .max(256)
-      .regex(BRANCH_NAME_REGEX, BRANCH_NAME_ERROR)
-      .optional(),
+    branchName: repoBranchSchema.optional(),
     summary: z.string().max(10_000).optional(),
   })
   .strict();
@@ -235,7 +221,6 @@ export const listLoopsQueryValidator = z.object({
   status: LoopStatusSchema.optional(),
   command: LoopCommandSchema.optional(),
   documentId: uuidOrSlug().optional(),
-  workstreamId: z.uuid().optional(),
   projectId: z.uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),

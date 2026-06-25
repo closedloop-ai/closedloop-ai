@@ -6,7 +6,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ChecksStatus: {
@@ -35,16 +35,20 @@ import {
 } from "@repo/database";
 import {
   pullRequestService,
-  type UpsertPullRequestArtifactInput,
+  type UpsertBranchArtifactInput,
 } from "@/app/pull-requests/pull-request-service";
 
 const ORG_ID = "org-1";
 const PROJECT_ID = "proj-1";
 const REPO_ID = "repo-1";
+const expectedPullRequestInclude = {
+  pullRequest: true,
+  branch: { include: { currentPullRequestDetail: true } },
+};
 
 function baseUpsertInput(
-  overrides: Partial<UpsertPullRequestArtifactInput> = {}
-): UpsertPullRequestArtifactInput {
+  overrides: Partial<UpsertBranchArtifactInput> = {}
+): UpsertBranchArtifactInput {
   return {
     organizationId: ORG_ID,
     repositoryId: REPO_ID,
@@ -67,65 +71,102 @@ describe("pullRequestService", () => {
     vi.clearAllMocks();
   });
 
-  describe("upsertPullRequestArtifact", () => {
+  describe("upsertBranchArtifact", () => {
     it("creates a new artifact + detail when no PR exists for githubId", async () => {
       const created = {
         id: "art-1",
-        pullRequest: { artifactId: "art-1" },
+        branch: { currentPullRequestDetail: null },
+        pullRequest: null,
+      };
+      const reread = {
+        id: "art-1",
+        branch: { currentPullRequestDetail: { id: "detail-1" } },
+        pullRequest: null,
       };
       const mockDb = {
         pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue(null),
+          findUnique: vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({ id: "detail-1" }),
+        },
+        branchDetail: {
+          findUnique: vi.fn().mockResolvedValue({ headSha: "abc123" }),
+          update: vi.fn(),
         },
         artifact: {
           create: vi.fn().mockResolvedValue(created),
+          findUnique: vi.fn().mockResolvedValue(reread),
           update: vi.fn(),
         },
       };
       mockWithDbTx(mockDb);
 
-      const result = await pullRequestService.upsertPullRequestArtifact(
+      const result = await pullRequestService.upsertBranchArtifact(
         baseUpsertInput()
       );
 
-      expect(mockDb.pullRequestDetail.findUnique).toHaveBeenCalledWith({
+      expect(mockDb.pullRequestDetail.findUnique).toHaveBeenNthCalledWith(1, {
         where: { githubId: "gh-123" },
-        select: { artifactId: true },
+        select: { id: true, artifactId: true, branchArtifactId: true },
       });
       expect(mockDb.artifact.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
           organizationId: ORG_ID,
           projectId: PROJECT_ID,
-          workstreamId: null,
-          name: "Add feature",
+          name: "feature",
           status: GitHubPRState.OPEN,
-          externalUrl: "https://github.com/o/r/pull/42",
-          pullRequest: {
+          externalUrl: "https://github.com/o/r/tree/feature",
+          branch: {
+            create: expect.objectContaining({
+              repositoryId: REPO_ID,
+              branchName: "feature",
+              baseBranch: "main",
+              headSha: "abc123",
+            }),
+          },
+          pullRequestDetails: {
             create: expect.objectContaining({
               repositoryId: REPO_ID,
               githubId: "gh-123",
               number: 42,
-              headBranch: "feature",
-              baseBranch: "main",
-              headSha: "abc123",
               prState: GitHubPRState.OPEN,
               isDraft: false,
             }),
           },
         }),
-        include: { pullRequest: true },
+        include: {
+          pullRequest: true,
+          branch: { include: { currentPullRequestDetail: true } },
+        },
       });
       expect(mockDb.artifact.update).not.toHaveBeenCalled();
-      expect(result).toEqual({ ok: true, value: created });
+      expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "art-1" },
+        data: { currentPullRequestDetailId: "detail-1" },
+      });
+      expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
+        where: { id: "art-1" },
+        include: expectedPullRequestInclude,
+      });
+      expect(result).toEqual({ ok: true, value: reread });
     });
 
     it("updates an existing artifact when detail already exists", async () => {
       const updated = { id: "art-99", pullRequest: { artifactId: "art-99" } };
       const mockDb = {
         pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "detail-99",
+            artifactId: null,
+            branchArtifactId: "art-99",
+          }),
           update: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
+        },
+        branchDetail: {
+          findUnique: vi.fn().mockResolvedValue({ headSha: "abc123" }),
+          update: vi.fn(),
         },
         artifact: {
           findUnique: vi.fn().mockResolvedValue(updated),
@@ -135,7 +176,7 @@ describe("pullRequestService", () => {
       };
       mockWithDbTx(mockDb);
 
-      const result = await pullRequestService.upsertPullRequestArtifact(
+      const result = await pullRequestService.upsertBranchArtifact(
         baseUpsertInput({
           prState: GitHubPRState.MERGED,
           mergedAt: new Date("2026-01-01"),
@@ -148,15 +189,23 @@ describe("pullRequestService", () => {
       expect(mockDb.artifact.updateMany).toHaveBeenCalledWith({
         where: { id: "art-99", organizationId: ORG_ID },
         data: expect.objectContaining({
-          name: "Add feature",
+          name: "feature",
           status: GitHubPRState.MERGED,
-          externalUrl: "https://github.com/o/r/pull/42",
+          externalUrl: "https://github.com/o/r/tree/feature",
           projectId: PROJECT_ID,
         }),
       });
-      // PR detail update is keyed by the detail's artifactId PK.
-      expect(mockDb.pullRequestDetail.update).toHaveBeenCalledWith({
+      expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
         where: { artifactId: "art-99" },
+        data: expect.objectContaining({
+          branchName: "feature",
+          baseBranch: "main",
+          headSha: "abc123",
+        }),
+      });
+      // PR detail update is keyed by the stable PullRequestDetail.id.
+      expect(mockDb.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { id: "detail-99" },
         data: expect.objectContaining({
           prState: GitHubPRState.MERGED,
           mergedAt: new Date("2026-01-01"),
@@ -166,59 +215,6 @@ describe("pullRequestService", () => {
       expect(result).toEqual({ ok: true, value: updated });
     });
 
-    it("disconnects workstream when workstreamId is null on update", async () => {
-      const mockDb = {
-        pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
-          update: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
-        },
-        artifact: {
-          findUnique: vi
-            .fn()
-            .mockResolvedValue({ id: "art-99", pullRequest: null }),
-          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-      };
-      mockWithDbTx(mockDb);
-
-      await pullRequestService.upsertPullRequestArtifact(
-        baseUpsertInput({ workstreamId: null })
-      );
-
-      // workstreamId: null sets the scalar column to null (disconnect).
-      expect(mockDb.artifact.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ workstreamId: null }),
-        })
-      );
-    });
-
-    it("connects workstream when workstreamId is set on update", async () => {
-      const mockDb = {
-        pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
-          update: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
-        },
-        artifact: {
-          findUnique: vi
-            .fn()
-            .mockResolvedValue({ id: "art-99", pullRequest: null }),
-          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-      };
-      mockWithDbTx(mockDb);
-
-      await pullRequestService.upsertPullRequestArtifact(
-        baseUpsertInput({ workstreamId: "ws-1" })
-      );
-
-      expect(mockDb.artifact.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ workstreamId: "ws-1" }),
-        })
-      );
-    });
-
     it("omits optional detail fields when not supplied on create", async () => {
       const mockDb = {
         pullRequestDetail: {
@@ -226,15 +222,21 @@ describe("pullRequestService", () => {
         },
         artifact: {
           create: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "art-1",
+            pullRequest: null,
+          }),
         },
       };
       mockWithDbTx(mockDb);
 
-      await pullRequestService.upsertPullRequestArtifact(baseUpsertInput());
+      await pullRequestService.upsertBranchArtifact(baseUpsertInput());
 
       const data = mockDb.artifact.create.mock.calls[0][0].data;
-      expect(data.pullRequest.create).not.toHaveProperty("checksStatus");
-      expect(data.pullRequest.create).not.toHaveProperty("reviewDecision");
+      expect(data.branch.create).not.toHaveProperty("checksStatus");
+      expect(data.pullRequestDetails.create).not.toHaveProperty(
+        "reviewDecision"
+      );
     });
 
     it("includes checksStatus and reviewDecision when supplied on create", async () => {
@@ -244,11 +246,15 @@ describe("pullRequestService", () => {
         },
         artifact: {
           create: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "art-1",
+            pullRequest: null,
+          }),
         },
       };
       mockWithDbTx(mockDb);
 
-      await pullRequestService.upsertPullRequestArtifact(
+      await pullRequestService.upsertBranchArtifact(
         baseUpsertInput({
           checksStatus: ChecksStatus.PASSING,
           reviewDecision: ReviewDecision.APPROVED,
@@ -256,8 +262,8 @@ describe("pullRequestService", () => {
       );
 
       const data = mockDb.artifact.create.mock.calls[0][0].data;
-      expect(data.pullRequest.create.checksStatus).toBe(ChecksStatus.PASSING);
-      expect(data.pullRequest.create.reviewDecision).toBe(
+      expect(data.branch.create.checksStatus).toBe(ChecksStatus.PASSING);
+      expect(data.pullRequestDetails.create.reviewDecision).toBe(
         ReviewDecision.APPROVED
       );
     });
@@ -269,7 +275,14 @@ describe("pullRequestService", () => {
       // updateMany guard; count=0 means no matching row in this org.
       const mockDb = {
         pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: "cross-org-99" }),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "cross-org-detail",
+            artifactId: null,
+            branchArtifactId: "cross-org-99",
+          }),
+          update: vi.fn(),
+        },
+        branchDetail: {
           update: vi.fn(),
         },
         artifact: {
@@ -279,7 +292,7 @@ describe("pullRequestService", () => {
       };
       mockWithDbTx(mockDb);
 
-      const result = await pullRequestService.upsertPullRequestArtifact(
+      const result = await pullRequestService.upsertBranchArtifact(
         baseUpsertInput()
       );
 
@@ -307,9 +320,9 @@ describe("pullRequestService", () => {
         where: {
           id: "art-1",
           organizationId: ORG_ID,
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
         },
-        include: { pullRequest: true },
+        include: expectedPullRequestInclude,
       });
       expect(result).toBe(found);
     });
@@ -327,7 +340,7 @@ describe("pullRequestService", () => {
   });
 
   describe("list", () => {
-    it("scopes to organizationId and PULL_REQUEST type, ordered desc by createdAt", async () => {
+    it("scopes to organizationId and BRANCH type, ordered desc by createdAt", async () => {
       const mockDb = {
         artifact: { findMany: vi.fn().mockResolvedValue([]) },
       };
@@ -338,9 +351,9 @@ describe("pullRequestService", () => {
       expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
         },
-        include: { pullRequest: true },
+        include: expectedPullRequestInclude,
         orderBy: { createdAt: "desc" },
       });
     });
@@ -354,19 +367,19 @@ describe("pullRequestService", () => {
       await pullRequestService.list({
         organizationId: ORG_ID,
         projectId: PROJECT_ID,
-        workstreamId: "ws-1",
         prState: GitHubPRState.OPEN,
       });
 
       expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
           projectId: PROJECT_ID,
-          workstreamId: "ws-1",
-          pullRequest: { prState: GitHubPRState.OPEN },
+          pullRequestDetails: {
+            some: { prState: GitHubPRState.OPEN, isCurrent: true },
+          },
         },
-        include: { pullRequest: true },
+        include: expectedPullRequestInclude,
         orderBy: { createdAt: "desc" },
       });
     });
@@ -385,7 +398,7 @@ describe("pullRequestService", () => {
         where: {
           id: "art-1",
           organizationId: ORG_ID,
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
         },
       });
       expect(result).toEqual({ ok: true, value: undefined });
@@ -417,10 +430,10 @@ describe("pullRequestService", () => {
       expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
         where: {
           organizationId: ORG_ID,
-          type: ArtifactType.PULL_REQUEST,
-          pullRequest: { githubId: "gh-123" },
+          type: ArtifactType.BRANCH,
+          pullRequestDetails: { some: { githubId: "gh-123" } },
         },
-        include: { pullRequest: true },
+        include: expectedPullRequestInclude,
       });
       expect(result).toEqual({ id: "art-1" });
     });
@@ -454,7 +467,9 @@ describe("pullRequestService", () => {
       };
       const mockDb = {
         pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: "art-1" }),
+          findUnique: vi
+            .fn()
+            .mockResolvedValue({ artifactId: null, branchArtifactId: "art-1" }),
         },
         artifact: {
           findUnique: vi.fn().mockResolvedValue(artifact),
@@ -469,11 +484,11 @@ describe("pullRequestService", () => {
 
       expect(mockDb.pullRequestDetail.findUnique).toHaveBeenCalledWith({
         where: { repositoryId_number: { repositoryId: REPO_ID, number: 42 } },
-        select: { artifactId: true },
+        select: { artifactId: true, branchArtifactId: true },
       });
       expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
         where: { id: "art-1" },
-        include: { pullRequest: true },
+        include: expectedPullRequestInclude,
       });
       expect(result).toBe(artifact);
     });
@@ -482,6 +497,9 @@ describe("pullRequestService", () => {
   describe("updateReviewState", () => {
     it("only sets detail fields that were supplied", async () => {
       const mockDb = {
+        branchDetail: {
+          update: vi.fn().mockResolvedValue({}),
+        },
         artifact: {
           update: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
         },
@@ -492,16 +510,20 @@ describe("pullRequestService", () => {
         checksStatus: ChecksStatus.FAILING,
       });
 
-      const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.pullRequest.update).toEqual({
-        checksStatus: ChecksStatus.FAILING,
+      expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "art-1" },
+        data: { checksStatus: ChecksStatus.FAILING },
       });
+      const data = mockDb.artifact.update.mock.calls[0][0].data;
       // No prState → parent status untouched
       expect(data).not.toHaveProperty("status");
     });
 
     it("sets artifact.status when prState is supplied", async () => {
       const mockDb = {
+        pullRequestDetail: {
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         artifact: {
           update: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
         },
@@ -515,14 +537,20 @@ describe("pullRequestService", () => {
 
       const data = mockDb.artifact.update.mock.calls[0][0].data;
       expect(data.status).toBe(GitHubPRState.CLOSED);
-      expect(data.pullRequest.update).toEqual({
-        prState: GitHubPRState.CLOSED,
-        closedAt: new Date("2026-02-02"),
+      expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
+        where: { branchArtifactId: "art-1", isCurrent: true },
+        data: {
+          prState: GitHubPRState.CLOSED,
+          closedAt: new Date("2026-02-02"),
+        },
       });
     });
 
     it("supports passing null to clear reviewDecision", async () => {
       const mockDb = {
+        pullRequestDetail: {
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         artifact: {
           update: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
         },
@@ -533,14 +561,19 @@ describe("pullRequestService", () => {
         reviewDecision: null,
       });
 
-      const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.pullRequest.update).toEqual({ reviewDecision: null });
+      expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
+        where: { branchArtifactId: "art-1", isCurrent: true },
+        data: { reviewDecision: null },
+      });
     });
   });
 
   describe("recordReviewDecision", () => {
     it("delegates to updateReviewState with just reviewDecision", async () => {
       const mockDb = {
+        pullRequestDetail: {
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         artifact: {
           update: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
         },
@@ -553,10 +586,11 @@ describe("pullRequestService", () => {
         ReviewDecision.CHANGES_REQUESTED
       );
 
-      const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.pullRequest.update).toEqual({
-        reviewDecision: ReviewDecision.CHANGES_REQUESTED,
+      expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
+        where: { branchArtifactId: "art-1", isCurrent: true },
+        data: { reviewDecision: ReviewDecision.CHANGES_REQUESTED },
       });
+      const data = mockDb.artifact.update.mock.calls[0][0].data;
       expect(data).not.toHaveProperty("status");
     });
   });

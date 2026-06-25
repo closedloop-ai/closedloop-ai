@@ -1,8 +1,8 @@
 import type { DocumentStatus } from "@repo/api/src/types/document";
 import { DocumentType } from "@repo/api/src/types/document";
+import { DOCUMENT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import type { Metadata } from "next";
 import { env } from "@/env";
-import { DOCUMENT_STATUS_LABELS } from "@/lib/project-constants";
 
 const DOCUMENT_TYPE_DISPLAY: Record<DocumentType, string> = {
   [DocumentType.Prd]: "PRD",
@@ -12,22 +12,22 @@ const DOCUMENT_TYPE_DISPLAY: Record<DocumentType, string> = {
 };
 
 const FALLBACK_METADATA: Metadata = {
-  title: "ClosedLoop.ai",
+  title: "Closedloop.ai",
   openGraph: {
-    title: "ClosedLoop.ai",
+    title: "Closedloop.ai",
     description: "Sign in to view this content.",
     type: "website",
-    siteName: "ClosedLoop.ai",
+    siteName: "Closedloop.ai",
   },
   twitter: {
     card: "summary",
-    title: "ClosedLoop.ai",
+    title: "Closedloop.ai",
     description: "Sign in to view this content.",
   },
 };
 
 function makeMetadata(title: string, description: string): Metadata {
-  const fullTitle = `${title} | ClosedLoop.ai`;
+  const fullTitle = `${title} | Closedloop.ai`;
   return {
     title: fullTitle,
     description,
@@ -35,7 +35,7 @@ function makeMetadata(title: string, description: string): Metadata {
       title: fullTitle,
       description,
       type: "website",
-      siteName: "ClosedLoop.ai",
+      siteName: "Closedloop.ai",
     },
     twitter: {
       card: "summary",
@@ -62,20 +62,30 @@ type OgHandler = {
   resolve: (match: RegExpExecArray, apiUrl: string) => Promise<Metadata>;
 };
 
+function buildMetaUrl(
+  apiUrl: string,
+  slug: string,
+  orgSlug: string | undefined
+): string {
+  const base = `${apiUrl}/documents/by-slug/${slug}/meta`;
+  return orgSlug ? `${base}?org=${encodeURIComponent(orgSlug)}` : base;
+}
+
 /**
  * OG metadata handler registry.
  *
  * Each handler matches a URL path pattern and fetches metadata from the
- * appropriate API endpoint. To add OG support for a new page:
- * 1. Add a public `/meta` API endpoint for the entity (no auth required)
- * 2. Add a handler entry here with the path pattern and fetch logic
+ * appropriate API endpoint. Patterns support an optional org-slug prefix
+ * so both `prds/PRD-1` and `acme/prds/PRD-1` match. When an org slug is
+ * present, it's forwarded to the meta endpoint for org-scoped lookup.
  */
 const handlers: OgHandler[] = [
   {
-    pattern: /^(?:prds|implementation-plans|documents)\/([^/]+)$/,
+    pattern: /^(?:([^/]+)\/)?(?:prds|implementation-plans|documents)\/([^/]+)$/,
     async resolve(match, apiUrl) {
-      const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/documents/by-slug/${slug}/meta`);
+      const orgSlug = match[1];
+      const slug = match[2];
+      const data = await fetchJson(buildMetaUrl(apiUrl, slug, orgSlug));
       if (!data) {
         return FALLBACK_METADATA;
       }
@@ -85,10 +95,11 @@ const handlers: OgHandler[] = [
     },
   },
   {
-    pattern: /^features\/([^/]+)$/,
+    pattern: /^(?:([^/]+)\/)?features\/([^/]+)$/,
     async resolve(match, apiUrl) {
-      const slug = match[1];
-      const data = await fetchJson(`${apiUrl}/documents/by-slug/${slug}/meta`);
+      const orgSlug = match[1];
+      const slug = match[2];
+      const data = await fetchJson(buildMetaUrl(apiUrl, slug, orgSlug));
       if (!data) {
         return FALLBACK_METADATA;
       }

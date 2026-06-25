@@ -1,8 +1,18 @@
+import {
+  HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT,
+  HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT,
+} from "@/hooks/queries/compute-target-query-keys";
+
 /**
  * Centralized query key factory.
  * Every key used by useQuery / invalidateQueries should reference this object
  * so that typos are caught at compile time and keys stay consistent.
  */
+export {
+  HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT,
+  HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT,
+} from "@/hooks/queries/compute-target-query-keys";
+
 export const queryKeys = {
   // Symphony domain
   closedloopStatus: (ticketId: string, repoPath: string | null) =>
@@ -74,9 +84,18 @@ export const queryKeys = {
   healthCheck: (
     targetKey: string,
     expectedMcpUrl: string | null,
-    latestVersion?: string | null
+    latestVersion?: string | null,
+    pluginAutoUpdateEnabled = false
   ) =>
-    ["health-check", targetKey, expectedMcpUrl, latestVersion ?? null] as const,
+    [
+      "health-check",
+      targetKey,
+      expectedMcpUrl,
+      latestVersion ?? null,
+      pluginAutoUpdateEnabled
+        ? HEALTH_CHECK_AUTO_UPDATE_QUERY_SEGMENT
+        : HEALTH_CHECK_NO_AUTO_UPDATE_QUERY_SEGMENT,
+    ] as const,
 
   // Chat session domain
   chatSessionHistory: (chatKey: string) =>
@@ -93,6 +112,36 @@ export const queryKeys = {
       repoFullName,
       headBranch,
       prNumber,
+      routingKey,
+    ] as const,
+  branchLocalChanges: (
+    repoFullName: string,
+    headBranch: string,
+    worktreePath: string,
+    routingKey: string
+  ) =>
+    [
+      "branch-local-changes",
+      repoFullName,
+      headBranch,
+      worktreePath,
+      routingKey,
+    ] as const,
+  branchLocalFileDiff: (
+    repoFullName: string,
+    headBranch: string,
+    worktreePath: string,
+    filePath: string,
+    previousPath: string | null | undefined,
+    routingKey: string
+  ) =>
+    [
+      "branch-local-file-diff",
+      repoFullName,
+      headBranch,
+      worktreePath,
+      filePath,
+      previousPath ?? "",
       routingKey,
     ] as const,
 

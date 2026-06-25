@@ -1,5 +1,5 @@
 import { Status } from "@repo/api/src/types/result";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMockWithDb,
   mockWithDbCall,
@@ -9,7 +9,8 @@ import {
 vi.mock("@repo/database", () => ({
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
+
     DEPLOYMENT: "DEPLOYMENT",
   },
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -67,7 +68,7 @@ describe("pullRequestRatingsService", () => {
         where: {
           id: "pr-1",
           organizationId: "org-1",
-          type: "PULL_REQUEST",
+          type: "BRANCH",
         },
         select: { id: true },
       });
@@ -244,7 +245,7 @@ describe("pullRequestRatingsService", () => {
         where: {
           id: "pr-1",
           organizationId: "org-1",
-          type: "PULL_REQUEST",
+          type: "BRANCH",
         },
         select: { id: true },
       });
@@ -272,7 +273,7 @@ describe("pullRequestRatingsService", () => {
         where: {
           id: "pr-1",
           organizationId: "org-1",
-          type: "PULL_REQUEST",
+          type: "BRANCH",
         },
         select: { id: true },
       });
@@ -347,7 +348,7 @@ describe("pullRequestRatingsService", () => {
         where: {
           id: "pr-1",
           organizationId: "org-1",
-          type: "PULL_REQUEST",
+          type: "BRANCH",
         },
         select: { id: true },
       });
@@ -524,7 +525,7 @@ describe("pullRequestRatingsService", () => {
         where: {
           id: "pr-1",
           organizationId: "org-1",
-          type: "PULL_REQUEST",
+          type: "BRANCH",
         },
         select: { id: true },
       });

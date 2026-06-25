@@ -5,7 +5,7 @@ export type AgentSummary = {
   role: string;
   description: string | null;
   enabled: boolean;
-  sourceRepo: string | null;
+  sourceRepo: string;
   currentVersion: number;
   createdAt: Date;
   updatedAt: Date;
@@ -47,20 +47,6 @@ export type UpdateAgentRequest = {
   changeNote?: string;
 };
 
-export type BulkIngestAgentItem = {
-  name: string;
-  role: string;
-  description?: string;
-  prompt: string;
-};
-
-export type BulkIngestAgentRequest = {
-  agents: BulkIngestAgentItem[];
-  bootstrapRunId: string;
-  sourceRepo: string;
-  criticGates?: Record<string, unknown>;
-};
-
 export type AgentListResponse = {
   agents: AgentSummary[];
   total: number;
@@ -78,16 +64,15 @@ export type RepoBootstrapConfigResponse = {
   updatedAt: Date;
 };
 
-export type ContextPackAgent = {
-  slug: string;
-  name: string;
-  prompt: string;
-};
+export type {
+  ContextPackAgent,
+  ContextPackRepoConfig,
+} from "@closedloop-ai/loops-api/context-pack";
 
-export type ContextPackRepoConfig = {
-  repoFullName: string;
-  criticGates: Record<string, unknown>;
-};
+import type {
+  ContextPackAgent,
+  ContextPackRepoConfig,
+} from "@closedloop-ai/loops-api/context-pack";
 
 export type ContextPackAgentsResponse = {
   agents: ContextPackAgent[];

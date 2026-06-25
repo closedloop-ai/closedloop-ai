@@ -1,0 +1,149 @@
+{
+  "name": "@closedloop-ai/shared-platform",
+  "version": "0.2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/closedloop-ai/symphony-alpha.git",
+    "directory": "packages/shared-platform"
+  },
+  "exports": {
+    "./gateway-probe": {
+      "import": {
+        "types": "./dist/gateway-probe.d.ts",
+        "default": "./dist/gateway-probe.js"
+      },
+      "require": {
+        "types": "./dist/gateway-probe.d.cts",
+        "default": "./dist/gateway-probe.cjs"
+      },
+      "default": "./dist/gateway-probe.js"
+    },
+    "./detection-store": {
+      "import": {
+        "types": "./dist/detection-store.d.ts",
+        "default": "./dist/detection-store.js"
+      },
+      "require": {
+        "types": "./dist/detection-store.d.cts",
+        "default": "./dist/detection-store.cjs"
+      },
+      "default": "./dist/detection-store.js"
+    },
+    "./routing-store": {
+      "import": {
+        "types": "./dist/routing-store.d.ts",
+        "default": "./dist/routing-store.js"
+      },
+      "require": {
+        "types": "./dist/routing-store.d.cts",
+        "default": "./dist/routing-store.cjs"
+      },
+      "default": "./dist/routing-store.js"
+    },
+    "./storage": {
+      "import": {
+        "types": "./dist/storage.d.ts",
+        "default": "./dist/storage.js"
+      },
+      "require": {
+        "types": "./dist/storage.d.cts",
+        "default": "./dist/storage.cjs"
+      },
+      "default": "./dist/storage.js"
+    },
+    "./types": {
+      "import": {
+        "types": "./dist/types.d.ts",
+        "default": "./dist/types.js"
+      },
+      "require": {
+        "types": "./dist/types.d.cts",
+        "default": "./dist/types.cjs"
+      },
+      "default": "./dist/types.js"
+    },
+    "./relay-request-model": {
+      "import": {
+        "types": "./dist/relay-request-model.d.ts",
+        "default": "./dist/relay-request-model.js"
+      },
+      "require": {
+        "types": "./dist/relay-request-model.d.cts",
+        "default": "./dist/relay-request-model.cjs"
+      },
+      "default": "./dist/relay-request-model.js"
+    },
+    "./gateway-dispatch": {
+      "import": {
+        "types": "./dist/gateway-dispatch.d.ts",
+        "default": "./dist/gateway-dispatch.js"
+      },
+      "require": {
+        "types": "./dist/gateway-dispatch.d.cts",
+        "default": "./dist/gateway-dispatch.cjs"
+      },
+      "default": "./dist/gateway-dispatch.js"
+    },
+    "./gateway-fetch-shim": {
+      "import": {
+        "types": "./dist/gateway-fetch-shim.d.ts",
+        "default": "./dist/gateway-fetch-shim.js"
+      },
+      "require": {
+        "types": "./dist/gateway-fetch-shim.d.cts",
+        "default": "./dist/gateway-fetch-shim.cjs"
+      },
+      "default": "./dist/gateway-fetch-shim.js"
+    },
+    "./gateway-constants": {
+      "import": {
+        "types": "./dist/gateway-constants.d.ts",
+        "default": "./dist/gateway-constants.js"
+      },
+      "require": {
+        "types": "./dist/gateway-constants.d.cts",
+        "default": "./dist/gateway-constants.cjs"
+      },
+      "default": "./dist/gateway-constants.js"
+    },
+    "./keyless-telemetry": {
+      "import": {
+        "types": "./dist/keyless-telemetry.d.ts",
+        "default": "./dist/keyless-telemetry.js"
+      },
+      "require": {
+        "types": "./dist/keyless-telemetry.d.cts",
+        "default": "./dist/keyless-telemetry.cjs"
+      },
+      "default": "./dist/keyless-telemetry.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.14",
+    "react": "19.2.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

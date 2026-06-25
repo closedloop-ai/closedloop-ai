@@ -18,6 +18,13 @@ export type BreadcrumbEntry = {
 type HeaderProps = {
   breadcrumbs: BreadcrumbEntry[];
   afterBreadcrumbs?: ReactNode;
+  /**
+   * Ellipsis / "more" menu pinned to the left cluster, immediately after the
+   * favorite button (`afterBreadcrumbs`) — or directly after the breadcrumb
+   * when there is no favorite. Page-level overflow actions go here, not in
+   * `children` (which stays on the right for primary actions).
+   */
+  moreMenu?: ReactNode;
   children?: ReactNode;
   className?: string;
 };
@@ -25,6 +32,7 @@ type HeaderProps = {
 export const Header = ({
   breadcrumbs,
   afterBreadcrumbs,
+  moreMenu,
   children,
   className,
 }: HeaderProps) => (
@@ -41,7 +49,7 @@ export const Header = ({
           {breadcrumbs.map((entry, index) => {
             const isLast = index === breadcrumbs.length - 1;
             return (
-              <Fragment key={`${entry.label}-${index}`}>
+              <Fragment key={entry.href ?? entry.label}>
                 {index > 0 && (
                   <BreadcrumbSeparator className="hidden shrink-0 md:block" />
                 )}
@@ -68,8 +76,11 @@ export const Header = ({
           })}
         </BreadcrumbList>
       </Breadcrumb>
-      {afterBreadcrumbs ? (
-        <div className="shrink-0">{afterBreadcrumbs}</div>
+      {afterBreadcrumbs || moreMenu ? (
+        <div className="flex shrink-0 items-center gap-0.5">
+          {afterBreadcrumbs}
+          {moreMenu}
+        </div>
       ) : null}
     </div>
     {children ? (

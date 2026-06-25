@@ -6,7 +6,7 @@
  * creating workstream events, and guard clauses.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -24,7 +24,7 @@ vi.mock("@repo/database", () => ({
   ),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -55,7 +55,6 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
-import { beforeEach, describe, expect, it } from "vitest";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { resetDocumentRoom } from "@/app/documents/room-utils";
 import { generatePrdHandler } from "@/lib/loops/loop-commands/generate-prd-handler";
@@ -176,40 +175,6 @@ describe("generatePrdHandler ingestion", () => {
     await generatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
 
     expect(mockResetArtifactRoom).not.toHaveBeenCalled();
-  });
-
-  it("creates workstream completion event when workstreamId exists", async () => {
-    const loop = buildGeneratePrdLoop({ workstreamId: "ws-1" });
-    mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    const { mockCreate } = mockDbUpdate();
-    mockCreateVersion.mockResolvedValue({ id: "version-1" });
-
-    await generatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
-
-    expect(mockCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        workstreamId: "ws-1",
-        type: "LOOP_COMPLETED",
-        actorType: "system",
-        data: expect.objectContaining({
-          loopId: loop.id,
-          documentId: "prd-artifact-1",
-          command: "GENERATE_PRD",
-          conclusion: "success",
-        }),
-      }),
-    });
-  });
-
-  it("skips workstream event when no workstreamId", async () => {
-    const loop = buildGeneratePrdLoop({ workstreamId: null });
-    mockDownloadArtifactFile.mockResolvedValue(Buffer.from("# PRD content"));
-    const { mockCreate } = mockDbUpdate();
-    mockCreateVersion.mockResolvedValue({ id: "version-1" });
-
-    await generatePrdHandler.downloadAndIngest(loop.s3StateKey!, loop, "org-1");
-
-    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("skips ingestion when no artifactId", async () => {

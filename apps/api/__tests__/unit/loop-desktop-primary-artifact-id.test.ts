@@ -10,7 +10,7 @@
  * EVALUATE_* variant to satisfy the acceptance criterion.
  */
 
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -65,7 +65,6 @@ vi.mock("@/lib/desktop-gateway-wire", () => ({
 // --- Imports (after mocks) ---
 
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { launchLoopOnDesktop } from "@/lib/loops/loop-desktop";
 

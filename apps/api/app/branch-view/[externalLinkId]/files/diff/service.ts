@@ -1,10 +1,11 @@
 import "server-only";
 
 import type { BranchViewFileDiff } from "@repo/api/src/types/branch-view";
+import { withDb } from "@repo/database";
 import {
-  getFileContentAtRef,
-  getSinglePullRequest,
-  listPullRequestFiles,
+  type BoundedFileContentAtRefResult,
+  getBoundedFileContentAtRef,
+  getMergeBaseSha,
 } from "@repo/github";
 import type { PrContext } from "@/lib/resolve-pr-context";
 
@@ -32,6 +33,7 @@ const BINARY_EXTENSIONS = new Set([
   ".avi",
   ".wav",
 ]);
+const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
 
 function isBinaryPath(path: string): boolean {
   const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
@@ -57,40 +59,57 @@ export function isRequestedDiffInPullRequest(
   );
 }
 
+export async function findCachedBranchFileChange(
+  ctx: PrContext,
+  path: string,
+  previousPath: string | null
+): Promise<{
+  path: string;
+  previousPath: string | null;
+  isBinary: boolean;
+} | null> {
+  if (!ctx.branch) {
+    return null;
+  }
+  const branchArtifactId = ctx.branch.artifactId;
+
+  return await withDb((db) =>
+    db.branchFileChange.findFirst({
+      where: {
+        branchArtifactId,
+        path,
+        previousPath,
+      },
+      select: {
+        path: true,
+        previousPath: true,
+        isBinary: true,
+      },
+    })
+  );
+}
+
 /**
  * Fetch old (base) and new (head) content for a single file diff.
- * Uses immutable SHAs from the live GitHub PR (not mutable branch names).
+ * The "old" side is read at the merge-base of the base branch and head, which
+ * is the fork point GitHub uses for PR "Files changed" diffs. Reading it at the
+ * base branch tip instead would surface unrelated changes whenever the base has
+ * advanced past the fork. Falls back to the base branch ref if the merge-base
+ * cannot be resolved.
  */
 export async function getFileDiff(
   ctx: PrContext,
   path: string,
   previousPath: string | null
 ): Promise<GetFileDiffResult> {
-  const { installationId, owner, repo, pullNumber } = ctx;
-
-  // Resolve immutable SHAs from GitHub
-  const [livePr, fileList] = await Promise.all([
-    getSinglePullRequest(installationId, owner, repo, pullNumber),
-    listPullRequestFiles(installationId, owner, repo, pullNumber),
-  ]);
-
-  if (!livePr) {
-    return { data: null, error: "Pull request not found on GitHub" };
+  const { installationId, owner, repo } = ctx;
+  const cachedFile = await findCachedBranchFileChange(ctx, path, previousPath);
+  if (!cachedFile) {
+    return { data: null, error: "File is not part of this branch" };
   }
 
-  if (!fileList) {
-    return { data: null, error: "Failed to load pull request files" };
-  }
-
-  if (!isRequestedDiffInPullRequest(fileList, path, previousPath)) {
-    return { data: null, error: "File is not part of this pull request" };
-  }
-
-  const baseSha = livePr.baseSha;
-  const headSha = livePr.headSha;
-
-  // Check for binary files
-  if (isBinaryPath(path)) {
+  const basePath = previousPath ?? path;
+  if (cachedFile.isBinary || isBinaryPath(path) || isBinaryPath(basePath)) {
     return {
       data: {
         path,
@@ -104,23 +123,66 @@ export async function getFileDiff(
     };
   }
 
-  // Fetch old and new content in parallel
-  // For renames, fetch old from previousPath
-  const basePath = previousPath ?? path;
+  const baseBranch =
+    ctx.branch?.baseBranch ?? ctx.gitHubPullRequest?.baseBranch ?? null;
+  const headRef = ctx.branch?.headSha ?? ctx.gitHubPullRequest?.headSha ?? null;
+  if (!(baseBranch && headRef)) {
+    return { data: null, error: "File diff refs unavailable" };
+  }
+
+  // Match GitHub's PR diff, which compares against the fork point rather than
+  // the base branch's current tip.
+  const mergeBaseSha = await getMergeBaseSha(
+    installationId,
+    owner,
+    repo,
+    baseBranch,
+    headRef
+  );
+  const baseRef = mergeBaseSha ?? baseBranch;
+
   const [oldContent, newContent] = await Promise.all([
-    getFileContentAtRef(installationId, owner, repo, basePath, baseSha),
-    getFileContentAtRef(installationId, owner, repo, path, headSha),
+    getBoundedFileContentAtRef(
+      installationId,
+      owner,
+      repo,
+      basePath,
+      baseRef,
+      MAX_FILE_CONTENT_BYTES
+    ),
+    getBoundedFileContentAtRef(
+      installationId,
+      owner,
+      repo,
+      path,
+      headRef,
+      MAX_FILE_CONTENT_BYTES
+    ),
   ]);
+
+  if (oldContent.status === "too_large" || newContent.status === "too_large") {
+    return { data: null, error: "File content exceeds 1 MiB limit" };
+  }
+  if (
+    oldContent.status === "unsupported_encoding" ||
+    newContent.status === "unsupported_encoding"
+  ) {
+    return { data: null, error: "File content is not text" };
+  }
 
   return {
     data: {
       path,
-      oldContent: oldContent ?? "",
-      newContent: newContent ?? "",
-      isNew: oldContent === null,
-      isDeleted: newContent === null,
+      oldContent: contentOrEmpty(oldContent),
+      newContent: contentOrEmpty(newContent),
+      isNew: oldContent.status !== "found",
+      isDeleted: newContent.status !== "found",
       isBinary: false,
     },
     error: null,
   };
+}
+
+function contentOrEmpty(result: BoundedFileContentAtRefResult): string {
+  return result.status === "found" ? result.content : "";
 }

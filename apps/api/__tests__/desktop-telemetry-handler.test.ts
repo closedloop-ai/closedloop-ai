@@ -2,6 +2,8 @@ import { log } from "@repo/observability/log";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
 import {
+  DesktopShutdownTrigger,
+  DesktopUpdateTrigger,
   desktopTelemetryEventSchema,
   OutboundNetworkDecision,
   OutboundNetworkDecisionReason,
@@ -12,7 +14,7 @@ import {
   TelemetrySeverity,
   telemetryDiagnosticsSchema,
 } from "@repo/observability/telemetry/schema";
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   handleTelemetryEvent,
   type TelemetryHandlerContext,
@@ -126,6 +128,82 @@ describe("handleTelemetryEvent — origin enrichment overwrites injected origin"
     expect(infoCall).toBeDefined();
     const meta = infoCall?.[1] as Record<string, unknown>;
     expect(meta.origin).toBe(Origin.Desktop);
+  });
+
+  it("preserves plugin update diagnostics into the Datadog-bound log metadata", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    const payload = {
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.PluginUpdateFailed,
+      diagnostics: {
+        pluginUpdate: {
+          pluginIds: ["code@closedloop-ai"],
+          versionsBefore: { "code@closedloop-ai": "1.0.0" },
+          versionsAfter: { "code@closedloop-ai": "1.0.0" },
+          outcomes: { "code@closedloop-ai": "failed" },
+          durationMs: 321,
+          command: "claude plugin update",
+          scope: "user",
+          exitCode: 1,
+          failureReason: "command_failed",
+          stderrTail:
+            "permission denied\nAuthorization: Bearer secret-token\nclean line",
+        },
+      },
+    };
+
+    const result = handleTelemetryEvent(payload, defaultHandlerContext);
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      pluginUpdate: {
+        ...payload.diagnostics.pluginUpdate,
+        stderrTail: "permission denied\nclean line",
+      },
+    });
+    expect(meta.origin).toBe(Origin.Desktop);
+  });
+
+  it("preserves desktop client version in the enriched telemetry trace", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    const payload = {
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.TokenCostPricingMiss,
+      severity: TelemetrySeverity.Warn,
+      trace: {
+        ...validDesktopWirePayload.trace,
+        desktopClientVersion: "0.16.67-test",
+      },
+      diagnostics: {
+        tokenCostPricingMiss: {
+          model: "some-new-model-v1",
+          reason: "unknown_model",
+          surface: "synced_session",
+        },
+      },
+    };
+
+    const result = handleTelemetryEvent(payload, {
+      ...defaultHandlerContext,
+      pluginVersion: "code-plugin-test",
+    });
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.trace).toMatchObject({
+      computeTargetId: COMPUTE_TARGET_ID,
+      desktopClientVersion: "0.16.67-test",
+      pluginVersion: "code-plugin-test",
+    });
   });
 });
 
@@ -577,6 +655,171 @@ describe("handleTelemetryEvent — decision-table verification telemetry", () =>
     expect(entry?.diagnostics?.decisionTableVerification).toEqual(
       reportedDecisionTableVerification
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (h1) handleTelemetryEvent — desktop update/shutdown telemetry
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — desktop update and shutdown telemetry", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs accepted electron update telemetry with queryable origin/category and sanitized diagnostics", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.ElectronUpdateFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Electron update failed",
+        diagnostics: {
+          desktopUpdate: {
+            trigger: "apply-before-downloaded",
+            status: "available",
+            version: "0.14.29",
+            error: "Update has not finished downloading yet",
+            downloaded: false,
+            readyToInstall: false,
+            rawLog: "authorization: Bearer secret",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.origin).toBe(Origin.Desktop);
+    expect(meta.category).toBe(TelemetryCategory.ElectronUpdateFailed);
+    expect(meta.diagnostics).toMatchObject({
+      desktopUpdate: {
+        trigger: "apply-before-downloaded",
+        status: "available",
+        version: "0.14.29",
+        error: "Update has not finished downloading yet",
+        downloaded: false,
+        readyToInstall: false,
+      },
+    });
+    expect(JSON.stringify(meta)).not.toContain("Bearer secret");
+    expect(JSON.stringify(meta)).not.toContain("rawLog");
+  });
+
+  it("logs accepted shutdown failure telemetry with queryable origin/category", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopShutdownFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Desktop shutdown failed",
+        diagnostics: {
+          desktopShutdown: {
+            trigger: "outer-hard-exit",
+            result: "timed_out",
+            phase: "server.stop",
+            elapsedMs: 8000,
+            duringUpdate: true,
+            outerHardExit: true,
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.origin).toBe(Origin.Desktop);
+    expect(meta.category).toBe(TelemetryCategory.DesktopShutdownFailed);
+    expect(meta.diagnostics).toMatchObject({
+      desktopShutdown: {
+        trigger: "outer-hard-exit",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 8000,
+        duringUpdate: true,
+        outerHardExit: true,
+      },
+    });
+  });
+
+  it("preserves update telemetry when desktop sends an unknown trigger", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.ElectronUpdateFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Electron update failed",
+        diagnostics: {
+          desktopUpdate: {
+            trigger: "future-update-trigger",
+            status: "available",
+            error: "new updater path failed",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      desktopUpdate: {
+        trigger: DesktopUpdateTrigger.Unknown,
+        status: "available",
+        error: "new updater path failed",
+      },
+    });
+  });
+
+  it("preserves shutdown telemetry when desktop sends an unknown trigger", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.DesktopShutdownFailed,
+        severity: TelemetrySeverity.Error,
+        message: "Desktop shutdown failed",
+        diagnostics: {
+          desktopShutdown: {
+            trigger: "future-shutdown-trigger",
+            result: "failed",
+            phase: "future.phase",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    const meta = infoCall?.[1] as Record<string, unknown>;
+    expect(meta.diagnostics).toMatchObject({
+      desktopShutdown: {
+        trigger: DesktopShutdownTrigger.Unknown,
+        result: "failed",
+        phase: "future.phase",
+      },
+    });
   });
 });
 
@@ -1112,6 +1355,7 @@ describe("handleTelemetryEvent — loopPerf payload-preservation (AC-006)", () =
         event: "iteration",
         runId: "run-001",
         iteration: 2,
+        command: "EXECUTE",
         startedAt: "2026-05-08T09:02:00.000Z",
         endedAt: "2026-05-08T09:10:00.000Z",
         durationS: 480,
@@ -1126,6 +1370,7 @@ describe("handleTelemetryEvent — loopPerf payload-preservation (AC-006)", () =
         event: "pipeline_step",
         runId: "run-001",
         iteration: 1,
+        command: "PLAN",
         step: 8.5,
         stepName: "write_merged_patterns",
         startedAt: "2026-05-08T09:03:00.000Z",
@@ -1351,6 +1596,49 @@ describe("handleTelemetryEvent — loopPerf payload-preservation (AC-006)", () =
     expect(warningEntry?.level).toBe("warn");
     expect(warningEntry?.loopPerfEvent).toBeNull();
   });
+
+  it("redacts unsafe loopPerf command and rawBytes in Datadog-bound metadata", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.LoopPerfParseFailure,
+        diagnostics: {
+          loopPerf: {
+            event: "parse_failure",
+            lineNumber: 7,
+            command: '{"password":"hunter2"}',
+            rawBytes: '\u0000{"api_key":"secret-api-key"}\u001f',
+            errorMessage: "Unexpected token",
+          },
+        },
+      },
+      defaultHandlerContext
+    );
+
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      diagnostics?: { loopPerf?: Record<string, unknown> };
+    }>;
+    const entry = body.find(
+      (e) => e.category === TelemetryCategory.LoopPerfParseFailure
+    );
+
+    expect(entry?.diagnostics?.loopPerf?.command).toBe("[redacted]");
+    expect(entry?.diagnostics?.loopPerf?.rawBytes).toBe("[redacted]");
+    expect(JSON.stringify(entry)).not.toContain("hunter2");
+    expect(JSON.stringify(entry)).not.toContain("secret-api-key");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1444,5 +1732,88 @@ describe("handleTelemetryEvent — validation failures emit category attribute",
     expect(entry).toBeDefined();
     expect(entry?.category).toBe(TelemetryCategory.TelemetryValidationFailed);
     expect(entry?.level).toBe("warn");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (l) handleTelemetryEvent — onboarding popup telemetry round-trip (AC-003)
+//
+// Verifies all 5 onboarding popup telemetry categories flow through
+// handleTelemetryEvent to the Datadog-flushed metadata with
+// origin: Origin.Desktop and the correct category string preserved.
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — onboarding popup telemetry (AC-003)", () => {
+  beforeEach(() => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_SERVICE", "api");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const onboardingPopupVariants: Array<{
+    label: string;
+    category: TelemetryCategory;
+  }> = [
+    {
+      label: "OnboardingPopupShown",
+      category: TelemetryCategory.OnboardingPopupShown,
+    },
+    {
+      label: "OnboardingPopupCtaClicked",
+      category: TelemetryCategory.OnboardingPopupCtaClicked,
+    },
+    {
+      label: "OnboardingPopupDismissedSession",
+      category: TelemetryCategory.OnboardingPopupDismissedSession,
+    },
+    {
+      label: "OnboardingPopupDismissedPermanent",
+      category: TelemetryCategory.OnboardingPopupDismissedPermanent,
+    },
+    {
+      label: "OnboardingPopupSuppressedAuto",
+      category: TelemetryCategory.OnboardingPopupSuppressedAuto,
+    },
+  ];
+
+  it.each(
+    onboardingPopupVariants
+  )("flushes $label with origin: Desktop and category preserved", async ({
+    category,
+  }) => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const { freshLog, freshHandler } =
+      await importFreshHandlerWithFetch(fetchMock);
+
+    const result = freshHandler(
+      {
+        ...validDesktopWirePayload,
+        category,
+      },
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    await freshLog.flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1].body as string
+    ) as Array<{
+      category?: string;
+      origin?: string;
+    }>;
+    const entry = body.find((e) => e.category === category);
+
+    expect(entry).toBeDefined();
+    expect(entry?.origin).toBe(Origin.Desktop);
+    expect(entry?.category).toBe(category);
   });
 });

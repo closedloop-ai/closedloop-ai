@@ -4,7 +4,7 @@ import {
   NotificationEntityKind,
 } from "@repo/api/src/types/notification-routes";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
-import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { AssignmentEntityType } from "@repo/collaboration/server/inbox-notifications";
 import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveProjectId } from "@/lib/identifier-utils";

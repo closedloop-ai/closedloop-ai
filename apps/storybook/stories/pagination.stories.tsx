@@ -10,15 +10,26 @@ import {
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Pagination with page navigation, next and previous links.
+ * The underlying shadcn `Pagination` primitive: a composable set of building
+ * blocks (`PaginationContent`, `PaginationItem`, `PaginationLink`,
+ * `PaginationPrevious`, `PaginationNext`, `PaginationEllipsis`) for assembling
+ * page navigation. For the higher-level, page-state-driven component, see
+ * `Table Pagination`.
  */
 const meta = {
-  title: "ui/Pagination",
+  title: "Design System/Data Display/Pagination",
   component: Pagination,
   tags: ["autodocs"],
-  argTypes: {},
-  render: (args) => (
-    <Pagination {...args}>
+  parameters: { layout: "centered" },
+} satisfies Meta<typeof Pagination>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+/** A representative composed pagination with an active page and ellipsis. */
+export const Default: Story = {
+  render: () => (
+    <Pagination>
       <PaginationContent>
         <PaginationItem>
           <PaginationPrevious href="#" />
@@ -27,7 +38,9 @@ const meta = {
           <PaginationLink href="#">1</PaginationLink>
         </PaginationItem>
         <PaginationItem>
-          <PaginationLink href="#">2</PaginationLink>
+          <PaginationLink href="#" isActive>
+            2
+          </PaginationLink>
         </PaginationItem>
         <PaginationItem>
           <PaginationLink href="#">3</PaginationLink>
@@ -36,21 +49,12 @@ const meta = {
           <PaginationEllipsis />
         </PaginationItem>
         <PaginationItem>
+          <PaginationLink href="#">10</PaginationLink>
+        </PaginationItem>
+        <PaginationItem>
           <PaginationNext href="#" />
         </PaginationItem>
       </PaginationContent>
     </Pagination>
   ),
-  parameters: {
-    layout: "centered",
-  },
-} satisfies Meta<typeof Pagination>;
-
-export default meta;
-
-type Story = StoryObj<typeof meta>;
-
-/**
- * The default form of the pagination.
- */
-export const Default: Story = {};
+};

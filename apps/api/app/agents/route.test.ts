@@ -3,7 +3,7 @@ import type {
   AgentListResponse,
   BulkIngestAgentResponse,
 } from "@repo/api/src/types/agent";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   createMockRequest,
@@ -69,7 +69,7 @@ describe("GET /agents", () => {
           role: "frontend-architect",
           description: "Specializes in React",
           enabled: true,
-          sourceRepo: null,
+          sourceRepo: "",
           currentVersion: 1,
           createdAt: NOW,
           updatedAt: NOW,
@@ -119,7 +119,10 @@ describe("POST /agents", () => {
   });
 
   it("creates an agent", async () => {
-    vi.mocked(agentsService.create).mockResolvedValue(MOCK_AGENT_DETAIL);
+    vi.mocked(agentsService.create).mockResolvedValue({
+      ok: true,
+      value: MOCK_AGENT_DETAIL,
+    });
 
     const request = createMockRequest({
       url: "http://localhost:3002/agents",

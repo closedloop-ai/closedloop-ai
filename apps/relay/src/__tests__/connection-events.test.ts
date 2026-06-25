@@ -1,4 +1,5 @@
 import { ConnectionState } from "@repo/observability/telemetry/metrics";
+import { TelemetryCategory } from "@repo/observability/telemetry/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -298,6 +299,44 @@ async function registerWorkerViaHello(
   return gatewaySessionId;
 }
 
+function makeDesktopTelemetryPayload(
+  category: string,
+  loopPerf: unknown
+): Record<string, unknown> {
+  return {
+    schemaVersion: "1",
+    category,
+    severity: "info",
+    timestamp: "2026-05-12T00:00:00.000Z",
+    trace: {
+      commandId: "cmd-1",
+      operationId: "op-1",
+      computeTargetId: TEST_TARGET_ID,
+    },
+    diagnostics: {
+      loopPerf,
+    },
+  };
+}
+
+function withoutTopLevelField(
+  field: "schemaVersion" | "severity" | "timestamp" | "trace",
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  const { [field]: _removed, ...rest } = payload;
+  return rest;
+}
+
+function mockSocketEventApiResponse() {
+  return {
+    ok: true,
+    status: 200,
+    url: "http://127.0.0.1:19878/internal/relay/socket-event",
+    text: () => Promise.resolve(JSON.stringify({ emit: [] })),
+    headers: { get: () => "application/json" },
+  } as unknown as Response;
+}
+
 // ---------------------------------------------------------------------------
 // Test: auth middleware sets socket.data.auth on success
 // ---------------------------------------------------------------------------
@@ -425,6 +464,215 @@ describe("connection handler", () => {
 
     // Verify the fetch was called for the hello event
     expect(globalThis.fetch).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PLN-750: loopPerf telemetry bypasses the generic relay limiter only on exact
+// category + diagnostics.loopPerf.event matches.
+// ---------------------------------------------------------------------------
+
+describe("desktop.telemetry loopPerf rate-limit bypass", () => {
+  it.each([
+    {
+      label: "iteration",
+      category: TelemetryCategory.LoopPerfIteration,
+      loopPerf: { event: "iteration", command: "EXECUTE", runId: "run-1" },
+    },
+    {
+      label: "pipeline_step",
+      category: TelemetryCategory.LoopPerfPipelineStep,
+      loopPerf: { event: "pipeline_step", command: "PLAN", runId: "run-1" },
+    },
+  ])("forwards a valid $label burst above the generic limit", async ({
+    category,
+    loopPerf,
+  }) => {
+    vi.useFakeTimers();
+    const socket = makeMockSocket(`socket-loopperf-${loopPerf.event}`);
+    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
+    await registerWorkerViaHello(socket, TEST_TARGET_ID);
+
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
+    for (let index = 0; index < 64; index += 1) {
+      socket._trigger(
+        "desktop.telemetry",
+        makeDesktopTelemetryPayload(category, loopPerf)
+      );
+    }
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(64);
+  });
+
+  it("forwards exact parse_failure loopPerf telemetry above the generic limit", async () => {
+    vi.useFakeTimers();
+    const socket = makeMockSocket("socket-loopperf-parse-failure");
+    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
+    await registerWorkerViaHello(socket, TEST_TARGET_ID);
+
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
+    for (let index = 0; index < 64; index += 1) {
+      socket._trigger(
+        "desktop.telemetry",
+        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfParseFailure, {
+          event: "parse_failure",
+          lineNumber: index + 1,
+        })
+      );
+    }
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(64);
+  });
+
+  it("limits exact valid loopPerf bursts at the loopPerf-specific cap", async () => {
+    vi.useFakeTimers();
+    const socket = makeMockSocket("socket-loopperf-specific-cap");
+    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
+    await registerWorkerViaHello(socket, TEST_TARGET_ID);
+
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
+    for (let index = 0; index < 245; index += 1) {
+      socket._trigger(
+        "desktop.telemetry",
+        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+          command: "EXECUTE",
+          runId: "run-1",
+          iteration: index + 1,
+        })
+      );
+    }
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(240);
+  });
+
+  it.each([
+    {
+      label: "missing diagnostics",
+      payload: {
+        schemaVersion: "1",
+        category: TelemetryCategory.LoopPerfIteration,
+        severity: "info",
+        timestamp: "2026-05-12T00:00:00.000Z",
+      },
+    },
+    {
+      label: "non-object loopPerf",
+      payload: {
+        ...makeDesktopTelemetryPayload(
+          TelemetryCategory.LoopPerfIteration,
+          "iteration"
+        ),
+      },
+    },
+    {
+      label: "category event mismatch",
+      payload: makeDesktopTelemetryPayload(
+        TelemetryCategory.LoopPerfIteration,
+        {
+          event: "pipeline_step",
+        }
+      ),
+    },
+    {
+      label: "unknown loopPerf future category",
+      payload: makeDesktopTelemetryPayload("loop.perf.future", {
+        event: "future",
+      }),
+    },
+    {
+      label: "unknown event variant category",
+      payload: makeDesktopTelemetryPayload(
+        TelemetryCategory.LoopPerfUnknownEventVariant,
+        { event: "unknown_event_variant" }
+      ),
+    },
+    {
+      label: "generic non-loopPerf telemetry",
+      payload: {
+        schemaVersion: "1",
+        category: TelemetryCategory.JobStarted,
+        severity: "info",
+        timestamp: "2026-05-12T00:00:00.000Z",
+      },
+    },
+    {
+      label: "missing schemaVersion exact loopPerf",
+      payload: withoutTopLevelField(
+        "schemaVersion",
+        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+        })
+      ),
+    },
+    {
+      label: "missing severity exact loopPerf",
+      payload: withoutTopLevelField(
+        "severity",
+        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+        })
+      ),
+    },
+    {
+      label: "missing timestamp exact loopPerf",
+      payload: withoutTopLevelField(
+        "timestamp",
+        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+        })
+      ),
+    },
+    {
+      label: "missing trace exact loopPerf",
+      payload: withoutTopLevelField(
+        "trace",
+        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+        })
+      ),
+    },
+    {
+      label: "missing trace computeTargetId exact loopPerf",
+      payload: {
+        ...makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+        }),
+        trace: {
+          commandId: "cmd-1",
+          operationId: "op-1",
+        },
+      },
+    },
+    {
+      label: "mismatched trace computeTargetId exact loopPerf",
+      payload: {
+        ...makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
+          event: "iteration",
+        }),
+        trace: {
+          commandId: "cmd-1",
+          operationId: "op-1",
+          computeTargetId: "different-target-id",
+        },
+      },
+    },
+  ])("keeps $label under the generic limiter", async ({ label, payload }) => {
+    vi.useFakeTimers();
+    const socket = makeMockSocket(`socket-loopperf-negative-${label}`);
+    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
+    await registerWorkerViaHello(socket, TEST_TARGET_ID);
+
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
+    for (let index = 0; index < 64; index += 1) {
+      socket._trigger("desktop.telemetry", payload);
+    }
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(60);
   });
 });
 

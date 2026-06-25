@@ -2,7 +2,7 @@ import figma from "@figma/code-connect";
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2768-28168";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2768-28168";
 
 figma.connect(Toggle, FIGMA_URL, {
   props: {

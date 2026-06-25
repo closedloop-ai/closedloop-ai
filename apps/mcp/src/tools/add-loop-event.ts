@@ -16,9 +16,15 @@ export function registerAddLoopEvent(
     {
       description:
         "Post a progress update to a running manual loop. The message appears as a log entry " +
-        "in the ClosedLoop platform UI, giving your team real-time visibility into what you're working on.\n\n" +
-        "Call periodically during implementation — when starting a new task, completing a milestone, " +
-        "running tests, or encountering a blocker. Keep messages concise and informative.",
+        "in the Closedloop platform UI, giving your team real-time visibility into what you're working on.\n\n" +
+        "Send events at meaningful milestones — not just start and end. Good milestones include:\n" +
+        '- "Reading FEA-1035 spec and investigating codebase" (investigation start)\n' +
+        '- "Implementation complete, 2 files changed. Running tests." (implementation done)\n' +
+        '- "All 23 tests pass, lint clean. Running code review." (verification)\n' +
+        '- "PR created: https://github.com/org/repo/pull/123" (PR)\n' +
+        '- "Blocked: dependency X needs upgrade first" (blocker)\n\n' +
+        "Keep messages concise and factual. Include counts, file names, or PR URLs where relevant. " +
+        "The team reads these to understand progress without interrupting you.",
       inputSchema: {
         loopId: z.string().describe("Loop UUID returned by create-loop"),
         message: z

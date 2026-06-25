@@ -1,3 +1,4 @@
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildDesktopTelemetryPayload,
@@ -6,7 +7,11 @@ import {
 } from "../telemetry/emitter";
 import type { TelemetryTraceContext } from "../telemetry/schema";
 import {
+  DesktopShutdownTrigger,
+  DesktopUpdateTrigger,
   desktopTelemetryEventSchema,
+  isLoopPerfTelemetryRateLimitBypass,
+  KNOWN_LOOP_COMMANDS,
   OutboundNetworkDecision,
   OutboundNetworkDecisionReason,
   OutboundNetworkDestinationClass,
@@ -233,6 +238,59 @@ describe("telemetryDiagnosticsSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts bounded desktop update diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      desktopUpdate: {
+        trigger: "renderer-apply-update",
+        status: "downloaded",
+        version: "0.14.29",
+        percent: 100,
+        downloaded: true,
+        readyToInstall: true,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts bounded desktop shutdown diagnostics", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      desktopShutdown: {
+        trigger: "shutdown-sequence",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 5002,
+        duringUpdate: true,
+        outerHardExit: false,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("maps unknown desktop update and shutdown triggers to a safe value", () => {
+    const result = telemetryDiagnosticsSchema.safeParse({
+      desktopUpdate: {
+        trigger: "future-update-trigger",
+        status: "downloaded",
+      },
+      desktopShutdown: {
+        trigger: "future-shutdown-trigger",
+        result: "failed",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.desktopUpdate?.trigger).toBe(
+        DesktopUpdateTrigger.Unknown
+      );
+      expect(result.data.desktopShutdown?.trigger).toBe(
+        DesktopShutdownTrigger.Unknown
+      );
+    }
+  });
+
   it("accepts absence of ackLatencyMs (optional)", () => {
     const result = telemetryDiagnosticsSchema.safeParse({});
     expect(result.success).toBe(true);
@@ -319,6 +377,66 @@ describe("desktopTelemetryEventSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts bounded plugin update diagnostics only under diagnostics.pluginUpdate", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.PluginUpdateFailed,
+      diagnostics: {
+        pluginUpdate: {
+          pluginIds: ["code@closedloop-ai"],
+          versionsBefore: { "code@closedloop-ai": "1.0.0" },
+          versionsAfter: { "code@closedloop-ai": "1.0.0" },
+          outcomes: { "code@closedloop-ai": "failed" },
+          durationMs: 123,
+          command: "claude plugin update",
+          scope: "user",
+          exitCode: 1,
+          failureReason: "command_failed",
+          stderrTail: "permission denied",
+          ignored: "stripped",
+        },
+      },
+      pluginUpdate: { pluginIds: ["invalid-top-level"] },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.pluginUpdate).toEqual({
+        pluginIds: ["code@closedloop-ai"],
+        versionsBefore: { "code@closedloop-ai": "1.0.0" },
+        versionsAfter: { "code@closedloop-ai": "1.0.0" },
+        outcomes: { "code@closedloop-ai": "failed" },
+        durationMs: 123,
+        command: "claude plugin update",
+        scope: "user",
+        exitCode: 1,
+        failureReason: "command_failed",
+        stderrTail: "permission denied",
+      });
+      expect("pluginUpdate" in result.data).toBe(false);
+    }
+  });
+
+  it("rejects invalid plugin update outcome values", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.PluginUpdateFailed,
+      diagnostics: {
+        pluginUpdate: {
+          pluginIds: ["code@closedloop-ai"],
+          versionsBefore: { "code@closedloop-ai": "1.0.0" },
+          versionsAfter: { "code@closedloop-ai": "1.0.0" },
+          outcomes: { "code@closedloop-ai": "unknown-outcome" },
+          durationMs: 123,
+          command: "claude plugin update",
+          scope: "user",
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("strips ackLatencyMs from desktop wire payloads (server-only field)", () => {
     // telemetryDiagnosticsSchema (server emission) carries ackLatencyMs, but
     // the desktop wire schema must not — otherwise desktop-origin payloads
@@ -377,6 +495,33 @@ describe("desktopTelemetryEventSchema", () => {
     }
   });
 
+  it("accepts the token-cost pricing-miss category and preserves its typed diagnostics", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.TokenCostPricingMiss,
+      severity: TelemetrySeverity.Warn,
+      diagnostics: {
+        tokenCostPricingMiss: {
+          model: "some-new-model-v1",
+          reason: "unknown_model",
+          surface: "synced_session",
+          sessionId: "sess-1",
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.category).toBe(TelemetryCategory.TokenCostPricingMiss);
+      expect(result.data.diagnostics?.tokenCostPricingMiss).toEqual({
+        model: "some-new-model-v1",
+        reason: "unknown_model",
+        surface: "synced_session",
+        sessionId: "sess-1",
+      });
+    }
+  });
+
   it("preserves outbound-network telemetry with unknown classification values", () => {
     const result = desktopTelemetryEventSchema.safeParse({
       ...validDesktopWirePayload,
@@ -407,6 +552,123 @@ describe("desktopTelemetryEventSchema", () => {
         port: "3000",
       });
       expect(JSON.stringify(result.data)).not.toContain("token=secret");
+    }
+  });
+
+  it("preserves desktop update diagnostics from desktop wire payloads", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.ElectronUpdateFailed,
+      diagnostics: {
+        desktopUpdate: {
+          trigger: "apply-before-downloaded",
+          status: "available",
+          version: "0.14.29",
+          error: "Update has not finished downloading yet",
+          downloaded: false,
+          readyToInstall: false,
+          rawLog: "authorization: Bearer secret",
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.desktopUpdate).toEqual({
+        trigger: "apply-before-downloaded",
+        status: "available",
+        version: "0.14.29",
+        error: "Update has not finished downloading yet",
+        downloaded: false,
+        readyToInstall: false,
+      });
+      expect(JSON.stringify(result.data)).not.toContain("Bearer secret");
+    }
+  });
+
+  it("preserves desktop shutdown diagnostics from desktop wire payloads", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopShutdownFailed,
+      diagnostics: {
+        desktopShutdown: {
+          trigger: "outer-hard-exit",
+          result: "timed_out",
+          phase: "server.stop",
+          elapsedMs: 8001,
+          duringUpdate: true,
+          outerHardExit: true,
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.desktopShutdown).toEqual({
+        trigger: "outer-hard-exit",
+        result: "timed_out",
+        phase: "server.stop",
+        elapsedMs: 8001,
+        duringUpdate: true,
+        outerHardExit: true,
+      });
+    }
+  });
+
+  it("preserves desktop diagnostics when wire triggers are unknown", () => {
+    const updateResult = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.ElectronUpdateFailed,
+      diagnostics: {
+        desktopUpdate: {
+          trigger: "future-update-trigger",
+          status: "available",
+          error: "new updater path failed",
+        },
+      },
+    });
+    const shutdownResult = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.DesktopShutdownFailed,
+      diagnostics: {
+        desktopShutdown: {
+          trigger: "future-shutdown-trigger",
+          result: "failed",
+          phase: "future.phase",
+        },
+      },
+    });
+
+    expect(updateResult.success).toBe(true);
+    if (updateResult.success) {
+      expect(updateResult.data.diagnostics?.desktopUpdate).toEqual({
+        trigger: DesktopUpdateTrigger.Unknown,
+        status: "available",
+        error: "new updater path failed",
+      });
+    }
+
+    expect(shutdownResult.success).toBe(true);
+    if (shutdownResult.success) {
+      expect(shutdownResult.data.diagnostics?.desktopShutdown).toEqual({
+        trigger: DesktopShutdownTrigger.Unknown,
+        result: "failed",
+        phase: "future.phase",
+      });
+    }
+  });
+
+  it("accepts update/shutdown categories when diagnostics are omitted", () => {
+    for (const category of [
+      TelemetryCategory.ElectronUpdateInitiated,
+      TelemetryCategory.ElectronUpdateFailed,
+      TelemetryCategory.DesktopShutdownFailed,
+    ]) {
+      const result = desktopTelemetryEventSchema.safeParse({
+        ...validDesktopWirePayload,
+        category,
+      });
+      expect(result.success).toBe(true);
     }
   });
 
@@ -470,6 +732,139 @@ describe("desktopTelemetryEventSchema", () => {
       expect(result.data.category).toBe(
         TelemetryCategory.OnboardingPopupSuppressedAuto
       );
+    }
+  });
+
+  // lifecycle back-compat: desktop clients that pre-date diagnostics.lifecycle
+  // must continue to be accepted unchanged (AC-001)
+  it("lifecycle back-compat — accepts job.* payload with diagnostics fields present but lifecycle omitted", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.JobStarted,
+      diagnostics: {
+        exitCode: 0,
+        logTail: "job started successfully",
+        elapsedMs: 1234,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.exitCode).toBe(0);
+      expect(result.data.diagnostics?.logTail).toBe("job started successfully");
+      expect(result.data.diagnostics?.elapsedMs).toBe(1234);
+      expect(result.data.diagnostics?.lifecycle).toBeUndefined();
+    }
+  });
+
+  // T-2.2: every canonical LoopCommand value is accepted in lifecycle.command (AC-004)
+  it("lifecycle.command — accepts every canonical LoopCommand value", () => {
+    expect(KNOWN_LOOP_COMMANDS.size).toBeGreaterThan(0);
+
+    for (const command of KNOWN_LOOP_COMMANDS) {
+      const result = desktopTelemetryEventSchema.safeParse({
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.JobStarted,
+        diagnostics: {
+          lifecycle: { command },
+        },
+      });
+
+      expect(
+        result.success,
+        `expected schema to accept command: ${command}`
+      ).toBe(true);
+      if (result.success) {
+        expect(result.data.diagnostics?.lifecycle?.command).toBe(command);
+      }
+    }
+  });
+
+  // T-2.3: unknown/arbitrary command strings are accepted for forward-compat (AC-002, AC-004)
+  it("lifecycle.command — accepts unknown/arbitrary string for forward-compat", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.JobStarted,
+      diagnostics: {
+        lifecycle: { command: "FUTURE_UNKNOWN_COMMAND" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.diagnostics?.lifecycle?.command).toBe(
+        "FUTURE_UNKNOWN_COMMAND"
+      );
+    }
+  });
+
+  // T-2.4: unknown sibling fields alongside command survive parsing via .passthrough() (AC-003, AC-004)
+  it("lifecycle — preserves unknown sibling fields via passthrough", () => {
+    const result = desktopTelemetryEventSchema.safeParse({
+      ...validDesktopWirePayload,
+      category: TelemetryCategory.JobStarted,
+      diagnostics: {
+        lifecycle: { command: LoopCommand.Execute, unknownField: "value" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const lifecycle = result.data.diagnostics?.lifecycle as
+        | Record<string, unknown>
+        | undefined;
+      expect(lifecycle?.command).toBe(LoopCommand.Execute);
+      expect(lifecycle?.unknownField).toBe("value");
+    }
+  });
+
+  // T-2.5: round-trip fidelity — full payload with lifecycle.command parses
+  // and the complete output matches the expected transformed shape (AC-004)
+  it("lifecycle — round-trip fidelity: complete payload with lifecycle.command survives schema parse without stripping", () => {
+    const input = {
+      schemaVersion: "1",
+      category: TelemetryCategory.JobStarted,
+      severity: TelemetrySeverity.Info,
+      timestamp: "2024-01-01T00:00:00.000Z",
+      trace: {
+        commandId: "cmd-1",
+        operationId: "op-1",
+        computeTargetId: "target-1",
+        gatewaySessionId: VALID_UUID_A,
+        sessionId: VALID_UUID_B,
+      },
+      diagnostics: {
+        lifecycle: { command: LoopCommand.Execute },
+        exitCode: 0,
+        elapsedMs: 5000,
+      },
+      message: "job started",
+    };
+
+    const result = desktopTelemetryEventSchema.safeParse(input);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({
+        schemaVersion: "1",
+        category: TelemetryCategory.JobStarted,
+        severity: TelemetrySeverity.Info,
+        timestamp: "2024-01-01T00:00:00.000Z",
+        trace: {
+          commandId: "cmd-1",
+          operationId: "op-1",
+          computeTargetId: "target-1",
+          gatewaySessionId: VALID_UUID_A,
+          loopSessionId: VALID_UUID_B,
+        },
+        diagnostics: {
+          lifecycle: { command: LoopCommand.Execute },
+          exitCode: 0,
+          elapsedMs: 5000,
+        },
+        message: "job started",
+        errorClass: undefined,
+      });
     }
   });
 });
@@ -817,6 +1212,27 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     expect(result?.tokenUsage).toEqual({ inputTokens: 10, outputTokens: 5 });
   });
 
+  it("sanitizes nested plugin update stderrTail", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      pluginUpdate: {
+        pluginIds: ["code@closedloop-ai"],
+        versionsBefore: { "code@closedloop-ai": "1.0.0" },
+        versionsAfter: { "code@closedloop-ai": "1.0.0" },
+        outcomes: { "code@closedloop-ai": "failed" },
+        durationMs: 321,
+        command: "claude plugin update",
+        scope: "user",
+        failureReason: "command_failed",
+        stderrTail:
+          "\u001b[31mError:\u001b[0m update failed\nAuthorization: Bearer secret-token\nclean line",
+      },
+    });
+
+    expect(result?.pluginUpdate?.stderrTail).toBe(
+      "Error: update failed\nclean line"
+    );
+  });
+
   it("keeps only descriptor fields for outbound network diagnostics", () => {
     const result = sanitizeDesktopTelemetryDiagnostics({
       outboundNetwork: {
@@ -844,6 +1260,128 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     });
     expect(JSON.stringify(result)).not.toContain("X-Amz-Signature");
     expect(JSON.stringify(result)).not.toContain("/users/123");
+  });
+
+  it("preserves safe loopPerf iteration and pipeline_step commands", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      loopPerf: {
+        event: "iteration",
+        command: "EXECUTE",
+        runId: "run-1",
+      },
+    });
+    expect(result?.loopPerf?.command).toBe("EXECUTE");
+
+    const pipelineStepResult = sanitizeDesktopTelemetryDiagnostics({
+      loopPerf: {
+        event: "pipeline_step",
+        command: "FUTURE_UNKNOWN_COMMAND",
+        runId: "run-1",
+      },
+    });
+    expect(pipelineStepResult?.loopPerf?.command).toBe(
+      "FUTURE_UNKNOWN_COMMAND"
+    );
+  });
+
+  it("omits absent loopPerf command and sanitizes unsafe command/rawBytes", () => {
+    const absentResult = sanitizeDesktopTelemetryDiagnostics({
+      loopPerf: { event: "iteration", runId: "run-1" },
+    });
+    expect(absentResult?.loopPerf).not.toHaveProperty("command");
+
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      loopPerf: {
+        event: "parse_failure",
+        command: '{"access_token":"hunter2"}',
+        rawBytes: `\u0000OPENAI_API_KEY=${"secret".repeat(200)}\u001f`,
+      },
+    });
+
+    expect(result?.loopPerf?.command).toBe("[redacted]");
+    expect(result?.loopPerf?.rawBytes).toBe("[redacted]");
+    expect(JSON.stringify(result)).not.toContain("hunter2");
+    expect(JSON.stringify(result)).not.toContain("OPENAI_API_KEY");
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
+  it("sanitizes common loopPerf credential key variants", () => {
+    const unsafeValues = [
+      '{"refresh_token":"secret-value"}',
+      "GITHUB_TOKEN=secret-value",
+      "OPENAI_API_KEY=secret-value",
+      "--access-token secret-value",
+      "service_secret: secret-value",
+    ];
+
+    for (const value of unsafeValues) {
+      const result = sanitizeDesktopTelemetryDiagnostics({
+        loopPerf: {
+          event: "iteration",
+          command: value,
+          rawBytes: value,
+        },
+      });
+
+      expect(result?.loopPerf?.command).toBe("[redacted]");
+      expect(result?.loopPerf?.rawBytes).toBe("[redacted]");
+    }
+  });
+
+  it("strips non-ANSI control chars from safe loopPerf command and rawBytes", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      loopPerf: {
+        event: "parse_failure",
+        command: "\u0000EXECUTE\u001f",
+        rawBytes: "\u0007safe raw bytes\u009f",
+      },
+    });
+
+    expect(result?.loopPerf?.command).toBe("EXECUTE");
+    expect(result?.loopPerf?.rawBytes).toBe("safe raw bytes");
+  });
+
+  it("bounds oversized loopPerf command and rawBytes metadata", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      loopPerf: {
+        event: "parse_failure",
+        command: "A".repeat(200),
+        rawBytes: "B".repeat(2000),
+      },
+    });
+
+    const command = result?.loopPerf?.command;
+    const rawBytes = result?.loopPerf?.rawBytes;
+
+    expect(typeof command).toBe("string");
+    expect(typeof rawBytes).toBe("string");
+    if (typeof command !== "string" || typeof rawBytes !== "string") {
+      throw new Error(
+        "Expected loopPerf command and rawBytes to remain strings"
+      );
+    }
+
+    expect(new TextEncoder().encode(command).length).toBeLessThanOrEqual(64);
+    expect(new TextEncoder().encode(rawBytes).length).toBeLessThanOrEqual(1024);
+  });
+
+  it("keeps non-loopPerf relay rate-limit checks cheap before full telemetry parsing", () => {
+    const payload = {
+      schemaVersion: "1",
+      category: TelemetryCategory.JobStarted,
+      severity: TelemetrySeverity.Info,
+      timestamp: "2024-01-01T00:00:00.000Z",
+      get trace() {
+        throw new Error("trace should not be parsed for generic telemetry");
+      },
+      get diagnostics() {
+        throw new Error(
+          "diagnostics should not be parsed for generic telemetry"
+        );
+      },
+    };
+
+    expect(isLoopPerfTelemetryRateLimitBypass(payload, "target-1")).toBe(false);
   });
 });
 

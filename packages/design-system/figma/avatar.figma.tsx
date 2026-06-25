@@ -6,7 +6,7 @@ import {
 } from "@repo/design-system/components/ui/avatar";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=8-297";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=8-297";
 
 figma.connect(Avatar, FIGMA_URL, {
   props: {

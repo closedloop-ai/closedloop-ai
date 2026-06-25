@@ -6,16 +6,28 @@
  * artifacts to include.
  */
 
-import type { ContextPackAttachment } from "@closedloop-ai/loops-api/context-pack";
+import type {
+  CodeEvaluationContext,
+  ContextPackAttachment,
+} from "@closedloop-ai/loops-api/context-pack";
+import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
+import type {
+  ContextPackAgent,
+  ContextPackRepoConfig,
+} from "@repo/api/src/types/agent";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
+import { withDb } from "@repo/database";
+import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { agentsService } from "@/app/agents/service";
 import {
   ATTACHMENT_SIGNED_URL_MAX_FILES,
   attachmentsService,
 } from "@/app/documents/attachments-service";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { documentService } from "@/app/documents/document-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { loopsService } from "@/app/loops/service";
@@ -26,6 +38,10 @@ import {
   downloadMetadata,
   uploadContextPack,
 } from "./loop-state";
+import {
+  shouldWrapLoopArtifactContent,
+  wrapUntrustedLoopArtifactContent,
+} from "./untrusted-loop-input";
 import { extractUploadedPlanRaw } from "./uploaded-plan-artifacts";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +57,7 @@ export type LoopForContextPack = {
   documentVersion: number | null;
   parentLoopId: string | null;
   repo: { fullName: string; branch: string } | null;
+  metadata?: Record<string, unknown> | null;
   contextRefs: Array<{
     sourceId: string;
     sourceType?: ArtifactType;
@@ -200,7 +217,12 @@ async function fetchPrimaryArtifact(
       id: artifact.id,
       type: String(artifact.type),
       title: artifact.title,
-      content: artifactContent,
+      content: shouldWrapLoopArtifactContent(String(artifact.type))
+        ? wrapUntrustedLoopArtifactContent(artifactContent, {
+            artifactType: String(artifact.type),
+            title: artifact.title,
+          })
+        : artifactContent,
       ...(rawPlan ? { raw: rawPlan } : {}),
     },
   ];
@@ -247,12 +269,19 @@ async function fetchArtifactRef(
 
   const latestVersion = await documentVersionService.getLatest(artifact.id);
   const content = latestVersion?.content ?? "";
+  const selectedContent =
+    ref.include === "summary" ? truncateForSummary(content) : content;
 
   return {
     id: artifact.id,
     type: String(artifact.type),
     title: artifact.title,
-    content: ref.include === "summary" ? truncateForSummary(content) : content,
+    content: shouldWrapLoopArtifactContent(String(artifact.type))
+      ? wrapUntrustedLoopArtifactContent(selectedContent, {
+          artifactType: String(artifact.type),
+          title: artifact.title,
+        })
+      : selectedContent,
   };
 }
 
@@ -277,6 +306,115 @@ async function fetchParentLoopSummary(
         : `Parent loop (${parentLoop.status}).`,
     },
   ];
+}
+
+async function fetchArtifactSlug(
+  documentId: string | null,
+  loopId: string,
+  organizationId: string
+): Promise<string | null> {
+  if (!documentId) {
+    return null;
+  }
+
+  try {
+    return await documentService.findSlugById(documentId, organizationId);
+  } catch (error) {
+    log.warn("[loop-context-pack] Failed to fetch artifact slug", {
+      loopId,
+      documentId,
+      error,
+    });
+    return null;
+  }
+}
+
+function fetchPullRequestHeadContext(
+  branchArtifactId: string,
+  organizationId: string
+): Promise<{ headSha: string | null; repositoryFullName: string | null }> {
+  return documentPullRequestService.getPullRequestHeadContext(
+    branchArtifactId,
+    organizationId
+  );
+}
+
+async function fetchCodeEvaluationPullRequestContext(
+  loop: LoopForContextPack,
+  organizationId: string
+): Promise<NonNullable<CodeEvaluationContext["pullRequest"]> | null> {
+  if (!loop.documentId) {
+    return null;
+  }
+
+  try {
+    const pullRequest = await documentPullRequestService.getDocumentPullRequest(
+      loop.documentId,
+      organizationId,
+      loop.repo?.fullName
+    );
+    if (!pullRequest) {
+      return null;
+    }
+
+    const headContext = await fetchPullRequestHeadContext(
+      pullRequest.id,
+      organizationId
+    );
+
+    return {
+      number: pullRequest.number,
+      url: pullRequest.htmlUrl || null,
+      headBranch: pullRequest.headBranch,
+      baseBranch: pullRequest.baseBranch,
+      headSha: headContext.headSha,
+      repositoryFullName:
+        headContext.repositoryFullName ?? pullRequest.repoFullName ?? null,
+    };
+  } catch (error) {
+    log.warn("[loop-context-pack] Failed to fetch code evaluation PR context", {
+      loopId: loop.id,
+      documentId: loop.documentId,
+      error,
+    });
+    return null;
+  }
+}
+
+/**
+ * Build the additive Code evaluation context consumed by ECS and Desktop
+ * materializers. Detection is filled by the runtime that owns the local clone.
+ */
+async function buildCodeEvaluationContext(
+  loop: LoopForContextPack,
+  organizationId: string,
+  parentLoop: ParentLoopForContextPack
+): Promise<CodeEvaluationContext | undefined> {
+  if (loop.command !== LoopCommand.EvaluateCode) {
+    return undefined;
+  }
+
+  const [artifactSlug, pullRequest] = await Promise.all([
+    fetchArtifactSlug(loop.documentId, loop.id, organizationId),
+    fetchCodeEvaluationPullRequestContext(loop, organizationId),
+  ]);
+  const localRepoPath =
+    typeof loop.metadata?.localRepoPath === "string"
+      ? loop.metadata.localRepoPath
+      : null;
+
+  return {
+    schemaVersion: 1,
+    repo: loop.repo
+      ? { fullName: loop.repo.fullName, branch: loop.repo.branch }
+      : null,
+    localRepoPath,
+    parentBranchName: parentLoop?.branchName ?? null,
+    parentSessionId: parentLoop?.sessionId ?? null,
+    artifactSlug,
+    pullRequest,
+    detected: null,
+  };
 }
 
 /**
@@ -440,25 +578,33 @@ async function collectContextRefAttachments(
   organizationId: string,
   loopId: string
 ): Promise<ContextPackAttachment[]> {
-  const result: ContextPackAttachment[] = [];
-  for (const ref of contextRefs) {
-    try {
-      const refAttachments =
-        await attachmentsService.listWithSignedUrlsByDocument(
+  // Fetch each context ref's attachments concurrently rather than serially.
+  // Each ref stays isolated: a failure logs a warning and contributes no
+  // attachments (preserving the previous per-ref resilience), and Promise.all
+  // keeps results in contextRefs order so the downstream dedup/limit logic is
+  // unchanged.
+  const perRefAttachments = await Promise.all(
+    contextRefs.map(async (ref) => {
+      try {
+        return await attachmentsService.listWithSignedUrlsByDocument(
           ref.sourceId,
           organizationId
         );
-      result.push(...refAttachments);
-    } catch (error) {
-      log.warn("[loop-context-pack] Failed to fetch context ref attachments", {
-        loopId,
-        sourceId: ref.sourceId,
-        sourceType: ref.sourceType,
-        error,
-      });
-    }
-  }
-  return result;
+      } catch (error) {
+        log.warn(
+          "[loop-context-pack] Failed to fetch context ref attachments",
+          {
+            loopId,
+            sourceId: ref.sourceId,
+            sourceType: ref.sourceType,
+            error,
+          }
+        );
+        return [] as ContextPackAttachment[];
+      }
+    })
+  );
+  return perRefAttachments.flat();
 }
 
 function applyAttachmentLimits(
@@ -517,6 +663,76 @@ function applyAttachmentLimits(
   return result;
 }
 
+const AGENTS_FEATURE_FLAG_KEY = "agents";
+
+function emptyAgentData(): {
+  agents: ContextPackAgent[];
+  repoConfigs: ContextPackRepoConfig[];
+} {
+  return { agents: [], repoConfigs: [] };
+}
+
+async function isAgentsEnabledForUser(userId: string): Promise<boolean> {
+  try {
+    const user = await withDb((db) =>
+      db.user.findUnique({
+        where: { id: userId },
+        select: { clerkId: true },
+      })
+    );
+    const distinctIds = [
+      ...new Set(
+        [user?.clerkId, userId].filter((v): v is string => Boolean(v))
+      ),
+    ];
+    for (const distinctId of distinctIds) {
+      if (
+        (await isFeatureFlagEnabledForDistinctId(
+          AGENTS_FEATURE_FLAG_KEY,
+          distinctId
+        )) === true
+      ) {
+        return true;
+      }
+    }
+    return false;
+  } catch (error) {
+    log.warn("[loop-context-pack] agents feature flag check failed", {
+      userId,
+      error: parseError(error),
+    });
+    return false;
+  }
+}
+
+async function fetchAgentsForContextPack(
+  loop: LoopForContextPack,
+  organizationId: string,
+  additionalRepos?: AdditionalRepoRefWithToken[]
+): Promise<{
+  agents: ContextPackAgent[];
+  repoConfigs: ContextPackRepoConfig[];
+}> {
+  if (!(await isAgentsEnabledForUser(loop.userId))) {
+    return emptyAgentData();
+  }
+
+  const repoFullNames: string[] = [];
+  if (loop.repo?.fullName) {
+    repoFullNames.push(loop.repo.fullName);
+  }
+  if (additionalRepos) {
+    for (const r of additionalRepos) {
+      repoFullNames.push(r.fullName);
+    }
+  }
+
+  return agentsService.getContextPackData(
+    organizationId,
+    repoFullNames.length > 0 ? repoFullNames : undefined
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -542,6 +758,8 @@ export async function buildContextPackInMemory(
     priorLoopSummaries,
     userContext,
     attachments,
+    agentData,
+    codeEvaluationContext,
   ] = await Promise.all([
     fetchPrimaryArtifact(loop, organizationId, parentLoop),
     fetchContextRefArtifacts(loop, organizationId),
@@ -555,6 +773,16 @@ export async function buildContextPackInMemory(
       });
       return [];
     }),
+    fetchAgentsForContextPack(loop, organizationId, additionalRepos).catch(
+      (error) => {
+        log.warn("[loop-context-pack] Failed to fetch agents", {
+          loopId: loop.id,
+          error,
+        });
+        return emptyAgentData();
+      }
+    ),
+    buildCodeEvaluationContext(loop, organizationId, parentLoop),
   ]);
 
   // Template first (structural blueprint), then context refs (Feature/PRD), then primary artifact
@@ -568,6 +796,8 @@ export async function buildContextPackInMemory(
     command: loop.command,
     prompt: loop.prompt ?? undefined,
     artifacts,
+    supportingArtifacts: refArtifacts.length > 0 ? refArtifacts : undefined,
+    codeEvaluationContext,
     repoInfo: loop.repo ?? undefined,
     priorLoopSummaries:
       priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
@@ -576,6 +806,9 @@ export async function buildContextPackInMemory(
     userContext,
     attachments: attachments.length > 0 ? attachments : undefined,
     additionalRepos: additionalRepos?.length ? additionalRepos : undefined,
+    agents: agentData.agents.length > 0 ? agentData.agents : undefined,
+    repoConfigs:
+      agentData.repoConfigs.length > 0 ? agentData.repoConfigs : undefined,
   };
 }
 

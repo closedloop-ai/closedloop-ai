@@ -3,14 +3,21 @@ const SHELL_VAR = "$";
 export const DESKTOP_INSTALLER_SCRIPT = String.raw`#!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="ClosedLoop"
+APP_NAME="Closedloop"
+# Brand rename (FEA-2101): installs from before the rename live at
+# /Applications/ClosedLoop.app (capital L) and run a process named "ClosedLoop".
+# The bundle id is unchanged, so the osascript quit still targets the old app,
+# but the running-process wait and the /Applications replace must also know the
+# legacy name or they would leave a stale duplicate behind.
+OLD_APP_NAME="ClosedLoop"
 BUNDLE_ID="ai.closedloop.desktop"
 APP_PATH="/Applications/${SHELL_VAR}{APP_NAME}.app"
-HANDOFF_DIR="${SHELL_VAR}{HOME}/Library/Application Support/ClosedLoop Desktop"
+OLD_APP_PATH="/Applications/${SHELL_VAR}{OLD_APP_NAME}.app"
+HANDOFF_DIR="${SHELL_VAR}{HOME}/Library/Application Support/Closedloop Desktop"
 HANDOFF_FILE="${SHELL_VAR}{HANDOFF_DIR}/pending-onboarding.json"
 NONINTERACTIVE="${SHELL_VAR}{CL_DESKTOP_NONINTERACTIVE:-0}"
 COMMAND_CHECK_TIMEOUT_SECONDS=15
-REQUIRED_CLOSEDLOOP_PLUGINS=(code platform judges code-review self-learning)
+REQUIRED_CLOSEDLOOP_PLUGINS=(code code-review judges platform self-learning)
 PREREQUISITE_FAILURES=()
 FAILED_PREREQUISITE_KEYS=()
 # Required prerequisite checks run in soft-fail mode so the script can report
@@ -33,9 +40,9 @@ fail_step() {
   local host="$2"
   local message="$3"
   if [ "$PREREQUISITE_CHECK_MODE" = "1" ]; then
-    printf 'ClosedLoop Desktop prerequisite check failed at %s (%s): %s\n' "$step" "$host" "$message" >&2
+    printf 'Closedloop Desktop prerequisite check failed at %s (%s): %s\n' "$step" "$host" "$message" >&2
   else
-    printf 'ClosedLoop Desktop installer failed at %s (%s): %s\n' "$step" "$host" "$message" >&2
+    printf 'Closedloop Desktop installer failed at %s (%s): %s\n' "$step" "$host" "$message" >&2
     printf 'Fix the issue, then rerun the onboarding command or use manual Desktop setup.\n' >&2
   fi
   exit 1
@@ -261,7 +268,7 @@ finish_required_prerequisites() {
     return 0
   fi
 
-  printf '\nClosedLoop Desktop automated setup could not finish because %s required prerequisite(s) failed:\n' "${SHELL_VAR}{#PREREQUISITE_FAILURES[@]}" >&2
+  printf '\nClosedloop Desktop automated setup could not finish because %s required prerequisite(s) failed:\n' "${SHELL_VAR}{#PREREQUISITE_FAILURES[@]}" >&2
   local failure
   for failure in "${SHELL_VAR}{PREREQUISITE_FAILURES[@]}"; do
     printf '  - %s\n' "$failure" >&2
@@ -340,14 +347,16 @@ ensure_python3() {
 }
 
 validate_desktop_download_url() {
-  case "$CL_DESKTOP_DOWNLOAD_URL" in
-    https://github.com/closedloop-ai/closedloop-electron/releases/download/*/*.dmg*)
-      return 0
-      ;;
-    *)
-      fail_step "desktop_download" "closedloop-electron release" "CL_DESKTOP_DOWNLOAD_URL must be an HTTPS ClosedLoop Desktop release asset."
-      ;;
-  esac
+  # Accept both the current "Closedloop-*" DMG name and the pre-rename
+  # "ClosedLoop-*" name during the brand-rename transition (FEA-2101): the
+  # server's release-resolution path now surfaces legacy DMG URLs, so managed
+  # onboarding must download them rather than fail validation. Closed[Ll]oop
+  # matches the single-letter casing difference.
+  local desktop_release_url_pattern='^https://github\.com/closedloop-ai/symphony-alpha/releases/download/desktop-v([0-9]+\.[0-9]+\.[0-9]+)/Closed[Ll]oop-([0-9]+\.[0-9]+\.[0-9]+)-universal\.dmg$'
+  if [[ "$CL_DESKTOP_DOWNLOAD_URL" =~ $desktop_release_url_pattern ]] && [ "${SHELL_VAR}{BASH_REMATCH[1]}" = "${SHELL_VAR}{BASH_REMATCH[2]}" ]; then
+    return 0
+  fi
+  fail_step "desktop_download" "symphony-alpha Desktop release" "CL_DESKTOP_DOWNLOAD_URL must be an HTTPS Closedloop Desktop release asset from closedloop-ai/symphony-alpha."
 }
 
 ensure_node_npm() {
@@ -410,6 +419,8 @@ ensure_closedloop_plugins() {
 verify_closedloop_plugins() {
   local registry="$HOME/.claude/plugins/installed_plugins.json"
   local missing_plugins=()
+  local disabled_plugins=()
+  local unverifiable_plugins=()
 
   for plugin in "${SHELL_VAR}{REQUIRED_CLOSEDLOOP_PLUGINS[@]}"; do
     local key="${SHELL_VAR}{plugin}@closedloop-ai"
@@ -420,25 +431,75 @@ verify_closedloop_plugins() {
         found=1
         break
       fi
-    done < <(jq -r --arg key "$key" '.plugins[$key][]?.installPath // empty' "$registry" 2>/dev/null || true)
+    done < <(jq -r --arg key "$key" '.plugins[$key][]? | select(.scope == "user") | .installPath // empty' "$registry" 2>/dev/null || true)
 
     if [ "$found" -ne 1 ]; then
       missing_plugins+=("$key")
+      continue
+    fi
+
+    local enabled_state
+    if ! enabled_state="$(closedloop_plugin_enabled_state "$key")"; then
+      unverifiable_plugins+=("$key")
+      continue
+    fi
+
+    if [ "$enabled_state" = "missing" ]; then
+      missing_plugins+=("$key")
+      continue
+    fi
+
+    if [ "$enabled_state" = "disabled" ]; then
+      if ! claude plugin enable "$key" --scope user >/dev/null 2>&1; then
+        disabled_plugins+=("$key")
+        continue
+      fi
+      if ! enabled_state="$(closedloop_plugin_enabled_state "$key")"; then
+        unverifiable_plugins+=("$key")
+        continue
+      fi
+      if [ "$enabled_state" != "enabled" ]; then
+        disabled_plugins+=("$key")
+      fi
     fi
   done
 
-  if [ "${SHELL_VAR}{#missing_plugins[@]}" -gt 0 ]; then
-    fail_step "plugins_verify" "local" "Missing required ClosedLoop plugins after install: ${SHELL_VAR}{missing_plugins[*]}"
+  if [ "${SHELL_VAR}{#missing_plugins[@]}" -gt 0 ] || [ "${SHELL_VAR}{#disabled_plugins[@]}" -gt 0 ] || [ "${SHELL_VAR}{#unverifiable_plugins[@]}" -gt 0 ]; then
+    print_closedloop_plugin_repair
+    fail_step "plugins_verify" "local" "Closedloop plugins must be installed at user scope with enabled state verified. Missing or invalid: ${SHELL_VAR}{missing_plugins[*]:-none}; disabled: ${SHELL_VAR}{disabled_plugins[*]:-none}; unverifiable: ${SHELL_VAR}{unverifiable_plugins[*]:-none}"
   fi
+}
+
+closedloop_plugin_enabled_state() {
+  local key="$1"
+  claude plugin list --json 2>/dev/null | jq -r --arg key "$key" '
+    [ .[] | select(.id == $key and .scope == "user") ] as $matches
+    | if ($matches | length) == 0 then "missing"
+      elif any($matches[]; .enabled == false) then "disabled"
+      else "enabled"
+      end
+  '
+}
+
+print_closedloop_plugin_repair() {
+  cat >&2 <<'REPAIR'
+Repair Closedloop plugins at user scope:
+for p in bootstrap code code-review judges platform self-learning; do
+  claude plugin uninstall "$p@closedloop-ai" --scope project
+  claude plugin install "$p@closedloop-ai" --scope user
+  claude plugin enable "$p@closedloop-ai" --scope user
+done
+claude plugin list --json
+REPAIR
 }
 
 quit_running_desktop() {
   osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
 
   local attempts=0
-  while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
+  while pgrep -x "$APP_NAME" >/dev/null 2>&1 || pgrep -x "$OLD_APP_NAME" >/dev/null 2>&1; do
     if [ "$attempts" -ge 10 ]; then
-      fail_step "desktop_quit" "local" "ClosedLoop Desktop is still running. Quit it, then rerun the onboarding command."
+      fail_step "desktop_quit" "local" "Closedloop Desktop is still running. Quit it, then rerun the onboarding command."
     fi
     attempts=$((attempts + 1))
     sleep 1
@@ -491,7 +552,7 @@ cleanup_desktop_install() {
 
 install_desktop_app() {
   if [ -z "${SHELL_VAR}{CL_DESKTOP_DOWNLOAD_URL:-}" ]; then
-    fail_step "desktop_download" "closedloop-electron release" "CL_DESKTOP_DOWNLOAD_URL is required."
+    fail_step "desktop_download" "symphony-alpha Desktop release" "CL_DESKTOP_DOWNLOAD_URL is required."
   fi
   validate_desktop_download_url
 
@@ -509,9 +570,15 @@ install_desktop_app() {
 
   DESKTOP_INSTALL_MOUNT_ROOT="$(mktemp -d)"
   run_external_step "desktop_mount" "local_dmg" hdiutil attach "$DESKTOP_INSTALL_DMG_PATH" -mountpoint "$DESKTOP_INSTALL_MOUNT_ROOT" -nobrowse -quiet
-  app_source="$(find "$DESKTOP_INSTALL_MOUNT_ROOT" -maxdepth 2 -name "${SHELL_VAR}{APP_NAME}.app" -type d | head -n 1)"
+  # A legacy DMG (FEA-2101) mounts as ClosedLoop.app; accept either bundle name.
+  # The staged copy below normalizes to the new APP_NAME bundle (Closedloop.app),
+  # so the installed bundle always lands at /Applications/Closedloop.app
+  # regardless of which name the DMG used. The code signature seals Contents/,
+  # not the bundle directory name, so the rename does not invalidate
+  # codesign/notarization.
+  app_source="$(find "$DESKTOP_INSTALL_MOUNT_ROOT" -maxdepth 2 \( -name "${SHELL_VAR}{APP_NAME}.app" -o -name "${SHELL_VAR}{OLD_APP_NAME}.app" \) -type d | head -n 1)"
   if [ -z "$app_source" ]; then
-    fail_step "desktop_install" "local_dmg" "ClosedLoop.app was not found in the downloaded DMG."
+    fail_step "desktop_install" "local_dmg" "Neither Closedloop.app nor ClosedLoop.app was found in the downloaded DMG."
   fi
 
   DESKTOP_INSTALL_STAGING_ROOT="$(mktemp -d "/Applications/.closedloop-install.XXXXXX")"
@@ -528,7 +595,7 @@ install_desktop_app() {
   verify_desktop_app_bundle "$staged_app"
 
   if [ -d "$APP_PATH" ]; then
-    printf 'ClosedLoop Desktop already installed; replacing with the latest downloaded build.\n'
+    printf 'Closedloop Desktop already installed; replacing with the latest downloaded build.\n'
     DESKTOP_INSTALL_BACKUP_APP="/Applications/${SHELL_VAR}{APP_NAME}.app.previous.$$"
     if ! mv "$APP_PATH" "$DESKTOP_INSTALL_BACKUP_APP" 2>"$copy_err_file"; then
       local message
@@ -553,6 +620,18 @@ install_desktop_app() {
     rm -rf "$DESKTOP_INSTALL_BACKUP_APP"
     DESKTOP_INSTALL_BACKUP_APP=""
   fi
+
+  # Brand rename (FEA-2101): remove the pre-rename /Applications/ClosedLoop.app
+  # once the new bundle is installed. On case-insensitive volumes (default macOS)
+  # the old and new paths are the SAME directory we just replaced, so the -ef
+  # same-file test guards against deleting the freshly installed app; only a
+  # genuinely distinct stale bundle (case-sensitive volumes) is removed so it
+  # does not linger in /Applications and the Dock alongside the new one.
+  if [ "$OLD_APP_PATH" != "$APP_PATH" ] && [ -d "$OLD_APP_PATH" ] && [ -d "$APP_PATH" ] && ! [ "$OLD_APP_PATH" -ef "$APP_PATH" ]; then
+    printf 'Removing stale pre-rename app bundle at %s.\n' "$OLD_APP_PATH"
+    rm -rf "$OLD_APP_PATH" || printf 'Warning: could not remove stale app bundle at %s.\n' "$OLD_APP_PATH" >&2
+  fi
+
   trap - EXIT
   cleanup_desktop_install
 }
@@ -692,12 +771,12 @@ write_handoff_file() {
 
 dispatch_handoff() {
   if open -a "$APP_PATH" "$HANDOFF_FILE"; then
-    printf 'Opened ClosedLoop Desktop with the onboarding handoff.\n'
+    printf 'Opened Closedloop Desktop with the onboarding handoff.\n'
     return 0
   fi
 
-  printf 'ClosedLoop Desktop was installed, but automatic file-open dispatch failed.\n' >&2
-  printf 'Open ClosedLoop Desktop manually; it will resume onboarding from:\n%s\n' "$HANDOFF_FILE" >&2
+  printf 'Closedloop Desktop was installed, but automatic file-open dispatch failed.\n' >&2
+  printf 'Open Closedloop Desktop manually; it will resume onboarding from:\n%s\n' "$HANDOFF_FILE" >&2
   return 0
 }
 
@@ -717,9 +796,9 @@ main() {
   run_required_prerequisite "claude" "Claude Code CLI" ensure_claude_cli
   run_required_prerequisite "jq" "jq" ensure_brew_package jq jq --version
   if has_failed_prerequisite "python3" || has_failed_prerequisite "claude" || has_failed_prerequisite "jq"; then
-    record_prerequisite_failure "closedloop_plugins" "ClosedLoop plugins" "skipped because Python 3, Claude Code CLI, or jq is unavailable"
+    record_prerequisite_failure "closedloop_plugins" "Closedloop plugins" "skipped because Python 3, Claude Code CLI, or jq is unavailable"
   else
-    run_required_prerequisite "closedloop_plugins" "ClosedLoop plugins" ensure_closedloop_plugins
+    run_required_prerequisite "closedloop_plugins" "Closedloop plugins" ensure_closedloop_plugins
   fi
   finish_required_prerequisites
   quit_running_desktop
@@ -727,7 +806,7 @@ main() {
 
   if [ "$NONINTERACTIVE" = "1" ] || { [ ! -t 0 ] && [ ! -t 1 ]; }; then
     printf 'Non-interactive mode complete. No onboarding handoff was created.\n'
-    printf 'Open ClosedLoop Desktop and complete manual setup.\n'
+    printf 'Open Closedloop Desktop and complete manual setup.\n'
     return 0
   fi
 

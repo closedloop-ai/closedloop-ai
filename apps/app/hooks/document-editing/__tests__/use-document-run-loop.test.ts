@@ -7,13 +7,17 @@
  * - prepareConflictRefs with no additionalRepos does not include the field in retry
  */
 
+import {
+  COMMAND_SIGNING_CAPABILITY_KEY,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { handleRunLoopResponse } from "@repo/app/loops/lib/run-loop-response";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
-import { handleRunLoopResponse } from "@/lib/run-loop-response";
 import {
   PreLoopCommand,
   type PreLoopMetadata,
@@ -28,11 +32,18 @@ const mockMutate = vi.fn();
 const mockRunWithPreLoopSystemCheck = vi.fn();
 const mockCancelPendingPreLoopAttempt = vi.fn();
 const mockUseOptionalPreLoopSystemCheckGate = vi.fn();
+const mockApiGet = vi.fn();
 
 vi.mock("@/hooks/queries/use-loops", () => ({
   useRunLoop: () => ({
     mutate: mockMutate,
     isPending: false,
+  }),
+}));
+
+vi.mock("@/hooks/use-api-client", () => ({
+  useApiClient: () => ({
+    get: mockApiGet,
   }),
 }));
 
@@ -48,7 +59,7 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   },
 }));
 
-vi.mock("@/lib/run-loop-response", () => ({
+vi.mock("@repo/app/loops/lib/run-loop-response", () => ({
   handleRunLoopResponse: vi.fn(),
 }));
 
@@ -61,7 +72,8 @@ vi.mock("next/navigation", () => ({
     refresh: vi.fn(),
     prefetch: vi.fn(),
   }),
-  usePathname: () => "/",
+  useParams: () => ({ orgSlug: "test-org" }),
+  usePathname: () => "/test-org",
   useSearchParams: () => new URLSearchParams(),
 }));
 
@@ -92,6 +104,7 @@ describe("useDocumentRunLoop", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApiGet.mockResolvedValue([makeComputeTargetWire("target-abc")]);
     mockUseOptionalPreLoopSystemCheckGate.mockReturnValue(null);
     queryClient = new QueryClient({
       defaultOptions: {
@@ -123,8 +136,8 @@ describe("useDocumentRunLoop", () => {
 
       // Simulate user resolving the multi-target conflict by selecting a target.
       // selectTarget is synchronous; the pendingActionRef fires immediately.
-      act(() => {
-        result.current.selectTarget("target-abc");
+      await act(async () => {
+        await result.current.selectTarget("target-abc");
       });
 
       await waitFor(() => {
@@ -156,8 +169,10 @@ describe("useDocumentRunLoop", () => {
         });
       });
 
-      act(() => {
-        result.current.selectTarget("target-111");
+      mockApiGet.mockResolvedValueOnce([makeComputeTargetWire("target-111")]);
+
+      await act(async () => {
+        await result.current.selectTarget("target-111");
       });
 
       await waitFor(() => {
@@ -201,8 +216,8 @@ describe("useDocumentRunLoop", () => {
         });
       });
 
-      act(() => {
-        result.current.selectTarget("target-abc");
+      await act(async () => {
+        await result.current.selectTarget("target-abc");
       });
 
       await waitFor(() => {
@@ -231,6 +246,148 @@ describe("useDocumentRunLoop", () => {
         }),
         expect.objectContaining({ onError: expect.any(Function) })
       );
+    });
+
+    test("selectTarget blocks mutation and restores selector state when refresh fails", async () => {
+      mockApiGet.mockRejectedValueOnce(new Error("network down"));
+      const { result } = renderHook(
+        () => useDocumentRunLoop({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      vi.mocked(handleRunLoopResponse).mockImplementationOnce(
+        (_error, callbacks) => {
+          callbacks.onMultipleTargets({
+            error: "multiple_targets",
+            message: "Multiple compute targets available",
+            availableTargets: [
+              { id: "target-abc", machineName: "target", status: "online" },
+            ],
+          });
+        }
+      );
+
+      act(() => {
+        result.current.routeConflictError(new Error("multiple targets"));
+      });
+      await waitFor(() => {
+        expect(result.current.multiTargetState).not.toBeNull();
+      });
+
+      await act(async () => {
+        await result.current.selectTarget("target-abc");
+      });
+
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(result.current.multiTargetState).not.toBeNull();
+    });
+
+    test("selectTarget restores selector state when replay fails without a fresh conflict", async () => {
+      const availableTargets = [
+        { id: "target-abc", machineName: "target", status: "online" },
+      ];
+      const { result } = renderHook(
+        () => useDocumentRunLoop({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.prepareConflictRefs({
+          command: RunLoopCommand.Plan,
+        });
+      });
+
+      vi.mocked(handleRunLoopResponse).mockImplementationOnce(
+        (_error, callbacks) => {
+          callbacks.onMultipleTargets({
+            error: "multiple_targets",
+            message: "Multiple compute targets available",
+            availableTargets,
+          });
+        }
+      );
+
+      act(() => {
+        result.current.routeConflictError(new Error("multiple targets"));
+      });
+      await waitFor(() => {
+        expect(result.current.multiTargetState?.availableTargets).toEqual(
+          availableTargets
+        );
+      });
+
+      await act(async () => {
+        await result.current.selectTarget("target-abc");
+      });
+
+      expect(result.current.multiTargetState).toBeNull();
+
+      vi.mocked(handleRunLoopResponse).mockImplementationOnce(() => {
+        // Non-conflict replay failures are surfaced by handleRunLoopResponse's
+        // fallback toast path without opening a fresh conflict selector.
+      });
+
+      act(() => {
+        mockMutate.mock.calls[0][1].onError(new Error("retry failed"));
+      });
+
+      await waitFor(() => {
+        expect(result.current.multiTargetState?.availableTargets).toEqual(
+          availableTargets
+        );
+      });
+    });
+
+    test("backend mismatch replay restores selector state when replay fails without a fresh conflict", async () => {
+      const mismatch = {
+        error: "backend_mismatch" as const,
+        message: "Backend differs from artifact's last loop",
+        originalComputeTargetId: "target-abc",
+        originalComputeTargetName: "Old Machine",
+        preferredComputeTargetId: "target-new",
+        documentId: "artifact-123",
+      };
+      const { result } = renderHook(
+        () => useDocumentRunLoop({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.prepareConflictRefs({
+          command: RunLoopCommand.Execute,
+        });
+      });
+
+      vi.mocked(handleRunLoopResponse).mockImplementationOnce(
+        (_error, callbacks) => {
+          callbacks.onBackendMismatch(mismatch);
+        }
+      );
+
+      act(() => {
+        result.current.routeConflictError(new Error("backend mismatch"));
+      });
+      await waitFor(() => {
+        expect(result.current.backendMismatchState).toEqual(mismatch);
+      });
+
+      await act(async () => {
+        await result.current.confirmOriginalBackend();
+      });
+
+      expect(result.current.backendMismatchState).toBeNull();
+
+      vi.mocked(handleRunLoopResponse).mockImplementationOnce(() => {
+        // No fresh conflict was routed from this replay failure.
+      });
+
+      act(() => {
+        mockMutate.mock.calls[0][1].onError(new Error("retry failed"));
+      });
+
+      await waitFor(() => {
+        expect(result.current.backendMismatchState).toEqual(mismatch);
+      });
     });
 
     test("backend mismatch replay preserves explicit Cloud target through the pre-loop check", () => {
@@ -381,3 +538,22 @@ describe("useDocumentRunLoop", () => {
     });
   });
 });
+
+function makeComputeTargetWire(id: string) {
+  return {
+    id,
+    organizationId: "org-1",
+    userId: "user-1",
+    machineName: "Test-MBP",
+    platform: "darwin",
+    capabilities: { [COMMAND_SIGNING_CAPABILITY_KEY]: false },
+    supportedOperations: [],
+    lastSeenAt: "2026-05-10T12:00:00.000Z",
+    isOnline: true,
+    isSharedWithOrg: false,
+    serverCapabilities: { computeTargetSigning: false },
+    selectedHarness: HarnessType.Claude,
+    createdAt: "2026-05-10T12:00:00.000Z",
+    updatedAt: "2026-05-10T12:00:00.000Z",
+  };
+}

@@ -24,7 +24,8 @@ const mockLatestElectronReleaseResult = vi.hoisted(
   } => ({
     value: {
       data: {
-        downloadUrl: "https://example.com/closedloop.dmg",
+        downloadUrl:
+          "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
         releaseNotes: "",
         version: "1.0.0",
       },
@@ -51,7 +52,11 @@ vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
 vi.mock("@/components/system-check/system-check-results", () => ({
   SystemCheckResults: (props: Record<string, unknown>) => {
     mockSystemCheckResults(props);
-    return <div data-testid="system-check-results" />;
+    return (
+      <div data-testid="system-check-results">
+        {props.afterRequired as React.ReactNode}
+      </div>
+    );
   },
 }));
 
@@ -69,7 +74,7 @@ vi.mock("@/components/engineer/PathAutocomplete", () => ({
   ),
 }));
 
-vi.mock("@/hooks/queries/use-electron-release", () => ({
+vi.mock("@repo/app/desktop/hooks/use-electron-release", () => ({
   useLatestElectronRelease: (options: unknown) => {
     mockLatestElectronReleaseOptions(options);
     return mockLatestElectronReleaseResult.value;
@@ -104,6 +109,17 @@ const failingData = {
   checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
   allRequiredPassed: false,
 };
+const pluginFailureData = {
+  checks: [
+    {
+      id: "claude-plugins",
+      label: "Claude Code plugins",
+      required: true,
+      passed: false,
+    },
+  ],
+  allRequiredPassed: false,
+};
 const passingData = {
   checks: [{ id: "cli", label: "CLI", required: true, passed: true }],
   allRequiredPassed: true,
@@ -112,7 +128,8 @@ const passingData = {
 beforeEach(() => {
   mockLatestElectronReleaseResult.value = {
     data: {
-      downloadUrl: "https://example.com/closedloop.dmg",
+      downloadUrl:
+        "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
       releaseNotes: "",
       version: "1.0.0",
     },
@@ -184,7 +201,8 @@ describe("Release gating", () => {
 
     mockLatestElectronReleaseResult.value = {
       data: {
-        downloadUrl: "https://example.com/closedloop.dmg",
+        downloadUrl:
+          "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
         releaseNotes: "",
         version: "1.0.0",
       },
@@ -199,6 +217,104 @@ describe("Release gating", () => {
     await act(async () => {});
 
     expect(mockQueryFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("target kind classification", () => {
+  it("classifies owned relay targets by ownership even when plugin auto-update is disabled", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          isOwnedTarget
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          pluginAutoUpdateEnabled={false}
+          relayTargetId="target-1"
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      pluginAutoUpdateEnabled: false,
+      targetKind: "owned_relay",
+    });
+  });
+
+  it("classifies shared relay targets separately from disabled owned relays", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          isOwnedTarget={false}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          pluginAutoUpdateEnabled={false}
+          relayTargetId="target-1"
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      pluginAutoUpdateEnabled: false,
+      targetKind: "shared_relay",
+    });
+  });
+});
+
+describe("plugin install guidance", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uses the user-scope repair installer command", async () => {
+    vi.useFakeTimers();
+    const Wrapper = createWrapper();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={{
+            allRequiredPassed: false,
+            checks: [
+              {
+                id: "claude-plugins",
+                label: "Claude Plugins",
+                required: true,
+                passed: false,
+              },
+            ],
+          }}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+
+    const installerCommand = screen.getByText(
+      /raw\.githubusercontent\.com\/closedloop-ai\/claude-plugins\/main\/install\.sh/
+    );
+
+    expect(installerCommand).toBeInTheDocument();
+    expect(installerCommand).toHaveTextContent(/mktemp/);
+    expect(installerCommand).toHaveTextContent(/-o "\$install_script"/);
+    expect(installerCommand).not.toHaveTextContent(/\| bash/);
+    expect(
+      screen.queryByText(
+        /claude plugin install code@closedloop-ai self-learning@closedloop-ai/
+      )
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -354,6 +470,85 @@ describe("Dismissal behavior", () => {
     await act(async () => {});
 
     expect(mockQueryFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows installer remediation for missing or disabled plugins", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={pluginFailureData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+
+    const command = screen.getByText((_, element) => {
+      const text = (element?.textContent ?? "").replace(/\s+/g, " ");
+      return (
+        element?.tagName.toLowerCase() === "p" &&
+        !text.includes("bootstrap@closedloop-ai") &&
+        text.includes("/bin/bash -c") &&
+        text.includes(
+          "raw.githubusercontent.com/closedloop-ai/claude-plugins/main/install.sh"
+        )
+      );
+    });
+
+    expect(command).toBeInTheDocument();
+  });
+
+  it("shows installer remediation when any plugin check fails", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={{
+            checks: [
+              {
+                id: "claude-plugins",
+                label: "Claude Code plugins",
+                required: true,
+                passed: true,
+              },
+              {
+                id: "plugin-code",
+                label: "Symphony Plugin",
+                required: true,
+                passed: false,
+              },
+            ],
+            allRequiredPassed: false,
+          }}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(240);
+    });
+
+    expect(
+      screen.getByText((_, element) => {
+        const text = (element?.textContent ?? "").replace(/\s+/g, " ");
+        return (
+          element?.tagName.toLowerCase() === "p" &&
+          text.includes("/bin/bash -c") &&
+          text.includes(
+            "raw.githubusercontent.com/closedloop-ai/claude-plugins/main/install.sh"
+          )
+        );
+      })
+    ).toBeInTheDocument();
   });
 });
 
@@ -870,6 +1065,91 @@ describe("Blocking pre-loop mode", () => {
     expect(onRecheckUnavailable).toHaveBeenCalledWith("offline");
     expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
       revealedCount: 1,
+    });
+  });
+});
+
+describe("Checking indicator behavior", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Render the blocking dialog and click Re-check with a pending query. */
+  async function renderAndClickRecheckWithPendingQuery() {
+    let resolveRecheck!: (value: typeof failingData) => void;
+    mockQueryFn.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRecheck = resolve;
+      })
+    );
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+
+    return resolveRecheck;
+  }
+
+  it("spins the RefreshCw icon while a re-check is in flight with cached failures", async () => {
+    const resolveRecheck = await renderAndClickRecheckWithPendingQuery();
+
+    const recheckButton = screen.getByRole("button", { name: /re-check/i });
+    const icon = recheckButton.querySelector("svg");
+    expect(icon?.getAttribute("class")).toContain("animate-spin");
+
+    await act(() => {
+      resolveRecheck(failingData);
+    });
+  });
+
+  it("does not spin the RefreshCw icon when no fetch is in flight", async () => {
+    mockQueryFn.mockResolvedValue(failingData);
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    const recheckButton = screen.getByRole("button", { name: /re-check/i });
+    const icon = recheckButton.querySelector("svg");
+    expect(icon?.getAttribute("class")).not.toContain("animate-spin");
+  });
+
+  it("disables the Re-check button while a fetch is in flight", async () => {
+    const resolveRecheck = await renderAndClickRecheckWithPendingQuery();
+
+    expect(screen.getByRole("button", { name: /re-check/i })).toBeDisabled();
+
+    await act(() => {
+      resolveRecheck(failingData);
     });
   });
 });

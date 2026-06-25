@@ -1,10 +1,12 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 
-// Keep in sync with MIN_SECRET_LENGTH in @repo/auth/runner-jwt-base. Not
-// imported to avoid pulling @repo/auth into every app that extends these
-// keys; the runtime check in getRunnerSecret is the source of truth.
+// Keep in sync with MIN_SECRET_LENGTH and MIN_UNIQUE_SECRET_CHARS in
+// @repo/auth/runner-jwt-base. Not imported to avoid pulling @repo/auth into
+// every app that extends these keys; the runtime check in getRunnerSecret
+// is the source of truth.
 const RUNNER_JWT_MIN_SECRET_LENGTH = 32;
+const RUNNER_JWT_MIN_UNIQUE_CHARS = 8;
 
 type AppType = "app" | "web" | "api";
 
@@ -161,6 +163,9 @@ export const keys = () =>
       CLOSEDLOOP_RUNNER_JWT_SECRET: z
         .string()
         .min(RUNNER_JWT_MIN_SECRET_LENGTH)
+        .refine((value) => new Set(value).size >= RUNNER_JWT_MIN_UNIQUE_CHARS, {
+          message: `CLOSEDLOOP_RUNNER_JWT_SECRET is too weak (must contain at least ${RUNNER_JWT_MIN_UNIQUE_CHARS} unique characters)`,
+        })
         .optional(),
 
       // Added by Vercel

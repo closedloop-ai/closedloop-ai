@@ -13,7 +13,7 @@ import { CommandSeparator } from "cmdk";
  * Fast, composable, unstyled command menu for React.
  */
 const meta = {
-  title: "ui/Command",
+  title: "Design System/Primitives/Command",
   component: Command,
   tags: ["autodocs"],
   argTypes: {},

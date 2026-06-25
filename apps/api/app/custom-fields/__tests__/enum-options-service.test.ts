@@ -8,10 +8,26 @@
  * checkOptionLimit limit enforcement is tested in utils.test.ts where the real
  * implementation can be exercised without interference from other mocks.
  */
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  Prisma: {
+    // Capture tagged-template parts so the batched reorder query is assertable.
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+    join: (parts: unknown[]) => ({ __join: parts }),
+  },
 }));
 
 // Mock utils so createEnumOption tests are isolated from checkOptionLimit's DB calls.
@@ -170,7 +186,7 @@ describe("enumOptionsService.reorderEnumOptions", () => {
     vi.restoreAllMocks();
   });
 
-  it("updates sortOrder for each option ID according to its position in the provided array", async () => {
+  it("reorders all options in a single batched UPDATE keyed by array position", async () => {
     // Arrange
     const fieldWith3Options = {
       ...MOCK_FIELD,
@@ -181,11 +197,11 @@ describe("enumOptionsService.reorderEnumOptions", () => {
       ],
     };
     const mockFindFirst = vi.fn().mockResolvedValue(fieldWith3Options);
-    const mockUpdate = vi.fn().mockResolvedValue({ id: "opt-c", sortOrder: 0 });
+    const mockExecuteRaw = vi.fn().mockResolvedValue(3);
 
     (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
       callback({
-        customFieldEnumOption: { update: mockUpdate },
+        $executeRaw: mockExecuteRaw,
       })
     );
 
@@ -204,28 +220,43 @@ describe("enumOptionsService.reorderEnumOptions", () => {
       orderedIds
     );
 
-    // Assert — each option updated with its index as sortOrder
-    expect(mockUpdate).toHaveBeenCalledTimes(3);
-    expect(mockUpdate).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        data: { sortOrder: 0 },
-        where: { id: "opt-c", customFieldId: TEST_FIELD_ID },
-      })
+    // Assert — one batched statement, not one write per option
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    const sqlArg = mockExecuteRaw.mock.calls[0][0] as {
+      values: unknown[];
+    };
+    // The VALUES rows: each option id paired with its new (index-based) order.
+    const joinWrapper = sqlArg.values.find(
+      (v): v is { __join: { values: unknown[] }[] } =>
+        typeof v === "object" && v !== null && "__join" in v
     );
-    expect(mockUpdate).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        data: { sortOrder: 1 },
-        where: { id: "opt-a", customFieldId: TEST_FIELD_ID },
-      })
+    const rows = joinWrapper?.__join.map((row) => row.values) ?? [];
+    expect(rows).toEqual([
+      ["opt-c", 0],
+      ["opt-a", 1],
+      ["opt-b", 2],
+    ]);
+    // Scoped to the owning custom field.
+    expect(sqlArg.values).toContain(TEST_FIELD_ID);
+  });
+
+  it("is a no-op (no SQL) when the field has no options to reorder", async () => {
+    // Arrange — a field with zero options; reorder list is also empty.
+    const fieldWithNoOptions = { ...MOCK_FIELD, enumOptions: [] };
+    const mockFindFirst = vi.fn().mockResolvedValue(fieldWithNoOptions);
+    const mockExecuteRaw = vi.fn().mockResolvedValue(0);
+    const mockTx = vi.fn();
+
+    (withDb as any).tx = mockTx;
+    mockWithDb.mockImplementation((callback: any) =>
+      callback({ customField: { findFirst: mockFindFirst } })
     );
-    expect(mockUpdate).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({
-        data: { sortOrder: 2 },
-        where: { id: "opt-b", customFieldId: TEST_FIELD_ID },
-      })
-    );
+
+    // Act
+    await enumOptionsService.reorderEnumOptions(TEST_FIELD_ID, TEST_ORG_ID, []);
+
+    // Assert — never opens a transaction or emits an (invalid) empty VALUES.
+    expect(mockTx).not.toHaveBeenCalled();
+    expect(mockExecuteRaw).not.toHaveBeenCalled();
   });
 });

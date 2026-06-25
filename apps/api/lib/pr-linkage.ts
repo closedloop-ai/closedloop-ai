@@ -1,4 +1,8 @@
-import { LinkType } from "@repo/api/src/types/artifact";
+import {
+  BranchBaseBranchSource,
+  BranchHeadShaSource,
+  LinkType,
+} from "@repo/api/src/types/artifact";
 import {
   ArtifactType,
   GitHubInstallationStatus,
@@ -8,14 +12,13 @@ import {
 import { log } from "@repo/observability/log";
 
 /**
- * Input for creating or deduplicating PR linkage records.
+ * Input for creating or deduplicating branch linkage records from PR data.
  * Used by both the workflow-completion handler and the loop execute handler
- * to ensure idempotent PR artifact + ArtifactLink creation.
+ * to ensure idempotent branch artifact + ArtifactLink creation.
  */
 type PrLinkageInput = {
   organizationId: string;
-  workstreamId: string;
-  projectId: string;
+  projectId: string | null;
   documentId: string;
   prUrl: string;
   prTitle: string;
@@ -37,7 +40,7 @@ async function resolveRepositoryId(
   tx: TransactionClient,
   prUrl: string,
   organizationId: string
-): Promise<string | null> {
+): Promise<{ id: string; fullName: string } | null> {
   const match = PR_URL_REGEX.exec(prUrl);
   if (!match) {
     return null;
@@ -52,18 +55,17 @@ async function resolveRepositoryId(
         status: GitHubInstallationStatus.ACTIVE,
       },
     },
-    select: { id: true },
+    select: { id: true, fullName: true },
   });
-  return row?.id ?? null;
+  return row ?? null;
 }
 
 /**
- * Create the PR Artifact (+ PullRequestDetail) and ArtifactLink records for a
- * PR, deduplicating against records that may already exist from a racing
+ * Create branch artifact (+ current PullRequestDetail) and ArtifactLink records
+ * for PR output, deduplicating against records that may already exist from a racing
  * handler.
  *
- * Three code paths can create these records for the same PR:
- * - workflow-completion-handler (handleExecutionSuccess)
+ * Two code paths can create these records for the same PR:
  * - loop execute handler (ingestExecutionArtifacts)
  * - pull-request webhook handler (createLinkageRecords)
  *
@@ -73,28 +75,37 @@ export async function ensurePrLinkageRecords(
   tx: TransactionClient,
   input: PrLinkageInput
 ): Promise<void> {
-  // Dedup PR artifact: find by githubId (unique on PullRequestDetail).
+  // Dedup by githubId (unique on PullRequestDetail).
   const existingDetail = await tx.pullRequestDetail.findUnique({
     where: { githubId: input.githubId },
-    select: { artifactId: true },
+    select: { artifactId: true, branchArtifactId: true },
   });
 
-  let pullRequestArtifactId: string;
+  let branchArtifactId: string;
 
   if (existingDetail) {
-    pullRequestArtifactId = existingDetail.artifactId;
+    const existingArtifactId =
+      existingDetail.branchArtifactId ?? existingDetail.artifactId;
+    if (!existingArtifactId) {
+      log.warn("[pr-linkage] Existing PR detail has no linkable artifact", {
+        githubId: input.githubId,
+        prNumber: input.prNumber,
+      });
+      return;
+    }
+    branchArtifactId = existingArtifactId;
   } else {
     // Resolve repositoryId from PR URL + org. PullRequestDetail.repositoryId
     // is required, so if we can't resolve it we skip artifact creation and
     // rely on the pr-read-repair / webhook paths to backfill later.
-    const repositoryId = await resolveRepositoryId(
+    const repository = await resolveRepositoryId(
       tx,
       input.prUrl,
       input.organizationId
     );
-    if (!repositoryId) {
+    if (!repository) {
       log.warn(
-        "[pr-linkage] Skipping PR artifact creation — no active installation for repo",
+        "[pr-linkage] Skipping branch artifact creation — no active installation for repo",
         {
           organizationId: input.organizationId,
           prUrl: input.prUrl,
@@ -107,36 +118,54 @@ export async function ensurePrLinkageRecords(
 
     const created = await tx.artifact.create({
       data: {
-        type: ArtifactType.PULL_REQUEST,
+        type: ArtifactType.BRANCH,
         organizationId: input.organizationId,
         projectId: input.projectId,
-        workstreamId: input.workstreamId,
-        name: input.prTitle,
+        name: input.headBranch,
         status: GitHubPRState.OPEN,
-        externalUrl: input.prUrl,
-        pullRequest: {
+        externalUrl: `https://github.com/${repository.fullName}/tree/${encodeURIComponent(input.headBranch)}`,
+        branch: {
           create: {
-            repositoryId,
+            repositoryId: repository.id,
+            branchName: input.headBranch,
+            baseBranch: input.baseBranch,
+            baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+            headSha: input.commitSha,
+            headShaSource: input.commitSha
+              ? BranchHeadShaSource.PullRequestWebhook
+              : null,
+          },
+        },
+        pullRequestDetails: {
+          create: {
+            repositoryId: repository.id,
             githubId: input.githubId,
             number: input.prNumber,
-            headBranch: input.headBranch,
-            baseBranch: input.baseBranch,
-            headSha: input.commitSha,
+            title: input.prTitle,
+            htmlUrl: input.prUrl,
             prState: GitHubPRState.OPEN,
+            isCurrent: true,
           },
         },
       },
-      select: { id: true },
+      select: { id: true, pullRequestDetails: { select: { id: true } } },
     });
-    pullRequestArtifactId = created.id;
+    branchArtifactId = created.id;
+    const currentDetailId = created.pullRequestDetails[0]?.id ?? null;
+    if (currentDetailId) {
+      await tx.branchDetail.update({
+        where: { artifactId: branchArtifactId },
+        data: { currentPullRequestDetailId: currentDetailId },
+      });
+    }
   }
 
-  // Dedup ArtifactLink: source artifact → PRODUCES → PR artifact.
+  // Dedup ArtifactLink: source artifact → PRODUCES → branch artifact.
   const existingLink = await tx.artifactLink.findFirst({
     where: {
       organizationId: input.organizationId,
       sourceId: input.documentId,
-      targetId: pullRequestArtifactId,
+      targetId: branchArtifactId,
       linkType: LinkType.Produces,
     },
     select: { id: true },
@@ -147,7 +176,7 @@ export async function ensurePrLinkageRecords(
       data: {
         organizationId: input.organizationId,
         sourceId: input.documentId,
-        targetId: pullRequestArtifactId,
+        targetId: branchArtifactId,
         linkType: LinkType.Produces,
       },
     });
@@ -157,6 +186,6 @@ export async function ensurePrLinkageRecords(
     documentId: input.documentId,
     prUrl: input.prUrl,
     prNumber: input.prNumber,
-    pullRequestArtifactId,
+    branchArtifactId,
   });
 }

@@ -1,6 +1,6 @@
 # commandId Correlation Contract
 
-This file is the authoritative source of truth for how `commandId` is minted, propagated, and protected from cardinality explosion across the ClosedLoop relay pipeline.
+This file is the authoritative source of truth for how `commandId` is minted, propagated, and protected from cardinality explosion across the Closedloop relay pipeline.
 
 ## Contents
 
@@ -128,7 +128,7 @@ Known mismatches between the PRD/plan and the current implementation, kept here 
 - **GAP-001 — PRD header-naming aspiration.** PRD §9 names an `x-desktop-command-id` HTTP header, but correlation actually travels as JSON body fields on `WireCommandPayload` via `WithCorrelation<T>`. See the ["No HTTP header named `x-desktop-command-id` exists"](#no-http-header-named-x-desktop-command-id-exists) section.
 - **GAP-002 — Correlation-field validation.** All three `WithCorrelation<T>` fields are optional; neither the relay `/dispatch` handler nor the event ingestion side validates them. Policy question, not an intentional omission.
 - **GAP-003 — Metric-tag allowlist governance.** The README lists an allowlist but does not specify whether additions require governance review.
-- **GAP-004 — Dispatch result vs. `CommandDispatched` telemetry divergence.** `dispatchToRelay()` returns `true` on any `response.ok`, so `CommandDispatched` telemetry fires even when the relay response body carried `delivered: false` (e.g., `reason: "target_not_connected"`). The `response.json().catch(() => ({ delivered: true }))` fallback additionally fail-opens on empty / non-JSON 2xx bodies. This means `CommandDispatched` telemetry is not a reliable signal of actual worker delivery. Fixing the behavior (check `result.delivered` before emitting `CommandDispatched`) and closing the API-side test gap for the `delivered: false` branch of `POST /compute-targets/:id/commands` are tracked as a follow-up ClosedLoop feature.
+- **GAP-004 — Dispatch result vs. `CommandDispatched` telemetry divergence.** `dispatchToRelay()` returns `true` on any `response.ok`, so `CommandDispatched` telemetry fires even when the relay response body carried `delivered: false` (e.g., `reason: "target_not_connected"`). The `response.json().catch(() => ({ delivered: true }))` fallback additionally fail-opens on empty / non-JSON 2xx bodies. This means `CommandDispatched` telemetry is not a reliable signal of actual worker delivery. Fixing the behavior (check `result.delivered` before emitting `CommandDispatched`) and closing the API-side test gap for the `delivered: false` branch of `POST /compute-targets/:id/commands` are tracked as a follow-up Closedloop feature.
 
 ## See also
 

@@ -7,7 +7,15 @@
  *
  * This file does NOT mock ../utils so the real implementations are exercised.
  */
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),

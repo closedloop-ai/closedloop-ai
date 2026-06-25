@@ -396,16 +396,3 @@ export async function getUserInfo(
     throw error;
   }
 }
-
-/**
- * Check if Google integration is configured.
- * Returns true only if both CLIENT_ID and CLIENT_SECRET are set.
- */
-export function isGoogleConfigured(): boolean {
-  try {
-    getRequiredCredentials();
-    return true;
-  } catch {
-    return false;
-  }
-}

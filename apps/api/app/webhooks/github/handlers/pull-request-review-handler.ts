@@ -4,10 +4,16 @@ import type {
 } from "@octokit/webhooks-types";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { ReviewDecision } from "@repo/api/src/types/document";
-import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
+import {
+  ArtifactType,
+  GitHubInstallationStatus,
+  type TransactionClient,
+  withDb,
+} from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
+import { bumpBranchActivity } from "@/app/branches/branch-service";
 import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
 
 /**
@@ -41,7 +47,7 @@ function mapReviewStateToDecision(state: string): ReviewDecision | null {
 
 /**
  * Handle the "submitted" action for a PR review.
- * Upserts per-reviewer record, recomputes aggregate, creates workstream event.
+ * Upserts per-reviewer record, recomputes aggregate.
  */
 async function handleSubmittedReview(
   tx: TransactionClient,
@@ -49,7 +55,6 @@ async function handleSubmittedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
-    workstreamId: string | null;
     documentId: string | null;
     reviewDecision: string | null;
     document: { slug: string } | null;
@@ -121,31 +126,6 @@ async function handleSubmittedReview(
       newAggregate: aggregateDecision,
     }
   );
-
-  // Create workstream event for submitted review — only when the PR artifact
-  // has a workstream.
-  if (existingPr.workstreamId) {
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId: existingPr.workstreamId,
-        type: "GITHUB_PR_REVIEW_SUBMITTED",
-        actorType: "system",
-        data: {
-          reviewId: review.id,
-          reviewState: review.state,
-          reviewDecision,
-          reviewerLogin,
-          reviewBody: review.body,
-          prNumber: pull_request.number,
-          prTitle: pull_request.title,
-          prUrl: pull_request.html_url,
-          reviewUrl: review.html_url,
-          documentId: existingPr.documentId,
-          documentSlug: existingPr.document?.slug,
-        },
-      },
-    });
-  }
 }
 
 /**
@@ -158,7 +138,6 @@ async function handleDismissedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
-    workstreamId: string | null;
     documentId: string | null;
     reviewDecision: string | null;
     document: { slug: string } | null;
@@ -201,31 +180,6 @@ async function handleDismissedReview(
     previousAggregate: existingPr.reviewDecision,
     newAggregate: aggregateDecision,
   });
-
-  // Create workstream event for dismissed review — only when the PR artifact
-  // has a workstream.
-  if (existingPr.workstreamId) {
-    await tx.workstreamEvent.create({
-      data: {
-        workstreamId: existingPr.workstreamId,
-        type: "GITHUB_PR_REVIEW_SUBMITTED",
-        actorType: "system",
-        data: {
-          reviewId: review.id,
-          reviewState: "dismissed",
-          reviewDecision: ReviewDecision.Dismissed,
-          reviewerLogin,
-          reviewBody: review.body,
-          prNumber: pull_request.number,
-          prTitle: pull_request.title,
-          prUrl: pull_request.html_url,
-          reviewUrl: review.html_url,
-          documentId: existingPr.documentId,
-          documentSlug: existingPr.document?.slug,
-        },
-      },
-    });
-  }
 }
 
 /**
@@ -247,6 +201,7 @@ export async function handlePullRequestReview(
   event: HandledPullRequestReviewEvent
 ): Promise<Response> {
   const { action, review, pull_request, repository } = event;
+  const installationId = event.installation?.id;
 
   // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
@@ -272,8 +227,20 @@ export async function handlePullRequestReview(
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
   await withDb.tx(async (tx) => {
+    // Installation-aware lookup (FEA-2022 / PLN-1034): the same githubRepoId can
+    // exist under multiple installations/tenants, so scope by full name + the
+    // active installation that delivered this webhook. Without this, a review
+    // event could resolve the wrong tenant's repo and bump the wrong branch's
+    // activity (mirrors the pull_request handler's findActivePullRequestRepository).
     const repo = await tx.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: String(repository.id) },
+      where: {
+        githubRepoId: String(repository.id),
+        fullName: repository.full_name,
+        installation: {
+          installationId: String(installationId),
+          status: GitHubInstallationStatus.ACTIVE,
+        },
+      },
       select: { id: true },
     });
 
@@ -295,12 +262,28 @@ export async function handlePullRequestReview(
         },
       },
       select: {
+        id: true,
         artifactId: true,
+        branchArtifactId: true,
         reviewDecision: true,
         artifact: {
           select: {
-            workstreamId: true,
             // PR is the TARGET of a DOCUMENT → produces → PR link.
+            targetLinks: {
+              where: {
+                linkType: LinkType.Produces,
+                source: { type: ArtifactType.DOCUMENT },
+              },
+              select: {
+                source: { select: { id: true, slug: true } },
+              },
+              orderBy: { createdAt: "asc" },
+              take: 1,
+            },
+          },
+        },
+        branchArtifact: {
+          select: {
             targetLinks: {
               where: {
                 linkType: LinkType.Produces,
@@ -327,11 +310,10 @@ export async function handlePullRequestReview(
       return;
     }
 
-    const linkedDoc = prDetail.artifact.targetLinks[0]?.source ?? null;
+    const ownerArtifact = prDetail.branchArtifact ?? prDetail.artifact;
+    const linkedDoc = ownerArtifact?.targetLinks[0]?.source ?? null;
     const existingPr = {
-      id: prDetail.artifactId,
-      // Preserve null — empty string is not a valid workstream id.
-      workstreamId: prDetail.artifact.workstreamId,
+      id: prDetail.id,
       documentId: linkedDoc?.id ?? null,
       reviewDecision: prDetail.reviewDecision,
       document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
@@ -339,6 +321,13 @@ export async function handlePullRequestReview(
 
     if (action === "submitted") {
       await handleSubmittedReview(tx, review, pull_request, existingPr);
+      // PLN-1034: a submitted review is genuine branch activity. Monotonic bump
+      // keyed on the branch artifact (not the PR-detail id used above).
+      await bumpBranchActivity(
+        tx,
+        prDetail.branchArtifactId,
+        review.submitted_at ? new Date(review.submitted_at) : new Date()
+      );
     } else if (action === "dismissed") {
       await handleDismissedReview(tx, review, pull_request, existingPr);
     }

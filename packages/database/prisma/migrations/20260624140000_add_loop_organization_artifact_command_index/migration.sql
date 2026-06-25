@@ -1,0 +1,11 @@
+-- CreateIndex
+-- Loop dispatch/idempotency lookups filter on (organization_id, artifact_id,
+-- command) at several query sites in apps/api/app/loops/service.ts (and on
+-- (organization_id, artifact_id) at one more). The existing
+-- (artifact_id, command, artifact_version) index leads with artifact_id and so
+-- is not usable for these org-scoped queries, while (organization_id, status)
+-- only covers the organization prefix. Add an org-leading composite so all
+-- three columns are served by an index scan instead of a seq-scan as the
+-- loops table grows. The leading two columns also serve the
+-- (organization_id, artifact_id) lookups.
+CREATE INDEX "loops_organization_id_artifact_id_command_idx" ON "loops"("organization_id", "artifact_id", "command");

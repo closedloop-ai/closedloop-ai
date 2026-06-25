@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useReducer } from "react";
-import type { ChatMessage, ContentBlock } from "@/components/chat/types";
-import type { LearningUsed, StreamErrorEvent } from "@/lib/chat/chat-utils";
 import {
   chatStreamReducer,
   initialChatStreamState,
-} from "./chat-stream-reducer";
-import { useAbortController } from "./use-abort-controller";
+} from "@repo/app/chat/hooks/chat-stream-reducer";
+import { useAbortController } from "@repo/app/chat/hooks/use-abort-controller";
+import type { ChatMessage, ContentBlock } from "@repo/app/chat/lib/types";
+import { useCallback, useReducer } from "react";
+import type { LearningUsed, StreamErrorEvent } from "@/lib/chat/chat-utils";
 import { useStreamDispatch } from "./use-stream-dispatch";
 import { useStreamReader } from "./use-stream-reader";
 
@@ -66,7 +66,7 @@ type UseChatStreamReturn = {
 
 /**
  * Shared hook encapsulating the streaming chat pattern used by
- * TicketChatDialog, CodexReviewDialog, and ClosedLoopChat.
+ * TicketChatDialog, CodexReviewDialog, and ClosedloopChat.
  *
  * Composes the chat-stream reducer with three focused sub-hooks:
  * `useAbortController` owns the `AbortController` lifecycle,

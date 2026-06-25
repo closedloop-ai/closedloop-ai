@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockPush = vi.fn();
@@ -7,6 +7,7 @@ const mockMutate = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
   usePathname: vi.fn(() => "/agents"),
+  useParams: vi.fn(() => ({ orgSlug: "test-org" })),
   useSearchParams: vi.fn(
     () =>
       new URLSearchParams() as unknown as ReturnType<
@@ -15,7 +16,7 @@ vi.mock("next/navigation", () => ({
   ),
 }));
 
-vi.mock("@/hooks/queries/use-agents", () => ({
+vi.mock("@repo/app/agents/hooks/use-agents", () => ({
   useAgents: vi.fn(() => ({ data: null, isLoading: false, error: null })),
   useUpdateAgent: vi.fn(() => ({
     mutate: mockMutate,
@@ -27,13 +28,12 @@ vi.mock("@/hooks/queries/use-agents", () => ({
   })),
 }));
 
-vi.mock("@/hooks/queries/use-bootstrap-agents", () => ({
+vi.mock("@repo/app/agents/hooks/use-bootstrap-agents", () => ({
   BootstrapStatus: {
     Idle: "idle",
     Creating: "creating",
     Dispatched: "dispatched",
     Running: "running",
-    Ingesting: "ingesting",
     Completed: "completed",
     Error: "error",
   },
@@ -51,7 +51,7 @@ vi.mock("@/hooks/queries/use-compute-targets", () => ({
   })),
 }));
 
-vi.mock("@/hooks/queries/use-github-integration", () => ({
+vi.mock("@repo/app/github/hooks/use-github-integration", () => ({
   useGitHubIntegrationStatus: vi.fn(() => ({
     data: { connected: false },
     isLoading: false,
@@ -67,8 +67,8 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 }));
 
 import type { AgentSummary } from "@repo/api/src/types/agent";
-import { AgentsTable } from "@/app/(authenticated)/agents/components/agents-table";
-import { useAgents } from "@/hooks/queries/use-agents";
+import { useAgents } from "@repo/app/agents/hooks/use-agents";
+import { AgentsTable } from "@/app/(authenticated)/[orgSlug]/agents/components/agents-table";
 
 const GENERATE_AGENTS_RE = /Generate Agents/i;
 const CREATE_AGENT_MANUALLY_RE = /Create Agent Manually/i;
@@ -180,10 +180,10 @@ describe("AgentsTable", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows 'Manual' as source when sourceRepo is null", () => {
+  it("shows 'Org-wide' as source when sourceRepo is empty string", () => {
     vi.mocked(useAgents).mockReturnValue({
       data: {
-        agents: [makeAgent({ sourceRepo: null })],
+        agents: [makeAgent({ sourceRepo: "" })],
         total: 1,
       },
       isLoading: false,
@@ -192,10 +192,10 @@ describe("AgentsTable", () => {
 
     render(<AgentsTable />);
 
-    expect(screen.getByText("Manual")).toBeInTheDocument();
+    expect(screen.getByText("Org-wide")).toBeInTheDocument();
   });
 
-  it("navigates to agent detail when row is clicked", () => {
+  it("renders a navigable link for each agent row", () => {
     vi.mocked(useAgents).mockReturnValue({
       data: {
         agents: [makeAgent()],
@@ -207,9 +207,8 @@ describe("AgentsTable", () => {
 
     render(<AgentsTable />);
 
-    fireEvent.click(screen.getByText("Frontend Architect"));
-
-    expect(mockPush).toHaveBeenCalledWith("/agents/frontend-architect");
+    const link = screen.getByRole("link", { name: "Open" });
+    expect(link).toHaveAttribute("href", "/test-org/agents/frontend-architect");
   });
 
   it("renders page title and subtitle", () => {

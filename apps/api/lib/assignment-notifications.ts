@@ -3,7 +3,7 @@ import {
   type AssignmentNotificationParams,
   detectAssigneeChange,
   sendAssignmentNotification,
-} from "@repo/collaboration/inbox-notifications";
+} from "@repo/collaboration/server/inbox-notifications";
 import { waitUntil } from "@vercel/functions";
 
 type DispatchAssignmentNotificationParams = {

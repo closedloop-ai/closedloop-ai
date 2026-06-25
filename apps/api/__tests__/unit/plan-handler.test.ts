@@ -7,7 +7,7 @@
  * - Handler shape matches LoopCommandHandler contract
  */
 
-import { vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -54,7 +54,6 @@ vi.mock("@/lib/prompts-service", () => ({
 
 // --- Imports (after mocks) ---
 
-import { describe, expect, it } from "vitest";
 import {
   planHandler,
   requestChangesHandler,

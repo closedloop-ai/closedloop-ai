@@ -12,3 +12,11 @@ export type JsonValue =
 
 export type JsonObject = { [key: string]: JsonValue };
 export type JsonArray = JsonValue[];
+
+export const Priority = {
+  Low: "LOW",
+  Medium: "MEDIUM",
+  High: "HIGH",
+  Urgent: "URGENT",
+} as const;
+export type Priority = (typeof Priority)[keyof typeof Priority];

@@ -3,7 +3,7 @@
  *
  * Covers fixed TTL persistence, lookups, and single-use consumption semantics.
  */
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const withDb = Object.assign(vi.fn(), {

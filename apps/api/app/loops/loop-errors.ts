@@ -125,3 +125,26 @@ export function isBranchNotFoundError(
 ): error is BranchNotFoundError {
   return error instanceof BranchNotFoundError;
 }
+
+// Defense-in-depth check that every repo on a project-scoped loop belongs to
+// the project's team-curated pool. UI changes prevent the case under normal
+// flows; this fires when an API client (MCP, CLI, scripts) tries to launch a
+// loop with a repo that isn't curated on any of the project's teams.
+export class RepoNotInProjectPoolError extends Error {
+  readonly outsidePool: string[];
+  readonly projectId: string;
+  constructor(projectId: string, outsidePool: string[]) {
+    super(
+      `Repositories not in this project's team pool: ${outsidePool.join(", ")}`
+    );
+    this.name = "RepoNotInProjectPoolError";
+    this.outsidePool = outsidePool;
+    this.projectId = projectId;
+  }
+}
+
+export function isRepoNotInProjectPoolError(
+  error: unknown
+): error is RepoNotInProjectPoolError {
+  return error instanceof RepoNotInProjectPoolError;
+}

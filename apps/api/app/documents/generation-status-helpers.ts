@@ -2,6 +2,7 @@ import {
   type GenerationStatus,
   getGenerationStatusRunKey,
 } from "@repo/api/src/types/document";
+import type { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import {
   mapLoopCommand,
@@ -13,10 +14,7 @@ import {
 /**
  * Helpers for resolving the "best" `GenerationStatus` for a document.
  *
- * A document's status is derived from two sources:
- *  - Most recent `gitHubActionRun` whose `triggerData.documentId` matches.
- *  - Loop records (`loop` rows) for the document.
- *
+ * A document's status is derived from its Loop records (`loop` rows).
  * `pickBestStatus` reconciles them with active > terminal > none semantics.
  *
  * Failures the user has explicitly dismissed are suppressed via the
@@ -41,7 +39,7 @@ function withRunKey(status: GenerationStatus): GenerationStatus {
 function toLoopGenerationStatus(
   loop: {
     id: string;
-    command: string;
+    command: LoopCommand;
     startedAt: Date | null;
     completedAt: Date | null;
     user: { firstName: string | null; lastName: string | null } | null;
@@ -58,47 +56,6 @@ function toLoopGenerationStatus(
     source: "loop",
     loopId: loop.id,
     initiatedBy: loop.user,
-  });
-}
-
-/** Fetch the latest GitHub Actions generation status for a document. */
-async function fetchGitHubActionsStatus(
-  workstreamId: string,
-  documentId: string
-): Promise<GenerationStatus | null> {
-  const actionRun = await withDb((db) =>
-    db.gitHubActionRun.findFirst({
-      where: { workstreamId, workflowName: "symphony-dispatch" },
-      orderBy: { createdAt: "desc" },
-    })
-  );
-
-  if (!actionRun) {
-    return null;
-  }
-
-  const triggerData = actionRun.triggerData as {
-    correlationId?: string;
-    documentId?: string;
-    command?: "plan" | "execute" | "chat";
-  } | null;
-
-  if (triggerData?.documentId !== documentId) {
-    return null;
-  }
-
-  // CANCELLED maps to FAILURE since both are terminal non-success states.
-  const status: GenerationStatus["status"] =
-    actionRun.status === "CANCELLED" ? "FAILURE" : actionRun.status;
-
-  return withRunKey({
-    status,
-    command: triggerData?.command ?? null,
-    htmlUrl: actionRun.htmlUrl || null,
-    startedAt: actionRun.startedAt,
-    completedAt: actionRun.completedAt,
-    correlationId: triggerData?.correlationId ?? null,
-    source: "github_actions",
   });
 }
 
@@ -136,20 +93,14 @@ async function fetchLoopStatus(
 }
 
 /**
- * Best status across both sources for a single document.
+ * Best Loop status for a single document.
  */
 export async function fetchBestGenerationStatusForDocument(
-  documentId: string,
-  workstreamId: string | null
+  documentId: string
 ): Promise<GenerationStatus> {
-  const [ghStatus, loopStatus] = await Promise.all([
-    workstreamId
-      ? fetchGitHubActionsStatus(workstreamId, documentId)
-      : Promise.resolve(null),
-    fetchLoopStatus(documentId),
-  ]);
+  const loopStatus = await fetchLoopStatus(documentId);
 
-  return withRunKey(pickBestStatus(ghStatus, loopStatus));
+  return withRunKey(pickBestStatus(null, loopStatus));
 }
 
 /**

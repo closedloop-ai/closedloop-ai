@@ -13,7 +13,7 @@ import { ArrowRightSquare } from "lucide-react";
  * Displays the path to the current resource using a hierarchy of links.
  */
 const meta = {
-  title: "ui/Breadcrumb",
+  title: "Design System/Navigation & Shell/Breadcrumb",
   component: Breadcrumb,
   tags: ["autodocs"],
   argTypes: {},

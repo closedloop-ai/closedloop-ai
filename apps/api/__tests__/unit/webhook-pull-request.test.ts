@@ -38,8 +38,12 @@ vi.mock("@repo/database", () => {
   return {
     ArtifactType: {
       DOCUMENT: "DOCUMENT",
-      PULL_REQUEST: "PULL_REQUEST",
+      BRANCH: "BRANCH",
+
       DEPLOYMENT: "DEPLOYMENT",
+    },
+    GitHubInstallationStatus: {
+      ACTIVE: "ACTIVE",
     },
     ArtifactSubtype: {
       PRD: "PRD",
@@ -52,9 +56,6 @@ vi.mock("@repo/database", () => {
       PENDING: "PENDING",
       PASSING: "PASSING",
       FAILING: "FAILING",
-    },
-    WorkstreamType: {
-      FEATURE_DELIVERY: "FEATURE_DELIVERY",
     },
     withDb: mockWithDb,
   };
@@ -72,11 +73,24 @@ vi.mock("@/lib/artifact-adapters", () => ({
   documentWhere: (where: any) => ({ ...where, type: "DOCUMENT" }),
 }));
 
+vi.mock("@/app/branches/branch-service", () => ({
+  branchService: {
+    upsertBranchArtifact: vi.fn().mockResolvedValue({
+      ok: true,
+      value: { id: "new-branch-artifact-id" },
+    }),
+  },
+  // PLN-1034: PR-lifecycle actions bump branch_detail.last_activity_at.
+  bumpBranchActivity: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import after mocking
+import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
+import { branchService } from "@/app/branches/branch-service";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 import {
   createPullRequest,
@@ -86,6 +100,7 @@ import {
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 const mockParseArtifactReferences = parseArtifactReferences as Mock;
+const mockUpsertBranchArtifact = branchService.upsertBranchArtifact as Mock;
 
 // Type aliases for mocked functions
 const mockWithDbTx = withDb.tx as unknown as Mock;
@@ -93,11 +108,30 @@ const mockWithDbTx = withDb.tx as unknown as Mock;
 // Mock database transaction client
 let mockTx: any;
 
+function pullRequestWebhookWriteMocks() {
+  return [
+    mockUpsertBranchArtifact,
+    mockTx.pullRequestDetail.upsert,
+    mockTx.pullRequestDetail.update,
+    mockTx.pullRequestDetail.updateMany,
+    mockTx.artifact.create,
+    mockTx.artifact.update,
+    mockTx.artifact.updateMany,
+    mockTx.branchDetail.update,
+    mockTx.branchDetail.updateMany,
+    mockTx.artifactLink.create,
+  ];
+}
+
 describe("handlePullRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockParseArtifactReferences.mockReturnValue([]);
+    mockUpsertBranchArtifact.mockResolvedValue({
+      ok: true,
+      value: { id: "new-branch-artifact-id" },
+    });
 
     mockTx = {
       gitHubInstallationRepository: {
@@ -105,6 +139,9 @@ describe("handlePullRequest", () => {
       },
       pullRequestDetail: {
         findUnique: vi.fn(),
+        upsert: vi.fn().mockResolvedValue({ id: "pr-detail-id" }),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       artifact: {
         findUnique: vi.fn(),
@@ -114,15 +151,17 @@ describe("handlePullRequest", () => {
         update: vi.fn(),
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       artifactLink: {
         findFirst: vi.fn(),
         findMany: vi.fn().mockResolvedValue([]),
-        create: vi.fn(),
-      },
-      workstream: {
-        create: vi.fn(),
-      },
-      workstreamEvent: {
         create: vi.fn(),
       },
     };
@@ -153,6 +192,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -164,25 +204,11 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-456",
           organizationId: "org-uuid-123",
-          workstreamId: "ws-uuid-789",
           linkedDoc: { id: "artifact-doc-123", slug: "plan-feature-x" },
         })
       );
 
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
-
-      // Merge cascade: artifactLink.findMany → artifact.findMany
-      mockTx.artifactLink.findMany.mockResolvedValueOnce([
-        { sourceId: "artifact-doc-123" },
-      ]);
-      mockTx.artifact.findMany.mockResolvedValueOnce([
-        {
-          id: "artifact-doc-123",
-          subtype: "IMPLEMENTATION_PLAN",
-          status: DocumentStatus.InProgress,
-        },
-      ]);
 
       await handlePullRequest(event);
 
@@ -191,44 +217,28 @@ describe("handlePullRequest", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             id: "artifact-pr-456",
-            organizationId: "org-uuid-123",
           }),
           data: expect.objectContaining({
             status: "MERGED",
-            pullRequest: expect.objectContaining({
-              update: expect.objectContaining({
-                prState: "MERGED",
-                mergedAt: new Date("2026-02-10T12:00:00Z"),
-                mergeCommitSha: "def456",
-              }),
-            }),
           }),
         })
       );
-
-      // Workstream event
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: {
-          workstreamId: "ws-uuid-789",
-          type: "GITHUB_PR_MERGED",
-          actorType: "system",
-          data: {
-            prNumber: 42,
-            prTitle: "Add feature X",
-            prUrl: "https://github.com/owner/test-repo/pull/1",
-            documentId: "artifact-doc-123",
-            slug: "plan-feature-x",
-            mergedAt: "2026-02-10T12:00:00Z",
-            mergeCommitSha: "def456",
-          },
-        },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({
+          prState: "MERGED",
+          mergedAt: new Date("2026-02-10T12:00:00Z"),
+          mergeCommitSha: "def456",
+        }),
       });
 
-      // Linked document → EXECUTED via artifact.update (second update call)
-      expect(mockTx.artifact.update).toHaveBeenCalledWith({
-        where: { id: "artifact-doc-123" },
-        data: { status: DocumentStatus.Executed },
-      });
+      // Merging a PR must NOT propagate status to upstream documents.
+      // A feature/plan can have many PRs, so merging one leaves the linked
+      // document untouched.
+      expect(mockTx.artifact.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: "artifact-doc-123" } })
+      );
+      expect(mockTx.artifact.updateMany).not.toHaveBeenCalled();
     });
   });
 
@@ -251,6 +261,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -262,13 +273,11 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-789",
           organizationId: "org-uuid-456",
-          workstreamId: "ws-uuid-abc",
           linkedDoc: null,
         })
       );
 
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequest(event);
 
@@ -276,37 +285,23 @@ describe("handlePullRequest", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             id: "artifact-pr-789",
-            organizationId: "org-uuid-456",
           }),
           data: expect.objectContaining({
             status: "CLOSED",
-            pullRequest: expect.objectContaining({
-              update: expect.objectContaining({
-                prState: "CLOSED",
-                mergedAt: null,
-                mergeCommitSha: null,
-              }),
-            }),
           }),
         })
       );
-
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: {
-          workstreamId: "ws-uuid-abc",
-          type: "GITHUB_PR_CLOSED",
-          actorType: "system",
-          data: {
-            prNumber: 43,
-            prTitle: "Feature rejected",
-            prUrl: "https://github.com/owner/test-repo/pull/1",
-            documentId: null,
-            slug: undefined,
-          },
-        },
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({
+          prState: "CLOSED",
+          mergedAt: null,
+          mergeCommitSha: null,
+        }),
       });
 
-      // Only one artifact.update (PR); no cascade update since merged=false
+      // Lifecycle status is owned by the closed action; current-PR
+      // relationship repair does not issue a duplicate artifact status write.
       expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
     });
   });
@@ -326,6 +321,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -337,7 +333,6 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-reopen",
           organizationId: "org-uuid-456",
-          workstreamId: "ws-uuid-def",
           // Already linked so linkage path is skipped
           linkedDoc: { id: "artifact-doc-reopen", slug: "plan-reopen" },
         })
@@ -351,19 +346,19 @@ describe("handlePullRequest", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             id: "artifact-pr-reopen",
-            organizationId: "org-uuid-456",
           }),
           data: expect.objectContaining({
             status: "OPEN",
-            pullRequest: expect.objectContaining({
-              update: expect.objectContaining({
-                prState: "OPEN",
-                closedAt: null,
-              }),
-            }),
           }),
         })
       );
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({
+          prState: "OPEN",
+          closedAt: null,
+        }),
+      });
     });
   });
 
@@ -384,6 +379,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -396,29 +392,154 @@ describe("handlePullRequest", () => {
           artifactId: "artifact-pr-sync",
           checksStatus: "UNKNOWN",
           organizationId: "org-uuid-sync",
-          workstreamId: "ws-uuid-sync",
           linkedDoc: null,
         })
       );
 
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequest(event);
 
-      expect(mockTx.artifact.update).toHaveBeenCalledWith(
+      const currentPrUpsert =
+        mockTx.pullRequestDetail.upsert.mock.calls[0]?.[0];
+      expect(currentPrUpsert.create).not.toHaveProperty("prState");
+      expect(currentPrUpsert.create).not.toHaveProperty("isDraft");
+      expect(currentPrUpsert.update).not.toHaveProperty("prState");
+      expect(currentPrUpsert.update).not.toHaveProperty("isDraft");
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-sync" },
+        data: expect.objectContaining({
+          headSha: "new-sha-xyz",
+          checksStatus: "PENDING",
+        }),
+      });
+    });
+
+    it("applies synchronize even when a push webhook already advanced the branch head", async () => {
+      const repository = createRepository(456);
+      const pullRequest = createPullRequest({
+        number: 45,
+        title: "Updated PR",
+        head: { sha: "new-sha-xyz" },
+      });
+
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-sync",
+        installation: { organizationId: "org-uuid-sync" },
+      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-sync",
+          checksStatus: "PASSING",
+          headSha: "new-sha-xyz",
+          prState: "OPEN",
+          isDraft: false,
+          organizationId: "org-uuid-sync",
+          linkedDoc: null,
+        })
+      );
+
+      await handlePullRequest({
+        action: "synchronize",
+        number: pullRequest.number,
+        before: "old-sha-abc",
+        after: "new-sha-xyz",
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any);
+
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({ prState: "OPEN" }),
+      });
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        where: { artifactId: "artifact-pr-sync" },
+        data: expect.objectContaining({
+          headSha: "new-sha-xyz",
+          checksStatus: "PENDING",
+        }),
+      });
+    });
+
+    it("does not let a stale foreign current PR suppress a branch synchronize event", async () => {
+      const repository = createRepository(456);
+      const pullRequest = createPullRequest({
+        id: 9020,
+        number: 210,
+        title: "Updated branch PR",
+        head: { sha: "incoming-pr-head" },
+      });
+
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-sync",
+        installation: { organizationId: "org-uuid-sync" },
+      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
+      mockTx.pullRequestDetail.upsert.mockResolvedValueOnce({
+        id: "incoming-pr-detail-id",
+      });
+      mockTx.branchDetail.findUnique.mockResolvedValueOnce({
+        artifactId: "branch-artifact-sync",
+        currentPullRequestDetailId: "foreign-terminal-pr-detail-id",
+        checksStatus: "PASSING",
+        headSha: "older-head",
+        artifact: {
+          organizationId: "org-uuid-sync",
+          projectId: "project-uuid-sync",
+          targetLinks: [],
+        },
+        currentPullRequestDetail: {
+          id: "foreign-terminal-pr-detail-id",
+          branchArtifactId: "other-branch-artifact",
+          repositoryId: "other-repo",
+          githubId: "old-github-pr-id",
+          prState: "MERGED",
+          isDraft: false,
+          closedAt: null,
+          mergedAt: new Date("2026-03-01T12:00:00Z"),
+        },
+      });
+
+      await handlePullRequest({
+        action: "synchronize",
+        number: pullRequest.number,
+        before: "older-head",
+        after: "incoming-pr-head",
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any);
+
+      expect(mockTx.pullRequestDetail.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: "artifact-pr-sync" },
-          data: expect.objectContaining({
-            pullRequest: expect.objectContaining({
-              update: expect.objectContaining({
-                headSha: "new-sha-xyz",
-                checksStatus: "PENDING",
-              }),
-            }),
+          where: { githubId: String(pullRequest.id) },
+          create: expect.objectContaining({
+            branchArtifactId: "branch-artifact-sync",
+            repositoryId: "repo-uuid-sync",
           }),
         })
       );
+      expect(mockTx.branchDetail.update).toHaveBeenCalledWith({
+        where: { artifactId: "branch-artifact-sync" },
+        data: { currentPullRequestDetailId: "incoming-pr-detail-id" },
+      });
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({
+          prState: "OPEN",
+          isDraft: false,
+        }),
+      });
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        where: { artifactId: "branch-artifact-sync" },
+        data: expect.objectContaining({
+          headSha: "incoming-pr-head",
+          checksStatus: "PENDING",
+        }),
+      });
     });
 
     it("creates GITHUB_CI_STATUS_CHANGED event with previousChecksStatus when status was PASSING", async () => {
@@ -437,6 +558,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -449,35 +571,30 @@ describe("handlePullRequest", () => {
           artifactId: "artifact-pr-sync",
           checksStatus: "PASSING",
           organizationId: "org-uuid-sync",
-          workstreamId: "ws-uuid-sync",
           linkedDoc: null,
         })
       );
 
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequest(event);
 
       expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalledWith(
         expect.objectContaining({
-          select: expect.objectContaining({ checksStatus: true }),
+          select: expect.objectContaining({
+            branchArtifact: expect.objectContaining({
+              select: expect.objectContaining({
+                branch: {
+                  select: expect.objectContaining({
+                    checksStatus: true,
+                    headSha: true,
+                  }),
+                },
+              }),
+            }),
+          }),
         })
       );
-
-      // Verify GITHUB_CI_STATUS_CHANGED workstream event is created with previousChecksStatus
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          workstreamId: "ws-uuid-sync",
-          type: "GITHUB_CI_STATUS_CHANGED",
-          actorType: "system",
-          data: expect.objectContaining({
-            checksStatus: "PENDING",
-            previousChecksStatus: "PASSING",
-            headSha: "new-sha-xyz",
-          }),
-        }),
-      });
     });
   });
 
@@ -496,6 +613,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -507,7 +625,6 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-draft",
           organizationId: "org-uuid-draft",
-          workstreamId: "ws-uuid-draft",
           linkedDoc: null,
         })
       );
@@ -518,7 +635,11 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.artifact.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-draft" },
-        data: { pullRequest: { update: { isDraft: true } } },
+        data: { status: "OPEN" },
+      });
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({ isDraft: true }),
       });
     });
   });
@@ -538,6 +659,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -549,7 +671,6 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-ready",
           organizationId: "org-uuid-ready",
-          workstreamId: "ws-uuid-ready",
           linkedDoc: null,
         })
       );
@@ -560,7 +681,11 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.artifact.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-ready" },
-        data: { pullRequest: { update: { isDraft: false } } },
+        data: { status: "OPEN" },
+      });
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({ isDraft: false }),
       });
     });
   });
@@ -579,6 +704,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
@@ -587,6 +713,146 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
       expect(mockTx.artifact.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("repository and installation isolation", () => {
+    it("rejects missing installation before database reads or writes", async () => {
+      const repository = createRepository(789);
+      const pullRequest = createPullRequest({
+        number: 60,
+        title: "Missing installation",
+      });
+
+      const response = await handlePullRequest({
+        action: "opened",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+      } as any);
+
+      expect(response.status).toBe(400);
+      expect(mockWithDbTx).not.toHaveBeenCalled();
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("skips writes when the installation id does not match the registered repository", async () => {
+      const repository = createRepository(789);
+      const pullRequest = createPullRequest({
+        number: 61,
+        title: "Wrong installation",
+      });
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValueOnce(null);
+
+      await handlePullRequest({
+        action: "opened",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 12_345 },
+      } as any);
+
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            githubRepoId: "789",
+            fullName: "owner/test-repo",
+            installation: {
+              installationId: "12345",
+              status: GitHubInstallationStatus.ACTIVE,
+            },
+          }),
+        })
+      );
+      expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      expect(mockTx.artifact.findUnique).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("skips writes when the GitHub repository id does not match", async () => {
+      const repository = createRepository(999_999);
+      const pullRequest = createPullRequest({
+        number: 62,
+        title: "Wrong repository id",
+      });
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
+
+      await handlePullRequest({
+        action: "opened",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any);
+
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            githubRepoId: "999999",
+            fullName: "owner/test-repo",
+            installation: expect.objectContaining({
+              installationId: "99",
+            }),
+          }),
+        })
+      );
+      expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("skips writes when the repository full name does not match", async () => {
+      const repository = {
+        ...createRepository(789),
+        full_name: "owner/renamed-repo",
+      };
+      const pullRequest = createPullRequest({
+        number: 63,
+        title: "Wrong full name",
+      });
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
+
+      await handlePullRequest({
+        action: "opened",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any);
+
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            githubRepoId: "789",
+            fullName: "owner/renamed-repo",
+            installation: expect.objectContaining({
+              installationId: "99",
+            }),
+          }),
+        })
+      );
+      expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
     });
   });
 
@@ -604,6 +870,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -633,6 +900,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
@@ -642,7 +910,6 @@ describe("handlePullRequest", () => {
       ).not.toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
       expect(mockTx.artifact.update).not.toHaveBeenCalled();
-      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
 
@@ -665,6 +932,7 @@ describe("handlePullRequest", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -676,13 +944,11 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-tx",
           organizationId: "org-uuid-tx",
-          workstreamId: "ws-uuid-tx",
           linkedDoc: { id: "artifact-doc-tx", slug: "plan-tx" },
         })
       );
 
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
 
       // Merge cascade
       mockTx.artifactLink.findMany.mockResolvedValueOnce([
@@ -708,7 +974,6 @@ describe("handlePullRequest", () => {
       expect(mockTx.gitHubInstallationRepository.findFirst).toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalled();
       expect(mockTx.artifact.update).toHaveBeenCalled();
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
     });
   });
 
@@ -716,7 +981,6 @@ describe("handlePullRequest", () => {
     const ORG_ID = "org-uuid-link";
     const REPO_ID = "repo-uuid-link";
     const ARTIFACT_ID = "artifact-uuid-link";
-    const WORKSTREAM_ID = "ws-uuid-link";
 
     function setupRepoMock() {
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -732,7 +996,6 @@ describe("handlePullRequest", () => {
         subtype: string;
         organizationId: string;
         projectId: string | null;
-        workstreamId: string | null;
         slug: string;
       }>
     ) {
@@ -744,7 +1007,6 @@ describe("handlePullRequest", () => {
         name: "Test Plan",
         organizationId: ORG_ID,
         projectId: "project-uuid-link",
-        workstreamId: WORKSTREAM_ID,
         assigneeId: null,
         createdById: "user-uuid-link",
         slug: "PLAN-42",
@@ -783,7 +1045,6 @@ describe("handlePullRequest", () => {
       mockTx.artifact.findFirst.mockResolvedValue(null);
       mockTx.artifactLink.findFirst.mockResolvedValue(null);
       mockTx.artifactLink.create.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
     }
 
     it("links PR opened with valid PLAN slug to artifact", async () => {
@@ -814,50 +1075,32 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
 
-      // Should create a new PR Artifact with nested pullRequest detail
-      expect(mockTx.artifact.create).toHaveBeenCalledWith(
+      // Should materialize a branch artifact with current PR detail.
+      expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({
-            type: "PULL_REQUEST",
-            organizationId: ORG_ID,
-            workstreamId: WORKSTREAM_ID,
-            status: "OPEN",
-            pullRequest: expect.objectContaining({
-              create: expect.objectContaining({
-                repositoryId: REPO_ID,
-                number: 100,
-                prState: "OPEN",
-              }),
-            }),
+          organizationId: ORG_ID,
+          repositoryId: REPO_ID,
+          branchName: "feature-branch",
+          sourceArtifactId: ARTIFACT_ID,
+          pullRequest: expect.objectContaining({
+            githubId: "9001",
+            number: 100,
           }),
         })
       );
 
-      // Should create an ArtifactLink (DOCUMENT → PULL_REQUEST via Produces)
+      // Should create an ArtifactLink (DOCUMENT → BRANCH via Produces)
       expect(mockTx.artifactLink.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             organizationId: ORG_ID,
             sourceId: ARTIFACT_ID,
-            linkType: "PRODUCES",
-          }),
-        })
-      );
-
-      // Should create GITHUB_PR_LINKED workstream event
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            workstreamId: WORKSTREAM_ID,
-            type: "GITHUB_PR_LINKED",
-            data: expect.objectContaining({
-              documentId: ARTIFACT_ID,
-              slug: "PLAN-42",
-            }),
+            linkType: LinkType.Produces,
           }),
         })
       );
@@ -874,7 +1117,6 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-edit",
           organizationId: ORG_ID,
-          workstreamId: WORKSTREAM_ID,
           linkedDoc: null,
         })
       );
@@ -894,6 +1136,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
         changes: {},
       } as any;
 
@@ -905,18 +1148,73 @@ describe("handlePullRequest", () => {
           data: expect.objectContaining({
             sourceId: ARTIFACT_ID,
             targetId: "artifact-pr-edit",
-            linkType: "PRODUCES",
+            linkType: LinkType.Produces,
           }),
         })
       );
 
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith(
+      expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(1);
+      expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it("links and applies reopened action when a migration-window PR detail points at a legacy non-branch artifact", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      setupArtifactMock();
+      setupLinkageMocks();
+      mockTx.pullRequestDetail.findUnique
+        .mockResolvedValueOnce({
+          artifactId: "legacy-pr-artifact",
+          branchArtifactId: null,
+          artifact: {
+            organizationId: ORG_ID,
+            projectId: "project-uuid-link",
+            branch: null,
+            targetLinks: [],
+          },
+          branchArtifact: null,
+        })
+        .mockResolvedValueOnce({
+          artifactId: "legacy-pr-artifact",
+          branchArtifactId: null,
+        });
+      mockTx.branchDetail.findUnique.mockResolvedValueOnce(null);
+
+      const pullRequest = createPullRequest({
+        id: 9006,
+        number: 106,
+        title: "PLAN-42: Reopened legacy PR",
+        state: "open",
+      });
+      const event: PullRequestReopenedEvent = {
+        action: "reopened",
+        number: 106,
+        pull_request: pullRequest,
+        repository: createRepository(789),
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any;
+
+      await handlePullRequest(event);
+
+      expect(mockTx.branchDetail.update).not.toHaveBeenCalled();
+      expect(mockTx.artifactLink.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            type: "GITHUB_PR_LINKED",
+            sourceId: ARTIFACT_ID,
+            targetId: "legacy-pr-artifact",
+            linkType: LinkType.Produces,
           }),
         })
       );
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(pullRequest.id) },
+        data: expect.objectContaining({
+          prState: "OPEN",
+          closedAt: null,
+        }),
+      });
     });
 
     it("does not fail for invalid slug (returns 200)", async () => {
@@ -935,6 +1233,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       const response = await handlePullRequest(event);
@@ -962,6 +1261,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
@@ -979,7 +1279,6 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-linked",
           organizationId: ORG_ID,
-          workstreamId: WORKSTREAM_ID,
           linkedDoc: { id: "existing-doc-id", slug: "PLAN-1" },
         })
       );
@@ -994,6 +1293,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
         changes: {},
       } as any;
 
@@ -1014,7 +1314,6 @@ describe("handlePullRequest", () => {
         makePrDetailRow({
           artifactId: "artifact-pr-dup",
           organizationId: ORG_ID,
-          workstreamId: WORKSTREAM_ID,
           linkedDoc: null,
         })
       );
@@ -1029,8 +1328,6 @@ describe("handlePullRequest", () => {
         id: "existing-artifact-link",
       });
 
-      mockTx.workstreamEvent.create.mockResolvedValue({});
-
       const event = {
         action: "reopened",
         number: 105,
@@ -1041,6 +1338,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
@@ -1048,11 +1346,148 @@ describe("handlePullRequest", () => {
       // Should NOT create duplicate ArtifactLink
       expect(mockTx.artifactLink.create).not.toHaveBeenCalled();
 
-      // Should still create workstream event
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
+      expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(1);
     });
 
-    it("PR merge with linked plan sets status to EXECUTED (existing behavior)", async () => {
+    it("does not let a stale non-current PR event re-point the branch current PR", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      const pullRequest = createPullRequest({
+        id: 9017,
+        number: 209,
+        title: "PLN-42: stale old PR",
+        head: { sha: "old-pr-head" },
+      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          id: "old-pr-detail-id",
+          artifactId: "branch-artifact-current",
+          currentPullRequestDetailId: "new-pr-detail-id",
+          headSha: "new-pr-head",
+          organizationId: ORG_ID,
+          linkedDoc: null,
+        })
+      );
+
+      await handlePullRequest({
+        action: "edited",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository: createRepository(789),
+        sender: createSender(),
+        installation: { id: 99 },
+        changes: {},
+      } as any);
+
+      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("does not mutate linkage for stale edited events against an existing closed PR", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-stale-edit",
+          headSha: "abc123",
+          prState: "CLOSED",
+          closedAt: new Date("2026-03-01T12:00:00Z"),
+          organizationId: ORG_ID,
+          linkedDoc: null,
+        })
+      );
+
+      await handlePullRequest({
+        action: "edited",
+        number: 206,
+        pull_request: createPullRequest({
+          id: 9014,
+          number: 206,
+          title: "PLN-42: stale edit",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+        installation: { id: 99 },
+        changes: {},
+      } as any);
+
+      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("does not mutate linkage for stale reopened events against an existing closed PR", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-stale-reopen",
+          headSha: "abc123",
+          prState: "CLOSED",
+          closedAt: new Date("2026-03-01T12:00:00Z"),
+          organizationId: ORG_ID,
+          linkedDoc: null,
+        })
+      );
+
+      await handlePullRequest({
+        action: "reopened",
+        number: 207,
+        pull_request: createPullRequest({
+          id: 9015,
+          number: 207,
+          title: "PLN-42: stale reopen",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any);
+
+      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("does not mutate linkage for edited events against an existing merged PR", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "artifact-pr-merged-terminal",
+          headSha: "abc123",
+          prState: "MERGED",
+          mergedAt: new Date("2026-03-01T12:00:00Z"),
+          organizationId: ORG_ID,
+          linkedDoc: null,
+        })
+      );
+
+      await handlePullRequest({
+        action: "edited",
+        number: 208,
+        pull_request: createPullRequest({
+          id: 9016,
+          number: 208,
+          title: "PLN-42: terminal edit",
+        }),
+        repository: createRepository(789),
+        sender: createSender(),
+        installation: { id: 99 },
+        changes: {},
+      } as any);
+
+      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
+      for (const write of pullRequestWebhookWriteMocks()) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it("PR merge with a linked plan does not change the plan status", async () => {
       setupRepoMock();
 
       mockTx.pullRequestDetail.findUnique.mockResolvedValue(
@@ -1060,24 +1495,10 @@ describe("handlePullRequest", () => {
           artifactId: "artifact-pr-merge",
           checksStatus: "PASSING",
           organizationId: ORG_ID,
-          workstreamId: WORKSTREAM_ID,
           linkedDoc: { id: ARTIFACT_ID, slug: "PLN-42" },
         })
       );
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
-
-      // Merge cascade
-      mockTx.artifactLink.findMany.mockResolvedValueOnce([
-        { sourceId: ARTIFACT_ID },
-      ]);
-      mockTx.artifact.findMany.mockResolvedValueOnce([
-        {
-          id: ARTIFACT_ID,
-          subtype: "IMPLEMENTATION_PLAN",
-          status: DocumentStatus.InProgress,
-        },
-      ]);
 
       const event: PullRequestClosedEvent = {
         action: "closed",
@@ -1094,14 +1515,16 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
 
-      expect(mockTx.artifact.update).toHaveBeenCalledWith({
-        where: { id: ARTIFACT_ID },
-        data: { status: DocumentStatus.Executed },
-      });
+      // Merging a PR must not propagate status to the upstream plan.
+      expect(mockTx.artifact.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: ARTIFACT_ID } })
+      );
+      expect(mockTx.artifact.updateMany).not.toHaveBeenCalled();
     });
 
     it("PR opened with FEA slug links to feature document", async () => {
@@ -1126,16 +1549,16 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
 
-      // PR artifact created via tx.artifact.create (with nested pullRequest)
-      expect(mockTx.artifact.create).toHaveBeenCalledWith(
+      // Branch artifact created with nested current PR detail through service.
+      expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({
-            type: "PULL_REQUEST",
-          }),
+          branchName: "feature-branch",
+          sourceArtifactId: ARTIFACT_ID,
         })
       );
       // ArtifactLink created with FEATURE document as source
@@ -1143,17 +1566,7 @@ describe("handlePullRequest", () => {
         expect.objectContaining({
           data: expect.objectContaining({
             sourceId: ARTIFACT_ID,
-            linkType: "PRODUCES",
-          }),
-        })
-      );
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            type: "GITHUB_PR_LINKED",
-            data: expect.objectContaining({
-              slug: "FEA-42",
-            }),
+            linkType: LinkType.Produces,
           }),
         })
       );
@@ -1179,6 +1592,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
@@ -1222,6 +1636,7 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
@@ -1235,23 +1650,10 @@ describe("handlePullRequest", () => {
           }),
         })
       );
-      // Only one ArtifactLink + one WorkstreamEvent
       expect(mockTx.artifactLink.create).toHaveBeenCalledTimes(1);
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledTimes(1);
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            type: "GITHUB_PR_LINKED",
-            data: expect.objectContaining({
-              documentId: ARTIFACT_ID,
-              slug: "PLN-17",
-            }),
-          }),
-        })
-      );
     });
 
-    it("merging a direct-FEA-linked PR sets the feature to DONE", async () => {
+    it("merging a direct-FEA-linked PR does not change the feature status", async () => {
       setupRepoMock();
 
       const FEATURE_ID = "feature-uuid-merge";
@@ -1260,23 +1662,10 @@ describe("handlePullRequest", () => {
           artifactId: "artifact-pr-feature-merge",
           checksStatus: "PASSING",
           organizationId: ORG_ID,
-          workstreamId: WORKSTREAM_ID,
           linkedDoc: { id: FEATURE_ID, slug: "FEA-42" },
         })
       );
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
-
-      mockTx.artifactLink.findMany.mockResolvedValueOnce([
-        { sourceId: FEATURE_ID },
-      ]);
-      mockTx.artifact.findMany.mockResolvedValueOnce([
-        {
-          id: FEATURE_ID,
-          subtype: "FEATURE",
-          status: DocumentStatus.InProgress,
-        },
-      ]);
 
       const event: PullRequestClosedEvent = {
         action: "closed",
@@ -1293,19 +1682,19 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
 
-      expect(mockTx.artifact.update).toHaveBeenCalledWith({
-        where: { id: FEATURE_ID },
-        data: { status: DocumentStatus.Done },
-      });
-      // Plan cascade (updateMany for features upstream of a plan) should NOT run
+      // A feature can have many PRs, so merging one must not complete it.
+      expect(mockTx.artifact.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: FEATURE_ID } })
+      );
       expect(mockTx.artifact.updateMany).not.toHaveBeenCalled();
     });
 
-    it("merging a plan-linked PR cascades upstream features to DONE", async () => {
+    it("merging a plan-linked PR does not cascade to upstream features", async () => {
       setupRepoMock();
 
       const PLAN_ID = "plan-uuid-cascade";
@@ -1314,29 +1703,10 @@ describe("handlePullRequest", () => {
           artifactId: "artifact-pr-cascade",
           checksStatus: "PASSING",
           organizationId: ORG_ID,
-          workstreamId: WORKSTREAM_ID,
           linkedDoc: { id: PLAN_ID, slug: "PLN-17" },
         })
       );
       mockTx.artifact.update.mockResolvedValue({});
-      mockTx.workstreamEvent.create.mockResolvedValue({});
-
-      // First findMany: upstream documents of the PR artifact — returns the plan.
-      // Second findMany: features upstream of the plan — returns two features.
-      mockTx.artifactLink.findMany
-        .mockResolvedValueOnce([{ sourceId: PLAN_ID }])
-        .mockResolvedValueOnce([
-          { sourceId: "feat-a" },
-          { sourceId: "feat-b" },
-        ]);
-      mockTx.artifact.findMany.mockResolvedValueOnce([
-        {
-          id: PLAN_ID,
-          subtype: "IMPLEMENTATION_PLAN",
-          status: DocumentStatus.InProgress,
-        },
-      ]);
-      mockTx.artifact.updateMany.mockResolvedValue({ count: 2 });
 
       const event: PullRequestClosedEvent = {
         action: "closed",
@@ -1353,28 +1723,16 @@ describe("handlePullRequest", () => {
         }),
         repository: createRepository(789),
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       await handlePullRequest(event);
 
-      // Plan → EXECUTED
-      expect(mockTx.artifact.update).toHaveBeenCalledWith({
-        where: { id: PLAN_ID },
-        data: { status: DocumentStatus.Executed },
-      });
-      // Feature cascade → DONE (with docWhere stamped type: DOCUMENT)
-      expect(mockTx.artifact.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            id: { in: ["feat-a", "feat-b"] },
-            subtype: "FEATURE",
-            status: {
-              notIn: [DocumentStatus.Done, DocumentStatus.Obsolete],
-            },
-          }),
-          data: { status: DocumentStatus.Done },
-        })
+      // Neither the plan nor its upstream features are mutated on merge.
+      expect(mockTx.artifact.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: PLAN_ID } })
       );
+      expect(mockTx.artifact.updateMany).not.toHaveBeenCalled();
     });
   });
 });

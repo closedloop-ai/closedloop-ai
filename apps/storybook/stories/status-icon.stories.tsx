@@ -10,7 +10,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * outer arc color. Supports a "thinking" spinner overlay for AI processing.
  */
 const meta = {
-  title: "ui/StatusIcon",
+  title: "Design System/Data Display/Status Icon",
   component: StatusIcon,
   tags: ["autodocs"],
   argTypes: {

@@ -1,9 +1,9 @@
 "use client";
 
+import { CollapsibleBlock } from "@repo/app/chat/components/collapsible-block";
 import { FileText } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { extractContextBlocks } from "@/lib/chat/chat-utils";
-import { CollapsibleBlock } from "./CollapsibleBlock";
 
 type UserMessageContentProps = {
   content: string;
@@ -13,7 +13,7 @@ type UserMessageContentProps = {
 
 /**
  * Shared user message renderer that extracts <context> blocks and displays them
- * as collapsible sections. Used by ClosedLoopChat, CommentChat, and TicketChatDialog.
+ * as collapsible sections. Used by ClosedloopChat, CommentChat, and TicketChatDialog.
  */
 export function UserMessageContent({
   content,

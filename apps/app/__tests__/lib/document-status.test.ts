@@ -1,17 +1,13 @@
 import { DocumentStatus } from "@repo/api/src/types/document";
-import { describe, expect, it } from "vitest";
-import {
-  artifactStatusColors,
-  artifactStatusLabels,
-} from "@/components/status-badge";
 import {
   DOCUMENT_STATUS_COLORS,
   DOCUMENT_STATUS_LABELS,
-} from "@/lib/project-constants";
+} from "@repo/app/projects/lib/project-constants";
 import {
-  artifactStatusDisplayName,
-  mapDocumentStatusToType,
-} from "@/types/engineer";
+  artifactStatusColors,
+  artifactStatusLabels,
+} from "@repo/app/shared/components/status-badge";
+import { describe, expect, it } from "vitest";
 
 // ---------------------------------------------------------------------------
 // DocumentStatus enum values
@@ -96,35 +92,5 @@ describe("DOCUMENT_STATUS_COLORS", () => {
 
   it("assigns blue color class to Executed", () => {
     expect(DOCUMENT_STATUS_COLORS[DocumentStatus.Executed]).toContain("blue");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// mapDocumentStatusToType (engineer.ts)
-// ---------------------------------------------------------------------------
-
-describe("mapDocumentStatusToType", () => {
-  it("returns 'started' for InReview", () => {
-    expect(mapDocumentStatusToType(DocumentStatus.InReview)).toBe("started");
-  });
-
-  it("returns 'completed' for Done", () => {
-    expect(mapDocumentStatusToType(DocumentStatus.Done)).toBe("completed");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// artifactStatusDisplayName (engineer.ts)
-// ---------------------------------------------------------------------------
-
-describe("artifactStatusDisplayName", () => {
-  it("returns 'In Review' for InReview", () => {
-    expect(artifactStatusDisplayName(DocumentStatus.InReview)).toBe(
-      "In Review"
-    );
-  });
-
-  it("returns 'Executed' for Executed", () => {
-    expect(artifactStatusDisplayName(DocumentStatus.Executed)).toBe("Executed");
   });
 });

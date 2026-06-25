@@ -6,7 +6,7 @@ import { Bold, Italic } from "lucide-react";
  * A two-state button that can be either on or off.
  */
 const meta: Meta<typeof Toggle> = {
-  title: "ui/Toggle",
+  title: "Design System/Primitives/Toggle",
   component: Toggle,
   tags: ["autodocs"],
   argTypes: {

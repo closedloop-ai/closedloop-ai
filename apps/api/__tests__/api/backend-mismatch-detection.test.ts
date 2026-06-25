@@ -9,7 +9,7 @@
  * - Both prior loop computeTargetId null and resolvedComputeTargetId undefined -> both normalize to null, no mismatch
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -31,7 +31,6 @@ vi.mock("@/app/compute-targets/service", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { checkBackendMismatch } from "@/app/documents/[id]/run-loop/run-loop-helpers";
 import { loopsService } from "@/app/loops/service";

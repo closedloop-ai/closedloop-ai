@@ -217,7 +217,6 @@ export const usersService = {
         totalComments,
         totalPRsLanded,
         totalLoops,
-        totalWorkstreams,
         contributionData,
         loopConcurrencyData,
         loopTokenAggregate,
@@ -253,14 +252,16 @@ export const usersService = {
             },
           })
         ),
-        // Merged PRs — PR artifacts on workstreams assigned to the user
+        // Merged branches with current PR evidence created by the user.
         withDb((db) =>
           db.artifact.count({
             where: {
               organizationId,
-              type: ArtifactType.PULL_REQUEST,
-              pullRequest: { prState: GitHubPRState.MERGED },
-              workstream: { assigneeId: userId },
+              type: ArtifactType.BRANCH,
+              createdById: userId,
+              branch: {
+                currentPullRequestDetail: { prState: GitHubPRState.MERGED },
+              },
             },
           })
         ),
@@ -268,15 +269,6 @@ export const usersService = {
         withDb((db) =>
           db.loop.count({
             where: { userId, organizationId },
-          })
-        ),
-        // Total workstreams (created or assigned)
-        withDb((db) =>
-          db.workstream.count({
-            where: {
-              organizationId,
-              OR: [{ createdById: userId }, { assigneeId: userId }],
-            },
           })
         ),
         // Contribution heatmap: document artifact creations over last year
@@ -333,7 +325,6 @@ export const usersService = {
         totalComments,
         totalPRsLanded,
         totalLoops,
-        totalWorkstreams,
         avgConcurrency,
         contributionHeatmap,
         totalTokensInput: loopTokenAggregate._sum.tokensInput ?? 0,

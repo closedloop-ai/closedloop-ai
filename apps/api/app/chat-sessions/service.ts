@@ -2,6 +2,17 @@ import type { ChatMessage } from "@repo/api/src/types/chat-session";
 import { Result } from "@repo/api/src/types/result";
 import { type ChatSession, type Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
+
+const chatMessageSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+  timestamp: z.string(),
+  blocks: z.array(z.unknown()).optional(),
+});
+
+const chatMessagesSchema = z.array(chatMessageSchema);
 
 /**
  * Narrowing helpers for the `messages` JSON column. The Prisma client
@@ -11,7 +22,14 @@ import { log } from "@repo/observability/log";
  * that coercion here so the service bodies stay clean.
  */
 function toPrismaJsonMessages(messages: ChatMessage[]): Prisma.InputJsonValue {
-  return messages as unknown as Prisma.InputJsonValue;
+  const parsed = chatMessagesSchema.safeParse(messages);
+  if (!parsed.success) {
+    log.error("Invalid chat messages before persistence", {
+      error: parsed.error.flatten(),
+    });
+    throw new Error("Invalid chat messages before persistence");
+  }
+  return parsed.data as Prisma.InputJsonValue;
 }
 
 function parseStoredMessages(
@@ -20,7 +38,14 @@ function parseStoredMessages(
   if (raw === null || raw === undefined) {
     return [];
   }
-  return raw as unknown as ChatMessage[];
+  const parsed = chatMessagesSchema.safeParse(raw);
+  if (!parsed.success) {
+    log.warn("Invalid stored chat messages", {
+      error: parsed.error.flatten(),
+    });
+    return [];
+  }
+  return parsed.data;
 }
 
 export type CreateChatSessionInput = {

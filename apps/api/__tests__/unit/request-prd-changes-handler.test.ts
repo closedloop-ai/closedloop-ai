@@ -6,7 +6,7 @@
  * and the guard clause that rejects non-PRD artifact types.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -24,7 +24,7 @@ vi.mock("@repo/database", () => ({
   ),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -56,7 +56,6 @@ vi.mock("@/lib/loops/loop-state", () => ({
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
-import { beforeEach, describe, expect, it } from "vitest";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { resetDocumentRoom } from "@/app/documents/room-utils";
 import { requestPrdChangesHandler } from "@/lib/loops/loop-commands/generate-prd-handler";

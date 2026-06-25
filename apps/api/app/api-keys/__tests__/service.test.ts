@@ -9,7 +9,7 @@
  *   - verifyKey() null for missing/expired/revoked, context for valid keys
  */
 import { createHash } from "node:crypto";
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { DesktopManagedKeyRotationConflictError } from "../service";
 
 const mocks = vi.hoisted(() => {

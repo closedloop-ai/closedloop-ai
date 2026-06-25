@@ -1,15 +1,15 @@
 "use client";
 
+import { CollapsibleBlock } from "@repo/app/chat/components/collapsible-block";
+import { CollapsibleBlockGroup } from "@repo/app/chat/components/collapsible-block-group";
+import type { ContentBlock } from "@repo/app/chat/lib/types";
 import { FileText, Sparkles } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ContentBlock } from "@/components/chat/types";
 import { chatMarkdownComponents } from "@/lib/chat/chat-markdown";
 import { parseLearningsUsed } from "@/lib/chat/chat-utils";
-import { CollapsibleBlock } from "./CollapsibleBlock";
-import { CollapsibleBlockGroup } from "./CollapsibleBlockGroup";
 import { LearningsUsedDialog } from "./LearningsUsedDialog";
 
 type MessageContentProps = {

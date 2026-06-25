@@ -1,12 +1,12 @@
 "use client";
 
+import { useCreateProject } from "@repo/app/projects/hooks/use-projects";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { Check, FolderOpen, Loader2 } from "lucide-react";
 import { useState } from "react";
-import { useCreateProject } from "@/hooks/queries/use-projects";
 
 type CreateProjectStepProps = {
   readonly teamId: string;
@@ -29,8 +29,8 @@ export function CreateProjectStep({
   if (createdProjectId && createdProjectName) {
     return (
       <div className="flex flex-col items-center gap-4 py-8 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
-          <Check className="h-6 w-6 text-green-500" />
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
+          <Check className="h-6 w-6 text-success" />
         </div>
         <div className="space-y-1">
           <p className="font-semibold">Project created</p>
@@ -43,19 +43,21 @@ export function CreateProjectStep({
     );
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) {
       return;
     }
 
-    const project = await createProject.mutateAsync({
-      name: trimmed,
-      description: description.trim() || undefined,
-      teamIds: [teamId],
-    });
-    onNext(project.id, project.name);
+    createProject.mutate(
+      {
+        name: trimmed,
+        description: description.trim() || undefined,
+        teamIds: [teamId],
+      },
+      { onSuccess: (project) => onNext(project.id, project.name) }
+    );
   };
 
   return (

@@ -9,7 +9,7 @@ import { createPageMetadata } from "@/lib/site";
 export const generateMetadata = async () =>
   createPageMetadata(
     "Community",
-    "Meetups, contributors, and the builder community around ClosedLoop.ai."
+    "Meetups, contributors, and the builder community around Closedloop.ai."
   );
 
 const CommunityPage = () => (
@@ -44,7 +44,7 @@ const CommunityPage = () => (
         </CardHeader>
         <CardContent className="text-muted-foreground text-sm">
           The docs site, templates, and implementation references all reinforce
-          that ClosedLoop.ai is being built as a transparent system rather than
+          that Closedloop.ai is being built as a transparent system rather than
           a black box.
         </CardContent>
       </Card>

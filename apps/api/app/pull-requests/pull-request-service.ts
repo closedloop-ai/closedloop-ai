@@ -1,3 +1,7 @@
+import {
+  BranchBaseBranchSource,
+  BranchHeadShaSource,
+} from "@repo/api/src/types/artifact";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type Artifact,
@@ -10,9 +14,10 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
 
 /**
- * PR artifact service. Owns CRUD on PULL_REQUEST artifacts and their
+ * PR artifact service. Owns CRUD on BRANCH artifacts and their
  * 1:1 PullRequestDetail rows.
  *
  * Writes use nested Prisma writes (`pullRequest: { create }` /
@@ -32,7 +37,7 @@ export type ArtifactWithPullRequestDetail = Artifact & {
   pullRequest: PullRequestDetail | null;
 };
 
-export type UpsertPullRequestArtifactInput = {
+export type UpsertBranchArtifactInput = {
   organizationId: string;
   repositoryId: string;
   githubId: string;
@@ -47,7 +52,6 @@ export type UpsertPullRequestArtifactInput = {
   isDraft: boolean;
   checksStatus?: ChecksStatus;
   reviewDecision?: ReviewDecision | null;
-  workstreamId?: string | null;
   projectId: string;
   closedAt?: Date | null;
   mergedAt?: Date | null;
@@ -66,32 +70,44 @@ export type UpdateReviewStateInput = {
 export type ListPullRequestsInput = {
   organizationId: string;
   projectId?: string;
-  workstreamId?: string;
   prState?: GitHubPRState;
 };
 
-const pullRequestInclude = { pullRequest: true } as const;
+const pullRequestInclude = {
+  pullRequest: true,
+  branch: { include: { currentPullRequestDetail: true } },
+} as const;
+const githubPullRequestUrlPattern = /github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/;
+
+function buildBranchTreeUrl(prUrl: string, branchName: string): string {
+  const match = githubPullRequestUrlPattern.exec(prUrl);
+  if (!match) {
+    return prUrl;
+  }
+  const [, owner, repo] = match;
+  return `https://github.com/${owner}/${repo}/tree/${encodeURIComponent(
+    branchName
+  )}`;
+}
 
 function buildPullRequestDetailCreate(
-  input: UpsertPullRequestArtifactInput
-): Prisma.PullRequestDetailUncheckedCreateWithoutArtifactInput {
-  const create: Prisma.PullRequestDetailUncheckedCreateWithoutArtifactInput = {
-    repositoryId: input.repositoryId,
-    githubId: input.githubId,
-    number: input.number,
-    body: input.body ?? null,
-    headBranch: input.headBranch,
-    baseBranch: input.baseBranch,
-    headSha: input.headSha ?? null,
-    prState: input.prState,
-    isDraft: input.isDraft,
-    closedAt: input.closedAt ?? null,
-    mergedAt: input.mergedAt ?? null,
-    mergeCommitSha: input.mergeCommitSha ?? null,
-  };
-  if (input.checksStatus !== undefined) {
-    create.checksStatus = input.checksStatus;
-  }
+  input: UpsertBranchArtifactInput
+): Prisma.PullRequestDetailUncheckedCreateWithoutBranchArtifactInput {
+  const create: Prisma.PullRequestDetailUncheckedCreateWithoutBranchArtifactInput =
+    {
+      repositoryId: input.repositoryId,
+      githubId: input.githubId,
+      number: input.number,
+      title: input.title,
+      htmlUrl: input.htmlUrl,
+      body: input.body ?? null,
+      prState: input.prState,
+      isDraft: input.isDraft,
+      isCurrent: true,
+      closedAt: input.closedAt ?? null,
+      mergedAt: input.mergedAt ?? null,
+      mergeCommitSha: input.mergeCommitSha ?? null,
+    };
   if (input.reviewDecision !== undefined) {
     create.reviewDecision = input.reviewDecision;
   }
@@ -99,20 +115,16 @@ function buildPullRequestDetailCreate(
 }
 
 function buildPullRequestDetailUpdate(
-  input: UpsertPullRequestArtifactInput
-): Prisma.PullRequestDetailUpdateWithoutArtifactInput {
-  const update: Prisma.PullRequestDetailUpdateWithoutArtifactInput = {
+  input: UpsertBranchArtifactInput
+): Prisma.PullRequestDetailUpdateInput {
+  const update: Prisma.PullRequestDetailUpdateInput = {
     number: input.number,
+    title: input.title,
+    htmlUrl: input.htmlUrl,
     body: input.body ?? undefined,
-    headBranch: input.headBranch,
-    baseBranch: input.baseBranch,
-    headSha: input.headSha ?? undefined,
     prState: input.prState,
     isDraft: input.isDraft,
   };
-  if (input.checksStatus !== undefined) {
-    update.checksStatus = input.checksStatus;
-  }
   if (input.reviewDecision !== undefined) {
     update.reviewDecision = input.reviewDecision;
   }
@@ -130,8 +142,9 @@ function buildPullRequestDetailUpdate(
 
 async function updateExistingPullRequest(
   db: TransactionClient,
-  artifactId: string,
-  input: UpsertPullRequestArtifactInput
+  branchArtifactId: string,
+  pullRequestDetailId: string,
+  input: UpsertBranchArtifactInput
 ): Promise<Result<ArtifactWithPullRequestDetail, StatusCode>> {
   // Defence in depth: PullRequestDetail.githubId is globally unique, but
   // we still scope the mutation to the caller's org so a cross-org row
@@ -141,31 +154,51 @@ async function updateExistingPullRequest(
   // detail update into its own call. Both run inside the same transaction
   // (the enclosing withDb.tx) so they commit atomically.
   const { count } = await db.artifact.updateMany({
-    where: { id: artifactId, organizationId: input.organizationId },
+    where: { id: branchArtifactId, organizationId: input.organizationId },
     data: {
-      name: input.title,
+      name: input.headBranch,
       status: input.prState,
-      externalUrl: input.htmlUrl,
+      externalUrl: buildBranchTreeUrl(input.htmlUrl, input.headBranch),
       ...(input.projectId ? { projectId: input.projectId } : {}),
-      ...(input.workstreamId === undefined
-        ? {}
-        : { workstreamId: input.workstreamId }),
     },
   });
   if (count === 0) {
     return Result.err(Status.NotFound);
   }
 
+  const previousBranch = await db.branchDetail.findUnique({
+    where: { artifactId: branchArtifactId },
+    select: { headSha: true },
+  });
+
+  await db.branchDetail.update({
+    where: { artifactId: branchArtifactId },
+    data: {
+      branchName: input.headBranch,
+      baseBranch: input.baseBranch,
+      baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+      headSha: input.headSha ?? null,
+      headShaSource: input.headSha
+        ? BranchHeadShaSource.PullRequestWebhook
+        : null,
+      ...(input.checksStatus === undefined
+        ? {}
+        : { checksStatus: input.checksStatus }),
+    },
+  });
+  if (previousBranch?.headSha !== (input.headSha ?? null)) {
+    await invalidateBranchStatusChecksForHeadChange(db, branchArtifactId);
+  }
+
   // Detail update + re-read with include. Safe now that the parent row is
-  // confirmed in-org — this update is scoped by the detail's artifactId PK
-  // which is 1:1 with the parent we just mutated.
+  // confirmed in-org; branch identity/status is stored on BranchDetail.
   await db.pullRequestDetail.update({
-    where: { artifactId },
+    where: { id: pullRequestDetailId },
     data: buildPullRequestDetailUpdate(input),
   });
 
   const updated = (await db.artifact.findUnique({
-    where: { id: artifactId },
+    where: { id: branchArtifactId },
     include: pullRequestInclude,
   })) as ArtifactWithPullRequestDetail;
   return Result.ok(updated);
@@ -173,26 +206,58 @@ async function updateExistingPullRequest(
 
 async function createPullRequest(
   db: TransactionClient,
-  input: UpsertPullRequestArtifactInput
+  input: UpsertBranchArtifactInput
 ): Promise<ArtifactWithPullRequestDetail> {
   const created = await db.artifact.create({
     data: {
-      type: ArtifactType.PULL_REQUEST,
+      type: ArtifactType.BRANCH,
       organizationId: input.organizationId,
       projectId: input.projectId,
-      workstreamId: input.workstreamId ?? null,
-      name: input.title,
+      name: input.headBranch,
       status: input.prState,
-      externalUrl: input.htmlUrl,
-      pullRequest: { create: buildPullRequestDetailCreate(input) },
+      externalUrl: buildBranchTreeUrl(input.htmlUrl, input.headBranch),
+      branch: {
+        create: {
+          repositoryId: input.repositoryId,
+          branchName: input.headBranch,
+          baseBranch: input.baseBranch,
+          baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+          headSha: input.headSha ?? null,
+          headShaSource: input.headSha
+            ? BranchHeadShaSource.PullRequestWebhook
+            : null,
+          ...(input.checksStatus === undefined
+            ? {}
+            : { checksStatus: input.checksStatus }),
+        },
+      },
+      pullRequestDetails: { create: buildPullRequestDetailCreate(input) },
     },
     include: pullRequestInclude,
   });
-  return created as ArtifactWithPullRequestDetail;
+  const currentDetailId = created.branch?.currentPullRequestDetail?.id ?? null;
+  const detail = currentDetailId
+    ? { id: currentDetailId }
+    : await db.pullRequestDetail.findUnique({
+        where: { githubId: input.githubId },
+        select: { id: true },
+      });
+  if (detail && currentDetailId !== detail.id) {
+    await db.branchDetail.update({
+      where: { artifactId: created.id },
+      data: { currentPullRequestDetailId: detail.id },
+    });
+  }
+
+  const reread = await db.artifact.findUnique({
+    where: { id: created.id },
+    include: pullRequestInclude,
+  });
+  return (reread ?? created) as ArtifactWithPullRequestDetail;
 }
 
 /**
- * Create or update a PULL_REQUEST artifact + its PullRequestDetail row
+ * Create or update a BRANCH artifact + its PullRequestDetail row
  * atomically. Dedup key is `pullRequestDetail.githubId` (unique). If no row
  * exists for that githubId, a new artifact (with nested detail) is created.
  * Otherwise the existing artifact is updated through the detail's
@@ -202,16 +267,26 @@ async function createPullRequest(
  * to a parent artifact that does not belong to the caller's organization
  * (defence-in-depth against cross-org GitHub PR id collisions).
  */
-function upsertPullRequestArtifact(
-  input: UpsertPullRequestArtifactInput
+function upsertBranchArtifact(
+  input: UpsertBranchArtifactInput
 ): Promise<Result<ArtifactWithPullRequestDetail, StatusCode>> {
   return withDb.tx(async (db) => {
     const existingDetail = await db.pullRequestDetail.findUnique({
       where: { githubId: input.githubId },
-      select: { artifactId: true },
+      select: { id: true, artifactId: true, branchArtifactId: true },
     });
     if (existingDetail) {
-      return updateExistingPullRequest(db, existingDetail.artifactId, input);
+      const branchArtifactId =
+        existingDetail.branchArtifactId ?? existingDetail.artifactId;
+      if (!branchArtifactId) {
+        return Result.err(Status.NotFound);
+      }
+      return updateExistingPullRequest(
+        db,
+        branchArtifactId,
+        existingDetail.id,
+        input
+      );
     }
     const created = await createPullRequest(db, input);
     return Result.ok(created);
@@ -228,7 +303,7 @@ async function findById(
 ): Promise<ArtifactWithPullRequestDetail | null> {
   const artifact = await withDb((db) =>
     db.artifact.findFirst({
-      where: { id, organizationId, type: ArtifactType.PULL_REQUEST },
+      where: { id, organizationId, type: ArtifactType.BRANCH },
       include: pullRequestInclude,
     })
   );
@@ -236,21 +311,22 @@ async function findById(
 }
 
 /**
- * List PR artifacts within an organization, optionally scoped by project,
- * workstream, or PR state.
+ * List PR artifacts within an organization, optionally scoped by project or
+ * PR state.
  */
 async function list(
   options: ListPullRequestsInput
 ): Promise<ArtifactWithPullRequestDetail[]> {
-  const { organizationId, projectId, workstreamId, prState } = options;
+  const { organizationId, projectId, prState } = options;
   const artifacts = await withDb((db) =>
     db.artifact.findMany({
       where: {
         organizationId,
-        type: ArtifactType.PULL_REQUEST,
+        type: ArtifactType.BRANCH,
         ...(projectId ? { projectId } : {}),
-        ...(workstreamId ? { workstreamId } : {}),
-        ...(prState ? { pullRequest: { prState } } : {}),
+        ...(prState
+          ? { pullRequestDetails: { some: { prState, isCurrent: true } } }
+          : {}),
       },
       include: pullRequestInclude,
       orderBy: { createdAt: "desc" },
@@ -273,7 +349,7 @@ async function deletePullRequest(
 ): Promise<Result<void, StatusCode>> {
   const { count } = await withDb((db) =>
     db.artifact.deleteMany({
-      where: { id, organizationId, type: ArtifactType.PULL_REQUEST },
+      where: { id, organizationId, type: ArtifactType.BRANCH },
     })
   );
   if (count === 0) {
@@ -294,8 +370,8 @@ async function findByGithubId(
     db.artifact.findFirst({
       where: {
         organizationId,
-        type: ArtifactType.PULL_REQUEST,
-        pullRequest: { githubId },
+        type: ArtifactType.BRANCH,
+        pullRequestDetails: { some: { githubId } },
       },
       include: pullRequestInclude,
     })
@@ -314,13 +390,17 @@ async function findByRepositoryAndNumber(
   const artifact = await withDb(async (db) => {
     const detail = await db.pullRequestDetail.findUnique({
       where: { repositoryId_number: { repositoryId, number } },
-      select: { artifactId: true },
+      select: { artifactId: true, branchArtifactId: true },
     });
     if (!detail) {
       return null;
     }
+    const branchArtifactId = detail.branchArtifactId ?? detail.artifactId;
+    if (!branchArtifactId) {
+      return null;
+    }
     return db.artifact.findUnique({
-      where: { id: detail.artifactId },
+      where: { id: branchArtifactId },
       include: pullRequestInclude,
     });
   });
@@ -337,10 +417,7 @@ async function updateReviewState(
   organizationId: string,
   input: UpdateReviewStateInput
 ): Promise<ArtifactWithPullRequestDetail> {
-  const detailUpdate: Prisma.PullRequestDetailUpdateWithoutArtifactInput = {};
-  if (input.checksStatus !== undefined) {
-    detailUpdate.checksStatus = input.checksStatus;
-  }
+  const detailUpdate: Prisma.PullRequestDetailUpdateInput = {};
   if (input.reviewDecision !== undefined) {
     detailUpdate.reviewDecision = input.reviewDecision;
   }
@@ -357,20 +434,30 @@ async function updateReviewState(
     detailUpdate.mergeCommitSha = input.mergeCommitSha;
   }
 
-  const artifactData: Prisma.ArtifactUpdateInput = {
-    pullRequest: { update: detailUpdate },
-  };
+  const artifactData: Prisma.ArtifactUpdateInput = {};
   if (input.prState !== undefined) {
     artifactData.status = input.prState;
   }
 
-  const updated = await withDb.tx((db) =>
-    db.artifact.update({
+  const updated = await withDb.tx(async (db) => {
+    if (input.checksStatus !== undefined) {
+      await db.branchDetail.update({
+        where: { artifactId: id },
+        data: { checksStatus: input.checksStatus },
+      });
+    }
+    if (Object.keys(detailUpdate).length > 0) {
+      await db.pullRequestDetail.updateMany({
+        where: { branchArtifactId: id, isCurrent: true },
+        data: detailUpdate,
+      });
+    }
+    return db.artifact.update({
       where: { id, organizationId },
       data: artifactData,
       include: pullRequestInclude,
-    })
-  );
+    });
+  });
   return updated;
 }
 
@@ -387,7 +474,7 @@ function recordReviewDecision(
 }
 
 export const pullRequestService = {
-  upsertPullRequestArtifact,
+  upsertBranchArtifact,
   findById,
   list,
   delete: deletePullRequest,

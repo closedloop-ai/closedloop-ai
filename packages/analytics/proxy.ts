@@ -1,3 +1,4 @@
+import "server-only";
 import { postHogMiddleware } from "@posthog/next";
 import { NextResponse } from "next/server";
 import { keys } from "./keys";

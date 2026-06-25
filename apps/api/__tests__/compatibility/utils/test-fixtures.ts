@@ -1,8 +1,9 @@
 import {
   type ComputeTarget,
   DesktopSecurityStatus,
+  HarnessType,
 } from "@repo/api/src/types/compute-target";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { PROTOCOL_VERSION } from "@/lib/desktop-gateway-types";
 
 vi.mock("@/lib/desktop-command-store", async (importOriginal) => {
@@ -62,6 +63,7 @@ export const mockTarget: ComputeTarget = {
     reason: "BOUND_DESKTOP_MANAGED_KEY",
     upgradeSupported: false,
   },
+  selectedHarness: HarnessType.Claude,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -69,6 +71,12 @@ export const mockTarget: ComputeTarget = {
 export const mockAuthContext = {
   organizationId: "org-1",
   userId: "user-1",
+};
+
+export const mockGatewayOwnerAuthContext = {
+  organizationId: "org-1",
+  userId: "user_db_1",
+  clerkUserId: "clerk_user_1",
 };
 
 export const INTERNAL_SECRET = "test-internal-secret";

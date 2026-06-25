@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@repo/database", () => ({
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
