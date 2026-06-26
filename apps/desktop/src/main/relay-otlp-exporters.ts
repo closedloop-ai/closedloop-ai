@@ -128,6 +128,8 @@ class RelayOtlpLogRecordExporter implements LogRecordExporter {
     resultCallback(EXPORT_SUCCESS);
   }
 
+  async forceFlush(): Promise<void> {}
+
   async shutdown(): Promise<void> {}
 }
 

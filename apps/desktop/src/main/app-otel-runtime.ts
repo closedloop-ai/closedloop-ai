@@ -453,6 +453,8 @@ class DesktopOtelLogRecordExporter implements LogRecordExporter {
     resultCallback({ code: 0 });
   }
 
+  async forceFlush(): Promise<void> {}
+
   async shutdown(): Promise<void> {}
 }
 
