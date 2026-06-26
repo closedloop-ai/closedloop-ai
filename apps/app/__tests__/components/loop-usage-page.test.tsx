@@ -17,7 +17,7 @@ const mockUsage = {
   byUser: [],
 };
 
-vi.mock("@/hooks/queries/use-loops", () => ({
+vi.mock("@repo/app/loops/hooks/use-loops", () => ({
   useLoopUsage: vi.fn(() => ({
     data: mockUsage,
     isLoading: false,
@@ -29,8 +29,8 @@ vi.mock("next/image", () => ({
   default: () => null,
 }));
 
-import LoopUsagePage from "@/app/(authenticated)/loops/usage/page";
-import { useLoopUsage } from "@/hooks/queries/use-loops";
+import { useLoopUsage } from "@repo/app/loops/hooks/use-loops";
+import LoopUsagePage from "@/app/(authenticated)/[orgSlug]/loops/usage/page";
 
 const SUMMARY_CARD_TITLES =
   /Total Loops|Input Tokens|Output Tokens|Cache Tokens|Estimated Cost/;

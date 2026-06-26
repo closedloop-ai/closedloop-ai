@@ -1,7 +1,6 @@
-import type { RepoExecutionResult } from "@closedloop-ai/loops-api/execution-result";
 import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
-import type { Mock } from "vitest";
-import { vi } from "vitest";
+import type { RepoExecutionResult } from "@repo/api/src/types/loop";
+import { type Mock, vi } from "vitest";
 import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results";
 
 /**
@@ -11,21 +10,17 @@ import type { IngestionContext } from "@/lib/loops/ingest-repo-execution-results
 /** Default IDs for unit tests (ingest-repo-execution-results, etc.) */
 export const unitIngestionCtxDefaults: IngestionContext = {
   organizationId: "org-1",
-  workstreamId: "ws-1",
   documentId: "doc-1",
   loopId: "loop-1",
   correlationId: "corr-1",
-  actionRunId: "action-run-1",
 };
 
 /** Default IDs for multi-repo E2E-style tests */
 export const e2eIngestionCtxDefaults: IngestionContext = {
   organizationId: "org-e2e",
-  workstreamId: "ws-e2e",
   documentId: "doc-e2e",
   loopId: "loop-e2e",
   correlationId: "corr-e2e",
-  actionRunId: "action-run-e2e",
 };
 
 /**
@@ -47,7 +42,7 @@ export function makeSuccessResult(
     fullName: "org/repo",
     prUrl: "https://github.com/org/repo/pull/42",
     prNumber: 42,
-    prTitle: "ClosedLoop: feature",
+    prTitle: "Closedloop: feature",
     branchName: "symphony/feature",
     baseBranch: "main",
     hasChanges: true,

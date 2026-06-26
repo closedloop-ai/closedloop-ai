@@ -3,7 +3,7 @@
  * gate, and the P2002 backstop in `loopsService.create`.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   databaseModuleMock,
   dbUtilsModuleMock,
@@ -19,8 +19,11 @@ const handles = vi.hoisted<LoopsServiceHandles>(() => ({
   loopCreate: vi.fn(),
   loopCount: vi.fn(),
   loopFindFirst: vi.fn(),
+  loopFindMany: vi.fn(),
   loopFindUnique: vi.fn(),
   loopUpdateMany: vi.fn(),
+  loopEventCreate: vi.fn(),
+  loopEventFindUnique: vi.fn(),
   orgFindUnique: vi.fn(),
   repoFindMany: vi.fn(),
 }));
@@ -37,7 +40,6 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () =>
 );
 
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
-import { beforeEach, describe, expect, it } from "vitest";
 import { LOOP_ACTIVE_INDEX_NAME } from "@/app/loops/loop-constants";
 import {
   isConcurrentLoopLimitError,
@@ -267,13 +269,21 @@ describe("loopsService.create", () => {
 
   describe("staleness reaper", () => {
     it("clears all stale index-blocking shapes for the (artifactId, command) slice before gating", async () => {
+      // Configure loopFindMany to return a stale loop so the reaper will call updateMany
+      handles.loopFindMany.mockResolvedValue([{ id: "stale-loop-1" }]);
+
       await loopsService.create(ORG_ID, USER_ID, planLoopInput);
 
       const reaper = handles.loopUpdateMany.mock.calls[0][0] as {
         where: Record<string, unknown>;
         data: Record<string, unknown>;
       };
+      // The reaper performs per-loop CAS updates inside the transaction so it can
+      // only clear tokens for loops it actually transitioned (the staleIds from
+      // findMany are racey — a loop may have moved out of Pending/Claimed in
+      // between). The WHERE clause therefore pins a single id, not an `in:` set.
       expect(reaper.where).toMatchObject({
+        id: "stale-loop-1",
         organizationId: ORG_ID,
         artifactId: planLoopInput.documentId,
         command: planLoopInput.command,

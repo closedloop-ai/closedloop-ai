@@ -1,25 +1,33 @@
-import { describe, expect, it, vi } from "vitest";
-import { mockWithDbCall } from "../utils/db-helpers";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
-vi.mock("@repo/collaboration/webhook", () => ({
+vi.mock("@repo/collaboration/server/webhook", () => ({
   createWebhookHandler: vi.fn(),
   getLiveblocksApiClient: vi.fn(),
 }));
 
-vi.mock("@repo/collaboration/room-utils", () => ({
-  parseArtifactRoomId: vi.fn(),
-}));
+vi.mock("@repo/collaboration/shared/room-utils", () => {
+  const parseArtifactRoomId = vi.fn();
+  // service.ts and webhook handlers import parseDocumentRoomId; tests stub
+  // parseArtifactRoomId (the legacy alias) — point both at the same vi.fn()
+  // so service-internal lookups resolve via the test's mock state.
+  return {
+    parseArtifactRoomId,
+    parseDocumentRoomId: parseArtifactRoomId,
+    generateDocumentRoomId: vi.fn(),
+  };
+});
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   Prisma: { JsonNull: "DbNull" },
 }));
 
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import {
   createWebhookHandler,
   getLiveblocksApiClient,
-} from "@repo/collaboration/webhook";
+} from "@repo/collaboration/server/webhook";
+import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
 import {
   handleCommentCreated,
   handleCommentDeleted,
@@ -129,7 +137,9 @@ describe("Liveblocks webhook route", () => {
 
 describe("Liveblocks webhook handlers", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // resetAllMocks (vs clearAllMocks) also clears mockImplementations so
+    // mockWithDbCall set up by one test doesn't leak into siblings.
+    vi.resetAllMocks();
   });
 
   describe("handleThreadCreated", () => {
@@ -150,6 +160,55 @@ describe("Liveblocks webhook handlers", () => {
       });
 
       expect(getLiveblocksApiClient).not.toHaveBeenCalled();
+    });
+
+    it("upserts the thread row using metadata.version from the webhook payload", async () => {
+      vi.mocked(parseArtifactRoomId).mockReturnValue({
+        organizationId: ORG_ID,
+        slug: "my-artifact",
+      });
+
+      const upsertSpy = vi.fn().mockResolvedValue({ id: "db-th-1" });
+      const mockDb = {
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "artifact-1",
+            document: { latestVersion: 4 },
+          }),
+        },
+        commentThread: { upsert: upsertSpy },
+      };
+      mockWithDbCall(mockDb);
+
+      const mockClient = {
+        getThread: vi.fn().mockResolvedValue({
+          id: "th_1",
+          roomId: ROOM_ID,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          resolved: false,
+          metadata: { version: 2 },
+          comments: [],
+        }),
+      };
+      vi.mocked(getLiveblocksApiClient).mockReturnValue(mockClient as never);
+
+      await handleThreadCreated({
+        type: "threadCreated",
+        data: {
+          projectId: "proj-1",
+          roomId: ROOM_ID,
+          threadId: "th_1",
+          createdAt: "2025-01-01T00:00:00Z",
+          createdBy: "user-1",
+        },
+      });
+
+      expect(upsertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ createdAtVersion: 2 }),
+        })
+      );
     });
   });
 
@@ -258,6 +317,13 @@ describe("Liveblocks webhook handlers", () => {
       const mockDb = {
         commentThread: {
           upsert: vi.fn().mockResolvedValue({ id: "db-th-1" }),
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: "OPEN",
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: {},
+          }),
           update: vi
             .fn()
             .mockResolvedValue({ id: "db-th-1", status: "RESOLVED" }),
@@ -267,6 +333,9 @@ describe("Liveblocks webhook handlers", () => {
         },
       };
       mockWithDbCall(mockDb);
+      // resolveThread now runs its read-mutate-write inside withDb.tx, so the
+      // transactional callback must be wired to the same mock db as well.
+      mockWithDbTx(mockDb);
 
       await handleThreadResolved({
         type: "threadMarkedAsResolved",

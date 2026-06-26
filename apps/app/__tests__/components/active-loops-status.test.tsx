@@ -2,13 +2,13 @@ import { LoopStatus } from "@repo/api/src/types/loop";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/hooks/queries/use-loops", () => ({
+vi.mock("@repo/app/loops/hooks/use-loops", () => ({
   useLoopsByProject: vi.fn(() => ({ data: [], isLoading: false })),
 }));
 
-import { ActiveLoopsStatus } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/active-loops-status";
-import { useLoopsByProject } from "@/hooks/queries/use-loops";
-import { createMockLoopWithUser } from "../fixtures/loops";
+import { useLoopsByProject } from "@repo/app/loops/hooks/use-loops";
+import { createMockLoopWithUser } from "@repo/app/shared/test-fixtures/loops";
+import { ActiveLoopsStatus } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/active-loops-status";
 
 const ONE_LOOP_RUNNING = /1 loop running/;
 const TWO_LOOPS_RUNNING = /2 loops running/;

@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { AttachmentPurposeSelector } from "@repo/api/src/types/attachment.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -27,11 +28,24 @@ export function registerListAttachments(
           .describe(
             describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
           ),
+        purpose: z
+          .enum([
+            AttachmentPurposeSelector.Context,
+            AttachmentPurposeSelector.Inline,
+            AttachmentPurposeSelector.All,
+          ])
+          .optional()
+          .describe(
+            "Optional attachment purpose selector. Omit to preserve the default context list."
+          ),
       },
     },
-    ({ entityId }) =>
+    ({ entityId, purpose }) =>
       withErrorHandling(async () => {
-        const path = `/documents/${encodePathSegment(entityId)}/attachments`;
+        const query = purpose
+          ? `?${new URLSearchParams({ purpose }).toString()}`
+          : "";
+        const path = `/documents/${encodePathSegment(entityId)}/attachments${query}`;
         const attachments = await apiClient.get<unknown>(path);
         return {
           content: [

@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
+import type {
+  HeartbeatResult,
+  RunnerTokenIssue,
+} from "@closedloop-ai/loops-api/token-refresh";
+import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
-import type { PullRequestInfo } from "@repo/api/src/types/document";
+import { HarnessType } from "@repo/api/src/types/compute-target";
+import type { BranchInfo, PullRequestInfo } from "@repo/api/src/types/document";
 import {
   type AdditionalRepoRefWithPr,
   type ComputeTargetSummary,
   type CreateLoopRequest,
   type CreateLoopResponse,
+  HeartbeatErrorCode,
+  INHERITANCE_ANCESTOR_MAX_DEPTH,
   type InheritedAdditionalRepos,
   type Loop,
   LoopCommand,
@@ -23,9 +31,16 @@ import {
   type LoopUsageByUser,
   type LoopUsageSummary,
   type LoopWithUser,
+  type RefreshError,
+  type RefreshResult,
+  RefreshTokenErrorCode,
   type ResumeLoopRequest,
   type TokensByModel,
 } from "@repo/api/src/types/loop";
+import {
+  issueLoopRunnerToken,
+  type LoopRunnerTokenIssueResult,
+} from "@repo/auth/loop-runner-jwt";
 import {
   type GitHubInstallationRepository,
   GitHubInstallationStatus,
@@ -37,13 +52,34 @@ import { verifyInstallationBranchExists } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
+import type { LoopRuntimeState } from "@/app/loops/types";
+import { mapTagRelations, TAG_RELATION_INCLUDE } from "@/app/tags/service";
 import { basicUserSelect, getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  findNonTerminalBlockers,
+  type LoopBlocker,
+} from "@/lib/loops/loop-blockers";
 import {
   generateDownloadUrl,
   validateKeyBelongsToLoop,
 } from "@/lib/loops/loop-state";
+import { ACTIVE_LOOP_STATUSES } from "@/lib/loops/loop-statuses";
 import { extractUploadedPlanRaw } from "@/lib/loops/uploaded-plan-artifacts";
-import { LOOP_ACTIVE_INDEX_NAME } from "./loop-constants";
+import {
+  emitHeartbeatAccepted,
+  emitReapReversed,
+  emitRefreshAttempt,
+  emitRefreshFailure,
+  mapRefreshErrorCodeToReason,
+  ReapReason,
+} from "@/lib/observability/loop-runner-metrics";
+import {
+  HEARTBEAT_RATE_LIMIT_WINDOW_MS,
+  LOOP_ACTIVE_INDEX_NAME,
+  LOOP_BLOCKED_INDEX_NAME,
+  REVIVAL_GRACE_WINDOW_MS,
+  REVIVAL_MAX_PER_LOOP,
+} from "./loop-constants";
 import {
   BranchNotFoundError,
   ConcurrentLoopLimitError,
@@ -51,8 +87,14 @@ import {
   LoopAlreadyActiveError,
   NestedManualLoopError,
   ReplayDetectedError,
+  RepoNotInProjectPoolError,
   UnauthorizedRepoError,
 } from "./loop-errors";
+import {
+  IngestRunnerEventErrorCode,
+  type IngestRunnerEventResult,
+} from "./loop-ingest-types";
+import { clearLoopTokens } from "./loop-token-cleanup";
 import { shouldIgnoreEventForTerminalLoop } from "./validators";
 
 /**
@@ -111,7 +153,14 @@ const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // A successful completion from the runner overrides a prior cancellation.
   // The runner is the ground truth for whether work actually finished.
   CANCELLED: new Set<LoopStatus>([LoopStatus.Completed]),
+  // Revival (TIMED_OUT → RUNNING) is handled exclusively by reviveTimedOutLoop's
+  // own guarded CAS, which does not consult this table. RUNNING is deliberately
+  // omitted here so the generic updateStatus cannot perform an unguarded revival.
   TIMED_OUT: new Set<LoopStatus>([LoopStatus.Completed]),
+  // BLOCKED → PENDING is performed by reconcileBlockedLoops once every blocking
+  // artifact reaches a terminal status, releasing the loop into the normal
+  // claim path. BLOCKED → CANCELLED lets a user abandon a deferred loop.
+  BLOCKED: new Set<LoopStatus>([LoopStatus.Pending, LoopStatus.Cancelled]),
 };
 
 const TERMINAL_STATUSES = new Set<LoopStatus>([
@@ -120,6 +169,16 @@ const TERMINAL_STATUSES = new Set<LoopStatus>([
   LoopStatus.Cancelled,
   LoopStatus.TimedOut,
 ]);
+
+/** Max deferred (BLOCKED) loops re-evaluated per reconciliation pass. Bounds
+ * the cron budget; any remainder is handled on the next tick. */
+const RECONCILE_BLOCKED_LOOPS_BATCH = 200;
+
+/** Age after which an unreleased deferred (BLOCKED) loop is force-cancelled by
+ * the reconciliation cron. A blocker that is abandoned without ever reaching a
+ * terminal status (e.g. a FEAT left open, never marked OBSOLETE) would otherwise
+ * strand its deferred loop in BLOCKED forever — this failsafe reaps it. */
+const STALE_BLOCKED_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
 
 type FindLoopByIdOptions = {
   /**
@@ -141,25 +200,6 @@ const supportBundleEventDataSchema = z.object({
 });
 
 /**
- * Loop statuses that the partial unique index `loops_active_artifact_command_version_key`
- * (migration 20260319195219_add_partial_unique_loop_artifact_command_version)
- * treats as "currently holding an (artifact_id, command, artifact_version) slot."
- * This is the **index-blocking tier**: the DB physically refuses a duplicate
- * insert for any row in this set. The narrower **operationally-active tier**
- * lives in `findOperationallyActiveLoop` and is strictly a subset; the reap step
- * bridges the two so any row in this set but not in the operational set is
- * eventually marked FAILED.
- *
- * Phase 1 (PLN-477) enforces the broader (artifact_id, command) invariant in
- * application code only; Phase 2 (FEA-906) will widen the DB index to match.
- */
-const ACTIVE_LOOP_STATUSES: LoopStatus[] = [
-  LoopStatus.Pending,
-  LoopStatus.Claimed,
-  LoopStatus.Running,
-];
-
-/**
  * Age threshold beyond which a PENDING loop with no containerId is treated as
  * an orphan (silently-failed dispatch). Used by the reap step and by the
  * operationally-active lookup so the two stay in lockstep.
@@ -179,6 +219,14 @@ const LOOP_ACTIVE_INDEX_DB_FIELDS = new Set([
   "command",
   "artifact_version",
 ]);
+/**
+ * Field sets for the blocked partial unique index
+ * (`loops_blocked_artifact_command_key` on (artifact_id, command)
+ * WHERE status = 'BLOCKED'). Mirrors the active-index sets above for the two
+ * `error.meta` shapes Prisma emits.
+ */
+const LOOP_BLOCKED_INDEX_TARGET_FIELDS = new Set(["artifactId", "command"]);
+const LOOP_BLOCKED_INDEX_DB_FIELDS = new Set(["artifact_id", "command"]);
 
 const prismaErrorMetaSchema = z
   .object({
@@ -212,6 +260,21 @@ function fieldsMatch(values: string[], expected: Set<string>): boolean {
 /** Checks for Prisma's `P2002` (unique constraint) error code. */
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   return getPrismaErrorCode(error) === PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE;
+}
+
+const VALID_HARNESS_VALUES = new Set<string>(Object.values(HarnessType));
+
+/**
+ * Coerce a DB string to a typed HarnessType, defaulting to HarnessType.Claude
+ * for unknown or null values. This is the migration-window default: records
+ * created before the harness column was added return the DB default "claude",
+ * and any unrecognized future value falls back safely.
+ */
+function parseHarness(value: string | null | undefined): HarnessType {
+  if (value != null && VALID_HARNESS_VALUES.has(value)) {
+    return value as HarnessType;
+  }
+  return HarnessType.Claude;
 }
 
 /**
@@ -263,6 +326,42 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
 }
 
 /**
+ * True iff the error is a P2002 raised by the blocked partial unique index
+ * (`loops_blocked_artifact_command_key`). Used by create() to resolve a
+ * concurrent deferred-dispatch race idempotently rather than surfacing the
+ * raw constraint error. Handles the same two `error.meta` shapes as
+ * {@link isLoopActiveIndexViolation}.
+ */
+function isLoopBlockedIndexViolation(error: unknown): boolean {
+  if (!isPrismaUniqueConstraintError(error)) {
+    return false;
+  }
+  const parsed = prismaErrorMetaSchema.safeParse(
+    Reflect.get(error as object, "meta")
+  );
+  if (!parsed.success || parsed.data == null) {
+    return false;
+  }
+  const { target, driverAdapterError } = parsed.data;
+
+  if (typeof target === "string") {
+    return target === LOOP_BLOCKED_INDEX_NAME;
+  }
+  if (Array.isArray(target)) {
+    return fieldsMatch(target, LOOP_BLOCKED_INDEX_TARGET_FIELDS);
+  }
+
+  const constraint = driverAdapterError?.cause?.constraint;
+  if (constraint?.index === LOOP_BLOCKED_INDEX_NAME) {
+    return true;
+  }
+  if (constraint?.fields) {
+    return fieldsMatch(constraint.fields, LOOP_BLOCKED_INDEX_DB_FIELDS);
+  }
+  return false;
+}
+
+/**
  * Mirrors the partial unique index scope: only non-Chat loops with a concrete
  * document/artifact participate in duplicate-active-loop prevention.
  */
@@ -271,6 +370,91 @@ function shouldEnforceActiveGate(
   documentId: string | null | undefined
 ): boolean {
   return command !== LoopCommand.Chat && documentId != null;
+}
+
+/** Initial status for a freshly created loop. Manual loops run immediately;
+ * autonomous loops with a non-terminal blocker are deferred as BLOCKED. */
+function resolveInitialLoopStatus(
+  isManual: boolean,
+  isBlocked: boolean
+): LoopStatus {
+  if (isManual) {
+    return LoopStatus.Running;
+  }
+  return isBlocked ? LoopStatus.Blocked : LoopStatus.Pending;
+}
+
+/** Record the blocking artifact ids on the loop's metadata for traceability,
+ * preserving any caller-supplied metadata. */
+function buildCreateMetadata(
+  metadata: JsonObject | undefined,
+  blockedBy: LoopBlocker[]
+): JsonObject | undefined {
+  if (blockedBy.length === 0) {
+    return metadata ?? undefined;
+  }
+  return {
+    ...(metadata ?? {}),
+    blockedBy: blockedBy.map((blocker) => blocker.id),
+  };
+}
+
+/**
+ * Drop the dispatch-time `blockedBy` traceability key from loop metadata,
+ * preserving every other key. A released loop carries no resolved blocker ids
+ * forward through PENDING → CLAIMED → RUNNING → COMPLETED, so a later debugger
+ * isn't misled by stale blocker references that cleared long ago.
+ */
+function stripBlockedByMetadata(metadata: unknown): JsonObject {
+  if (
+    metadata == null ||
+    typeof metadata !== "object" ||
+    Array.isArray(metadata)
+  ) {
+    return {};
+  }
+  const next: JsonObject = {};
+  for (const [key, value] of Object.entries(metadata as JsonObject)) {
+    if (key !== "blockedBy") {
+      next[key] = value;
+    }
+  }
+  return next;
+}
+
+/**
+ * Atomically release a deferred loop (BLOCKED → PENDING) so the normal claim
+ * path picks it up, clearing the now-resolved `blockedBy` metadata in the same
+ * write. Returns false when the row was no longer BLOCKED. A P2002 means another
+ * active loop already holds the artifact+command slot (the partial unique
+ * index), so the loop stays BLOCKED for the next reconcile pass.
+ */
+async function releaseBlockedLoop(
+  loopId: string,
+  organizationId: string,
+  metadata: unknown
+): Promise<boolean> {
+  try {
+    const result = await withDb((db) =>
+      db.loop.updateMany({
+        where: { id: loopId, organizationId, status: LoopStatus.Blocked },
+        data: {
+          status: LoopStatus.Pending,
+          metadata: stripBlockedByMetadata(metadata),
+        },
+      })
+    );
+    return result.count > 0;
+  } catch (error) {
+    if (getPrismaErrorCode(error) === "P2002") {
+      log.warn(
+        "[reconcile-blocked-loops] Release skipped; artifact slot already active",
+        { loopId }
+      );
+      return false;
+    }
+    throw error;
+  }
 }
 
 function throwLoopAlreadyActive(existing: {
@@ -371,6 +555,29 @@ async function findIndexBlockingLoop(
     })
   );
   return loop ? toLoop(loop) : null;
+}
+
+/**
+ * The single deferred (BLOCKED) loop for an artifact+command, if any. Backs both
+ * the optimistic idempotency check in create() and the recovery path when the
+ * blocked partial unique index rejects a concurrent duplicate insert with P2002.
+ */
+async function findExistingBlockedLoop(
+  documentId: string,
+  command: LoopCommand,
+  organizationId: string
+): Promise<{ id: string } | null> {
+  return await withDb((db) =>
+    db.loop.findFirst({
+      where: {
+        organizationId,
+        artifactId: documentId,
+        command,
+        status: LoopStatus.Blocked,
+      },
+      select: { id: true },
+    })
+  );
 }
 
 /**
@@ -489,10 +696,25 @@ const computeTargetSelect = {
  * runtime-validated JSON field parsing for repo, additionalRepos, and error.
  * contextRefs, metadata, and tokensByModel use structural casts
  * since they are always written by trusted backend code.
+ *
+ * tokenExpiresAt, lastRunnerHeartbeatAt, and runnerCapabilities are
+ * explicitly omitted — they are runner-internal fields exposed only via
+ * the admin-only GET /api/loops/:id/runtime endpoint (AC-005).
+ * sessionArtifactId is likewise omitted: it is the internal Loop→SESSION
+ * artifact linkage (FEA-1718), not part of the public Loop response contract.
+ * All are destructured out so they never leak through the `...rest` spread.
  */
 function toLoop(record: PrismaLoop): Loop {
+  const {
+    tokenExpiresAt: _tokenExpiresAt,
+    lastRunnerHeartbeatAt: _lastRunnerHeartbeatAt,
+    runnerCapabilities: _runnerCapabilities,
+    sessionArtifactId: _sessionArtifactId,
+    ...rest
+  } = record;
   return {
-    ...record,
+    ...rest,
+    harness: parseHarness(record.harness),
     documentId: record.artifactId,
     estimatedCost:
       record.estimatedCost == null ? null : Number(record.estimatedCost),
@@ -528,12 +750,14 @@ function toLoopWithUser(
   record: PrismaLoop & {
     user: LoopWithUser["user"];
     computeTarget?: ComputeTargetSummary | null;
+    tagLoops?: Array<{ tag: { id: string; name: string; color: string } }>;
   }
 ): LoopWithUser {
   return {
     ...toLoop(record),
     user: record.user,
     computeTarget: record.computeTarget ?? null,
+    tags: mapTagRelations(record.tagLoops ?? []),
   };
 }
 
@@ -625,6 +849,26 @@ export function resolveOrgLoopLimit(rawSettings: unknown): number {
 }
 
 /**
+ * Zod schema for parsing the runnerCapabilities JSON column.
+ * Unknown keys are stripped; missing boolean flags default to false.
+ */
+const runnerCapabilitiesSchema = z.object({
+  loopRunnerRefreshSupported: z.boolean().optional(),
+  loopRunnerHeartbeatSupported: z.boolean().optional(),
+});
+
+/**
+ * Runtime validator for the Prisma `Loop.status` column.
+ * The column is typed as `string` in Prisma but constrained to LoopStatus
+ * values at the application layer. Parse instead of casting so a data-integrity
+ * drift (e.g. an unknown status enum value) surfaces as a logged warning
+ * rather than a silent type lie.
+ */
+const loopStatusSchema = z.enum(
+  Object.values(LoopStatus) as [LoopStatus, ...LoopStatus[]]
+);
+
+/**
  * Loops service - handles database operations for loop management.
  * Loops represent AI execution sessions (plan, execute, chat, etc.).
  */
@@ -650,6 +894,13 @@ export const loopsService = {
       await authorizeAdditionalRepos(input.additionalRepos, organizationId);
     }
 
+    await assertReposInProjectPool({
+      organizationId,
+      documentId: input.documentId,
+      primary: input.repo,
+      additionalRepos: input.additionalRepos,
+    });
+
     const isManual = input.command === LoopCommand.Manual;
 
     // Nested-loop prevention: reject manual loop creation when a platform-managed
@@ -671,45 +922,231 @@ export const loopsService = {
       }
     }
 
-    const loop = await createLoopWithActiveGate({
-      command: input.command,
-      documentId: input.documentId,
-      organizationId,
-      insert: () =>
-        withDb((db) =>
-          db.loop.create({
-            data: {
-              organizationId,
-              userId,
-              command: input.command,
-              artifactId: input.documentId ?? null,
-              workstreamId: input.workstreamId ?? null,
-              parentLoopId: input.parentLoopId ?? null,
-              computeTargetId: input.computeTargetId ?? null,
-              prompt: input.prompt ?? null,
-              repo: input.repo ?? undefined,
-              additionalRepos: input.additionalRepos ?? undefined,
-              contextRefs: input.contextRefs ?? undefined,
-              artifactVersion: input.documentVersion ?? null,
-              metadata: input.metadata ?? undefined,
-              status: isManual ? LoopStatus.Running : LoopStatus.Pending,
-              startedAt: isManual ? new Date() : undefined,
-            },
-          })
-        ),
-    });
+    // Dependency-aware dispatch gating: defer an autonomous loop whose linked
+    // artifact still has a non-terminal blocker, surfacing it as BLOCKED until
+    // reconciliation releases it. Manual loops are explicit user actions and
+    // are never gated.
+    const blockedBy =
+      !isManual && input.documentId
+        ? await findNonTerminalBlockers(organizationId, input.documentId)
+        : [];
+    const isBlocked = blockedBy.length > 0;
+
+    if (isBlocked && input.documentId) {
+      // Idempotency for deferred dispatch: the active-loop gate and its partial
+      // unique index both ignore BLOCKED rows, so without this guard a repeated
+      // trigger would create a second BLOCKED loop that reconciliation would
+      // later release as a duplicate run. Fast-path: reuse the existing deferred
+      // loop. Concurrent creators that both miss here are caught below by the
+      // blocked partial unique index.
+      const existingBlocked = await findExistingBlockedLoop(
+        input.documentId,
+        input.command,
+        organizationId
+      );
+      if (existingBlocked) {
+        log.info("Loop dispatch deferred; reusing existing blocked loop", {
+          loopId: existingBlocked.id,
+          organizationId,
+          command: input.command,
+        });
+        return { loopId: existingBlocked.id, status: LoopStatus.Blocked };
+      }
+    }
+
+    let loop: { id: string; status: string };
+    try {
+      loop = await createLoopWithActiveGate({
+        command: input.command,
+        documentId: input.documentId,
+        organizationId,
+        insert: () =>
+          withDb((db) =>
+            db.loop.create({
+              data: {
+                organizationId,
+                userId,
+                command: input.command,
+                harness: input.harness ?? HarnessType.Claude,
+                artifactId: input.documentId ?? null,
+                parentLoopId: input.parentLoopId ?? null,
+                computeTargetId: input.computeTargetId ?? null,
+                prompt: input.prompt ?? null,
+                repo: input.repo ?? undefined,
+                additionalRepos: input.additionalRepos ?? undefined,
+                contextRefs: input.contextRefs ?? undefined,
+                artifactVersion: input.documentVersion ?? null,
+                metadata: buildCreateMetadata(input.metadata, blockedBy),
+                status: resolveInitialLoopStatus(isManual, isBlocked),
+                startedAt: isManual ? new Date() : undefined,
+              },
+            })
+          ),
+      });
+    } catch (error) {
+      // TOCTOU recovery: two concurrent dispatches for the same blocked
+      // artifact+command both passed the optimistic check above and both tried
+      // to insert a BLOCKED row. The blocked partial unique index rejected the
+      // loser with P2002 — resolve to the row that won the race instead of
+      // surfacing a duplicate (which reconciliation would later double-run).
+      if (isBlocked && input.documentId && isLoopBlockedIndexViolation(error)) {
+        const existingBlocked = await findExistingBlockedLoop(
+          input.documentId,
+          input.command,
+          organizationId
+        );
+        if (existingBlocked) {
+          log.info("Loop dispatch deferred; reusing blocked loop after race", {
+            loopId: existingBlocked.id,
+            organizationId,
+            command: input.command,
+          });
+          return { loopId: existingBlocked.id, status: LoopStatus.Blocked };
+        }
+      }
+      throw error;
+    }
 
     log.info("Loop created", {
       loopId: loop.id,
       organizationId,
       userId,
       command: input.command,
+      blocked: isBlocked,
+      blockedBy: blockedBy.map((blocker) => blocker.id),
     });
 
     return {
       loopId: loop.id,
       status: loop.status as LoopStatus,
     };
+  },
+
+  /**
+   * Reconcile deferred (BLOCKED) loops: re-evaluate each loop's dependency
+   * blockers and release any whose blockers have all reached a terminal status
+   * back into the dispatch queue (BLOCKED → PENDING). Invoked by the loop
+   * reconciliation cron so a blocked autonomous loop starts automatically once
+   * its upstream FEAT/PLAN/issue resolves. Returns the number released.
+   *
+   * Bounded to RECONCILE_BLOCKED_LOOPS_BATCH per pass so a backlog cannot blow
+   * the cron budget; the remainder is picked up on the next tick. Release does
+   * not re-check the per-user concurrency cap — a deferred dispatch resumes work
+   * that was already admitted at create() time.
+   */
+  async reconcileBlockedLoops(): Promise<number> {
+    const blockedLoops = await withDb((db) =>
+      db.loop.findMany({
+        where: { status: LoopStatus.Blocked },
+        select: {
+          id: true,
+          organizationId: true,
+          artifactId: true,
+          metadata: true,
+        },
+        orderBy: { createdAt: "asc" },
+        take: RECONCILE_BLOCKED_LOOPS_BATCH,
+      })
+    );
+
+    let releasedCount = 0;
+    for (const loop of blockedLoops) {
+      const blockers =
+        loop.artifactId === null
+          ? []
+          : await findNonTerminalBlockers(loop.organizationId, loop.artifactId);
+      if (blockers.length > 0) {
+        continue;
+      }
+      if (
+        await releaseBlockedLoop(loop.id, loop.organizationId, loop.metadata)
+      ) {
+        releasedCount++;
+      }
+    }
+
+    if (releasedCount > 0) {
+      log.info("[reconcile-blocked-loops] Released loops", {
+        count: releasedCount,
+      });
+    }
+    return releasedCount;
+  },
+
+  /**
+   * Failsafe sweep for abandoned deferred (BLOCKED) loops. reconcileBlockedLoops
+   * releases a loop once its blockers reach a terminal status, but a blocker
+   * that is never resolved (e.g. a FEAT left open and never marked OBSOLETE)
+   * would otherwise strand its loop in BLOCKED indefinitely. Force-cancels
+   * BLOCKED loops older than STALE_BLOCKED_THRESHOLD_MS, mirroring the
+   * PENDING/RUNNING staleness reapers in the timeout-loops cron. Returns the
+   * number cancelled.
+   *
+   * Bounded to RECONCILE_BLOCKED_LOOPS_BATCH per pass. A BLOCKED loop never
+   * started a container or minted runner tokens, so cancellation needs no ECS
+   * stop or token cleanup — only a guarded CAS to CANCELLED plus a best-effort
+   * audit event.
+   */
+  async reapStaleBlockedLoops(): Promise<number> {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - STALE_BLOCKED_THRESHOLD_MS);
+    const staleLoops = await withDb((db) =>
+      db.loop.findMany({
+        where: { status: LoopStatus.Blocked, createdAt: { lt: cutoff } },
+        select: { id: true, organizationId: true },
+        orderBy: { createdAt: "asc" },
+        take: RECONCILE_BLOCKED_LOOPS_BATCH,
+      })
+    );
+
+    const staleDays = Math.floor(
+      STALE_BLOCKED_THRESHOLD_MS / (24 * 60 * 60 * 1000)
+    );
+    const message = `Deferred loop cancelled after ${staleDays} days blocked (upstream blocker never resolved)`;
+
+    let cancelledCount = 0;
+    for (const loop of staleLoops) {
+      const result = await withDb((db) =>
+        db.loop.updateMany({
+          where: {
+            id: loop.id,
+            organizationId: loop.organizationId,
+            status: LoopStatus.Blocked,
+          },
+          data: {
+            status: LoopStatus.Cancelled,
+            completedAt: now,
+            error: { code: "BLOCKED_TIMEOUT", message },
+          },
+        })
+      );
+      if (result.count === 0) {
+        continue;
+      }
+      cancelledCount++;
+      try {
+        await loopsService.addEvent(loop.id, loop.organizationId, {
+          type: LoopEventType.Cancelled,
+          data: { reason: "blocked_timeout", message },
+        });
+      } catch (eventErr) {
+        log.warn(
+          "[reconcile-blocked-loops] Failed to record stale-cancel event",
+          {
+            loopId: loop.id,
+            error:
+              eventErr instanceof Error ? eventErr.message : String(eventErr),
+          }
+        );
+      }
+    }
+
+    if (cancelledCount > 0) {
+      log.info("[reconcile-blocked-loops] Cancelled stale blocked loops", {
+        count: cancelledCount,
+      });
+    }
+    return cancelledCount;
   },
 
   /**
@@ -727,6 +1164,11 @@ export const loopsService = {
         include: {
           user: basicUserSelect,
           computeTarget: computeTargetSelect,
+          tagLoops: {
+            include: {
+              ...TAG_RELATION_INCLUDE,
+            },
+          },
         },
       })
     );
@@ -739,21 +1181,32 @@ export const loopsService = {
       loop as PrismaLoop & {
         user: LoopWithUser["user"];
         computeTarget: ComputeTargetSummary | null;
+        tagLoops: Array<{ tag: { id: string; name: string; color: string } }>;
       }
     );
 
+    let branches: BranchInfo[] = [];
     let pullRequests: PullRequestInfo[] = [];
     if (
       result.documentId !== null &&
       (result.repo !== null ||
         (result.additionalRepos !== null && result.additionalRepos.length > 0))
     ) {
+      branches = await documentPullRequestService.getDocumentBranches(
+        result.documentId,
+        result.organizationId
+      );
       pullRequests = await documentPullRequestService.getDocumentPullRequests(
         result.documentId,
         result.organizationId
       );
     }
-    const additionalRepos = _enrichAdditionalReposWithPr(result, pullRequests);
+    const additionalRepos = _enrichAdditionalReposWithPr(
+      result,
+      pullRequests,
+      branches
+    );
+    const primaryBranch = _findPrimaryRepoBranch(result, branches);
     const primaryPullRequest = _findPrimaryRepoPr(result, pullRequests);
     const supportArtifacts = options.includeSupportArtifacts
       ? await resolveSupportArtifacts(id, organizationId)
@@ -762,6 +1215,7 @@ export const loopsService = {
     return {
       ...result,
       additionalRepos,
+      primaryBranch,
       primaryPullRequest,
       supportArtifacts,
     };
@@ -796,7 +1250,6 @@ export const loopsService = {
       status,
       command,
       documentId,
-      workstreamId,
       projectId,
       userId,
       limit = 50,
@@ -810,13 +1263,17 @@ export const loopsService = {
           ...(status ? { status } : {}),
           ...(command ? { command } : {}),
           ...(documentId ? { artifactId: documentId } : {}),
-          ...(workstreamId ? { workstreamId } : {}),
           ...(projectId ? { artifact: { projectId } } : {}),
           ...(userId ? { userId } : {}),
         },
         include: {
           user: basicUserSelect,
           computeTarget: computeTargetSelect,
+          tagLoops: {
+            include: {
+              ...TAG_RELATION_INCLUDE,
+            },
+          },
         },
         orderBy: { createdAt: "desc" },
         take: limit,
@@ -827,6 +1284,7 @@ export const loopsService = {
     type LoopWithIncludes = PrismaLoop & {
       user: LoopWithUser["user"];
       computeTarget: ComputeTargetSummary | null;
+      tagLoops: Array<{ tag: { id: string; name: string; color: string } }>;
     };
 
     return loops.map((l) => toLoopWithUser(l as LoopWithIncludes));
@@ -904,16 +1362,42 @@ export const loopsService = {
     // Atomic conditional update: only transitions from a valid source status.
     // This prevents TOCTOU races where two concurrent requests both pass
     // validation but one clobbers the other's status change.
-    const result = await withDb((db) =>
-      db.loop.updateMany({
-        where: {
-          id,
-          organizationId,
-          status: { in: validFromStatuses },
-        },
-        data: updateData,
-      })
-    );
+    // For terminal transitions (COMPLETED, FAILED, CANCELLED, TIMED_OUT),
+    // runner tokens are deleted and an audit event is inserted in the same
+    // transaction so the cleanup is atomic with the status flip.
+    const isTerminalCleanupStatus = TERMINAL_STATUSES.has(status);
+
+    // Terminal transitions need CAS + runner-token cleanup + audit event in one
+    // atomic block. Non-terminal transitions (PENDING->CLAIMED, CLAIMED->RUNNING)
+    // do a single updateMany — already atomic at the SQL level — so they skip
+    // the interactive transaction to avoid BEGIN/COMMIT overhead on the hot path.
+    const result = isTerminalCleanupStatus
+      ? await withDb.tx(async (db) => {
+          const cas = await db.loop.updateMany({
+            where: {
+              id,
+              organizationId,
+              status: { in: validFromStatuses },
+            },
+            data: updateData,
+          });
+
+          if (cas.count > 0) {
+            await clearLoopTokens(db, id, organizationId, status);
+          }
+
+          return cas;
+        })
+      : await withDb((db) =>
+          db.loop.updateMany({
+            where: {
+              id,
+              organizationId,
+              status: { in: validFromStatuses },
+            },
+            data: updateData,
+          })
+        );
 
     if (result.count === 0) {
       // Either the loop doesn't exist, or it's in a status that doesn't
@@ -1000,8 +1484,10 @@ export const loopsService = {
       .map(([from]) => from as LoopStatus);
 
     // Atomic conditional update: only transitions from a valid source status.
-    const result = await withDb((db) =>
-      db.loop.updateMany({
+    // Token cleanup and audit log run in the same transaction so cleanup is
+    // atomic with the status flip.
+    const result = await withDb.tx(async (db) => {
+      const cas = await db.loop.updateMany({
         where: {
           id,
           organizationId,
@@ -1011,8 +1497,14 @@ export const loopsService = {
           status: LoopStatus.Cancelled,
           completedAt: new Date(),
         },
-      })
-    );
+      });
+
+      if (cas.count > 0) {
+        await clearLoopTokens(db, id, organizationId, LoopStatus.Cancelled);
+      }
+
+      return cas;
+    });
 
     if (result.count === 0) {
       const current = await withDb((db) =>
@@ -1111,8 +1603,11 @@ export const loopsService = {
     const stalenessThreshold = new Date(
       Date.now() - STALE_PENDING_THRESHOLD_MS
     );
-    const result = await withDb((db) =>
-      db.loop.updateMany({
+
+    // Find the IDs of stale loops before the transaction so we can perform
+    // per-loop token cleanup and audit log inside the same atomic block.
+    const staleLoops = await withDb((db) =>
+      db.loop.findMany({
         where: {
           organizationId,
           artifactId,
@@ -1124,20 +1619,59 @@ export const loopsService = {
             { status: LoopStatus.Pending, containerId: { not: null } },
           ],
         },
-        data: {
-          status: LoopStatus.Failed,
-          completedAt: new Date(),
-          error: {
-            code: LoopErrorCode.StaleDispatch,
-            message:
-              "Loop dispatch was never acknowledged; marked failed after staleness threshold.",
-          },
-        },
+        select: { id: true },
       })
     );
-    if (result.count > 0) {
+
+    if (staleLoops.length === 0) {
+      return;
+    }
+
+    const staleIds = staleLoops.map((l) => l.id);
+
+    // One transaction per loop: each per-loop CAS + token cleanup + audit event
+    // is independently atomic, so we keep each interactive tx bounded to 3 DB
+    // calls. Wrapping all N loops in a single tx risked Prisma's default 5s
+    // interactive-transaction timeout under burst conditions.
+    let reapedCount = 0;
+    for (const loopId of staleIds) {
+      const transitioned = await withDb.tx(async (db) => {
+        const cas = await db.loop.updateMany({
+          where: {
+            id: loopId,
+            organizationId,
+            artifactId,
+            command: command as LoopCommand,
+            createdAt: { lt: stalenessThreshold },
+            OR: [
+              { status: LoopStatus.Pending, containerId: null },
+              { status: LoopStatus.Claimed, containerId: null },
+              { status: LoopStatus.Pending, containerId: { not: null } },
+            ],
+          },
+          data: {
+            status: LoopStatus.Failed,
+            completedAt: new Date(),
+            error: {
+              code: LoopErrorCode.StaleDispatch,
+              message:
+                "Loop dispatch was never acknowledged; marked failed after staleness threshold.",
+            },
+          },
+        });
+
+        if (cas.count === 1) {
+          await clearLoopTokens(db, loopId, organizationId, LoopStatus.Failed);
+          return 1;
+        }
+        return 0;
+      });
+      reapedCount += transitioned;
+    }
+
+    if (reapedCount > 0) {
       log.info("Reaped stale pending loops", {
-        count: result.count,
+        count: reapedCount,
         organizationId,
         artifactId,
         command,
@@ -1200,13 +1734,13 @@ export const loopsService = {
               userId,
               command: parent.command,
               artifactId: parent.artifactId,
-              workstreamId: parent.workstreamId,
               parentLoopId: parent.id,
               prompt: input.prompt ?? parent.prompt,
               repo: parent.repo ?? undefined,
               additionalRepos: parsedAdditionalRepos ?? undefined,
               contextRefs: parent.contextRefs ?? undefined,
               computeTargetId: computeTargetId ?? null,
+              harness: parseHarness(parent.harness),
               status: LoopStatus.Pending,
             },
           })
@@ -1230,6 +1764,11 @@ export const loopsService = {
   /**
    * Record a Loop event.
    * Events are streamed from the container harness and stored for replay.
+   *
+   * @param runner - When present, sets eventSource to "runner" and builds a
+   *   composite eventId from `${tokenJti}:${nonce}`. On P2002 a
+   *   `ReplayDetectedError` is thrown so the route can return 409 before
+   *   replayed runner events publish or apply downstream side effects.
    */
   async addEvent(
     loopId: string,
@@ -1635,45 +2174,119 @@ export const loopsService = {
     targetCommand: LoopCommand
   ): Promise<InheritedAdditionalRepos> {
     return withDb(async (db) => {
-      const precedence = INHERITED_REPOS_SOURCE_PRECEDENCE[targetCommand];
-      if (!precedence) {
+      const maybePrecedence = INHERITED_REPOS_SOURCE_PRECEDENCE[targetCommand];
+      if (!maybePrecedence) {
         return { additionalRepos: [], source: null };
       }
+      const precedence: readonly LoopCommand[] = maybePrecedence;
       const statusFilters: Prisma.EnumLoopStatusFilter[] = [
         { equals: LoopStatus.Completed },
         { in: [...INHERITANCE_FALLBACK_STATUSES] },
       ];
-      for (const command of precedence) {
-        for (const statusFilter of statusFilters) {
-          const candidate = await db.loop.findFirst({
-            where: {
-              artifactId: documentId,
-              organizationId,
-              command,
-              status: statusFilter,
-            },
-            orderBy: { createdAt: "desc" },
-            select: INHERITANCE_LOOP_SELECT,
-          });
-          if (!candidate) {
-            continue;
-          }
-          const peers = parseAdditionalRepos(candidate.additionalRepos);
-          if (peers && peers.length > 0) {
-            return {
-              additionalRepos: peers,
-              source: {
-                loopId: candidate.id,
-                command: candidate.command,
+
+      /**
+       * Walk the precedence chain for a given artifact.
+       * Returns the first match with a non-empty additionalRepos, or null.
+       */
+      async function walkPrecedence(
+        artifactId: string
+      ): Promise<InheritedAdditionalRepos | null> {
+        for (const command of precedence) {
+          for (const statusFilter of statusFilters) {
+            const candidate = await db.loop.findFirst({
+              where: {
+                artifactId,
+                organizationId,
+                command,
+                status: statusFilter,
               },
-            };
+              orderBy: { createdAt: "desc" },
+              select: INHERITANCE_LOOP_SELECT,
+            });
+            if (!candidate) {
+              continue;
+            }
+            const peers = parseAdditionalRepos(candidate.additionalRepos);
+            if (peers && peers.length > 0) {
+              return {
+                additionalRepos: peers,
+                source: {
+                  loopId: candidate.id,
+                  command: candidate.command,
+                  artifactId,
+                },
+              };
+            }
+            // Candidate exists but has no usable peers — keep walking the
+            // precedence chain so a recent empty PLAN doesn't shadow a
+            // GENERATE_PRD that does have peers.
           }
-          // Candidate exists but has no usable peers — keep walking the
-          // precedence chain so a recent empty PLAN doesn't shadow a
-          // GENERATE_PRD that does have peers.
         }
+        return null;
       }
-      return { additionalRepos: [], source: null };
+
+      /**
+       * Recursively walk up PRODUCES artifact-link ancestors looking for
+       * a non-empty additionalRepos. Maintains a visited set for cycle
+       * protection and respects INHERITANCE_ANCESTOR_MAX_DEPTH.
+       */
+      async function walkAncestors(
+        currentId: string,
+        depth: number,
+        visited: Set<string>
+      ): Promise<InheritedAdditionalRepos | null> {
+        if (depth > INHERITANCE_ANCESTOR_MAX_DEPTH) {
+          return null;
+        }
+        if (visited.has(currentId)) {
+          return null;
+        }
+        visited.add(currentId);
+
+        const parentLink = await db.artifactLink.findFirst({
+          where: {
+            organizationId,
+            targetId: currentId,
+            linkType: LinkType.Produces,
+          },
+          orderBy: { createdAt: "desc" },
+          select: { sourceId: true },
+        });
+
+        if (!parentLink) {
+          return null;
+        }
+
+        const parentId = parentLink.sourceId;
+        // Cycle guard: bail before the precedence walk if parentId is already
+        // in visited. Without this short-circuit, a PRODUCES cycle A->B->A
+        // re-issues every walkPrecedence query for A on the second hop.
+        if (visited.has(parentId)) {
+          return null;
+        }
+        const ancestorResult = await walkPrecedence(parentId);
+        if (ancestorResult) {
+          return ancestorResult;
+        }
+
+        return walkAncestors(parentId, depth + 1, visited);
+      }
+
+      // Self-lookup: check the current document first.
+      const selfResult = await walkPrecedence(documentId);
+      if (selfResult) {
+        return selfResult;
+      }
+
+      // Ancestor walk: traverse up PRODUCES links if self-lookup yields nothing.
+      // The visited set starts empty — walkAncestors adds documentId on first
+      // entry, which prevents cycles that lead back to the original document.
+      const ancestorResult = await walkAncestors(
+        documentId,
+        1,
+        new Set<string>()
+      );
+      return ancestorResult ?? { additionalRepos: [], source: null };
     });
   },
 
@@ -1901,6 +2514,154 @@ export const loopsService = {
     );
     return result.count;
   },
+
+  /**
+   * Fetch the minimal auth data needed to verify a runner JWT.
+   * Intentionally NOT org-scoped — the caller has not yet proven org membership;
+   * org correctness is enforced downstream in `authenticateLoopRunnerRequest`,
+   * which compares the JWT's `organizationId` claim to the value returned here
+   * after JWT verification succeeds.
+   */
+  findRunnerAuthData(
+    loopId: string
+  ): Promise<{ organizationId: string; activeTokenJti: string | null } | null> {
+    return withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId },
+        select: { organizationId: true, activeTokenJti: true },
+      })
+    );
+  },
+
+  /**
+   * Runner event ingestion: existence check, terminal-loop guard, and
+   * explicit replay detection. JTI enforcement is performed earlier by
+   * `authenticateLoopRunnerRequest` in the route layer, so this method does
+   * not re-verify the token.
+   *
+   * Does NOT persist the event itself. The route forwards the canonical
+   * event to `handleLoopEvent` after a successful `inserted` outcome; the
+   * orchestrator becomes the single writer so that canonicalized shapes
+   * (e.g. error+CANCELLED → "cancelled", `logTail` truncation) reach the DB
+   * unmolested by a raw pre-insert.
+   *
+   * Replay detection uses an indexed `findUnique` on `LoopEvent` keyed by
+   * `(loopId, eventSource, eventId)`, avoiding the previous design's
+   * `create → P2002 → catch` flow that used exceptions as control flow.
+   *
+   * Returns a discriminated `IngestRunnerEventResult` (ok-style; see
+   * `loop-ingest-types.ts` for the HTTP mapping).
+   */
+  async ingestRunnerEvent(args: {
+    loopId: string;
+    tokenJti: string;
+    nonce: string;
+    event: { type: string; data: Record<string, unknown> };
+    organizationId: string;
+  }): Promise<IngestRunnerEventResult> {
+    const { loopId, tokenJti, nonce, event, organizationId } = args;
+
+    const loop = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId, organizationId },
+        select: { status: true },
+      })
+    );
+
+    if (!loop) {
+      return { ok: false, code: IngestRunnerEventErrorCode.LoopNotFound };
+    }
+
+    const loopStatus = loop.status as LoopStatus;
+
+    // Terminal status check: ignore non-terminal events for finished loops.
+    // `shouldIgnoreEventForTerminalLoop` exempts SupportBundleUploaded on
+    // FAILED/TIMED_OUT so Desktop crash recovery can still publish links.
+    if (shouldIgnoreEventForTerminalLoop(loopStatus, event.type)) {
+      return { ok: true, outcome: "ignored" };
+    }
+
+    // Explicit replay pre-check via the unique index on
+    // (loopId, eventSource, eventId). This is only a fast path: a concurrent
+    // request for the same composite key can still pass this read, so
+    // `addEvent` is the authoritative atomic duplicate gate via P2002.
+    const compositeEventId = `${tokenJti}:${nonce}`;
+    const existing = await withDb((db) =>
+      db.loopEvent.findUnique({
+        where: {
+          loopId_eventSource_eventId: {
+            loopId,
+            eventSource: "runner",
+            eventId: compositeEventId,
+          },
+        },
+        select: { id: true },
+      })
+    );
+
+    if (existing) {
+      return { ok: false, code: IngestRunnerEventErrorCode.Replay };
+    }
+
+    return { ok: true, outcome: "inserted" };
+  },
+
+  /**
+   * Fetch runtime observability state for a loop (admin-only).
+   * Returns auth lifecycle fields and parsed runner capability flags.
+   * Returns null when the loop does not exist for the given org (covers
+   * cross-org access: the query is org-scoped so a different org's loop
+   * is indistinguishable from a non-existent loop).
+   */
+  async getLoopRuntime(
+    id: string,
+    organizationId: string
+  ): Promise<LoopRuntimeState | null> {
+    const record = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id, organizationId },
+        select: {
+          id: true,
+          status: true,
+          tokenExpiresAt: true,
+          lastRunnerHeartbeatAt: true,
+          activeTokenJti: true,
+          runnerCapabilities: true,
+        },
+      })
+    );
+
+    if (!record) {
+      return null;
+    }
+
+    const statusParsed = loopStatusSchema.safeParse(record.status);
+    if (!statusParsed.success) {
+      log.warn("Loop has unrecognized status value; treating as not found", {
+        loopId: record.id,
+        status: record.status,
+      });
+      return null;
+    }
+
+    const parsed = runnerCapabilitiesSchema.safeParse(
+      record.runnerCapabilities
+    );
+    const caps = parsed.success ? parsed.data : {};
+
+    return {
+      id: record.id,
+      status: statusParsed.data,
+      tokenExpiresAt: record.tokenExpiresAt,
+      lastRunnerHeartbeatAt: record.lastRunnerHeartbeatAt,
+      activeTokenJti: record.activeTokenJti,
+      runnerCapabilities: {
+        loopRunnerRefreshSupported: caps.loopRunnerRefreshSupported ?? false,
+        loopRunnerHeartbeatSupported:
+          caps.loopRunnerHeartbeatSupported ?? false,
+      },
+    };
+  },
 };
 
 /**
@@ -1910,7 +2671,8 @@ export const loopsService = {
  */
 function _enrichAdditionalReposWithPr(
   loop: LoopWithUser,
-  prs: PullRequestInfo[]
+  prs: PullRequestInfo[],
+  branches: BranchInfo[] = []
 ): AdditionalRepoRefWithPr[] | null {
   if (
     loop.additionalRepos === null ||
@@ -1922,8 +2684,28 @@ function _enrichAdditionalReposWithPr(
 
   return loop.additionalRepos.map((repo) => ({
     ...repo,
+    branchArtifact:
+      branches.find((branch) => branch.repoFullName === repo.fullName) ?? null,
     pullRequest: prs.find((pr) => pr.repoFullName === repo.fullName) ?? null,
   }));
+}
+
+/**
+ * Find the branch artifact for the primary repo of a loop (if any).
+ * Returns null when the loop has no documentId, no primary repo, or no matching branch.
+ */
+function _findPrimaryRepoBranch(
+  loop: LoopWithUser,
+  branches: BranchInfo[]
+): BranchInfo | null {
+  if (loop.documentId === null || loop.repo === null) {
+    return null;
+  }
+
+  return (
+    branches.find((branch) => branch.repoFullName === loop.repo?.fullName) ??
+    null
+  );
 }
 
 /**
@@ -1966,10 +2748,13 @@ export async function authorizeAdditionalRepos(
     organizationId,
   });
 
+  // Filter tombstoned rows (PLN-634) so dispatch never targets a repo that
+  // disappeared from the installation during a disconnect/reinstall window.
   const authorizedRepos = await withDb((db) =>
     db.gitHubInstallationRepository.findMany({
       where: {
         fullName: { in: fullNames },
+        removedAt: null,
         installation: {
           organizationId,
           status: GitHubInstallationStatus.ACTIVE,
@@ -1984,6 +2769,7 @@ export async function authorizeAdditionalRepos(
         githubRepoId: true,
         installationId: true,
         lastPushedAt: true,
+        removedAt: true,
         createdAt: true,
         updatedAt: true,
         installation: {
@@ -2041,4 +2827,718 @@ export async function authorizeAdditionalRepos(
   });
 
   return authorizedRepos;
+}
+
+/**
+ * Per-loop refresh rate limit: at most `REFRESH_RATE_LIMIT_MAX_IN_WINDOW`
+ * successful rotations per `REFRESH_RATE_LIMIT_WINDOW_MS` window. Counted
+ * against the `loop_token_refresh` audit table.
+ */
+const REFRESH_RATE_LIMIT_WINDOW_MS = 60_000;
+const REFRESH_RATE_LIMIT_MAX_IN_WINDOW = 6;
+const REFRESH_AUDIT_RETENTION_PER_LOOP = 50;
+
+export type RefreshRunnerTokenOptions = {
+  idempotencyKey?: string;
+  requesterIp?: string;
+  requesterUa?: string;
+};
+
+/**
+ * Emit a refresh failure metric and build the corresponding RefreshError.
+ * Centralises the repeated emit-then-return pattern in refreshRunnerToken.
+ */
+function refreshError(
+  orgId: string,
+  code: RefreshTokenErrorCode,
+  message: string
+): RefreshError {
+  emitRefreshFailure(orgId, mapRefreshErrorCodeToReason(code));
+  return { ok: false, code, message };
+}
+
+/**
+ * Rotate the runner JWT for an active loop.
+ *
+ * Guards: loop must exist, be RUNNING, have a non-expired token, present the
+ * current JTI, and not have already used that JTI for a prior refresh. Throttled
+ * per-loop via a trailing-window count over the audit table. The atomic CAS
+ * predicate enforces both the current JTI and `status: RUNNING`, so a loop that
+ * transitions to a terminal status between the pre-read and the CAS cannot
+ * have its token rotated; the count===0 branch re-reads to disambiguate
+ * `RaceLost` (concurrent rotation) from `NotRunning` (terminal transition).
+ *
+ * On a successful rotation, emits a single durable `token_refreshed` loop
+ * event with the prev/new JTIs, new expiry, and requester metadata. Bounded
+ * cleanup of the audit table runs best-effort after commit and never blocks
+ * the rotation.
+ */
+export async function refreshRunnerToken(
+  loopId: string,
+  currentJti: string,
+  options: RefreshRunnerTokenOptions = {}
+): Promise<RefreshResult> {
+  const { idempotencyKey, requesterIp, requesterUa } = options;
+
+  const loop = await withDb((db) =>
+    db.loop.findUnique({
+      where: { id: loopId },
+      select: {
+        organizationId: true,
+        status: true,
+        activeTokenJti: true,
+        tokenExpiresAt: true,
+      },
+    })
+  );
+
+  if (!loop) {
+    // Skip org-scoped metrics for non-existent loops: tagging telemetry
+    // with an empty orgId would create a synthetic empty-org bucket in
+    // Datadog dashboards. The Result return path is still observable via
+    // the route's log line.
+    return {
+      ok: false,
+      code: RefreshTokenErrorCode.LoopNotFound,
+      message: `Loop not found: ${loopId}`,
+    };
+  }
+
+  const orgId = loop.organizationId;
+  emitRefreshAttempt(orgId);
+
+  if (loop.status !== LoopStatus.Running) {
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.NotRunning,
+      `Loop ${loopId} is not RUNNING (current status: ${loop.status})`
+    );
+  }
+
+  if (!loop.tokenExpiresAt || loop.tokenExpiresAt <= new Date()) {
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.TokenExpired,
+      `Runner token for loop ${loopId} has expired`
+    );
+  }
+
+  if (loop.activeTokenJti !== currentJti) {
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.JtiMismatch,
+      `Token JTI mismatch for loop ${loopId}`
+    );
+  }
+
+  const priorUse = await withDb((db) =>
+    db.loopTokenRefresh.findUnique({
+      where: { jti: currentJti },
+    })
+  );
+
+  if (priorUse) {
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.JtiAlreadyUsed,
+      `Token JTI ${currentJti} has already been used for a refresh`
+    );
+  }
+
+  const windowStart = new Date(Date.now() - REFRESH_RATE_LIMIT_WINDOW_MS);
+  const recentRefreshCount = await withDb((db) =>
+    db.loopTokenRefresh.count({
+      where: { loopId, refreshedAt: { gte: windowStart } },
+    })
+  );
+
+  if (recentRefreshCount >= REFRESH_RATE_LIMIT_MAX_IN_WINDOW) {
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.RateLimited,
+      `Refresh rate limit exceeded for loop ${loopId} (max ${REFRESH_RATE_LIMIT_MAX_IN_WINDOW} per ${REFRESH_RATE_LIMIT_WINDOW_MS}ms)`
+    );
+  }
+
+  // Issue a new JWT — try/catch is warranted because issueLoopRunnerToken
+  // performs cryptographic signing that can throw on misconfigured secrets.
+  let issued: LoopRunnerTokenIssueResult;
+  try {
+    issued = await issueLoopRunnerToken({
+      loopId,
+      organizationId: loop.organizationId,
+    });
+  } catch (error) {
+    log.error("refreshRunnerToken: failed to issue new token", {
+      loopId,
+      error,
+    });
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.GenerationFailed,
+      "Failed to generate new runner token"
+    );
+  }
+
+  // CAS update + audit row + token_refreshed event written atomically: if any
+  // write fails the loop's activeTokenJti stays on currentJti and the runner
+  // can safely retry with its old token. The `status: Running` predicate
+  // prevents rotating a loop that transitioned to a terminal status between
+  // the pre-read and this write.
+  const raced = await withDb.tx(async (db) => {
+    const cas = await db.loop.updateMany({
+      where: {
+        id: loopId,
+        activeTokenJti: currentJti,
+        status: LoopStatus.Running,
+      },
+      data: {
+        activeTokenJti: issued.tokenId,
+        tokenExpiresAt: issued.expiresAt,
+        lastRunnerHeartbeatAt: new Date(),
+      },
+    });
+
+    if (cas.count === 0) {
+      return true;
+    }
+
+    await db.loopTokenRefresh.create({
+      data: {
+        loopId,
+        jti: currentJti,
+        refreshedAt: new Date(),
+      },
+    });
+
+    const eventData: JsonObject = {
+      prevJti: currentJti,
+      newJti: issued.tokenId,
+      exp: issued.expiresAt.toISOString(),
+    };
+    if (requesterIp !== undefined) {
+      eventData.requesterIp = requesterIp;
+    }
+    if (requesterUa !== undefined) {
+      eventData.requesterUa = requesterUa;
+    }
+    if (idempotencyKey !== undefined) {
+      eventData.idempotencyKey = idempotencyKey;
+    }
+
+    await db.loopEvent.create({
+      data: {
+        loopId,
+        type: LoopEventType.TokenRefreshed,
+        eventSource: "system",
+        eventId: `token_refreshed:${currentJti}`,
+        runnerTokenJti: currentJti,
+        data: eventData,
+      },
+    });
+
+    return false;
+  });
+
+  if (raced) {
+    // The CAS matched 0 rows. Re-read the loop outside the tx to disambiguate
+    // `NotRunning` (loop transitioned to a terminal status) from `RaceLost`
+    // (concurrent rotation moved activeTokenJti). The re-read is informational
+    // only, so it does not need to share the rotation's transactional scope.
+    const reread = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId },
+        select: { status: true },
+      })
+    );
+
+    if (reread && reread.status !== LoopStatus.Running) {
+      return refreshError(
+        orgId,
+        RefreshTokenErrorCode.NotRunning,
+        `Loop ${loopId} is not RUNNING (current status: ${reread.status})`
+      );
+    }
+
+    return refreshError(
+      orgId,
+      RefreshTokenErrorCode.RaceLost,
+      `Concurrent token refresh detected for loop ${loopId}; retry with the new token`
+    );
+  }
+
+  // Best-effort bounded cleanup of the audit table. Failure here must not
+  // affect the rotation result — the runner has already received its new
+  // token by the time this runs.
+  try {
+    const stale = await withDb((db) =>
+      db.loopTokenRefresh.findMany({
+        where: { loopId },
+        orderBy: { refreshedAt: "desc" },
+        skip: REFRESH_AUDIT_RETENTION_PER_LOOP,
+        select: { id: true },
+      })
+    );
+
+    if (stale.length > 0) {
+      await withDb((db) =>
+        db.loopTokenRefresh.deleteMany({
+          where: { id: { in: stale.map((row) => row.id) } },
+        })
+      );
+    }
+  } catch (error) {
+    log.warn("refreshRunnerToken: bounded cleanup failed", {
+      loopId,
+      error,
+    });
+  }
+
+  log.info("refreshRunnerToken: token rotated", {
+    loopId,
+    newJti: issued.tokenId,
+  });
+
+  return {
+    ok: true,
+    token: issued.token,
+    expiresAt: issued.expiresAt,
+    jti: issued.tokenId,
+  };
+}
+
+type AssertReposInProjectPoolArgs = {
+  organizationId: string;
+  documentId: string | undefined;
+  primary: { fullName: string } | undefined;
+  additionalRepos: Array<{ fullName: string }> | undefined;
+};
+
+/**
+ * Defense-in-depth project-pool membership check (PLN-529 T-4.1).
+ *
+ * When the loop is associated with a project (via the request's documentId),
+ * every repo on the request — primary + additional — must resolve to a
+ * `GitHubInstallationRepository` curated on at least one team belonging to
+ * that project. Throws `RepoNotInProjectPoolError` otherwise.
+ *
+ * No-ops when:
+ *  - There is no documentId (not project-scoped)
+ *  - The artifact has no projectId
+ *  - The project has zero team-curated repos (legacy projects pre-PLN-462)
+ *
+ * The UI gates submission to the team pool, so this firing in production
+ * indicates a programmatic client (MCP, CLI, scripts) bypassed the picker.
+ */
+async function assertReposInProjectPool({
+  organizationId,
+  documentId,
+  primary,
+  additionalRepos,
+}: AssertReposInProjectPoolArgs): Promise<void> {
+  const fullNames: string[] = [];
+  if (primary?.fullName) {
+    fullNames.push(primary.fullName);
+  }
+  if (additionalRepos) {
+    for (const repo of additionalRepos) {
+      fullNames.push(repo.fullName);
+    }
+  }
+  if (!(documentId && fullNames.length > 0)) {
+    return;
+  }
+
+  const projectInfo = await withDb((db) =>
+    db.artifact.findFirst({
+      where: { id: documentId, organizationId },
+      select: { projectId: true },
+    })
+  );
+  const projectId = projectInfo?.projectId;
+  if (!projectId) {
+    return;
+  }
+
+  const teamRepos = await withDb((db) =>
+    db.teamRepository.findMany({
+      where: {
+        team: {
+          projects: { some: { projectId } },
+          organizationId,
+        },
+      },
+      select: {
+        repository: { select: { fullName: true } },
+      },
+    })
+  );
+  if (teamRepos.length === 0) {
+    // Legacy projects without a curated pool — fall through to other auth
+    // checks (`authorizeAdditionalRepos` already covers org-level access).
+    return;
+  }
+
+  const poolNames = new Set(teamRepos.map((r) => r.repository.fullName));
+  const outsidePool = fullNames.filter((n) => !poolNames.has(n));
+  if (outsidePool.length === 0) {
+    return;
+  }
+
+  log.warn("assertReposInProjectPool: repos outside project pool", {
+    organizationId,
+    documentId,
+    projectId,
+    outsidePool,
+  });
+  throw new RepoNotInProjectPoolError(projectId, outsidePool);
+}
+
+/**
+ * Record a liveness heartbeat for a running loop runner.
+ *
+ * Guards:
+ * - Loop must exist and be org-scoped
+ * - Loop must not be in a terminal status (COMPLETED, FAILED, CANCELLED, TIMED_OUT)
+ * - Rate-limited: if `lastRunnerHeartbeatAt` is within the HEARTBEAT_RATE_LIMIT_WINDOW_MS,
+ *   the bump is skipped and a success-like result with `bumped: false` is returned
+ *
+ * Uses `updateMany` with CAS on `status: Running` so concurrent writes (e.g.,
+ * a simultaneous heartbeat + terminal transition) are safe. A CAS miss when
+ * the loop is still RUNNING is benign — either a concurrent heartbeat already
+ * bumped the timestamp, or the status changed to terminal after our pre-read.
+ *
+ * No LoopEvent row is created — heartbeats emit a structured log only to avoid
+ * event-table flooding.
+ */
+export async function heartbeatRunner(
+  loopId: string,
+  organizationId: string
+): Promise<HeartbeatResult> {
+  const loop = await withDb((db) =>
+    db.loop.findUnique({
+      where: { id: loopId, organizationId },
+      select: { status: true, lastRunnerHeartbeatAt: true },
+    })
+  );
+
+  if (!loop) {
+    return { ok: false, code: HeartbeatErrorCode.LoopNotFound };
+  }
+
+  const loopStatus = loop.status as LoopStatus;
+
+  if (TERMINAL_STATUSES.has(loopStatus)) {
+    return { ok: false, code: HeartbeatErrorCode.TerminalLoop };
+  }
+
+  if (loop.lastRunnerHeartbeatAt !== null) {
+    const elapsedMs = Date.now() - loop.lastRunnerHeartbeatAt.getTime();
+    if (elapsedMs < HEARTBEAT_RATE_LIMIT_WINDOW_MS) {
+      return { ok: true, bumped: false };
+    }
+  }
+
+  const { count } = await withDb((db) =>
+    db.loop.updateMany({
+      where: {
+        id: loopId,
+        organizationId,
+        status: LoopStatus.Running,
+      },
+      data: { lastRunnerHeartbeatAt: new Date() },
+    })
+  );
+
+  if (count === 0) {
+    // CAS missed: re-read to disambiguate a concurrent terminal transition
+    // (→ TerminalLoop), a loop that was never Running (→ NotRunning), or a
+    // concurrent hard-delete between the pre-read and the CAS (→ LoopNotFound).
+    const reread = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId, organizationId },
+        select: { status: true },
+      })
+    );
+
+    if (!reread) {
+      return { ok: false, code: HeartbeatErrorCode.LoopNotFound };
+    }
+
+    if (!TERMINAL_STATUSES.has(reread.status as LoopStatus)) {
+      return { ok: false, code: HeartbeatErrorCode.NotRunning };
+    }
+
+    return { ok: false, code: HeartbeatErrorCode.TerminalLoop };
+  }
+
+  emitHeartbeatAccepted(organizationId, loopId);
+  return { ok: true, bumped: true };
+}
+
+/**
+ * Throttled heartbeat bump invoked from the event-ingestion route when a runner
+ * event is successfully inserted. Updates `lastRunnerHeartbeatAt` only when it
+ * is NULL or older than `HEARTBEAT_RATE_LIMIT_WINDOW_MS`, so the cost is
+ * O(no-op) for high-frequency event streams. The CAS on `status: Running`
+ * prevents writes that race with a terminal transition. Failures are logged
+ * and swallowed — heartbeat bumping is best-effort.
+ */
+export async function scheduleRunnerHeartbeatBump(
+  loopId: string,
+  organizationId: string
+): Promise<void> {
+  const heartbeatThreshold = new Date(
+    Date.now() - HEARTBEAT_RATE_LIMIT_WINDOW_MS
+  );
+  try {
+    await withDb((db) =>
+      db.loop.updateMany({
+        where: {
+          id: loopId,
+          organizationId,
+          status: LoopStatus.Running,
+          OR: [
+            { lastRunnerHeartbeatAt: null },
+            { lastRunnerHeartbeatAt: { lt: heartbeatThreshold } },
+          ],
+        },
+        data: { lastRunnerHeartbeatAt: new Date() },
+      })
+    );
+  } catch (heartbeatError) {
+    log.warn("Failed to bump runner heartbeat on event ingestion", {
+      loopId,
+      error: heartbeatError,
+    });
+  }
+}
+
+/**
+ * Reason codes for revival guard rejections. Callers map these to HTTP
+ * responses (410 Gone for terminal guards, 409 Conflict for CAS races).
+ */
+export const RevivalRefusedReason = {
+  /** Loop not found or does not belong to the org. */
+  LoopNotFound: "LOOP_NOT_FOUND",
+  /** Loop is not in TIMED_OUT status. */
+  NotTimedOut: "NOT_TIMED_OUT",
+  /** Loop's runnerCapabilities do not include desktop heartbeat support. */
+  NotDesktop: "NOT_DESKTOP",
+  /** Loop was reaped for a non-heartbeat-staleness reason. */
+  NonHeartbeatReap: "NON_HEARTBEAT_REAP",
+  /** Loop was reaped more than REVIVAL_GRACE_WINDOW_MS ago. */
+  GraceWindowExpired: "GRACE_WINDOW_EXPIRED",
+  /** Loop has reached REVIVAL_MAX_PER_LOOP revival attempts. */
+  RevivalCapReached: "REVIVAL_CAP_REACHED",
+  /** CAS missed — a concurrent write transitioned the loop out of TIMED_OUT. */
+  CasRace: "CAS_RACE",
+  /** Fresh runner token could not be minted. */
+  TokenMintFailed: "TOKEN_MINT_FAILED",
+} as const;
+export type RevivalRefusedReason =
+  (typeof RevivalRefusedReason)[keyof typeof RevivalRefusedReason];
+
+export type ReviveTimedOutLoopResult =
+  | ({ ok: true } & RunnerTokenIssue)
+  | {
+      ok: false;
+      reason: RevivalRefusedReason;
+    };
+
+/**
+ * Reap reasons that indicate recoverable heartbeat-staleness. Used by
+ * `reviveTimedOutLoop` to decide whether a TIMED_OUT loop is eligible for
+ * revival. Allocated once at module level to avoid per-call Set creation.
+ */
+const HEARTBEAT_STALENESS_REAP_REASONS = new Set<string>([
+  ReapReason.DesktopHeartbeatStale,
+  ReapReason.DesktopNoHeartbeat,
+]);
+
+/**
+ * Zod schema for reading the reaper data embedded in a TIMED_OUT audit event.
+ * The reaper sub-object is written by `buildTimeoutEventData` in reaper-helpers.
+ */
+const reaperEventDataSchema = z.object({
+  reaper: z
+    .object({
+      reason: z.string().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Attempt to revive a TIMED_OUT desktop loop when the local process wakes and
+ * sends a heartbeat with a valid Clerk session token.
+ *
+ * Guards (in order):
+ * 1. Loop must exist and be in TIMED_OUT status.
+ * 2. Loop must have desktop heartbeat capability (runnerCapabilities includes
+ *    loopRunnerHeartbeatSupported=true or lastRunnerHeartbeatAt is non-null).
+ * 3. The most-recent TIMED_OUT audit event must carry reaper.reason of
+ *    heartbeat-staleness (DesktopHeartbeatStale or DesktopNoHeartbeat).
+ * 4. The loop's completedAt must be within REVIVAL_GRACE_WINDOW_MS.
+ * 5. revivalCount must be < REVIVAL_MAX_PER_LOOP.
+ *
+ * On passing all guards:
+ * - Mints a fresh runner token.
+ * - CAS-transitions TIMED_OUT → RUNNING atomically (updateMany with status
+ *   predicate) to avoid TOCTOU races with the reaper or concurrent revivals.
+ * - Inserts a ReapReversed audit event.
+ * - Emits the reap.reversed telemetry metric.
+ *
+ * Returns a `ReviveTimedOutLoopResult` — never throws for expected refusals.
+ */
+export async function reviveTimedOutLoop(
+  loopId: string,
+  organizationId: string
+): Promise<ReviveTimedOutLoopResult> {
+  // 1. Fetch the loop — org-scoped for security.
+  const loop = await withDb((db) =>
+    db.loop.findUnique({
+      where: { id: loopId, organizationId },
+      select: {
+        status: true,
+        computeTargetId: true,
+        completedAt: true,
+        revivalCount: true,
+        lastRunnerHeartbeatAt: true,
+        runnerCapabilities: true,
+      },
+    })
+  );
+
+  if (!loop) {
+    return { ok: false, reason: RevivalRefusedReason.LoopNotFound };
+  }
+
+  if (loop.status !== LoopStatus.TimedOut) {
+    return { ok: false, reason: RevivalRefusedReason.NotTimedOut };
+  }
+
+  // 2. Guard: desktop capability check.
+  // A loop is desktop-capable when it has a computeTargetId (Desktop runner)
+  // and advertises heartbeat support via capabilities or a prior heartbeat.
+  const parsedCaps = runnerCapabilitiesSchema.safeParse(
+    loop.runnerCapabilities
+  );
+  const caps = parsedCaps.success ? parsedCaps.data : {};
+  const isDesktop =
+    loop.computeTargetId !== null &&
+    (caps.loopRunnerHeartbeatSupported === true ||
+      loop.lastRunnerHeartbeatAt !== null);
+
+  if (!isDesktop) {
+    return { ok: false, reason: RevivalRefusedReason.NotDesktop };
+  }
+
+  // 3. Guard: heartbeat-staleness reap reason check.
+  // Read the most-recent TIMED_OUT audit event to confirm the loop was reaped
+  // for a recoverable heartbeat-staleness reason.
+  const timedOutEvent = await withDb((db) =>
+    db.loopEvent.findFirst({
+      where: { loopId, type: LoopEventType.Error },
+      orderBy: { createdAt: "desc" },
+      select: { data: true },
+    })
+  );
+
+  const parsedEventData = reaperEventDataSchema.safeParse(timedOutEvent?.data);
+  const reapReason = parsedEventData.success
+    ? parsedEventData.data.reaper?.reason
+    : undefined;
+
+  if (!(reapReason && HEARTBEAT_STALENESS_REAP_REASONS.has(reapReason))) {
+    return { ok: false, reason: RevivalRefusedReason.NonHeartbeatReap };
+  }
+
+  // 4. Guard: grace window check.
+  const completedAt = loop.completedAt;
+  if (
+    completedAt === null ||
+    Date.now() - completedAt.getTime() > REVIVAL_GRACE_WINDOW_MS
+  ) {
+    return { ok: false, reason: RevivalRefusedReason.GraceWindowExpired };
+  }
+
+  // 5. Guard: revival cap check.
+  if (loop.revivalCount >= REVIVAL_MAX_PER_LOOP) {
+    return { ok: false, reason: RevivalRefusedReason.RevivalCapReached };
+  }
+
+  // Mint a fresh runner token before the CAS write. If minting fails, we
+  // return early without touching the loop status.
+  let issued: LoopRunnerTokenIssueResult;
+  try {
+    issued = await issueLoopRunnerToken({ loopId, organizationId });
+  } catch (mintError) {
+    log.error("reviveTimedOutLoop: failed to mint runner token", {
+      loopId,
+      error: mintError,
+    });
+    return { ok: false, reason: RevivalRefusedReason.TokenMintFailed };
+  }
+
+  // CAS: TIMED_OUT → RUNNING. The status predicate prevents a double-revival
+  // or a lost update if the reaper or another heartbeat request races here.
+  const now = new Date();
+  const casResult = await withDb.tx(async (db) => {
+    const cas = await db.loop.updateMany({
+      where: {
+        id: loopId,
+        organizationId,
+        status: LoopStatus.TimedOut,
+      },
+      data: {
+        status: LoopStatus.Running,
+        completedAt: null,
+        activeTokenJti: issued.tokenId,
+        tokenExpiresAt: issued.expiresAt,
+        lastRunnerHeartbeatAt: now,
+        revivalCount: { increment: 1 },
+        lastRevivalAt: now,
+      },
+    });
+
+    if (cas.count === 0) {
+      return { raced: true as const };
+    }
+
+    // Insert the ReapReversed audit event inside the same transaction.
+    await db.loopEvent.create({
+      data: {
+        loopId,
+        type: LoopEventType.ReapReversed,
+        eventSource: "system",
+        eventId: `${LoopEventType.ReapReversed}:${issued.tokenId}`,
+        data: {
+          newJti: issued.tokenId,
+          exp: issued.expiresAt.toISOString(),
+          timestamp: now.toISOString(),
+        },
+      },
+    });
+
+    return { raced: false as const };
+  });
+
+  if (casResult.raced) {
+    return { ok: false, reason: RevivalRefusedReason.CasRace };
+  }
+
+  // Emit telemetry after the transaction commits.
+  emitReapReversed(loopId, organizationId);
+
+  log.info("reviveTimedOutLoop: loop revived", {
+    loopId,
+    newJti: issued.tokenId,
+  });
+
+  return {
+    ok: true,
+    token: issued.token,
+    expiresAt: issued.expiresAt,
+    jti: issued.tokenId,
+  };
 }

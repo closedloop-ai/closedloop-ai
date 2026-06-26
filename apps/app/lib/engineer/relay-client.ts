@@ -1,36 +1,47 @@
-import {
-  isDesktopApiPath,
-  normalizeDesktopApiPath,
-} from "@repo/api/src/desktop-api-namespace";
-import type { ApiResult, JsonValue } from "@repo/api/src/types/common";
+import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
+import { BranchViewLocalErrorCode } from "@repo/api/src/types/branch-view-local";
+import type { ApiResult } from "@repo/api/src/types/common";
 import type {
+  BrowserSignedCommandId,
+  CommandSignatureFields,
   CreateDesktopCommandInput,
   CreateDesktopCommandResponse,
   DesktopCommandEvent,
 } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import type {
+  RelayHttpRequestPayload,
+  RelayResponseEnvelope,
+} from "@repo/shared-platform/relay-request-model";
+import {
+  isRecord,
+  normalizeMethod,
+  parseRelayResponseEnvelope,
+  splitPathAndQuery,
+  unwrapRelayBody,
+} from "@repo/shared-platform/relay-request-model";
 
 const RESULT_STREAM_TIMEOUT_MS = 120_000;
 const STREAM_INACTIVITY_TIMEOUT_MS = 270_000; // Must be < maxDuration (300s) to allow error flush
 const STREAM_POLL_INTERVAL_MS = 1000;
 
-export type RelayEncodedBody =
-  | { kind: "none" }
-  | { kind: "json"; value: JsonValue }
-  | { kind: "text"; value: string; contentType: string | null }
-  | { kind: "base64"; value: string; contentType: string | null };
-
-export type RelayHttpRequestPayload = {
-  method: string;
-  path: string;
-  headers: Record<string, string>;
-  body: RelayEncodedBody;
+export type RelayCommandSigningInput = CommandSignatureFields & {
+  commandId: BrowserSignedCommandId;
 };
 
-type RelayResponseEnvelope = {
-  status: number;
-  body: unknown;
-  headers?: Record<string, string>;
+export type RelayCommandOptions = {
+  /**
+   * Forces event reads through the public author-scoped route. Branch View
+   * local commands can persist local file content in event payloads, so they
+   * must not use the internal service-to-service fallback.
+   */
+  localContent?: boolean;
+};
+
+type ApiFailurePayload = {
+  success: false;
+  error: string;
+  code?: string;
 };
 
 export class RelayRequestError extends Error {
@@ -43,47 +54,6 @@ export class RelayRequestError extends Error {
     this.details = details;
     this.name = "RelayRequestError";
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseRelayResponseEnvelope(
-  value: unknown
-): RelayResponseEnvelope | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  // Electron gateway uses { statusCode, data }, relay envelope uses { status, body }.
-  let status: number | undefined;
-  if (typeof value.status === "number") {
-    status = value.status;
-  } else if (typeof value.statusCode === "number") {
-    status = value.statusCode;
-  }
-
-  let body: unknown;
-  if ("body" in value) {
-    body = value.body;
-  } else if ("data" in value) {
-    body = value.data;
-  }
-
-  if (status === undefined || body === undefined) {
-    return null;
-  }
-
-  return {
-    status,
-    body,
-    headers:
-      isRecord(value.headers) &&
-      Object.values(value.headers).every((entry) => typeof entry === "string")
-        ? (value.headers as Record<string, string>)
-        : undefined,
-  };
 }
 
 async function parseApiResult<T>(response: Response): Promise<T> {
@@ -112,6 +82,16 @@ async function parseApiResult<T>(response: Response): Promise<T> {
   return payload.data;
 }
 
+function getSseDataLines(rawEvent: string): string[] {
+  const dataLines: string[] = [];
+  for (const line of rawEvent.split("\n")) {
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  return dataLines;
+}
+
 async function* readSseData(response: Response): AsyncGenerator<string> {
   if (!response.body) {
     return;
@@ -134,10 +114,7 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
       const rawEvent = buffer.slice(0, separatorIndex);
       buffer = buffer.slice(separatorIndex + 2);
 
-      const dataLines = rawEvent
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart());
+      const dataLines = getSseDataLines(rawEvent);
 
       if (dataLines.length > 0) {
         yield dataLines.join("\n");
@@ -151,10 +128,7 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
   buffer += decoder.decode();
   const remaining = buffer.trim();
   if (remaining) {
-    const dataLines = remaining
-      .split("\n")
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart());
+    const dataLines = getSseDataLines(remaining);
     if (dataLines.length > 0) {
       yield dataLines.join("\n");
     }
@@ -258,75 +232,53 @@ function makeCommandEventsStreamUrl(
   return `${apiOrigin}/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events?stream=true`;
 }
 
-function normalizeMethod(method: string): CreateDesktopCommandInput["method"] {
-  const normalized = method.toUpperCase();
-  if (
-    normalized === "GET" ||
-    normalized === "POST" ||
-    normalized === "PUT" ||
-    normalized === "PATCH" ||
-    normalized === "DELETE"
-  ) {
-    return normalized;
+function makeCommandEventsPollUrl(
+  apiOrigin: string,
+  targetId: string,
+  commandId: string,
+  afterSequence?: number
+): string {
+  let url = `${apiOrigin}/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`;
+  if (afterSequence != null) {
+    url += `?afterSequence=${afterSequence}`;
   }
-  throw new Error(`Unsupported relay method: ${method}`);
+  return url;
 }
 
-function splitPathAndQuery(pathWithQuery: string): {
-  path: string;
-  query?: Record<string, string | string[]>;
-} {
-  const url = new URL(pathWithQuery, "http://relay.local");
-  const query = new Map<string, string[]>();
-  for (const [key, value] of url.searchParams.entries()) {
-    const values = query.get(key) ?? [];
-    values.push(value);
-    query.set(key, values);
+function makeInternalCommandEventsPollUrl(
+  apiOrigin: string,
+  targetId: string,
+  commandId: string,
+  afterSequence?: number
+): string {
+  let url = `${apiOrigin}/internal/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`;
+  if (afterSequence != null) {
+    url += `?afterSequence=${afterSequence}`;
   }
-
-  if (query.size === 0) {
-    return { path: url.pathname };
-  }
-
-  return {
-    path: url.pathname,
-    query: Object.fromEntries(
-      Array.from(query.entries()).map(([key, values]) => [
-        key,
-        values.length === 1 ? values[0] : values,
-      ])
-    ),
-  };
+  return url;
 }
 
-function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
-  switch (body.kind) {
-    case "none":
-      return undefined;
-    case "json":
-      return body.value as JsonValue;
-    case "text":
-      return body.value as unknown as JsonValue;
-    case "base64":
-      return body.value as unknown as JsonValue;
-    default:
-      throw new Error("Unsupported relay body kind");
-  }
+function isApiFailurePayload(value: unknown): value is ApiFailurePayload {
+  return (
+    isRecord(value) &&
+    value.success === false &&
+    typeof value.error === "string"
+  );
 }
 
 function toDesktopCommandInput(
   operationId: string,
   request: RelayHttpRequestPayload,
-  streaming: boolean
+  streaming: boolean,
+  signing?: RelayCommandSigningInput
 ): CreateDesktopCommandInput {
   const { path, query } = splitPathAndQuery(request.path);
   if (!isDesktopApiPath(path)) {
-    throw new Error(
-      `Relay path must target /api/gateway/* or /api/engineer/*, got: ${path}`
-    );
+    throw new Error(`Relay path must target /api/gateway/*, got: ${path}`);
   }
 
   return {
+    ...(signing ? { commandId: signing.commandId } : {}),
     operationId,
     method: normalizeMethod(request.method),
     path,
@@ -334,6 +286,13 @@ function toDesktopCommandInput(
     query,
     body: unwrapRelayBody(request.body),
     streaming,
+    ...(signing
+      ? {
+          signature: signing.signature,
+          signaturePayload: signing.signaturePayload,
+          publicKeyFingerprint: signing.publicKeyFingerprint,
+        }
+      : {}),
   };
 }
 
@@ -366,9 +325,8 @@ export function isStreamingGatewayRequest(
     return false;
   }
 
-  const rawPathname = path.split("?")[0];
-  const pathname = normalizeDesktopApiPath(rawPathname);
-  if (!pathname) {
+  const pathname = path.split("?")[0];
+  if (!isDesktopApiPath(pathname)) {
     return false;
   }
   return [
@@ -450,10 +408,17 @@ export class RelayClient {
 
   async executeOperation(
     targetId: string,
-    request: RelayHttpRequestPayload
+    request: RelayHttpRequestPayload,
+    signing?: RelayCommandSigningInput,
+    options: RelayCommandOptions = {}
   ): Promise<{ envelope: RelayResponseEnvelope | null; value: unknown }> {
     const operationId = crypto.randomUUID();
-    const commandInput = toDesktopCommandInput(operationId, request, false);
+    const commandInput = toDesktopCommandInput(
+      operationId,
+      request,
+      false,
+      signing
+    );
     const { commandId } = await this.createCommand(targetId, commandInput);
 
     const abortController = new AbortController();
@@ -513,7 +478,11 @@ export class RelayClient {
           // so the result row is committed before done becomes observable.
           // The retry loop is defensive margin for transient read failures,
           // not a budget matching the gateway's 2s SSE cross-process poll.
-          const recovered = await this.recoverMissedResult(targetId, commandId);
+          const recovered = await this.recoverMissedResult(
+            targetId,
+            commandId,
+            options
+          );
           if (recovered) {
             return recovered;
           }
@@ -529,7 +498,11 @@ export class RelayClient {
     }
 
     // SSE stream ended without any terminal event — poll as last resort
-    const recovered = await this.recoverMissedResult(targetId, commandId);
+    const recovered = await this.recoverMissedResult(
+      targetId,
+      commandId,
+      options
+    );
     if (recovered) {
       return recovered;
     }
@@ -543,7 +516,8 @@ export class RelayClient {
    */
   private async recoverMissedResult(
     targetId: string,
-    commandId: string
+    commandId: string,
+    options: RelayCommandOptions = {}
   ): Promise<{
     envelope: RelayResponseEnvelope | null;
     value: unknown;
@@ -557,7 +531,12 @@ export class RelayClient {
     const delayMs = 750;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const events = await this.pollCommandEvents(targetId, commandId);
+        const events = await this.pollCommandEvents(
+          targetId,
+          commandId,
+          undefined,
+          options
+        );
         const resultEvent = events.find((e) => e.eventType === "result");
         if (resultEvent) {
           const line = mapCommandEventToNdjsonLine(resultEvent);
@@ -589,17 +568,26 @@ export class RelayClient {
   private async pollCommandEvents(
     targetId: string,
     commandId: string,
-    afterSequence?: number
+    afterSequence?: number,
+    options: RelayCommandOptions = {}
   ): Promise<DesktopCommandEvent[]> {
     const useInternalRoute =
+      options.localContent !== true &&
       typeof this.internalApiSecret === "string" &&
       this.internalApiSecret.length > 0;
-    let url = useInternalRoute
-      ? `${this.apiOrigin}/internal/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`
-      : `${this.apiOrigin}/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`;
-    if (afterSequence != null) {
-      url += `?afterSequence=${afterSequence}`;
-    }
+    const url = useInternalRoute
+      ? makeInternalCommandEventsPollUrl(
+          this.apiOrigin,
+          targetId,
+          commandId,
+          afterSequence
+        )
+      : makeCommandEventsPollUrl(
+          this.apiOrigin,
+          targetId,
+          commandId,
+          afterSequence
+        );
     let response = await fetch(url, {
       method: "GET",
       cache: "no-store",
@@ -656,7 +644,8 @@ export class RelayClient {
   private _createPollingStream(
     targetId: string,
     commandId: string,
-    afterSequence: number
+    afterSequence: number,
+    options: RelayCommandOptions = {}
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     const self = this;
@@ -690,7 +679,8 @@ export class RelayClient {
             const events = await self.pollCommandEvents(
               targetId,
               commandId,
-              lastSequence
+              lastSequence,
+              options
             );
             if (cancelled) {
               break;
@@ -760,24 +750,84 @@ export class RelayClient {
 
   async streamOperation(
     targetId: string,
-    request: RelayHttpRequestPayload
+    request: RelayHttpRequestPayload,
+    signing?: RelayCommandSigningInput,
+    options: RelayCommandOptions = {}
   ): Promise<{ stream: ReadableStream<Uint8Array>; commandId: string }> {
     const operationId = crypto.randomUUID();
-    const commandInput = toDesktopCommandInput(operationId, request, true);
+    const commandInput = toDesktopCommandInput(
+      operationId,
+      request,
+      true,
+      signing
+    );
     const { commandId } = await this.createCommand(targetId, commandInput);
-    const stream = this._createPollingStream(targetId, commandId, 0);
+    const stream = this._createPollingStream(targetId, commandId, 0, options);
     return { stream, commandId };
+  }
+
+  async resolveResumeOptions(
+    targetId: string,
+    commandId: string
+  ): Promise<RelayCommandOptions> {
+    if (!(this.internalApiSecret && this.internalApiSecret.length > 0)) {
+      return {};
+    }
+
+    const internalResponse = await fetch(
+      makeInternalCommandEventsPollUrl(this.apiOrigin, targetId, commandId, 0),
+      {
+        method: "GET",
+        cache: "no-store",
+        headers: { "x-internal-secret": this.internalApiSecret },
+      }
+    );
+    if (internalResponse.ok) {
+      return {};
+    }
+
+    const internalPayload = (await internalResponse
+      .json()
+      .catch(() => null)) as unknown;
+    const requiresPublicRead =
+      internalResponse.status === 403 &&
+      isApiFailurePayload(internalPayload) &&
+      internalPayload.code === BranchViewLocalErrorCode.PublicEventReadRequired;
+    if (!requiresPublicRead) {
+      throw new RelayRequestError(
+        isApiFailurePayload(internalPayload)
+          ? internalPayload.error
+          : "Relay resume authorization failed",
+        internalResponse.status,
+        internalPayload
+      );
+    }
+
+    const publicResponse = await fetch(
+      makeCommandEventsPollUrl(this.apiOrigin, targetId, commandId, 0),
+      {
+        method: "GET",
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${this.authToken}` },
+      }
+    );
+    if (!publicResponse.ok) {
+      throw await parsePollError(publicResponse);
+    }
+    return { localContent: true };
   }
 
   resumeStream(
     targetId: string,
     commandId: string,
-    afterSequence: number
+    afterSequence: number,
+    options: RelayCommandOptions = {}
   ): { stream: ReadableStream<Uint8Array>; commandId: string } {
     const stream = this._createPollingStream(
       targetId,
       commandId,
-      afterSequence
+      afterSequence,
+      options
     );
     return { stream, commandId };
   }

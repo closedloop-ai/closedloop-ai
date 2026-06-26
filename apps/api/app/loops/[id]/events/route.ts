@@ -1,23 +1,32 @@
 import type {
   LoopEvent,
+  LoopEventsFilters,
   LoopEventsPaginatedResponse,
+  LoopEventType,
 } from "@repo/api/src/types/loop";
-import { authenticateLoopRunner } from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  conflictResponse,
+  errorResponse,
+  forbiddenResponse,
+  parseBody,
+  scheduleLogFlushAfter,
+  successResponse,
+} from "@/lib/route-utils";
 import {
   type InvalidStatusTransitionError,
   isInvalidStatusTransitionError,
   isReplayDetectedError,
 } from "../../loop-errors";
-import { loopsService } from "../../service";
+import { IngestRunnerEventErrorCode } from "../../loop-ingest-types";
+import { loopsService, scheduleRunnerHeartbeatBump } from "../../service";
 import {
   listLoopEventsQueryValidator,
   loopEventPayloadValidator,
   normalizeLoopEvent,
-  shouldIgnoreEventForTerminalLoop,
   TERMINAL_LOOP_STATUSES,
   validateNormalizedEvent,
 } from "../../validators";
@@ -25,6 +34,12 @@ import {
 const NONCE_UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/**
+ * Extract the runner event nonce from the request header.
+ * The nonce is the second half of the composite eventId (tokenJti:nonce) that
+ * underpins replay detection — a missing nonce would let retries bypass the
+ * unique constraint, so we reject the request rather than fail open.
+ */
 function extractEventNonce(request: Request): string | Response {
   const nonce = request.headers.get("x-loop-event-nonce");
   if (!nonce) {
@@ -44,9 +59,30 @@ function extractEventNonce(request: Request): string | Response {
   return nonce;
 }
 
+/**
+ * Convert the flat {@link LoopEvent} shape into the `{ type, data }` envelope
+ * expected by `ingestRunnerEvent` / `addEvent` for DB storage. Splitting the
+ * `type` discriminant from the remaining fields with a typed rest keeps the
+ * conversion type-checked instead of bridging through `Record<string, unknown>`.
+ */
+function toLoopEventEnvelope(event: LoopEvent): {
+  type: string;
+  data: Record<string, unknown>;
+} {
+  const { type, ...data } = event;
+  return { type, data };
+}
+
+/**
+ * Translate errors thrown by `handleLoopEvent` into appropriate HTTP responses.
+ * - `InvalidStatusTransitionError` from a terminal source status is treated as
+ *   an ignored duplicate (200 { received: true, ignored: true }).
+ * - `InvalidStatusTransitionError` from a non-terminal source is a 409.
+ * Returns null if the error is not one we map; the caller should rethrow.
+ */
 function mapEventHandlingError(error: unknown): Response | null {
   if (isReplayDetectedError(error)) {
-    return errorResponse("Replay detected", new Error("Conflict"), 409);
+    return conflictResponse("Replay detected");
   }
 
   if (isInvalidStatusTransitionError(error)) {
@@ -63,7 +99,6 @@ function mapEventHandlingError(error: unknown): Response | null {
       409
     );
   }
-
   return null;
 }
 
@@ -98,10 +133,17 @@ export const GET = withAuth<
       return errorResponse(msg, new Error(msg), 400);
     }
 
+    const filters: LoopEventsFilters = {
+      type: parsed.data.type as LoopEventType | undefined,
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+      sort: parsed.data.sort,
+    };
+
     const result = await loopsService.getEventsPaginated(
       id,
       user.organizationId,
-      parsed.data
+      filters
     );
     return successResponse(result);
   } catch (error) {
@@ -123,11 +165,14 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const auth = await authenticateLoopRunner(request, loopId);
-    if (!auth.ok) {
-      return auth.response;
+    const claims = await authenticateLoopRunnerRequest(
+      request,
+      loopId,
+      "loops/[id]/events"
+    );
+    if (claims instanceof Response) {
+      return claims;
     }
-    const claims = auth.claims;
 
     const nonce = extractEventNonce(request);
     if (nonce instanceof Response) {
@@ -151,18 +196,50 @@ export async function POST(
       return errorResponse(normalizedError, new Error("Bad Request"), 400);
     }
 
-    const loop = await loopsService.findById(loopId, claims.organizationId);
-    if (!loop) {
-      return errorResponse("Loop not found", new Error("Forbidden"), 403);
+    const ingestResult = await loopsService.ingestRunnerEvent({
+      loopId,
+      tokenJti: claims.tokenId,
+      nonce,
+      event: toLoopEventEnvelope(event),
+      organizationId: claims.organizationId,
+    });
+
+    if (!ingestResult.ok) {
+      switch (ingestResult.code) {
+        case IngestRunnerEventErrorCode.LoopNotFound:
+          return forbiddenResponse({ code: "loop_not_found" });
+        case IngestRunnerEventErrorCode.Replay:
+          return conflictResponse("Replay detected");
+        default: {
+          const _exhaustive: never = ingestResult.code;
+          return errorResponse(
+            "Unhandled ingest error code",
+            new Error(String(_exhaustive)),
+            500
+          );
+        }
+      }
     }
 
-    if (shouldIgnoreEventForTerminalLoop(loop.status, event.type)) {
+    if (ingestResult.outcome === "ignored") {
       return successResponse({
         received: true as const,
         ignored: true as const,
       });
     }
+    // ingestResult.outcome === "inserted" — fall through to handleLoopEvent
 
+    // Fire-and-forget throttled heartbeat bump — see
+    // `scheduleRunnerHeartbeatBump` in ../../service for throttling/CAS details.
+    scheduleLogFlushAfter(
+      scheduleRunnerHeartbeatBump(loopId, claims.organizationId)
+    );
+
+    // Run full orchestration. The orchestrator is the sole writer of the
+    // canonical LoopEvent row — see comment in `ingestRunnerEvent`. A status
+    // transition raced ahead of us (e.g., a duplicate `started` after
+    // RUNNING, or a late `error` after another terminal transition) must
+    // surface as a 200-ignored or 409 rather than an opaque 500.
     let canonicalEvents: LoopEvent[];
     try {
       canonicalEvents = await handleLoopEvent(

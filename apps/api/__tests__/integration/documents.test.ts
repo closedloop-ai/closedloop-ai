@@ -1,5 +1,6 @@
 import { keys } from "@repo/database/keys";
 import { v7 as uuidv7 } from "uuid";
+import { describe, expect, it } from "vitest";
 import { documentService } from "@/app/documents/document-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import {
@@ -35,13 +36,10 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     });
   });
 
-  it("throws error when no project/workstream provided for non-template artifacts", async () => {
-    // This validation happens before any database operation, so we don't need autoRollbackTransaction
+  it("throws error when no project provided for non-template artifacts", async () => {
     const testOrgId = uuidv7();
     const testUserId = uuidv7();
 
-    // Create artifact without projectId or workstreamId - should throw error
-    // Type assertion needed to test runtime validation of missing projectId
     await expect(
       documentService.create(testOrgId, testUserId, {
         type: "PRD",
@@ -49,7 +47,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
         content: "Feature details...",
       } as Parameters<typeof documentService.create>[2])
     ).rejects.toThrow(
-      "Artifacts (except templates) must be associated with a project or workstream"
+      "Artifacts (except templates) must be associated with a project"
     );
   });
 

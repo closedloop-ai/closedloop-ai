@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   createServer,
   type IncomingHttpHeaders,
@@ -6,9 +7,19 @@ import {
   type ServerResponse,
 } from "node:http";
 import {
+  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+  type DesktopAgentSessionsAck,
+  DesktopAgentSessionsAckReason,
+} from "@repo/api/src/types/agent-session";
+import {
   DESKTOP_POP_HEADER_NAMES,
   type DesktopPopHeaderName,
 } from "@repo/api/src/types/api-key";
+import {
+  DESKTOP_ANALYTICS_SOCKET_EVENT,
+  type DesktopAnalyticsAck,
+  DesktopAnalyticsAckReason,
+} from "@repo/api/src/types/desktop-analytics";
 import { log } from "@repo/observability/log";
 import {
   ConnectionState,
@@ -18,10 +29,29 @@ import {
 import { ORIGIN } from "@repo/observability/telemetry/origin";
 import {
   ErrorClass,
+  isLoopPerfTelemetryRateLimitBypass,
   TelemetryCategory,
 } from "@repo/observability/telemetry/schema";
+import { createRedisClient } from "@repo/redis";
 import { Server, type Socket } from "socket.io";
-import { isRateLimited, remove as removeRateLimit } from "./rate-limiter";
+import {
+  isRoutablePrivateIpv4,
+  resolveInstanceId,
+  resolvePrivateIp,
+} from "./instance-discovery.js";
+import { registerKeylessTelemetryNamespace } from "./keyless-otlp-ingress.js";
+import {
+  createRateLimiter,
+  isRateLimited,
+  remove as removeRateLimit,
+} from "./rate-limiter";
+import {
+  InMemoryTargetRegistry,
+  type InstanceInfo,
+  RedisTargetRegistry,
+  type TargetMetadata,
+  type TargetRegistry,
+} from "./target-registry.js";
 
 const RELAY_PORT = Number(
   process.env.RELAY_PORT ?? process.env.MCP_PORT ?? "3020"
@@ -39,6 +69,52 @@ const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
 );
 const SHUTDOWN_FLUSH_DEADLINE_MS = 5000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
+const MAX_PENDING_BUFFER_SIZE = 100;
+const RELAY_RUNTIME_MODE = process.env.RELAY_RUNTIME_MODE ?? "inmemory";
+const RELAY_INTERNAL_ALLOWED_IPS = (
+  process.env.RELAY_INTERNAL_ALLOWED_IPS ?? ""
+)
+  .split(",")
+  .map((v) => v.trim())
+  .filter(Boolean);
+
+const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
+
+/**
+ * Socket.IO CORS origin guard. Desktop workers connect via Node
+ * socket.io-client and send no browser Origin header, so those are always
+ * allowed. Any request that carries an Origin is a browser — none are expected
+ * here — so it is rejected (localhost permitted in non-production for local
+ * tooling). This keeps the credentialed `/desktop-gateway` namespace closed to
+ * arbitrary sites even if the websocket-only transport is ever broadened.
+ */
+function isAllowedSocketOrigin(origin: string | undefined): boolean {
+  if (!origin) {
+    return true;
+  }
+  return (
+    process.env.NODE_ENV !== "production" && LOCALHOST_ORIGIN_REGEX.test(origin)
+  );
+}
+
+let targetRegistry: TargetRegistry = new InMemoryTargetRegistry();
+let relayInstanceId = "unknown";
+let ownerGeneration = 0;
+let instanceKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+const LOOP_PERF_TELEMETRY_RATE_LIMIT_WINDOW_MS = 60_000;
+let loopPerfTelemetryRateLimitPerMinute = Number(
+  process.env.LOOP_PERF_TELEMETRY_RATE_LIMIT_PER_MINUTE ?? "240"
+);
+if (
+  !Number.isFinite(loopPerfTelemetryRateLimitPerMinute) ||
+  loopPerfTelemetryRateLimitPerMinute <= 0
+) {
+  log.warn(
+    "Invalid LOOP_PERF_TELEMETRY_RATE_LIMIT_PER_MINUTE, defaulting to 240"
+  );
+  loopPerfTelemetryRateLimitPerMinute = 240;
+}
 
 if (!INTERNAL_API_SECRET) {
   log.error("INTERNAL_API_SECRET is required");
@@ -59,17 +135,23 @@ type WorkerContext = {
   targetId: string;
   organizationId: string;
   userId: string;
+  clerkUserId?: string;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   degradedTimer: ReturnType<typeof setTimeout> | null;
   wasDegraded: boolean;
   gatewaySessionId?: string;
   pluginVersion?: string;
+  ownerToken?: string;
 };
 
 type DesktopPopHeaders = Partial<Record<DesktopPopHeaderName, string>>;
 
 const workersByTargetId = new Map<string, WorkerContext>();
 const socketToTarget = new Map<string, string>();
+const loopPerfTelemetryRateLimiter = createRateLimiter(
+  loopPerfTelemetryRateLimitPerMinute,
+  LOOP_PERF_TELEMETRY_RATE_LIMIT_WINDOW_MS
+);
 
 function safeEmitConnectionStateCount(
   metric: Extract<ProtocolMetric, { metric: "connection_state_count" }>
@@ -151,6 +233,16 @@ let disconnectCount = 0;
 let reconnectCount = 0;
 // Per-target timestamp of last successful heartbeat ack (ms since epoch).
 const lastHeartbeatAckAt = new Map<string, number>();
+const DEFAULT_VERCEL_CALL_TIMEOUT_MS = 10_000;
+const AGENT_SESSIONS_SOCKET_EVENT_TIMEOUT_MS = 30_000;
+// Cross-instance proxy dispatch must finish well inside the API caller's budget.
+// apps/api/lib/loops/loop-desktop.ts aborts the POST /dispatch request after
+// 5000ms; a peer timeout at or above that lets a slow peer outlive the upstream
+// request, so the API reports failure while the peer is still working. Keep this
+// comfortably below 5000ms so the relay can return an explicit not-delivered
+// result before the caller gives up.
+export const API_DISPATCH_CALLER_TIMEOUT_MS = 5000;
+export const PEER_DISPATCH_TIMEOUT_MS = 4000;
 
 // ---------------------------------------------------------------------------
 // Vercel API client
@@ -159,7 +251,8 @@ const lastHeartbeatAckAt = new Map<string, number>();
 async function callVercel<T = Record<string, unknown>>(
   path: string,
   body: unknown,
-  extraHeaders?: DesktopPopHeaders
+  extraHeaders?: DesktopPopHeaders,
+  timeoutMs = DEFAULT_VERCEL_CALL_TIMEOUT_MS
 ): Promise<{
   ok: boolean;
   status: number;
@@ -176,7 +269,7 @@ async function callVercel<T = Record<string, unknown>>(
       ...(extraHeaders ?? {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const rawBody = await response.text();
   let data: T | null = null;
@@ -202,7 +295,7 @@ async function validateApiKeyViaApi(
   desktopPopHeaders?: DesktopPopHeaders
 ): Promise<{
   ok: boolean;
-  context?: { organizationId: string; userId: string };
+  context?: { organizationId: string; userId: string; clerkUserId?: string };
 }> {
   log.info("validateApiKeyViaApi: calling API", {
     hasApiKey: Boolean(apiKey),
@@ -283,12 +376,18 @@ async function validateApiKeyViaApi(
       .organizationId as string,
   });
 
+  const clerkUserId =
+    typeof (payload as Record<string, unknown>).clerkUserId === "string"
+      ? ((payload as Record<string, unknown>).clerkUserId as string)
+      : undefined;
+
   return {
     ok: true,
     context: {
       organizationId: (payload as Record<string, unknown>)
         .organizationId as string,
       userId: (payload as Record<string, unknown>).userId as string,
+      ...(clerkUserId ? { clerkUserId } : {}),
     },
   };
 }
@@ -296,13 +395,15 @@ async function validateApiKeyViaApi(
 async function forwardSocketEvent(
   event: string,
   payload: unknown,
-  auth?: { organizationId: string; userId: string },
+  auth?: { organizationId: string; userId: string; clerkUserId?: string },
   targetId?: string,
-  gatewaySessionId?: string
+  gatewaySessionId?: string,
+  relaySocketId?: string
 ): Promise<{
   targetId?: string;
   gatewaySessionId?: string;
   emit: Array<{ event: string; payload: unknown }>;
+  ack?: unknown;
   disconnect?: boolean;
 }> {
   if (event === "_relay.validate") {
@@ -339,13 +440,21 @@ async function forwardSocketEvent(
   }
 
   const { ok, data, status, responseUrl, contentType, rawBody } =
-    await callVercel("/internal/relay/socket-event", {
-      event,
-      payload,
-      auth,
-      targetId,
-      gatewaySessionId,
-    });
+    await callVercel(
+      "/internal/relay/socket-event",
+      {
+        event,
+        payload,
+        auth,
+        targetId,
+        gatewaySessionId,
+        relaySocketId,
+      },
+      undefined,
+      event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT
+        ? AGENT_SESSIONS_SOCKET_EVENT_TIMEOUT_MS
+        : DEFAULT_VERCEL_CALL_TIMEOUT_MS
+    );
   if (!(ok && data)) {
     log.error("Vercel socket-event call failed", {
       event,
@@ -374,7 +483,68 @@ async function forwardSocketEvent(
     targetId?: string;
     gatewaySessionId?: string;
     emit: Array<{ event: string; payload: unknown }>;
+    ack?: unknown;
     disconnect?: boolean;
+  };
+}
+
+const knownDesktopAnalyticsAckReasons = new Set<string>(
+  Object.values(DesktopAnalyticsAckReason)
+);
+
+function toDesktopAnalyticsAck(value: unknown): DesktopAnalyticsAck {
+  if (!value || typeof value !== "object") {
+    return {
+      accepted: false,
+      reason: DesktopAnalyticsAckReason.ValidationFailed,
+    };
+  }
+  const record = value as Record<string, unknown>;
+  if (record.accepted === true) {
+    return { accepted: true };
+  }
+  if (
+    typeof record.reason === "string" &&
+    knownDesktopAnalyticsAckReasons.has(record.reason)
+  ) {
+    return {
+      accepted: false,
+      reason: record.reason as DesktopAnalyticsAckReason,
+    };
+  }
+  return {
+    accepted: false,
+    reason: DesktopAnalyticsAckReason.ValidationFailed,
+  };
+}
+
+const knownAgentSessionsAckReasons = new Set<string>(
+  Object.values(DesktopAgentSessionsAckReason)
+);
+
+function toDesktopAgentSessionsAck(value: unknown): DesktopAgentSessionsAck {
+  if (!value || typeof value !== "object") {
+    return {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.IngestionFailed,
+    };
+  }
+  const record = value as Record<string, unknown>;
+  if (record.accepted === true) {
+    return { accepted: true };
+  }
+  if (
+    typeof record.reason === "string" &&
+    knownAgentSessionsAckReasons.has(record.reason)
+  ) {
+    return {
+      accepted: false,
+      reason: record.reason as DesktopAgentSessionsAckReason,
+    };
+  }
+  return {
+    accepted: false,
+    reason: DesktopAgentSessionsAckReason.IngestionFailed,
   };
 }
 
@@ -423,6 +593,45 @@ function validateSecret(headerValue: string | string[] | undefined): boolean {
   return timingSafeEqual(expectedDigest, actualDigest);
 }
 
+type DispatchPayload = { targetId: string; operation: unknown };
+
+type DispatchParseResult =
+  | { ok: true; payload: DispatchPayload }
+  | { ok: false; error: string };
+
+// Pure validation, decoupled from the HTTP cycle so it can be unit-tested in
+// isolation. Callers own the response: parseDispatchBody below sends the 400.
+export function parseDispatchPayload(raw: string): DispatchParseResult {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "Invalid JSON" };
+  }
+
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    typeof (body as Record<string, unknown>).targetId !== "string"
+  ) {
+    return { ok: false, error: "Missing targetId" };
+  }
+
+  return { ok: true, payload: body as DispatchPayload };
+}
+
+async function parseDispatchBody(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<DispatchPayload | null> {
+  const result = parseDispatchPayload(await readBody(req));
+  if (!result.ok) {
+    jsonResponse(res, 400, { error: result.error });
+    return null;
+  }
+  return result.payload;
+}
+
 async function handleDispatch(
   req: IncomingMessage,
   res: ServerResponse
@@ -432,31 +641,27 @@ async function handleDispatch(
     return;
   }
 
-  const raw = await readBody(req);
-  let payload: unknown;
-  try {
-    payload = JSON.parse(raw);
-  } catch {
-    jsonResponse(res, 400, { error: "Invalid JSON" });
+  const payload = await parseDispatchBody(req, res);
+  if (!payload) {
     return;
   }
 
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    !("targetId" in payload) ||
-    typeof (payload as Record<string, unknown>).targetId !== "string"
-  ) {
-    jsonResponse(res, 400, { error: "Missing targetId" });
-    return;
-  }
-
-  const { targetId, operation } = payload as {
-    targetId: string;
-    operation: unknown;
-  };
+  const { targetId, operation } = payload;
   const worker = workersByTargetId.get(targetId);
-  if (!worker) {
+
+  // Ownership check: in Redis mode the shared registry — not this process's
+  // socket map — is the source of truth for which relay instance currently owns
+  // a target. A desktop that reconnected to a different relay re-registers in
+  // Redis while this instance may still hold a stale local socket for the same
+  // target. Emitting to that stale socket would double-route the command, so
+  // when the registry attributes the target to another owner we proxy to the
+  // registered owner (or report not connected) rather than emitting locally.
+  if (!(worker && (await isLocalWorkerCurrentOwner(targetId, worker)))) {
+    const proxyResult = await tryProxyDispatch(targetId, operation);
+    if (proxyResult) {
+      jsonResponse(res, 200, proxyResult);
+      return;
+    }
     jsonResponse(res, 200, {
       delivered: false,
       reason: "target_not_connected",
@@ -464,8 +669,6 @@ async function handleDispatch(
     return;
   }
 
-  // Forward the command to the connected worker socket.
-  // The operation is already in wire-envelope format from the Vercel API.
   log.info("Dispatch: emitting desktop.command to worker", {
     targetId,
     socketId: worker.socket.id,
@@ -500,6 +703,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === "/internal/dispatch" && req.method === "POST") {
+    try {
+      await handleInternalDispatch(req, res);
+    } catch (error) {
+      log.error("Internal dispatch handler error", { error });
+      jsonResponse(res, 500, { error: "Internal server error" });
+    }
+    return;
+  }
+
   jsonResponse(res, 404, { error: "Not found" });
 });
 
@@ -509,9 +722,28 @@ const server = createServer(async (req, res) => {
 
 const io = new Server(server, {
   transports: ["websocket"],
-  // CORS is irrelevant — only desktop workers connect via websocket with
-  // API key auth, not browser clients. No browser origins will reach this server.
-  cors: { origin: true, credentials: true },
+  // Only desktop workers connect, via websocket with API key auth — not browser
+  // clients. The origin guard rejects any browser Origin as defense-in-depth so
+  // that re-adding a polling transport could never expose this credentialed
+  // namespace to arbitrary sites.
+  cors: {
+    origin: (origin, callback) => callback(null, isAllowedSocketOrigin(origin)),
+    credentials: true,
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Keyless telemetry-only OTLP ingress (FEA-1989 / PRD-481 C1). A separate,
+// UNAUTHENTICATED `/telemetry` namespace (multiplexed over the same single
+// connection) that proxies opaque OTLP to a fixed collector origin. It shares
+// no state with — and grants no access to — the authenticated command/DB-sync
+// namespace below. Fails closed when RELAY_OTLP_COLLECTOR_URL is unset.
+// ---------------------------------------------------------------------------
+registerKeylessTelemetryNamespace(io, {
+  collectorUrl: process.env.RELAY_OTLP_COLLECTOR_URL,
+  allowPrivateCollector:
+    process.env.RELAY_OTLP_ALLOW_PRIVATE_COLLECTOR_URL === "true",
+  isProduction: process.env.NODE_ENV === "production",
 });
 
 const namespace = io.of("/desktop-gateway");
@@ -676,10 +908,57 @@ function cleanupExistingWorker(
   });
 }
 
+function pushPendingBuffer(
+  socket: Socket,
+  event: string,
+  ...args: unknown[]
+): void {
+  if (socket.data.pendingBuffer.length >= MAX_PENDING_BUFFER_SIZE) {
+    log.warn("Pending buffer full, dropping event", {
+      socketId: socket.id,
+      event,
+    });
+    if (event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT) {
+      (args[1] as ((response: DesktopAgentSessionsAck) => void) | undefined)?.({
+        accepted: false,
+        reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      });
+    } else if (event === DESKTOP_ANALYTICS_SOCKET_EVENT) {
+      (args[1] as ((response: DesktopAnalyticsAck) => void) | undefined)?.({
+        accepted: false,
+        reason: DesktopAnalyticsAckReason.ValidationFailed,
+      });
+    }
+    return;
+  }
+  socket.data.pendingBuffer.push({ event, args });
+}
+
+function drainPendingBuffer(socket: Socket): void {
+  const pending = socket.data.pendingBuffer;
+  if (!pending || pending.length === 0) {
+    return;
+  }
+  socket.data.pendingBuffer = [];
+  for (const { event, args } of pending) {
+    if (event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT) {
+      (args[1] as ((response: DesktopAgentSessionsAck) => void) | undefined)?.({
+        accepted: false,
+        reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      });
+    } else if (event === DESKTOP_ANALYTICS_SOCKET_EVENT) {
+      (args[1] as ((response: DesktopAnalyticsAck) => void) | undefined)?.({
+        accepted: false,
+        reason: DesktopAnalyticsAckReason.ValidationFailed,
+      });
+    }
+  }
+}
+
 function registerWorker(
   socket: Socket,
   targetId: string,
-  auth: { organizationId: string; userId: string },
+  auth: { organizationId: string; userId: string; clerkUserId?: string },
   gatewaySessionId?: string,
   pluginVersion?: string
 ): void {
@@ -715,6 +994,11 @@ function registerWorker(
         const prev = lastHeartbeatAckAt.get(targetId);
         lastHeartbeatSuccess = now;
         lastHeartbeatAckAt.set(targetId, now);
+        if (workerContext.ownerToken) {
+          targetRegistry
+            .refreshTtl(targetId, workerContext.ownerToken)
+            .catch(() => {});
+        }
         // heartbeat_freshness = elapsed ms since previous successful ack.
         // Only emit once we have a previous ack to compare against.
         if (prev !== undefined) {
@@ -788,6 +1072,27 @@ function registerWorker(
   workersByTargetId.set(targetId, workerContext);
   socketToTarget.set(socket.id, targetId);
 
+  const token = `${relayInstanceId}:${socket.id}:${++ownerGeneration}`;
+  workerContext.ownerToken = token;
+  targetRegistry
+    .register(targetId, {
+      instanceId: relayInstanceId,
+      socketId: socket.id,
+      ownerToken: token,
+      organizationId: auth.organizationId,
+      userId: auth.userId,
+      connectedAt: Date.now(),
+    })
+    .catch(() => {});
+
+  const pending = socket.data.pendingBuffer;
+  if (pending && pending.length > 0) {
+    socket.data.pendingBuffer = [];
+    for (const { event, args } of pending) {
+      EventEmitter.prototype.emit.call(socket, event, ...args);
+    }
+  }
+
   if (isFirstRegistration) {
     emitConnectionState(ConnectionState.Online, targetId, gatewaySessionId);
   }
@@ -820,6 +1125,7 @@ namespace.on("connection", (socket) => {
   const auth = socket.data.auth as {
     organizationId: string;
     userId: string;
+    clerkUserId?: string;
   };
 
   connectCount += 1;
@@ -837,6 +1143,9 @@ namespace.on("connection", (socket) => {
     transport: socket.conn.transport.name,
   });
 
+  // Buffer for events that arrive before desktop.hello registration completes
+  socket.data.pendingBuffer = [];
+
   // Handle desktop.hello — registers target, returns pending commands
   socket.on("desktop.hello", async (payload: unknown) => {
     log.info("Received desktop.hello", {
@@ -852,6 +1161,7 @@ namespace.on("connection", (socket) => {
         log.warn("desktop.hello rejected by API, disconnecting", {
           socketId: socket.id,
         });
+        drainPendingBuffer(socket);
         socket.disconnect(true);
         return;
       }
@@ -880,6 +1190,8 @@ namespace.on("connection", (socket) => {
           gatewaySessionId,
           pluginVersion
         );
+      } else {
+        drainPendingBuffer(socket);
       }
 
       log.info("desktop.hello processed", {
@@ -901,6 +1213,7 @@ namespace.on("connection", (socket) => {
         userId: auth.userId,
         error,
       });
+      drainPendingBuffer(socket);
       socket.disconnect(true);
     }
   });
@@ -910,9 +1223,7 @@ namespace.on("connection", (socket) => {
   socket.on("desktop.command.event", (payload: unknown) => {
     const targetId = socketToTarget.get(socket.id);
     if (!targetId) {
-      log.warn("Received command.event but no targetId for socket", {
-        socketId: socket.id,
-      });
+      pushPendingBuffer(socket, "desktop.command.event", payload);
       return;
     }
 
@@ -964,9 +1275,7 @@ namespace.on("connection", (socket) => {
   socket.on("desktop.command.ack", async (payload: unknown) => {
     const targetId = socketToTarget.get(socket.id);
     if (!targetId) {
-      log.warn("Received command.ack but no targetId for socket", {
-        socketId: socket.id,
-      });
+      pushPendingBuffer(socket, "desktop.command.ack", payload);
       return;
     }
 
@@ -1013,16 +1322,22 @@ namespace.on("connection", (socket) => {
   socket.on("desktop.telemetry", (payload: unknown) => {
     const targetId = socketToTarget.get(socket.id);
     if (!targetId) {
-      log.warn("Received desktop.telemetry but no targetId for socket", {
-        socketId: socket.id,
-      });
+      pushPendingBuffer(socket, "desktop.telemetry", payload);
       return;
     }
 
-    if (isRateLimited(socket.id)) {
+    const loopPerfRateLimitBypass = isLoopPerfTelemetryRateLimitBypass(
+      payload,
+      targetId
+    );
+    const rateLimited = loopPerfRateLimitBypass
+      ? loopPerfTelemetryRateLimiter.isRateLimited(socket.id)
+      : isRateLimited(socket.id);
+    if (rateLimited) {
       log.info("desktop.telemetry rate_limited", {
         socketId: socket.id,
         targetId,
+        limiter: loopPerfRateLimitBypass ? "loopPerf" : "generic",
       });
       return;
     }
@@ -1058,10 +1373,97 @@ namespace.on("connection", (socket) => {
       });
   });
 
+  socket.on(
+    DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+    (payload: unknown, ack?: (response: DesktopAgentSessionsAck) => void) => {
+      const targetId = socketToTarget.get(socket.id);
+      if (!targetId) {
+        pushPendingBuffer(
+          socket,
+          DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+          payload,
+          ack
+        );
+        return;
+      }
+
+      const worker = workersByTargetId.get(targetId);
+      const gatewaySessionId = worker?.gatewaySessionId;
+
+      forwardSocketEvent(
+        DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+        payload,
+        auth,
+        targetId,
+        gatewaySessionId,
+        socket.id
+      )
+        .then((result) => {
+          ack?.(toDesktopAgentSessionsAck(result.ack));
+        })
+        .catch((error) => {
+          log.error("Failed forwarding desktop.agent-sessions", {
+            socketId: socket.id,
+            targetId,
+            gatewaySessionId,
+            error,
+          });
+          ack?.({
+            accepted: false,
+            reason: DesktopAgentSessionsAckReason.IngestionFailed,
+          });
+        });
+    }
+  );
+
+  socket.on(
+    DESKTOP_ANALYTICS_SOCKET_EVENT,
+    (payload: unknown, ack?: (response: DesktopAnalyticsAck) => void) => {
+      const targetId = socketToTarget.get(socket.id);
+      if (!targetId) {
+        pushPendingBuffer(socket, DESKTOP_ANALYTICS_SOCKET_EVENT, payload, ack);
+        return;
+      }
+
+      const worker = workersByTargetId.get(targetId);
+      const gatewaySessionId = worker?.gatewaySessionId;
+      const pluginVersion = worker?.pluginVersion;
+      const enrichedPayload =
+        typeof payload === "object" && payload !== null
+          ? { ...(payload as Record<string, unknown>), pluginVersion }
+          : { pluginVersion };
+
+      forwardSocketEvent(
+        DESKTOP_ANALYTICS_SOCKET_EVENT,
+        enrichedPayload,
+        auth,
+        targetId,
+        gatewaySessionId,
+        socket.id
+      )
+        .then((result) => {
+          ack?.(toDesktopAnalyticsAck(result.ack));
+        })
+        .catch((error) => {
+          log.error("Failed forwarding desktop.analytics", {
+            socketId: socket.id,
+            targetId,
+            gatewaySessionId,
+            error,
+          });
+          ack?.({
+            accepted: false,
+            reason: DesktopAnalyticsAckReason.ValidationFailed,
+          });
+        });
+    }
+  );
+
   // Handle presence — forward to Vercel for heartbeat
   socket.on("desktop.presence", async () => {
     const targetId = socketToTarget.get(socket.id);
     if (!targetId) {
+      pushPendingBuffer(socket, "desktop.presence");
       return;
     }
 
@@ -1090,6 +1492,7 @@ namespace.on("connection", (socket) => {
   socket.on("disconnect", (reason: string) => {
     socketEventQueues.delete(socket.id);
     removeRateLimit(socket.id);
+    loopPerfTelemetryRateLimiter.remove(socket.id);
 
     const targetId = socketToTarget.get(socket.id);
     socketToTarget.delete(socket.id);
@@ -1107,6 +1510,11 @@ namespace.on("connection", (socket) => {
         }
         workersByTargetId.delete(targetId);
         lastHeartbeatAckAt.delete(targetId);
+        if (worker.ownerToken) {
+          targetRegistry
+            .deregister(targetId, worker.ownerToken)
+            .catch(() => {});
+        }
 
         disconnectCount += 1;
         emitProtocolMetric({
@@ -1187,6 +1595,8 @@ export async function startRelayServer(host = "0.0.0.0"): Promise<void> {
     return;
   }
 
+  await initializeTargetRegistry();
+
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {
       server.off("listening", onListening);
@@ -1222,6 +1632,16 @@ export async function stopRelayServer(): Promise<void> {
 
 async function handleShutdown(): Promise<void> {
   try {
+    if (instanceKeepaliveTimer) {
+      clearInterval(instanceKeepaliveTimer);
+      instanceKeepaliveTimer = null;
+    }
+    if (RELAY_RUNTIME_MODE === "redis") {
+      await targetRegistry
+        .deregisterAllByInstance(relayInstanceId)
+        .catch(() => {});
+      await targetRegistry.deregisterInstance(relayInstanceId).catch(() => {});
+    }
     for (const [targetId, ctx] of workersByTargetId) {
       emitConnectionState(
         ConnectionState.Disconnected,
@@ -1250,6 +1670,298 @@ async function handleShutdown(): Promise<void> {
     // swallow — must still exit
   }
   process.exit(0);
+}
+
+async function initializeTargetRegistry(): Promise<void> {
+  if (RELAY_RUNTIME_MODE !== "redis" || !process.env.REDIS_URL) {
+    log.info("[relay] target registry: in-memory mode");
+    return;
+  }
+
+  // A routable private IP is mandatory for Redis mode: peers reach this instance
+  // for cross-instance dispatch via the address published in the registry.
+  // Without one (ECS metadata missing/malformed) we must NOT publish a loopback
+  // address — that would route peers back to their own host and make a live
+  // remote target look unreachable. Degrade to in-memory mode instead.
+  const privateIp = await resolvePrivateIp();
+  if (!privateIp) {
+    log.warn(
+      "[relay] redis mode requested but no routable private IP could be resolved; falling back to in-memory mode"
+    );
+    return;
+  }
+
+  try {
+    const redisClient = createRedisClient({
+      url: process.env.REDIS_URL,
+      keyPrefix: "relay:",
+      logger: log,
+      onError: (error) =>
+        log.warn("[relay] redis error", { error: error.message }),
+    });
+    await redisClient.connect();
+    targetRegistry = new RedisTargetRegistry(redisClient);
+
+    relayInstanceId = await resolveInstanceId();
+
+    await targetRegistry.registerInstance(relayInstanceId, {
+      privateIp,
+      port: RELAY_PORT,
+      startedAt: Date.now(),
+    });
+
+    instanceKeepaliveTimer = setInterval(async () => {
+      try {
+        await targetRegistry.registerInstance(relayInstanceId, {
+          privateIp,
+          port: RELAY_PORT,
+          startedAt: Date.now(),
+        });
+      } catch {
+        // Non-fatal
+      }
+    }, 15_000);
+
+    log.info(
+      `[relay] target registry: redis mode (instance: ${relayInstanceId}, ip: ${privateIp})`
+    );
+  } catch (error) {
+    targetRegistry = new InMemoryTargetRegistry();
+    log.warn("[relay] redis init failed, falling back to in-memory mode", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function tryProxyDispatch(
+  targetId: string,
+  operation: unknown
+): Promise<{ delivered: boolean; reason?: string } | null> {
+  const targetMeta = await targetRegistry.lookup(targetId);
+  if (!targetMeta || targetMeta.instanceId === relayInstanceId) {
+    return null;
+  }
+
+  const instanceInfo = await targetRegistry.lookupInstance(
+    targetMeta.instanceId
+  );
+  if (!instanceInfo) {
+    return null;
+  }
+
+  // SSRF guard: instanceInfo is read from Redis, which must be treated as
+  // untrusted input. A poisoned or malformed registry record could otherwise
+  // redirect this request — carrying the internal shared secret — to an
+  // attacker-controlled host. Only proxy (and attach the secret) when the peer
+  // address is an allowed private/VPC target on the expected relay port.
+  if (!isAllowedPeerInstance(instanceInfo)) {
+    log.warn("Refusing to proxy dispatch to disallowed peer instance", {
+      targetId,
+      peerInstanceId: targetMeta.instanceId,
+      peerPrivateIp: instanceInfo.privateIp,
+      peerPort: instanceInfo.port,
+    });
+    return null;
+  }
+
+  try {
+    const proxyRes = await fetch(
+      `http://${instanceInfo.privateIp}:${instanceInfo.port}/internal/dispatch`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-secret": INTERNAL_API_SECRET as string,
+        },
+        body: JSON.stringify({ targetId, operation }),
+        signal: AbortSignal.timeout(PEER_DISPATCH_TIMEOUT_MS),
+      }
+    );
+
+    // Treat any non-2xx peer status as not-delivered. Without this, a peer
+    // 401/403/500 with a JSON error body would be forwarded verbatim with a 200,
+    // and the API caller (which only treats delivered === false as failure)
+    // would report the command as successfully dispatched.
+    if (!proxyRes.ok) {
+      log.warn("Peer instance returned non-2xx for proxied dispatch", {
+        targetId,
+        peerInstanceId: targetMeta.instanceId,
+        status: proxyRes.status,
+      });
+      return null;
+    }
+
+    const proxyResult = (await proxyRes.json()) as {
+      delivered: boolean;
+      reason?: string;
+    };
+
+    // Reject a 2xx response whose body does not match the dispatch envelope,
+    // rather than passing an undefined `delivered` through to the caller.
+    if (typeof proxyResult?.delivered !== "boolean") {
+      log.warn("Peer instance returned a malformed dispatch response", {
+        targetId,
+        peerInstanceId: targetMeta.instanceId,
+      });
+      return null;
+    }
+
+    if (
+      !proxyResult.delivered &&
+      proxyResult.reason === "target_not_connected"
+    ) {
+      targetRegistry
+        .deregister(targetId, targetMeta.ownerToken)
+        .catch(() => {});
+    }
+
+    return proxyResult;
+  } catch (error) {
+    // A network error, timeout (AbortSignal), or non-JSON body from the peer
+    // relay all land here (non-2xx statuses are handled above). We return null
+    // and the caller reports "target_not_connected" (the wire contract the
+    // Vercel gateway consumes), but log the underlying cause so a
+    // down/unreachable/slow peer is distinguishable from a genuinely absent
+    // target during debugging.
+    log.warn("Proxy dispatch to peer instance failed", {
+      targetId,
+      peerInstanceId: targetMeta.instanceId,
+      peerPrivateIp: instanceInfo.privateIp,
+      peerPort: instanceInfo.port,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function handleInternalDispatch(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  if (!validateSecret(req.headers["x-internal-secret"])) {
+    jsonResponse(res, 401, { error: "Unauthorized" });
+    return;
+  }
+
+  // The timing-safe shared secret (validateSecret, above) is the security
+  // boundary for this endpoint. The CIDR allowlist is optional defense-in-depth
+  // for deployments that want to additionally restrict source IPs to the VPC.
+  // When unset, the secret alone authorizes — a localhost-only fallback would
+  // be wrong here, since legitimate cross-instance proxy traffic originates
+  // from peer relays' private IPs, never loopback.
+  if (RELAY_INTERNAL_ALLOWED_IPS.length > 0) {
+    const sourceIp = req.socket.remoteAddress ?? "";
+    const allowed = RELAY_INTERNAL_ALLOWED_IPS.some((cidr) =>
+      isAddressInCidr(sourceIp, cidr)
+    );
+    if (!allowed) {
+      jsonResponse(res, 403, { error: "Forbidden" });
+      return;
+    }
+  }
+
+  const payload = await parseDispatchBody(req, res);
+  if (!payload) {
+    return;
+  }
+
+  const { targetId, operation } = payload;
+  const worker = workersByTargetId.get(targetId);
+  if (!worker) {
+    jsonResponse(res, 200, {
+      delivered: false,
+      reason: "target_not_connected",
+    });
+    return;
+  }
+
+  worker.socket.emit("desktop.command", operation);
+  jsonResponse(res, 200, { delivered: true });
+}
+
+const IPV6_MAPPED_RE = /^::ffff:/;
+
+export function isAddressInCidr(address: string, cidr: string): boolean {
+  const [subnet, bits] = cidr.split("/");
+  if (!(subnet && bits)) {
+    return address === cidr;
+  }
+  const prefixLen = Number(bits);
+  // Fail closed on malformed or out-of-range prefixes (e.g. "/foo", "/-1",
+  // "/40"). A malformed allowlist entry must never match every address.
+  // Mirrors the MCP counterpart in apps/mcp/src/index.ts.
+  if (!Number.isInteger(prefixLen) || prefixLen < 0 || prefixLen > 32) {
+    return false;
+  }
+  // "/0" legitimately matches all addresses. Handle it explicitly: the mask
+  // computation below would shift by 32, which JS evaluates as a shift by 0
+  // (1 << 32 === 1), producing a full mask instead of an empty one.
+  if (prefixLen === 0) {
+    return true;
+  }
+  // biome-ignore lint/suspicious/noBitwiseOperators: IP address mask computation requires bitwise ops
+  const mask = ~((1 << (32 - prefixLen)) - 1) >>> 0;
+  const ipNum = ipToNumber(address.replace(IPV6_MAPPED_RE, ""));
+  const subnetNum = ipToNumber(subnet);
+  // biome-ignore lint/suspicious/noBitwiseOperators: IP subnet matching requires bitwise AND
+  return (ipNum & mask) === (subnetNum & mask);
+}
+
+function ipToNumber(ip: string): number {
+  let result = 0;
+  for (const octet of ip.split(".")) {
+    // biome-ignore lint/suspicious/noBitwiseOperators: packing IPv4 octets into a 32-bit integer
+    result = (result << 8) + Number(octet);
+  }
+  // biome-ignore lint/suspicious/noBitwiseOperators: unsigned 32-bit conversion
+  return result >>> 0;
+}
+
+// Egress allowlist for cross-instance dispatch. The peer address comes from the
+// Redis registry, so it is untrusted: validate it before sending the internal
+// secret. The port must match this deployment's relay port (every relay task
+// listens on the same port), and the IP must be either inside the configured
+// CIDR allowlist or — when none is configured — an RFC1918 private address.
+export function isAllowedPeerInstance(info: InstanceInfo): boolean {
+  if (typeof info.privateIp !== "string" || !Number.isInteger(info.port)) {
+    return false;
+  }
+  if (info.port !== RELAY_PORT) {
+    return false;
+  }
+  if (RELAY_INTERNAL_ALLOWED_IPS.length > 0) {
+    return RELAY_INTERNAL_ALLOWED_IPS.some((cidr) =>
+      isAddressInCidr(info.privateIp, cidr)
+    );
+  }
+  return isRoutablePrivateIpv4(info.privateIp);
+}
+
+// Pure ownership decision: is the live local socket still the registry's owner
+// for this target? In Redis mode the shared registry is authoritative; a target
+// that re-registered on another instance leaves this instance holding a stale
+// socket that must not receive dispatches. A null registry entry (in-memory
+// miss, degraded Redis, or TTL lapse while connected) trusts the live socket.
+export function isCurrentRegistryOwner(
+  registered: TargetMetadata | null,
+  worker: Pick<WorkerContext, "ownerToken">,
+  instanceId: string
+): boolean {
+  if (!registered) {
+    return true;
+  }
+  return (
+    registered.instanceId === instanceId &&
+    registered.ownerToken === worker.ownerToken
+  );
+}
+
+async function isLocalWorkerCurrentOwner(
+  targetId: string,
+  worker: WorkerContext
+): Promise<boolean> {
+  const registered = await targetRegistry.lookup(targetId);
+  return isCurrentRegistryOwner(registered, worker, relayInstanceId);
 }
 
 if (process.env.NODE_ENV !== "test") {

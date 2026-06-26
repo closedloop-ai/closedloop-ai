@@ -72,7 +72,7 @@ export const AuthProvider = ({
       localization={{
         signIn: {
           start: {
-            title: "Welcome to ClosedLoop",
+            title: "Welcome to Closedloop",
           },
         },
         signUp: {

@@ -1,4 +1,10 @@
 import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
+import {
+  prependUntrustedLoopInputPreamble,
+  shouldAddUntrustedInputPreamble,
+} from "./untrusted-loop-input";
+
+const NON_WHITESPACE_PATTERN = /\S/;
 
 /**
  * Build the final prompt for a loop spawn.
@@ -14,17 +20,32 @@ import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
  * EXECUTE get their peer awareness via the run-loop.sh harness and
  * `--add-dir` at the runtime layer instead, so they return "" here.
  *
- * When `additionalRepos` is empty/undefined the result is byte-identical to
- * the pre-feature baseline — either the body prompt verbatim or the legacy
- * default instructions verbatim.
+ * Commands that read untrusted artifact content directly (for example
+ * GENERATE_PRD, REQUEST_PRD_CHANGES, and DECOMPOSE) also get a prompt-side
+ * trust-boundary preamble so the model treats artifact content as data rather
+ * than instructions.
  */
 export function buildLoopPrompt(
   command: LoopCommand,
   bodyPrompt?: string,
   additionalRepos?: readonly AdditionalRepoRef[]
 ): string {
+  if (
+    command === LoopCommand.RequestPrdChanges &&
+    !hasMeaningfulPrompt(bodyPrompt)
+  ) {
+    return bodyPrompt ?? "";
+  }
+
   const base = bodyPrompt || getBaseInstructions(command);
-  return getPeerPreamble(command, additionalRepos) + base;
+  const promptWithPreamble = shouldAddUntrustedInputPreamble(command)
+    ? prependUntrustedLoopInputPreamble(base)
+    : base;
+  return getPeerPreamble(command, additionalRepos) + promptWithPreamble;
+}
+
+function hasMeaningfulPrompt(prompt: string | undefined): boolean {
+  return typeof prompt === "string" && NON_WHITESPACE_PATTERN.test(prompt);
 }
 
 function getBaseInstructions(command: LoopCommand): string {
@@ -72,8 +93,8 @@ Peer repositories provided:
 ${lines.join("\n")}
 
 When grounding the PRD's Technical Considerations and cross-repo concerns:
-1. Read each peer worktree to identify shared types, API contracts, event schemas, package boundaries, or other integration surfaces relevant to the requested feature.
-2. Cite specific file paths from each peer where they ground the PRD's claims — quote real symbols and code locations rather than describing peers in the abstract.
+1. Read each peer worktree to understand what **capabilities, contracts, integrations, and constraints** each peer already provides that are relevant to the requested feature. The investigation should produce a product-level understanding of what each peer enables, not a code-level inventory.
+2. Describe peers in the PRD at the capability or contract level — what each peer enables, what behaviors or rules it enforces, and what gaps affect feasibility. Do NOT cite file paths, service names, function names, schema fields, or other implementation details; the global Technical Considerations scope rules in the main instructions apply equally to peer-derived content.
 3. Treat peers as **read-only**. Any writes inside peer directories are scratch and discarded on cleanup; do not author code or files there.
 
 ---
@@ -469,15 +490,17 @@ Read ALL provided context thoroughly before writing.
 
 ## Using the repository
 
-You have access to the target repository. Before writing the PRD, explore it to ground your output in reality:
+You have access to the target repository. Before writing the PRD, investigate it to understand **what the product currently does** — its existing capabilities, behaviors, and integrations. Existing functionality directly affects the ability to deliver new features: it determines what you can build on, what constraints you must respect, and where capability gaps create feasibility risks.
 
-1. **Tech stack:** Check package.json, framework configs, and directory structure to identify the stack (e.g., Next.js, Prisma, Tailwind).
-2. **Existing entities and schema:** Look at database schemas or models to understand what data structures already exist that relate to the feature.
-3. **Architecture patterns:** Look at how existing features are structured (routes, services, components) to inform the Technical Considerations section.
-4. **Auth and permissions:** Check for existing auth/RBAC patterns that the feature will need to integrate with.
-5. **Related code:** Search for existing implementations that overlap with or are adjacent to the requested feature.
+The investigation should produce a **product-level understanding, not a code-level reference**:
 
-Use these findings to write a Technical Considerations section that references real entities, services, and patterns from the codebase — not generic boilerplate.
+1. **Existing capabilities:** What can the product already do that overlaps with, supports, or is adjacent to the requested feature? Frame findings at the product level (e.g., "the product already supports team-scoped permissions") — not at the code level (e.g., "uses RBAC middleware in middleware/auth.ts").
+2. **Existing behaviors and rules:** What rules, validations, edge cases, or constraints are already enforced that the new feature must respect, reuse, or extend?
+3. **Existing integrations:** What external systems is the product already integrated with, and at what scope? Example: "Google OAuth is configured at the org level, not the user level" — feasibility-relevant.
+4. **Existing UX patterns and flows:** Are there established UX patterns the new feature should fit into?
+5. **Capability gaps:** What is missing today that this feature would require? Are those gaps feasible to close?
+
+Use these findings to describe how the new feature relates to existing product capabilities and to surface feasibility risks. **Describe what the product does, not where the code lives or how it is structured.** Architecture and code-level decisions belong to the plan-generation agent, not the PRD.
 
 ## How to generate the PRD
 
@@ -508,12 +531,30 @@ Use these findings to write a Technical Considerations section that references r
    - For non-functional requirements, categorize by type (performance, security, accessibility, scalability, reliability, observability, privacy/compliance).
    - If the template specifies a different format, use the template's format instead.
 
-7. **Sections that cannot be completed:**
+7. **Technical Considerations: scope.** This section is for **feasibility, constraints, and dependencies** — NOT implementation guidance. From your codebase investigation, populate this section with product-level findings only.
+
+   **What belongs in Technical Considerations:**
+   - Existing product capabilities the feature builds on, described at the product level (e.g., "the product already supports per-org PRD templates")
+   - Behavioral constraints from existing functionality the new feature must respect (e.g., "retroactive entries must not conflict with the closed-sprint lock behavior")
+   - Capability gaps that affect feasibility (e.g., "no existing user-level OAuth consent flow; would need to be added")
+   - Cross-system or cross-team dependencies stated as capabilities or contracts (e.g., "requires read access to the Sprint entity")
+   - Feasibility risks; if a risk cannot be resolved from the investigation, restate it under Open Questions
+
+   **What does NOT belong in Technical Considerations:**
+   - File, module, service, function, table, or column names
+   - Schema fields, RRULE strings, OAuth scope strings, specific API endpoints, or library names
+   - Phrases like "extend X service," "follow the Y handler pattern," or "uses Z middleware"
+   - Implementation sequencing, layering choices, code organization, or directory structure
+   - Any "how to build" detail — that is the plan-generation agent's responsibility
+
+   Shorthand: **investigate the code, document the product.**
+
+8. **Sections that cannot be completed:**
    - If the user's input provides no information whatsoever for a section and you cannot reasonably infer content, write: "[TODO: This section requires input from [stakeholder/source]. Key questions: [list 2-3 specific questions that would populate this section].]" and add the question to **Open Questions**.
    - For sections that genuinely do not apply to this work, mark them **N/A** and include an explanation for why it does not apply. Do not invent details.
    - Optional/supplementary sections (marked *(optional)* in the template) may use brief reasonable defaults, a single [TODO] marker, or be omitted if the input provides no basis for them.
 
-8. **Open Questions:**
+9. **Open Questions:**
    - Collect all assumptions you made and all [TODO] items into the Open Questions section.
    - Frame each as a specific, answerable question directed at the appropriate stakeholder.
 
@@ -524,6 +565,8 @@ Use these findings to write a Technical Considerations section that references r
 - NEVER fabricate specific metrics, dates, deadlines, budget figures, or named individuals. Always use [TODO] placeholders for these.
 - NEVER ask clarifying questions. Produce the best PRD you can from the available input.
 - NEVER add commentary, preamble, or explanation outside the PRD content itself.
+- DO investigate the codebase to understand what the product already does — its capabilities, behaviors, integrations, and gaps. This grounds your feasibility judgments and lets you describe how the new feature relates to existing functionality.
+- NEVER document implementation details in the PRD: file names, service names, function names, schema fields, API endpoints, library names, code patterns, or layering choices. Describe product capabilities and behaviors, not how they are implemented. Architecture decisions belong to the plan-generation agent.
 - The template structure is authoritative. When template conventions conflict with the default formats in steps 5-6, the template wins.
 
 </constraints>
@@ -532,7 +575,7 @@ Use these findings to write a Technical Considerations section that references r
 
 Before writing the PRD, reason through your approach inside <thinking> tags:
 1. What is the core product/feature being described?
-2. What did I learn from the repository that is relevant (tech stack, existing entities, patterns)?
+2. What did my codebase investigation reveal about existing product capabilities, behaviors, integrations, and gaps relevant to this feature? What feasibility risks or open questions did it surface? (Focus on product behavior, not code structure.)
 3. What sections of the template can I fully populate from the input?
 4. What sections require inference? What are my assumptions?
 5. What sections require [TODO] placeholders?
@@ -675,12 +718,19 @@ The organization already maintains PRD templates that define the expected struct
 
 ## Technical Considerations
 
-Based on repository analysis:
-- **System Dependencies:** The existing template system stores templates as artifacts with type=TEMPLATE and templateForType=PRD, scoped per organization. The generation pipeline should fetch the org's template via the existing findOrgTemplate service method.
-- **Team Dependencies:** None — this builds on existing Loops infrastructure.
-- **Constraints:** The Loops infrastructure (ECS container or desktop compute) provides the execution environment. A new GENERATE_PRD loop command should follow the pattern established by the DECOMPOSE command.
-- **Architecture:** The agent runs with repository access, providing codebase context (tech stack, existing entities, architecture patterns) to inform the Technical Considerations section of generated PRDs. Generated content is ingested as a new artifact version via documentVersionService.createVersion, matching the existing plan-handler ingestion pattern.
-- **Migration / Backfill:** N/A — new capability, no existing data to migrate.
+Based on codebase investigation:
+
+- **Existing capabilities this depends on:**
+  - The product already supports per-organization PRD templates that PMs can configure. The new feature consumes these as its structural blueprint.
+  - The product already supports AI-driven artifact generation end-to-end (demonstrated by the existing feature decomposition flow). This confirms the platform foundation is in place; no new platform capability is required.
+  - The product already supports artifact versioning with draft status. Generated PRDs must integrate with this so users can compare or revert prior drafts.
+- **System Dependencies:** Generation runs on the existing AI artifact-generation platform; no new external service integrations required.
+- **Team Dependencies:** None.
+- **Constraints:** Generated content must conform to the organization's configured PRD template. If no template is configured, a sensible default must be used so generation is not blocked.
+- **Compatibility / Rollout Coordination:** New artifact versions must not disrupt existing version history or in-flight reviews of other documents.
+- **Feasibility Risks:**
+  - Generation latency may exceed user tolerance for an interactive flow. Not a blocker, but the target needs validation under realistic prompts.
+  - Output quality depends on prompt design and may require iteration after initial release.
 
 ## Alternatives Considered *(optional)*
 

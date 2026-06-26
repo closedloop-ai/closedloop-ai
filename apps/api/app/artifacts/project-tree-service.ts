@@ -1,12 +1,26 @@
 import { LinkType } from "@repo/api/src/types/artifact";
+import type { GenerationStatus } from "@repo/api/src/types/document";
 import type {
+  ArtifactViewDetails,
+  DetailedTreeNode,
   ExternalParentLink,
+  ProjectTreeDetailsResponse,
   ProjectTreeResponse,
   TreeChild,
   TreeNode,
 } from "@repo/api/src/types/project-tree";
 import type { BasicUser } from "@repo/api/src/types/user";
-import { type Artifact, type ArtifactLink, withDb } from "@repo/database";
+import {
+  type Artifact,
+  type ArtifactLink,
+  ArtifactType,
+  withDb,
+} from "@repo/database";
+import {
+  mergeLoopStatuses,
+  suppressDismissedFailuresForDocumentMap,
+} from "@/app/documents/generation-status-helpers";
+import { mapTagRelations } from "@/app/tags/service";
 import { basicUserSelect } from "@/lib/db-utils";
 
 type ArtifactWithAssignee = Artifact & {
@@ -45,6 +59,13 @@ export const projectTreeService = {
     const internalLinks: ArtifactLink[] = [];
     const incomingExternalLinks: ArtifactLink[] = [];
     for (const link of links) {
+      // Only PRODUCES links express a parent-child relationship. BLOCKS and
+      // RELATES_TO are peer/sibling links and must not drive tree nesting or
+      // surface as external parents — artifacts joined solely by those links
+      // remain independent (sibling) roots.
+      if (link.linkType !== LinkType.Produces) {
+        continue;
+      }
       const sourceInProject = artifactsById.has(link.sourceId);
       const targetInProject = artifactsById.has(link.targetId);
       if (sourceInProject && targetInProject) {
@@ -92,11 +113,118 @@ export const projectTreeService = {
       }
     }
 
-    nodes.sort((a, b) => a.root.name.localeCompare(b.root.name));
+    nodes.sort(compareByStackRank);
 
     return { nodes, externalParents };
   },
+
+  /**
+   * `getProjectTree` with every artifact node enriched in place with
+   * artifact-level view details (tags, generation status) — the
+   * `?include=details` contract (FEA-1763, PLN-874). The enrichment lookups
+   * run in parallel with the tree build; the tree shape is untouched and no
+   * parallel flat collection is returned.
+   */
+  async getProjectTreeWithDetails(
+    projectId: string,
+    organizationId: string
+  ): Promise<ProjectTreeDetailsResponse> {
+    const [tree, detailsById] = await Promise.all([
+      projectTreeService.getProjectTree(projectId, organizationId),
+      fetchArtifactViewDetails(projectId, organizationId),
+    ]);
+
+    const nodes: DetailedTreeNode[] = tree.nodes.map((node) => ({
+      root: attachViewDetails(node.root, detailsById),
+      children: node.children.map((child) =>
+        attachViewDetails(child, detailsById)
+      ),
+    }));
+
+    return { nodes, externalParents: tree.externalParents };
+  },
 };
+
+/**
+ * Batch-load per-artifact view details for a project: tag summaries for all
+ * artifacts, and generation status (resolved from Loop records, dismissed
+ * failures suppressed) for DOCUMENT artifacts.
+ */
+async function fetchArtifactViewDetails(
+  projectId: string,
+  organizationId: string
+): Promise<Map<string, ArtifactViewDetails>> {
+  const rows = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        projectId,
+        organizationId,
+        project: { isTemplatesSentinel: false },
+      },
+      select: {
+        id: true,
+        type: true,
+        tagArtifacts: { include: { tag: true } },
+      },
+    })
+  );
+
+  const documentIds = rows
+    .filter((row) => row.type === ArtifactType.DOCUMENT)
+    .map((row) => row.id);
+  const generationStatusMap = new Map<string, GenerationStatus>();
+  await mergeLoopStatuses(documentIds, generationStatusMap);
+  await suppressDismissedFailuresForDocumentMap(
+    documentIds,
+    generationStatusMap
+  );
+
+  const detailsById = new Map<string, ArtifactViewDetails>();
+  for (const row of rows) {
+    const tags = mapTagRelations(row.tagArtifacts);
+    const generationStatus = generationStatusMap.get(row.id);
+    if (tags.length > 0 || generationStatus) {
+      detailsById.set(row.id, {
+        ...(tags.length > 0 && { tags }),
+        ...(generationStatus && { generationStatus }),
+      });
+    }
+  }
+  return detailsById;
+}
+
+function attachViewDetails<T extends { id: string }>(
+  artifact: T,
+  detailsById: Map<string, ArtifactViewDetails>
+): T & ArtifactViewDetails {
+  const details = detailsById.get(artifact.id);
+  return details ? { ...artifact, ...details } : artifact;
+}
+
+/**
+ * Order root nodes by stack rank ASC, NULLs last, with createdAt DESC as a
+ * tiebreaker (PRD-421). The migration in
+ * `20260528220059_backfill_artifact_sort_order` seeds every existing root
+ * document with a deterministic sortOrder, so NULL handling is mostly a
+ * compatibility window for any rows created between migration and the
+ * createDocument update in PLN-755 T-A.6 that assigns sortOrder atomically.
+ * The ordering itself is project-scoped (callers query a single project).
+ */
+function compareByStackRank(a: TreeNode, b: TreeNode): number {
+  const aRank = a.root.sortOrder;
+  const bRank = b.root.sortOrder;
+  if (aRank !== null && bRank !== null) {
+    if (aRank !== bRank) {
+      return aRank - bRank;
+    }
+  } else if (aRank === null && bRank !== null) {
+    return 1;
+  } else if (aRank !== null && bRank === null) {
+    return -1;
+  }
+  // Both null OR equal — fall through to createdAt DESC.
+  return b.root.createdAt.getTime() - a.root.createdAt.getTime();
+}
 
 function fetchArtifactLinks(
   organizationId: string,
@@ -339,8 +467,11 @@ function collectUnreachableComponentMembers(
     }
     const artifact = artifactsById.get(id);
     if (artifact) {
+      // The graph only contains PRODUCES edges (BLOCKS/RELATES_TO are filtered
+      // out upstream), so any component member attached under the root here is
+      // a produces-child.
       const edges = adjacency.get(id) ?? [];
-      const linkType = edges[0]?.linkType ?? LinkType.RelatesTo;
+      const linkType = edges[0]?.linkType ?? LinkType.Produces;
       state.children.push({
         ...artifact,
         linkType,

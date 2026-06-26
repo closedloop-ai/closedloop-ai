@@ -1,7 +1,7 @@
 import type {
   CommentBody,
   CommentBodyInlineElement,
-} from "@repo/collaboration/webhook";
+} from "@repo/collaboration/server/webhook";
 
 /**
  * Extract plain text from a Liveblocks CommentBody structure.

@@ -9,6 +9,7 @@
  *   - Use of timingSafeEqual for constant-time comparison
  */
 import { createHmac } from "node:crypto";
+import { describe, expect, it } from "vitest";
 import { slackVerifyWebhookSignature } from "../webhook-utils";
 
 // ---------------------------------------------------------------------------

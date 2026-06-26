@@ -1,24 +1,21 @@
+import { describe, expect, it } from "vitest";
 /**
  * ArtifactLink direction contract — integration test against a real DB.
  *
  * Why this exists
  * ---------------
- * The canonical convention is DOCUMENT → produces → PULL_REQUEST:
+ * The canonical convention is DOCUMENT → produces → BRANCH:
  *   ArtifactLink { sourceId: documentId, targetId: prId, linkType: PRODUCES }
  *
  * From the PR artifact's perspective, this link is an INCOMING edge, so the PR
- * artifact reads it via `artifact.targetLinks`. Several webhook handlers and
- * the merge-cascade helper all rely on this direction to find the document
- * that produced a PR:
+ * artifact reads it via `artifact.targetLinks`. Several webhook handlers all
+ * rely on this direction to find the document that produced a PR:
  *
  *   - apps/api/app/webhooks/github/handlers/pull-request-handler.ts
  *   - apps/api/app/webhooks/github/handlers/pull-request-review-handler.ts
  *   - apps/api/app/webhooks/github/handlers/pull-request-review-comment-handler.ts
  *   - apps/api/app/webhooks/github/handlers/issue-comment-handler.ts
  *   - apps/api/app/webhooks/github/handlers/check-run-handler.ts
- *   - apps/api/app/webhooks/github/handlers/workflow-completion-handler.ts
- *     (existing-PR dedup path)
- *   - markLinkedArtifactsOnMerge in pull-request-handler.ts
  *
  * The pre-refactor bug swapped `targetLinks` for `sourceLinks` on the PR,
  * producing a wrong-direction query that always returned an empty list.
@@ -34,15 +31,12 @@
  *   2. PR.sourceLinks[source.type=DOCUMENT]  → empty (this is the bug shape).
  *   3. Document.sourceLinks[target.type=PR]  → returns the produced PR.
  *   4. Document.targetLinks[target.type=PR]  → empty.
- *   5. artifactLink.findMany { targetId: prId, target.type: PR,
- *      source.type: DOCUMENT, linkType: PRODUCES } → returns the link
- *      (the exact shape used by markLinkedArtifactsOnMerge).
- *   6. Service layer: findResolvedLinks(doc, Source) vs (doc, Target) vs
+ *   5. Service layer: findResolvedLinks(doc, Source) vs (doc, Target) vs
  *      (pr, Source) vs (pr, Target) each return the expected directed slice.
  *
  * Any handler that regresses to the wrong relation fails cases 1-2 or 3-4.
  * Any service-level direction confusion (e.g. context-section's client-side
- * filter bug) fails case 6.
+ * filter bug) fails case 5.
  */
 
 import {
@@ -110,35 +104,51 @@ async function seedGithubRepoForOrg(
   return { repositoryId: repo.id };
 }
 
-function createPullRequestArtifact(
+function createBranchArtifact(
   orgId: string,
   projectId: string,
   repositoryId: string,
   overrides: { title: string; number: number; githubId: string; url: string }
 ): Promise<{ id: string }> {
-  return withDb((db) =>
-    db.artifact.create({
+  return withDb(async (db) => {
+    const artifact = await db.artifact.create({
       data: {
         organizationId: orgId,
         projectId,
-        type: PrismaArtifactType.PULL_REQUEST,
-        name: overrides.title,
+        type: PrismaArtifactType.BRANCH,
+        name: "feat/test",
         status: GitHubPRState.OPEN,
         externalUrl: overrides.url,
-        pullRequest: {
+        branch: {
+          create: {
+            repositoryId,
+            branchName: "feat/test",
+            baseBranch: "main",
+          },
+        },
+        pullRequestDetails: {
           create: {
             repositoryId,
             githubId: overrides.githubId,
             number: overrides.number,
-            headBranch: "feat/test",
-            baseBranch: "main",
+            title: overrides.title,
+            htmlUrl: overrides.url,
             prState: GitHubPRState.OPEN,
+            isCurrent: true,
           },
         },
       },
-      select: { id: true },
-    })
-  );
+      select: { id: true, pullRequestDetails: { select: { id: true } } },
+    });
+    const currentDetailId = artifact.pullRequestDetails[0]?.id ?? null;
+    if (currentDetailId) {
+      await db.branchDetail.update({
+        where: { artifactId: artifact.id },
+        data: { currentPullRequestDetailId: currentDetailId },
+      });
+    }
+    return { id: artifact.id };
+  });
 }
 
 async function createDocumentArtifact(
@@ -197,7 +207,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
         testProjectId,
         { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
-      const pr = await createPullRequestArtifact(
+      const pr = await createBranchArtifact(
         testOrgId,
         testProjectId,
         repositoryId,
@@ -258,7 +268,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
         testProjectId,
         { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
-      const pr = await createPullRequestArtifact(
+      const pr = await createBranchArtifact(
         testOrgId,
         testProjectId,
         repositoryId,
@@ -282,14 +292,14 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
             sourceLinks: {
               where: {
                 linkType: LinkType.Produces,
-                target: { type: PrismaArtifactType.PULL_REQUEST },
+                target: { type: PrismaArtifactType.BRANCH },
               },
               select: { target: { select: { id: true, slug: true } } },
             },
             targetLinks: {
               where: {
                 linkType: LinkType.Produces,
-                target: { type: PrismaArtifactType.PULL_REQUEST },
+                target: { type: PrismaArtifactType.BRANCH },
               },
               select: { target: { select: { id: true, slug: true } } },
             },
@@ -301,55 +311,6 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
       expect(docArtifact?.sourceLinks).toHaveLength(1);
       expect(docArtifact?.sourceLinks[0]?.target.id).toBe(pr.id);
       expect(docArtifact?.targetLinks).toHaveLength(0);
-    });
-  });
-
-  it("markLinkedArtifactsOnMerge query shape returns the produce link", async () => {
-    await autoRollbackTransaction(async () => {
-      const { testOrgId, testProjectId, testUser } = await setupTestData();
-      const { repositoryId } = await seedGithubRepoForOrg(testOrgId);
-
-      const doc = await createDocumentArtifact(
-        testOrgId,
-        testUser.id,
-        testProjectId,
-        { type: DocumentType.ImplementationPlan, title: "Plan" }
-      );
-      const pr = await createPullRequestArtifact(
-        testOrgId,
-        testProjectId,
-        repositoryId,
-        {
-          title: "PR #3",
-          number: 3,
-          githubId: "gh-3",
-          url: "https://github.com/org/repo/pull/3",
-        }
-      );
-      const { produceLinkId } = await seedDirectionFixture(
-        testOrgId,
-        doc.id,
-        pr.id
-      );
-
-      // Mirrors the exact where-clause used by markLinkedArtifactsOnMerge
-      // (apps/api/app/webhooks/github/handlers/pull-request-handler.ts).
-      const links = await withDb((db) =>
-        db.artifactLink.findMany({
-          where: {
-            targetId: pr.id,
-            target: { type: PrismaArtifactType.PULL_REQUEST },
-            source: { type: PrismaArtifactType.DOCUMENT },
-            linkType: LinkType.Produces,
-          },
-          select: { id: true, sourceId: true, targetId: true },
-        })
-      );
-
-      expect(links).toHaveLength(1);
-      expect(links[0]?.id).toBe(produceLinkId);
-      expect(links[0]?.sourceId).toBe(doc.id);
-      expect(links[0]?.targetId).toBe(pr.id);
     });
   });
 
@@ -365,7 +326,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
           testProjectId,
           { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
-        const pr = await createPullRequestArtifact(
+        const pr = await createBranchArtifact(
           testOrgId,
           testProjectId,
           repositoryId,
@@ -390,7 +351,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
         expect(outgoing).toHaveLength(1);
         expect(outgoing[0]?.source.id).toBe(doc.id);
         expect(outgoing[0]?.target.id).toBe(pr.id);
-        expect(outgoing[0]?.target.type).toBe(ArtifactType.PullRequest);
+        expect(outgoing[0]?.target.type).toBe(ArtifactType.Branch);
 
         // Doc is the source of PRODUCES, NOT the target. Source direction
         // (i.e. "links arriving at me") with PRODUCES filter must be empty.
@@ -415,7 +376,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
           testProjectId,
           { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
-        const pr = await createPullRequestArtifact(
+        const pr = await createBranchArtifact(
           testOrgId,
           testProjectId,
           repositoryId,
@@ -464,7 +425,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
           testProjectId,
           { type: DocumentType.ImplementationPlan, title: "Plan" }
         );
-        const pr = await createPullRequestArtifact(
+        const pr = await createBranchArtifact(
           testOrgId,
           testProjectId,
           repositoryId,

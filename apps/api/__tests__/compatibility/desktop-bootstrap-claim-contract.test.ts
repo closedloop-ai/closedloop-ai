@@ -4,7 +4,7 @@
  * Verifies the route rejects the obsolete bootstrap-JWT payload while still
  * tolerating safe legacy field variations and null-bound managed keys.
  */
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiKeysService } from "@/app/api-keys/service";
 import { POST } from "@/app/desktop/bootstrap/claim/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";

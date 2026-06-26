@@ -1,5 +1,5 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
@@ -97,7 +97,7 @@ describe("artifactLinksService.batchMoveArtifacts", () => {
       rows: [
         { id: "root-artifact", type: ArtifactType.Document },
         { id: "child-1", type: ArtifactType.Document },
-        { id: "child-2", type: ArtifactType.PullRequest },
+        { id: "child-2", type: ArtifactType.Branch },
       ],
     });
     findDownstreamSpy.mockResolvedValueOnce(["child-1", "child-2"]);
@@ -115,7 +115,7 @@ describe("artifactLinksService.batchMoveArtifacts", () => {
         movedArtifacts: [
           { id: "root-artifact", type: ArtifactType.Document },
           { id: "child-1", type: ArtifactType.Document },
-          { id: "child-2", type: ArtifactType.PullRequest },
+          { id: "child-2", type: ArtifactType.Branch },
         ],
       },
     });
@@ -165,7 +165,7 @@ describe("artifactLinksService.batchMoveArtifacts", () => {
       rows: [
         { id: "root-artifact", type: ArtifactType.Document },
         { id: "child-1", type: ArtifactType.Document },
-        { id: "child-2", type: ArtifactType.PullRequest },
+        { id: "child-2", type: ArtifactType.Branch },
       ],
     });
     findDownstreamSpy.mockResolvedValueOnce(["child-1", "child-2"]);

@@ -1,6 +1,6 @@
 import type { DocumentRatingSummary } from "@repo/api/src/types/rating";
 import { Result, Status } from "@repo/api/src/types/result";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, PUT } from "@/app/documents/[id]/rating/route";
 import { documentEvaluationService } from "@/app/documents/evaluation-service";
 import type { AuthContext } from "@/lib/auth/with-auth";

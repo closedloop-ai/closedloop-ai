@@ -1,9 +1,11 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import type {
-  Document,
-  DocumentStatus,
-  DocumentType,
+import {
+  type ArtifactRepositorySnapshot,
+  type Document,
+  type DocumentStatus,
+  type DocumentType,
+  SnapshotSource,
 } from "@repo/api/src/types/document";
 import type {
   LoopCommand,
@@ -16,10 +18,16 @@ import type {
   Artifact as PrismaArtifact,
   DocumentDetail as PrismaDocumentDetail,
   Priority as PrismaPriority,
-  WorkstreamState,
 } from "@repo/database";
 import { nanoid } from "nanoid";
+import { TAG_RELATION_INCLUDE } from "@/app/tags/service";
 import { basicUserSelect } from "@/lib/db-utils";
+import { parseStoredSnapshot } from "./repository-snapshot-helpers";
+
+const EMPTY_REPOSITORY_SNAPSHOT: ArtifactRepositorySnapshot = {
+  repositories: [],
+  source: SnapshotSource.None,
+};
 
 export function generateSlug(): string {
   return nanoid(14);
@@ -31,6 +39,7 @@ export function generateSlug(): string {
  */
 export type ArtifactWithDocumentDetail = PrismaArtifact & {
   assignee: BasicUser | null;
+  createdBy: BasicUser | null;
   document: (PrismaDocumentDetail & { approver: BasicUser | null }) | null;
 };
 
@@ -41,10 +50,12 @@ export type ArtifactWithDocumentDetail = PrismaArtifact & {
  */
 export function toDocument(artifact: ArtifactWithDocumentDetail): Document {
   const detail = artifact.document;
+  const repositorySnapshot =
+    parseStoredSnapshot(detail?.repositorySnapshot) ??
+    EMPTY_REPOSITORY_SNAPSHOT;
   return {
     id: artifact.id,
     organizationId: artifact.organizationId,
-    workstreamId: artifact.workstreamId,
     projectId: artifact.projectId,
     type: artifact.subtype!,
     title: artifact.name,
@@ -54,13 +65,13 @@ export function toDocument(artifact: ArtifactWithDocumentDetail): Document {
     priority: artifact.priority ?? Priority.Medium,
     latestVersion: detail?.latestVersion ?? 1,
     createdById: artifact.createdById ?? "",
+    createdBy: artifact.createdBy ?? null,
     assigneeId: artifact.assigneeId,
     assignee: artifact.assignee,
     approverId: detail?.approverId ?? null,
     approver: detail?.approver ?? null,
     tokenUsage: null,
-    targetRepo: detail?.targetRepo ?? null,
-    targetBranch: detail?.targetBranch ?? null,
+    repositorySnapshot,
     templateForType: detail?.templateForType ?? null,
     sortOrder: artifact.sortOrder,
     createdAt: artifact.createdAt,
@@ -84,16 +95,17 @@ export type DocumentPayloadInput = {
   status?: string;
   // Artifact columns — nullable in schema.
   priority?: PrismaPriority | null;
-  workstreamId?: string | null;
   assigneeId?: string | null;
   sortOrder?: number | null;
-  // DocumentDetail columns — all nullable in schema.
+  // DocumentDetail columns.
   fileName?: string | null;
   approverId?: string | null;
   templateForType?: DocumentType | null;
   latestVersion?: number;
-  targetRepo?: string | null;
-  targetBranch?: string | null;
+  // DocumentDetail.repositorySnapshot — NOT NULL in schema. Set only on
+  // create paths by trusted internal callers (PLN-602). Update paths leave
+  // it undefined so Prisma doesn't touch the column.
+  repositorySnapshot?: ArtifactRepositorySnapshot;
 };
 
 /**
@@ -122,8 +134,7 @@ export function splitDocumentPayload(
     approverId,
     templateForType,
     latestVersion,
-    targetRepo,
-    targetBranch,
+    repositorySnapshot,
     ...artifactRest
   } = data;
   const artifact: Prisma.ArtifactUncheckedUpdateInput = { ...artifactRest };
@@ -147,11 +158,8 @@ export function splitDocumentPayload(
   if (latestVersion !== undefined) {
     detail.latestVersion = latestVersion;
   }
-  if (targetRepo !== undefined) {
-    detail.targetRepo = targetRepo;
-  }
-  if (targetBranch !== undefined) {
-    detail.targetBranch = targetBranch;
+  if (repositorySnapshot !== undefined) {
+    detail.repositorySnapshot = repositorySnapshot;
   }
   return { artifact, detail };
 }
@@ -162,6 +170,7 @@ export function splitDocumentPayload(
  */
 export const documentIncludeWithUser = {
   assignee: basicUserSelect,
+  createdBy: basicUserSelect,
   document: {
     include: {
       approver: basicUserSelect,
@@ -169,27 +178,7 @@ export const documentIncludeWithUser = {
   },
 } as const;
 
-/**
- * PullRequestDetail select that maps to PullRequestInfo. Applied alongside the
- * parent artifact (which carries title, url via externalUrl).
- */
-export const pullRequestDetailSelect = {
-  number: true,
-  headBranch: true,
-  baseBranch: true,
-  prState: true,
-  checksStatus: true,
-  reviewDecision: true,
-} as const;
-
 export const documentIncludeWithContext = {
-  workstream: {
-    select: {
-      id: true,
-      title: true,
-      state: true,
-    },
-  },
   project: {
     select: {
       id: true,
@@ -208,71 +197,16 @@ export const documentIncludeWithContext = {
       },
     },
   },
+  tagArtifacts: {
+    include: TAG_RELATION_INCLUDE,
+  },
   ...documentIncludeWithUser,
 } as const;
-
-const VALID_COMMANDS = new Set(["plan", "execute", "chat"]);
-
-export type TriggerData = {
-  correlationId: string;
-  documentId: string;
-  command: "plan" | "execute" | "chat";
-};
-
-export function parseTriggerData(triggerData: unknown): TriggerData | null {
-  if (
-    typeof triggerData !== "object" ||
-    triggerData === null ||
-    Array.isArray(triggerData)
-  ) {
-    return null;
-  }
-
-  const data = triggerData as Record<string, unknown>;
-
-  if (
-    typeof data.correlationId !== "string" ||
-    typeof data.documentId !== "string" ||
-    typeof data.command !== "string"
-  ) {
-    return null;
-  }
-
-  if (
-    data.correlationId.trim() === "" ||
-    data.documentId.trim() === "" ||
-    data.command.trim() === ""
-  ) {
-    return null;
-  }
-
-  if (!VALID_COMMANDS.has(data.command)) {
-    return null;
-  }
-
-  return {
-    correlationId: data.correlationId,
-    documentId: data.documentId,
-    command: data.command as TriggerData["command"],
-  };
-}
-
-// Workstream summary used by `DocumentWithRegenerationContext`.
-export type WorkstreamSummary = {
-  id: string;
-  organizationId: string;
-  projectId: string;
-  title: string;
-  description: string | null;
-  state: WorkstreamState;
-  createdAt: Date;
-  updatedAt: Date;
-};
 
 // Project summary used inside `DocumentWithRegenerationContext`. Mirrors the
 // Prisma `Project` shape with `settings` kept as the raw JSON value
 // (consumers coerce via `getProjectSettings`).
-export type WorkstreamProject = {
+export type RegenerationProject = {
   id: string;
   organizationId: string;
   name: string;
@@ -280,19 +214,17 @@ export type WorkstreamProject = {
 };
 
 /**
- * Document wire shape augmented with the workstream + PRD documents needed
+ * Document wire shape augmented with the project + source PRD context needed
  * for plan/loop context resolution. Returned by
- * `documentGenerationService.findWithRegenerationContext` and consumed by
- * `documentWorkstreamService.findOrCreateWorkstream` and the various generation/
- * execution flows that branch off it.
+ * `documentGenerationService.findWithRegenerationContext` and consumed by the
+ * various generation/execution flows that branch off it.
+ *
+ * The source PRD is discovered by walking the artifact_links PRODUCES chain
+ * upward from this document, replacing the legacy workstream join.
  */
 export type DocumentWithRegenerationContext = Document & {
-  workstream:
-    | (WorkstreamSummary & {
-        project: WorkstreamProject | null;
-        documents: Document[];
-      })
-    | null;
+  project: RegenerationProject | null;
+  sourcePrd: SourceContext | null;
 };
 
 /**
@@ -303,9 +235,7 @@ export type SourceContext = {
   type: SourceContextType;
   title: string;
   content: string | null;
-  targetRepo: string | null;
-  targetBranch: string | null;
-  workstreamId: string | null;
+  repositorySnapshot: ArtifactRepositorySnapshot;
 };
 
 /**
@@ -314,59 +244,23 @@ export type SourceContext = {
  */
 export type RawDocumentWithContext = PrismaArtifact & {
   assignee: BasicUser | null;
+  createdBy: BasicUser | null;
   document:
     | (PrismaDocumentDetail & {
         approver: BasicUser | null;
         versions?: { content: string | null }[];
       })
     | null;
-  workstream: { id: string; title: string; state: WorkstreamState } | null;
   project: {
     id: string;
     organizationId: string;
     name: string;
     teams: { team: { id: string; name: string } }[];
   } | null;
+  tagArtifacts?: Array<{ tag: { id: string; name: string; color: string } }>;
 };
 
-/**
- * Flatten a workstream row with nested `artifacts` (PRD documents) into the
- * legacy `{ ...workstream, documents: Document[] }` shape used by callers.
- */
-export function workstreamToWithDocuments<
-  W extends {
-    artifacts: ArtifactWithDocumentDetail[];
-  },
->(
-  workstream: W | null
-):
-  | (Omit<W, "artifacts"> & {
-      documents: Document[];
-      artifacts: W["artifacts"];
-    })
-  | null {
-  if (!workstream) {
-    return null;
-  }
-  return {
-    ...workstream,
-    documents: workstream.artifacts.map(toDocument),
-  };
-}
-
 // Result types shared across regenerate / execute / request-changes flows.
-export type RegenerateResult =
-  | { success: true; document: Document }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type ExecuteResult =
-  | { success: true; correlationId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type RequestChangesResult =
-  | { success: true; message: string; documentId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
 export type StartPlanLoopFromLocalResult =
   | { outcome: "needs-selection"; documents: { id: string; title: string }[] }
   | {
@@ -391,42 +285,3 @@ export type StartPlanLoopFromLocalResult =
       documentSlug: string;
       document: DocumentWithRegenerationContext;
     };
-
-/**
- * Returns true when GitHub App env vars are configured. Used by generation,
- * regenerate, execute, and request-changes flows to decide whether to issue
- * the workflow_dispatch call or fall back to placeholder content.
- */
-export function isGitHubConfigured(): boolean {
-  return Boolean(
-    process.env.GITHUB_APP_ID &&
-      process.env.GITHUB_APP_PRIVATE_KEY &&
-      process.env.GITHUB_APP_WEBHOOK_SECRET &&
-      process.env.GITHUB_APP_DISPATCH_REPO
-  );
-}
-
-/**
- * Placeholder content used when GitHub Actions integration is not configured.
- */
-export function getPlaceholderContent(title: string, version: number): string {
-  return `# ${title}
-
-## Overview
-
-This implementation plan outlines the technical approach for ${title}.
-
-**Version:** v${version}
-**Status:** Generating...
-
-## Note
-
-GitHub Actions integration is not configured. This is placeholder content.
-Configure the following environment variables to enable plan generation:
-- GITHUB_APP_ID
-- GITHUB_APP_PRIVATE_KEY
-- GITHUB_APP_WEBHOOK_SECRET
-- GITHUB_APP_DISPATCH_REPO
-- WEBAPP_ENV
-`;
-}

@@ -1,5 +1,5 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import type { DocumentTitleMap } from "@repo/api/src/types/document";
+import type { DocumentMetaMap } from "@repo/api/src/types/document";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { env } from "@/env";
@@ -12,7 +12,7 @@ import { env } from "@/env";
 export async function fetchBatchMeta(
   slugs: string[],
   getToken: () => Promise<string | null>
-): Promise<DocumentTitleMap> {
+): Promise<DocumentMetaMap> {
   if (slugs.length === 0) {
     return {};
   }
@@ -43,7 +43,7 @@ export async function fetchBatchMeta(
       return {};
     }
 
-    const result = (await response.json()) as ApiResult<DocumentTitleMap>;
+    const result = (await response.json()) as ApiResult<DocumentMetaMap>;
     if (!result.success) {
       log.error("Unable to fetch batch meta", { error: result.error });
       return {};

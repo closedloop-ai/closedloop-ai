@@ -2,7 +2,7 @@ import { createMetadata } from "@repo/seo/metadata";
 import { Github } from "lucide-react";
 import type { Metadata } from "next";
 
-export const siteTitle = "ClosedLoop.ai";
+export const siteTitle = "Closedloop.ai";
 export const siteDescription =
   "Team-based agentic development for production software.";
 

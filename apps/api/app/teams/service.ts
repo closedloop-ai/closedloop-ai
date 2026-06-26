@@ -301,11 +301,12 @@ export const teamsService = {
   /**
    * Get all repositories configured for a team, with installation repo details.
    * Ordered with primary first, then default-selected, then by creation time.
+   * Tombstoned installation repos (PLN-634) are filtered from the active pool.
    */
   getRepositories(teamId: string): Promise<TeamRepository[]> {
     return withDb((db) =>
       db.teamRepository.findMany({
-        where: { teamId },
+        where: { teamId, repository: { removedAt: null } },
         include: TEAM_REPO_INCLUDE,
         orderBy: [
           { isPrimary: "desc" },
@@ -321,7 +322,8 @@ export const teamsService = {
    * Org scoping flows through the project relation. Note that teams which
    * belong to the project but have curated zero repositories produce no rows
    * here — use `countTeamsForProject` when the resolver's `teamCount` is
-   * needed.
+   * needed. Tombstoned installation repos (PLN-634) are filtered from the
+   * active pool.
    */
   getRepositoriesByProject(
     projectId: string,
@@ -334,6 +336,7 @@ export const teamsService = {
             organizationId,
             projects: { some: { projectId } },
           },
+          repository: { removedAt: null },
         },
         include: TEAM_REPO_INCLUDE,
         orderBy: [

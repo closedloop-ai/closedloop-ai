@@ -18,10 +18,6 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(mocks.withDb, { tx: mocks.withDbTx }),
 }));
 
-vi.mock("@repo/github", () => ({
-  triggerWorkflowDispatch: vi.fn(),
-}));
-
 vi.mock("@/app/artifact-links/service", () => ({
   artifactLinksService: { findTargetLinks: mocks.findTargetLinks },
 }));
@@ -34,7 +30,6 @@ vi.mock("@/app/loops/service", () => ({
 
 vi.mock("@/app/documents/generation-service", () => ({
   documentGenerationService: {
-    findPendingWorkflowRun: vi.fn(),
     findWithRegenerationContext: mocks.findWithRegenerationContext,
   },
 }));

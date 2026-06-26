@@ -11,7 +11,7 @@
  * - TIMED_OUT error with logTail: truncated and persisted correctly
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -70,9 +70,12 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  issueLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
+  const { createLoopRunnerJwtMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopRunnerJwtMockModule(importOriginal);
+});
 
 vi.mock("@/lib/aws-credentials", () => ({
   getAwsCredentials: vi.fn(),
@@ -99,7 +102,6 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 import { LoopErrorCode, RunnerErrorSubcode } from "@repo/api/src/types/loop";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import {
   handleLoopEvent,
@@ -174,7 +176,7 @@ describe("handleLoopEvent error diagnostics", () => {
     });
     mockLoopsService.findById.mockResolvedValue(loop);
     mockLoopsService.updateStatus.mockResolvedValue(undefined);
-    mockLoopsService.addEvent.mockResolvedValue(undefined);
+    mockLoopsService.addEvent.mockResolvedValue(true);
   }
 
   it("persists logTail within 8KB without truncation", async () => {

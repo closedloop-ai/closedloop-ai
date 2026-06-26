@@ -1,12 +1,40 @@
 "use client";
 
+import { ChatInput } from "@repo/app/chat/components/chat-input";
+import type { ChatMessage, ContentBlock } from "@repo/app/chat/lib/types";
 import { cn } from "@repo/design-system/lib/utils";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { ChatBubble } from "@/components/chat/ChatBubble";
-import { ChatInput } from "@/components/chat/ChatInput";
 import { MessageContent } from "@/components/chat/MessageContent";
-import type { ChatMessage, ContentBlock } from "@/components/chat/types";
 import { UserMessageContent } from "@/components/chat/UserMessageContent";
+
+/**
+ * Memoized transcript row. Takes the message DATA as props (rather than
+ * receiving freshly-built JSX through `children`) so the underlying
+ * `ChatBubble` memo comparator can short-circuit on unchanged messages.
+ * Without this, the parent re-creates `children` JSX every render and the
+ * `prev.children === next.children` check in `ChatBubble` never holds, so
+ * the entire transcript re-renders on every stream tick / keystroke.
+ */
+const ChatRow = memo(function ChatRow({
+  message,
+  index,
+}: Readonly<{ message: ChatMessage; index: number }>) {
+  return (
+    <ChatBubble
+      index={index}
+      isStreaming={false}
+      messageRole={message.role}
+      timestamp={message.timestamp}
+    >
+      {message.role === "user" ? (
+        <UserMessageContent content={message.content} />
+      ) : (
+        <MessageContent blocks={message.blocks} content={message.content} />
+      )}
+    </ChatBubble>
+  );
+});
 
 export type ChatPanelProps = {
   messages: ChatMessage[];
@@ -101,7 +129,7 @@ export function ChatPanel({
       </div>
 
       {notice ? (
-        <output className="shrink-0 border-amber-500/30 border-b bg-amber-500/10 px-3 py-2 text-amber-700 text-xs dark:text-amber-400">
+        <output className="shrink-0 border-warning/30 border-b bg-warning/12 px-3 py-2 text-warning-foreground text-xs">
           {notice}
         </output>
       ) : null}
@@ -114,19 +142,7 @@ export function ChatPanel({
           </div>
         ) : null}
         {messages.map((msg, index) => (
-          <ChatBubble
-            index={index}
-            isStreaming={false}
-            key={msg.id}
-            messageRole={msg.role}
-            timestamp={msg.timestamp}
-          >
-            {msg.role === "user" ? (
-              <UserMessageContent content={msg.content} />
-            ) : (
-              <MessageContent blocks={msg.blocks} content={msg.content} />
-            )}
-          </ChatBubble>
+          <ChatRow index={index} key={msg.id} message={msg} />
         ))}
         {isStreaming ? (
           <ChatBubble

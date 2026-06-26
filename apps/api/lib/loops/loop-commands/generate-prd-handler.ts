@@ -87,34 +87,6 @@ export async function ingestGeneratePrdArtifacts(
     );
   }
 
-  // Create workstream completion event (idempotent — skip if already exists)
-  if (loop.workstreamId) {
-    await withDb(async (db) => {
-      const existing = await db.workstreamEvent.findFirst({
-        where: {
-          workstreamId: loop.workstreamId!,
-          type: "LOOP_COMPLETED",
-          data: { path: ["loopId"], equals: loop.id },
-        },
-      });
-      if (!existing) {
-        await db.workstreamEvent.create({
-          data: {
-            workstreamId: loop.workstreamId!,
-            type: "LOOP_COMPLETED",
-            actorType: "system",
-            data: {
-              loopId: loop.id,
-              documentId,
-              command: loop.command,
-              conclusion: "success",
-            },
-          },
-        });
-      }
-    });
-  }
-
   log.info("[loop-document-ingestion] PRD content ingested", {
     documentId,
     contentLength: prdContent.length,
@@ -157,10 +129,6 @@ export const generatePrdHandler = defineHandler<GeneratePrdArtifacts>({
   ingest: ingestGeneratePrdArtifacts,
 });
 
-// `assertLoopBackendAllowed` correctly blocks PRDs pre-dating loop-based
-// generation because requiresParent: true causes the orchestrator to call it
-// before dispatching this handler. PRDs that were generated via GH Actions
-// will be rejected there, so we never reach this ingest function for them.
 export const requestPrdChangesHandler = defineHandler<GeneratePrdArtifacts>({
   requiresRepo: true,
   requiresParent: true,

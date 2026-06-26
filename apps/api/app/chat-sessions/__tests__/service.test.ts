@@ -5,7 +5,15 @@
  * (create + appendMessages), provider lock enforcement, idempotent delete,
  * and the no-op branches that avoid bumping `updatedAt`.
  */
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),

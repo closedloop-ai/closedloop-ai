@@ -27,7 +27,7 @@ const ResourcesPage = async ({ params }: ResourcesPageProps) => {
         locale,
         "/docs/resources/closedloop-vs-chat-based-workflows"
       ),
-      title: "ClosedLoop.ai vs chat-based workflows",
+      title: "Closedloop.ai vs chat-based workflows",
       description:
         "Explain why artifact-bound execution changes how teams ship.",
     },

@@ -1,5 +1,9 @@
+import {
+  HarnessType,
+  PluginUpdateOutcome,
+} from "@repo/api/src/types/compute-target";
 import { Result } from "@repo/api/src/types/result";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GET as healthCheckGET,
   PUT as healthCheckPUT,
@@ -54,6 +58,7 @@ const mockTarget = {
   lastSeenAt: new Date(),
   isOnline: true,
   isSharedWithOrg: false,
+  selectedHarness: HarnessType.Claude,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -228,6 +233,7 @@ describe("GET /compute-targets/:id/health-check", () => {
       checkedAt: new Date("2026-05-08T15:00:00.000Z"),
       expectedMcpUrl: "https://mcp.example.com",
       latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: true,
       result: {
         checks: [{ id: "git", label: "Git", required: true, passed: true }],
         allRequiredPassed: true,
@@ -268,6 +274,7 @@ describe("PUT /compute-targets/:id/health-check", () => {
       checkedAt: new Date("2026-05-08T15:00:00.000Z"),
       expectedMcpUrl: "https://mcp.example.com",
       latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: true,
       result: {
         checks: [{ id: "git", label: "Git", required: true, passed: true }],
         allRequiredPassed: true,
@@ -289,9 +296,29 @@ describe("PUT /compute-targets/:id/health-check", () => {
         body: {
           expectedMcpUrl: "https://mcp.example.com",
           latestVersion: "1.2.3",
+          pluginAutoUpdateEnabled: true,
           result: {
-            checks: [{ id: "git", label: "Git", required: true, passed: true }],
-            allRequiredPassed: true,
+            checks: [
+              {
+                id: "plugin-code",
+                label: "Symphony Plugin",
+                required: true,
+                passed: false,
+                enableAttempted: true,
+                enableOutcome: PluginUpdateOutcome.Failed,
+                enablePluginIds: ["code@closedloop-ai"],
+                updateAttempted: true,
+                updateOutcome: PluginUpdateOutcome.Failed,
+                updatePluginIds: ["plugin-code"],
+                remediationLinks: [
+                  {
+                    label: "Update Closedloop plugins manually",
+                    url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+                  },
+                ],
+              },
+            ],
+            allRequiredPassed: false,
           },
         },
       }),
@@ -308,6 +335,16 @@ describe("PUT /compute-targets/:id/health-check", () => {
       expect.objectContaining({
         expectedMcpUrl: "https://mcp.example.com",
         latestVersion: "1.2.3",
+        pluginAutoUpdateEnabled: true,
+        result: expect.objectContaining({
+          checks: [
+            expect.objectContaining({
+              enableAttempted: true,
+              enableOutcome: PluginUpdateOutcome.Failed,
+              enablePluginIds: ["code@closedloop-ai"],
+            }),
+          ],
+        }),
       })
     );
   });
@@ -332,5 +369,40 @@ describe("PUT /compute-targets/:id/health-check", () => {
     );
 
     expect(response.status).toBe(404);
+  });
+
+  it("rejects unsafe structured remediation link schemes", async () => {
+    const response = await healthCheckPUT(
+      createMockRequest({
+        method: "PUT",
+        url: "http://localhost:3002/compute-targets/target-1/health-check",
+        body: {
+          result: {
+            checks: [
+              {
+                id: "plugin-code",
+                label: "Symphony Plugin",
+                required: true,
+                passed: false,
+                remediation: "Open a safe help page",
+                remediationLinks: [
+                  {
+                    label: "Unsafe link",
+                    url: "javascript:alert(1)",
+                  },
+                ],
+              },
+            ],
+            allRequiredPassed: false,
+          },
+        },
+      }),
+      createMockRouteContext({ id: "target-1" })
+    );
+
+    expect(response.status).toBe(400);
+    expect(
+      computeTargetsService.upsertHealthCheckSnapshot
+    ).not.toHaveBeenCalled();
   });
 });

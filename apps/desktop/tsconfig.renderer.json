@@ -1,0 +1,21 @@
+{
+  "extends": "@repo/typescript-config/react-library.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "verbatimModuleSyntax": true,
+    "baseUrl": ".",
+    // `@repo/*` → packages source: workspace packages with no `exports` field
+    // (notably @repo/app, whose self-referencing `@repo/app/<feature>/…`
+    // imports don't resolve through node_modules when pulled into this program)
+    // resolve from source. The Vite counterpart lives in vite.renderer.config.ts.
+    "paths": {
+      "@repo/*": ["../../packages/*"]
+    },
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx"]
+}

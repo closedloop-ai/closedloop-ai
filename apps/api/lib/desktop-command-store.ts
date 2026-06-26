@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   CreateDesktopCommandInput,
@@ -14,6 +15,7 @@ import {
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
+import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
 import {
   emitProtocolMetric,
   emitQueueMetric,
@@ -117,6 +119,13 @@ class IdempotencyConflictError extends Error {
   }
 }
 
+class ClientCommandIdConflictError extends Error {
+  constructor(message = "Command ID already exists") {
+    super(message);
+    this.name = "ClientCommandIdConflictError";
+  }
+}
+
 type EventSubscriber = (event: DesktopCommandEvent) => void;
 
 const eventSubscribers = new Map<string, Set<EventSubscriber>>();
@@ -127,31 +136,23 @@ const idempotencyCache = new BoundedCache<string, IdempotencyEntry>(
   CACHE_MAX_SIZE
 );
 
-function stableStringify(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  if (isRecord(value)) {
-    const keys = Object.keys(value).sort();
-    return `{${keys
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(String(value));
+function stripTransientCommandFields(
+  input: CreateDesktopCommandInput
+): CreateDesktopCommandInput {
+  const {
+    commandId: _commandId,
+    signature: _signature,
+    signaturePayload: _signaturePayload,
+    publicKeyFingerprint: _publicKeyFingerprint,
+    ...persistable
+  } = input;
+  return persistable;
 }
 
 function fingerprintCommand(input: CreateDesktopCommandInput): string {
-  return createHash("sha256").update(stableStringify(input)).digest("hex");
+  return createHash("sha256")
+    .update(stableStringify(stripTransientCommandFields(input)))
+    .digest("hex");
 }
 
 function isDesktopCommandStatus(value: string): value is DesktopCommandStatus {
@@ -505,10 +506,10 @@ function emitCommandLifecycleEventForStatus(
     Partial<TelemetryTraceContext>
 ): void {
   const trace: Partial<TelemetryTraceContext> = {
+    ...context,
     commandId,
     operationId,
     computeTargetId,
-    ...context,
   };
 
   if (status === "done") {
@@ -549,9 +550,13 @@ export const desktopCommandStore = {
       Partial<TelemetryTraceContext>
   ): Promise<CreateCommandResult> {
     const idempotencyKey = input.idempotencyKey?.trim() || undefined;
+    const requestPayload = stripTransientCommandFields(input);
     // Fingerprint with the trimmed key so " key " and "key" produce the
     // same hash — prevents false IdempotencyConflictError on retry.
-    const fingerprint = fingerprintCommand({ ...input, idempotencyKey });
+    const fingerprint = fingerprintCommand({
+      ...requestPayload,
+      idempotencyKey,
+    });
 
     if (idempotencyKey) {
       const deduped = await resolveIdempotentCommand(
@@ -569,11 +574,12 @@ export const desktopCommandStore = {
       created = (await withDb((db) =>
         db.desktopCommand.create({
           data: {
+            ...(input.commandId ? { id: input.commandId } : {}),
             computeTargetId,
             operationId: input.operationId,
             idempotencyKey: idempotencyKey ?? null,
             requestFingerprint: fingerprint,
-            requestPayload: input as unknown as Prisma.InputJsonValue,
+            requestPayload: requestPayload as unknown as Prisma.InputJsonValue,
             status: DesktopCommandStatus.Queued,
             lastSequenceAcked: 0,
           },
@@ -586,6 +592,9 @@ export const desktopCommandStore = {
           idempotencyKey,
           fingerprint
         );
+      }
+      if (input.commandId && (error as { code?: string }).code === "P2002") {
+        throw new ClientCommandIdConflictError();
       }
       throw error;
     }
@@ -706,23 +715,25 @@ export const desktopCommandStore = {
     // `toStatus` would be undefined (or count === 0 from the queued→running
     // race) and the ack-latency signal would be lost. Emitting per-call gives
     // at-least-once semantics; downstream dedupes on (commandId, timestamp).
-    try {
-      emitCommandLifecycleEvent(
-        TelemetryCategory.CommandAcknowledged,
-        {
-          ...context,
+    if (context) {
+      try {
+        emitCommandLifecycleEvent(
+          TelemetryCategory.CommandAcknowledged,
+          {
+            ...context,
+            commandId,
+            operationId: command.operationId,
+            computeTargetId: computeTargetId ?? command.computeTargetId,
+          },
+          { diagnostics: { ackLatencyMs } }
+        );
+      } catch (emitError) {
+        log.warn("CommandAcknowledged lifecycle emit failed", {
           commandId,
-          operationId: command.operationId,
           computeTargetId: computeTargetId ?? command.computeTargetId,
-        },
-        { diagnostics: { ackLatencyMs } }
-      );
-    } catch (emitError) {
-      log.warn("CommandAcknowledged lifecycle emit failed", {
-        commandId,
-        computeTargetId: computeTargetId ?? command.computeTargetId,
-        error: emitError,
-      });
+          error: emitError,
+        });
+      }
     }
 
     // If no rows updated, re-fetch to return current state
@@ -1110,6 +1121,8 @@ export const desktopCommandStore = {
           metric: "dropped_expired_work_items",
           origin: ORIGIN,
           count,
+          filterToken: FilterToken.WorkItemDroppedExpired,
+          ...(reason ? { reason } : {}),
           ...(context?.computeTargetId
             ? { computeTargetId: context.computeTargetId }
             : {}),
@@ -1139,4 +1152,5 @@ export const desktopCommandStore = {
   },
 
   IdempotencyConflictError,
+  ClientCommandIdConflictError,
 };

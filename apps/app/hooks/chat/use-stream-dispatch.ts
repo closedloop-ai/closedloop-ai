@@ -1,8 +1,8 @@
 "use client";
 
+import type { ChatStreamAction } from "@repo/app/chat/hooks/chat-stream-reducer";
+import type { useAbortController } from "@repo/app/chat/hooks/use-abort-controller";
 import { type Dispatch, useCallback, useRef } from "react";
-import type { ChatStreamAction } from "./chat-stream-reducer";
-import type { useAbortController } from "./use-abort-controller";
 import type {
   SendMessageResult,
   UseChatStreamCallbacks,

@@ -72,16 +72,15 @@ export async function launchPlanLoop(
     return ctResult;
   }
 
-  const { workstream, targetRepo, targetBranch, contextRefs } =
-    await resolveLoopContext(
-      artifact,
-      { repo: repoOverride, command: "plan" },
-      undefined,
-      organizationId,
-      userId,
-      documentId,
-      ctResult.computeTargetId
-    );
+  const { targetRepo, targetBranch, contextRefs } = await resolveLoopContext(
+    artifact,
+    { repo: repoOverride, command: "plan" },
+    undefined,
+    organizationId,
+    userId,
+    documentId,
+    ctResult.computeTargetId
+  );
 
   const command = COMMAND_MAP.plan;
   const prompt = buildLoopPrompt(command);
@@ -89,7 +88,6 @@ export async function launchPlanLoop(
   const loopResponse = await loopsService.create(organizationId, userId, {
     command,
     documentId,
-    workstreamId: workstream?.id,
     computeTargetId: ctResult.computeTargetId,
     prompt,
     repo: targetRepo

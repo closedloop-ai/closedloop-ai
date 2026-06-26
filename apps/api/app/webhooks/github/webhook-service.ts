@@ -1,4 +1,3 @@
-import { withDb } from "@repo/database";
 import { headers } from "next/headers";
 
 /**
@@ -9,8 +8,7 @@ export function isGitHubConfigured(): boolean {
   return Boolean(
     process.env.GITHUB_APP_ID &&
       process.env.GITHUB_APP_PRIVATE_KEY &&
-      process.env.GITHUB_APP_WEBHOOK_SECRET &&
-      process.env.GITHUB_APP_DISPATCH_REPO
+      process.env.GITHUB_APP_WEBHOOK_SECRET
   );
 }
 
@@ -24,33 +22,4 @@ export async function validateRequest(request: Request) {
   const eventType = headerPayload.get("x-github-event");
 
   return { body, signature, eventType };
-}
-
-/**
- * Find the GitHubActionRun by correlation ID in triggerData.
- * @param correlationId - The correlation ID to search for
- * @param activeOnly - If true, only find runs that are still in progress (PENDING, QUEUED, RUNNING)
- *                     If false, find any run regardless of status (for replay support)
- */
-export async function findActionRunByCorrelationId(
-  correlationId: string,
-  activeOnly = true
-) {
-  const actionRuns = await withDb((db) =>
-    db.gitHubActionRun.findMany({
-      where: {
-        workflowName: "symphony-dispatch",
-        ...(activeOnly
-          ? { status: { in: ["PENDING", "QUEUED", "RUNNING"] } }
-          : {}),
-      },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    })
-  );
-
-  return actionRuns.find((run) => {
-    const data = run.triggerData as { correlationId?: string } | null;
-    return data?.correlationId === correlationId;
-  });
 }

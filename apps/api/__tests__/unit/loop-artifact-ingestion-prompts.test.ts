@@ -11,7 +11,7 @@
  */
 
 import type { Loop } from "@repo/api/src/types/loop";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 // --- Mocks (must come before imports of the module under test) ---
 
@@ -65,7 +65,6 @@ vi.mock("@/lib/pr-linkage", async () => {
 // --- Imports (after mocks) ---
 
 import { withDb } from "@repo/database";
-import type { Mock } from "vitest";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import {
   downloadExecutionArtifacts,
@@ -99,7 +98,6 @@ const mockWithDb = withDb as unknown as Mock & { tx: Mock };
 const ORG_ID = "org-test-123";
 const ARTIFACT_ID = "artifact-test-123";
 const LOOP_ID = "loop-test-123";
-const WORKSTREAM_ID = "ws-test-123";
 const STATE_KEY_PREFIX = `${ORG_ID}/loops/${LOOP_ID}/run-1`;
 
 function makeLoop(overrides: Partial<Loop> = {}): Loop {
@@ -107,7 +105,6 @@ function makeLoop(overrides: Partial<Loop> = {}): Loop {
     id: LOOP_ID,
     organizationId: ORG_ID,
     documentId: ARTIFACT_ID,
-    workstreamId: WORKSTREAM_ID,
     s3StateKey: STATE_KEY_PREFIX,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
@@ -216,7 +213,7 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
       has_changes: true,
       pr_url: "https://github.com/owner/primary/pull/42",
       pr_number: 42,
-      pr_title: "ClosedLoop: primary",
+      pr_title: "Closedloop: primary",
       branch_name: "feat/primary",
       base_ref: "main",
       github_id: 123,
@@ -240,7 +237,7 @@ describe("downloadExecutionArtifacts — execution result parsing", () => {
       prUrl: "https://github.com/owner/primary/pull/42",
       branchName: "feat/primary",
       baseBranch: "main",
-      prTitle: "ClosedLoop: primary",
+      prTitle: "Closedloop: primary",
       commitSha: "abc123",
       githubId: 123,
     });
@@ -561,7 +558,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
           fullName: "org/repo",
           prUrl: "https://github.com/org/repo/pull/10",
           prNumber: 10,
-          prTitle: "ClosedLoop: test feature",
+          prTitle: "Closedloop: test feature",
           branchName: "symphony/test-feature",
           baseBranch: "main",
           hasChanges: true,
@@ -632,7 +629,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
           fullName: "org/repo",
           prUrl: "https://github.com/org/repo/pull/11",
           prNumber: 11,
-          prTitle: "ClosedLoop: null snapshot test",
+          prTitle: "Closedloop: null snapshot test",
           branchName: "symphony/null-snapshot",
           baseBranch: "main",
           hasChanges: true,

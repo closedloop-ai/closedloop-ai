@@ -11,13 +11,13 @@ import { deploymentService } from "@/app/deployments/deployment-service";
  * When Vercel (or another deployment provider) completes a preview deployment,
  * GitHub sends a deployment_status event with `environment_url` containing the
  * actual preview URL. This handler updates the matching PREVIEW_DEPLOYMENT
- * ExternalLink record so the URL appears in the ClosedLoop UI.
+ * ExternalLink record so the URL appears in the Closedloop UI.
  *
  * Flow:
  * 1. Filter to "success" deployments with a non-empty environment_url
  * 2. Look up the GitHub repository
- * 3. Find the open PR matching the deployment's ref (branch)
- * 4. Create the deployment record
+ * 3. Find an existing non-default branch artifact matching the deployment ref
+ * 4. Create the deployment record linked to that branch
  */
 export async function handleDeploymentStatus(
   event: DeploymentStatusEvent
@@ -49,64 +49,54 @@ export async function handleDeploymentStatus(
     });
   }
 
-  // Look up repository and matching open PR
-  const { pr, repo, prExternalLink } = await withDb(async (db) => {
+  const { branch, repo } = await withDb(async (db) => {
     const foundRepo = await db.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: String(event.repository.id) },
+      where: {
+        githubRepoId: String(event.repository.id),
+        fullName: event.repository.full_name,
+      },
       select: { id: true },
     });
 
     if (!foundRepo) {
-      return { repo: null, pr: null, prExternalLink: null };
+      return { repo: null, branch: null };
     }
 
-    // Match PR detail by headSha or headBranch
-    const foundPrDetail = await db.pullRequestDetail.findFirst({
+    const foundBranchDetail = await db.branchDetail.findFirst({
       where: {
         repositoryId: foundRepo.id,
-        OR: [{ headSha: sha }, { headBranch: ref }],
+        branchName: ref,
+        ...(sha ? { OR: [{ headSha: sha }, { headSha: null }] } : {}),
       },
-      orderBy: { artifact: { createdAt: "desc" } },
       select: {
         artifactId: true,
-        headBranch: true,
+        branchName: true,
         artifact: {
           select: {
             organizationId: true,
-            workstreamId: true,
-            externalUrl: true,
-            workstream: { select: { projectId: true } },
+            projectId: true,
           },
         },
       },
     });
 
-    if (!foundPrDetail) {
-      return { repo: foundRepo, pr: null, prExternalLink: null };
+    if (!foundBranchDetail) {
+      return { repo: foundRepo, branch: null };
     }
 
-    // The PR artifact's id is the "external link" id for linkage graphs —
-    // the legacy ExternalLink.id and the new Artifact.id are the same value
-    // (IDs were reused during the migration).
-    const foundPr = {
-      id: foundPrDetail.artifactId,
-      workstreamId: foundPrDetail.artifact.workstreamId,
-      headBranch: foundPrDetail.headBranch,
-      organizationId: foundPrDetail.artifact.organizationId,
-      workstream: foundPrDetail.artifact.workstream,
-      htmlUrl: foundPrDetail.artifact.externalUrl ?? "",
+    const foundBranch = {
+      id: foundBranchDetail.artifactId,
+      branchName: foundBranchDetail.branchName,
+      organizationId: foundBranchDetail.artifact.organizationId,
+      projectId: foundBranchDetail.artifact.projectId,
     };
 
-    return {
-      repo: foundRepo,
-      pr: foundPr,
-      prExternalLink: { id: foundPrDetail.artifactId },
-    };
+    return { repo: foundRepo, branch: foundBranch };
   });
 
   if (!repo) {
     log.info(
-      "[handleDeploymentStatus] Repository not registered in ClosedLoop",
+      "[handleDeploymentStatus] Repository not registered in Closedloop",
       {
         githubRepoId: event.repository.id,
       }
@@ -117,26 +107,29 @@ export async function handleDeploymentStatus(
     });
   }
 
-  if (!(pr?.workstreamId && pr.workstream)) {
-    log.info("[handleDeploymentStatus] No PR found for deployment ref", {
-      ref,
-      sha,
-    });
+  if (!branch) {
+    log.info(
+      "[handleDeploymentStatus] No branch artifact found for deployment ref",
+      {
+        ref,
+        sha,
+        production: deployment.production_environment,
+      }
+    );
     return NextResponse.json({
-      message: "No matching PR for this deployment",
+      message: "No matching branch for this deployment",
       ok: true,
     });
   }
 
-  const resolvedWorkstream = pr.workstream;
-  const branchRef = pr.headBranch ?? ref;
+  const projectId = branch.projectId;
+  const branchRef = branch.branchName;
   const title = `${branchRef} deployed to ${deployment.environment}`;
 
   const created = await withDb.tx(async (tx) => {
-    const deploymentArtifact = await deploymentService.recordDeployment({
-      organizationId: pr.organizationId,
-      projectId: resolvedWorkstream.projectId,
-      workstreamId: pr.workstreamId,
+    const recorded = await deploymentService.recordDeployment({
+      organizationId: branch.organizationId,
+      projectId,
       environment: deployment.environment,
       ref: branchRef,
       sha,
@@ -146,37 +139,53 @@ export async function handleDeploymentStatus(
       githubDeploymentUrl: status.deployment_url,
       transient: deployment.transient_environment,
       production: deployment.production_environment,
-      pullRequestArtifactId: prExternalLink?.id ?? null,
+      branchArtifactId: branch.id,
       title,
     });
+    if (!recorded.ok) {
+      return null;
+    }
+    const deploymentArtifact = recorded.value;
 
-    // Link the deployment artifact to the PR artifact. ArtifactLink is a
+    // Link the deployment artifact to the branch artifact. ArtifactLink is a
     // pure (sourceId, targetId, linkType) tuple — the polymorphic
     // sourceType/targetType fields were dropped in the cutover.
-    if (prExternalLink) {
-      const existingLink = await tx.artifactLink.findFirst({
-        where: {
-          organizationId: pr.organizationId,
-          sourceId: prExternalLink.id,
+    const existingLink = await tx.artifactLink.findFirst({
+      where: {
+        organizationId: branch.organizationId,
+        sourceId: branch.id,
+        targetId: deploymentArtifact.id,
+        linkType: LinkType.Produces,
+      },
+      select: { id: true },
+    });
+    if (!existingLink) {
+      await tx.artifactLink.create({
+        data: {
+          organizationId: branch.organizationId,
+          sourceId: branch.id,
           targetId: deploymentArtifact.id,
           linkType: LinkType.Produces,
         },
-        select: { id: true },
       });
-      if (!existingLink) {
-        await tx.artifactLink.create({
-          data: {
-            organizationId: pr.organizationId,
-            sourceId: prExternalLink.id,
-            targetId: deploymentArtifact.id,
-            linkType: LinkType.Produces,
-          },
-        });
-      }
     }
 
     return deploymentArtifact;
   });
+
+  if (!created) {
+    // Only reachable when the branch artifact is unparented, which the
+    // branch-service guard and the artifacts project CHECK constraint
+    // prevent. Skip with a 2xx so GitHub does not surface a delivery failure.
+    log.warn(
+      "[handleDeploymentStatus] Skipped deployment record for unparented branch",
+      { ref, sha, branchArtifactId: branch.id }
+    );
+    return NextResponse.json({
+      message: "Deployment skipped: branch artifact has no project",
+      ok: true,
+    });
+  }
 
   log.info("[handleDeploymentStatus] Created preview deployment record", {
     externalLinkId: created.id,

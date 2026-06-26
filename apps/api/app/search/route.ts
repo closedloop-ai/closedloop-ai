@@ -1,4 +1,5 @@
 import type { GlobalSearchResponse } from "@repo/api/src/types/search";
+import { uuidValidator } from "@/app/compute-targets/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
@@ -8,7 +9,8 @@ import {
 import { searchService } from "./service";
 
 /**
- * GET /search?q=<query> - Global search across artifacts, issues, workstreams, and projects
+ * GET /search?q=<query> - Global search across artifacts and projects
+ * GET /search?tagId=<tagId> - Search artifacts by tag
  * Accepts API key authentication (sk_live_) or Clerk session authentication.
  */
 export const GET = withAnyAuth<GlobalSearchResponse, "/search">(
@@ -16,6 +18,20 @@ export const GET = withAnyAuth<GlobalSearchResponse, "/search">(
     try {
       const { searchParams } = new URL(request.url);
       const query = searchParams.get("q")?.trim();
+      const tagId = searchParams.get("tagId")?.trim();
+
+      if (tagId) {
+        const parseResult = uuidValidator.safeParse(tagId);
+        if (!parseResult.success) {
+          return badRequestResponse("tagId must be a valid UUID");
+        }
+
+        const results = await searchService.searchByTag(
+          user.organizationId,
+          tagId
+        );
+        return successResponse(results);
+      }
 
       if (!query) {
         return badRequestResponse("q is required");

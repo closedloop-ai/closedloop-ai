@@ -1,5 +1,20 @@
 import { request } from "node:http";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+
+const socketIoMocks = vi.hoisted(() => ({
+  namespace: {
+    use: vi.fn(),
+    on: vi.fn(),
+  },
+}));
 
 const TEST_PORT = 20_000 + Math.floor(Math.random() * 10_000);
 const TEST_SECRET = "test-internal-secret";
@@ -11,14 +26,16 @@ let stopRelay: (() => Promise<void>) | null = null;
 
 // Mock socket.io to avoid starting a real Socket.IO server in tests
 vi.mock("socket.io", () => {
-  const mockNamespace = {
-    use: vi.fn(),
-    on: vi.fn(),
-  };
   return {
     Server: class MockServer {
-      of() {
-        return mockNamespace;
+      of(namespace?: string) {
+        if (namespace === "/desktop-gateway") {
+          return socketIoMocks.namespace;
+        }
+        // Other namespaces (e.g. the keyless /telemetry ingress) get an
+        // isolated no-op namespace so their handlers never pollute the
+        // gateway mock this suite inspects.
+        return { use() {}, on() {} };
       }
 
       close() {
@@ -52,6 +69,14 @@ afterAll(async () => {
     await stopRelay();
   }
   process.env = { ...ORIGINAL_ENV };
+});
+
+afterEach(async () => {
+  for (const socket of registeredTestSockets) {
+    await disconnectSocketTarget(socket);
+  }
+  registeredTestSockets.clear();
+  vi.unstubAllGlobals();
 });
 
 type TestRequestOptions = {
@@ -103,6 +128,83 @@ function requestJson(
     }
     req.end();
   });
+}
+
+type MockRelaySocket = {
+  id: string;
+  data: {
+    auth: {
+      organizationId: string;
+      userId: string;
+    };
+    pendingBuffer?: Array<{ event: string; args: unknown[] }>;
+  };
+  conn: { transport: { name: string } };
+  connected: boolean;
+  on: ReturnType<typeof vi.fn>;
+  emit: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  handlers: Map<string, (...args: unknown[]) => Promise<void> | void>;
+};
+
+const registeredTestSockets = new Set<MockRelaySocket>();
+
+function createMockRelaySocket(id: string): MockRelaySocket {
+  const handlers = new Map<
+    string,
+    (...args: unknown[]) => Promise<void> | void
+  >();
+  return {
+    id,
+    data: {
+      auth: {
+        organizationId: "org-1",
+        userId: "user-1",
+      },
+    },
+    conn: { transport: { name: "websocket" } },
+    connected: true,
+    on: vi.fn(
+      (
+        event: string,
+        handler: (...args: unknown[]) => Promise<void> | void
+      ) => {
+        handlers.set(event, handler);
+      }
+    ),
+    emit: vi.fn(),
+    disconnect: vi.fn(),
+    handlers,
+  };
+}
+
+function getConnectionHandler() {
+  const call = socketIoMocks.namespace.on.mock.calls.find(
+    ([event]) => event === "connection"
+  );
+  if (!call) {
+    throw new Error("Expected relay connection handler to be registered");
+  }
+  return call[1] as (socket: MockRelaySocket) => void;
+}
+
+async function registerSocketTarget(socket: MockRelaySocket, targetId: string) {
+  getConnectionHandler()(socket);
+  const helloHandler = socket.handlers.get("desktop.hello");
+  if (!helloHandler) {
+    throw new Error("Expected desktop.hello handler to be registered");
+  }
+  await helloHandler({ targetId, pluginVersion: "test" });
+  registeredTestSockets.add(socket);
+}
+
+async function disconnectSocketTarget(socket: MockRelaySocket) {
+  const disconnectHandler = socket.handlers.get("disconnect");
+  if (!disconnectHandler) {
+    return;
+  }
+  socket.connected = false;
+  await disconnectHandler("test_cleanup");
 }
 
 describe("GET /health", () => {
@@ -197,6 +299,55 @@ describe("POST /dispatch", () => {
     };
     expect(body.delivered).toBe(false);
     expect(body.reason).toBe("target_not_connected");
+  });
+
+  it("emits desktop.command only to the socket registered for the requested targetId", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        const requestBody = JSON.parse(String(init.body)) as {
+          event: string;
+          payload?: { targetId?: string };
+        };
+        return new Response(
+          JSON.stringify({
+            targetId: requestBody.payload?.targetId,
+            gatewaySessionId: `gateway-${requestBody.payload?.targetId}`,
+            emit: [],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      })
+    );
+    const socketA = createMockRelaySocket("socket-a");
+    const socketB = createMockRelaySocket("socket-b");
+    await registerSocketTarget(socketA, "target-a");
+    await registerSocketTarget(socketB, "target-b");
+
+    const operation = { commandId: "cmd-1", operationId: "op-1" };
+    const response = await requestJson(baseUrl, "/dispatch", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": TEST_SECRET,
+      },
+      body: JSON.stringify({
+        targetId: "target-a",
+        operation,
+      }),
+    });
+    const body = JSON.parse(response.body) as { delivered: boolean };
+
+    expect(response.status).toBe(200);
+    expect(body.delivered).toBe(true);
+    expect(socketA.emit).toHaveBeenCalledWith("desktop.command", operation);
+    expect(socketB.emit).not.toHaveBeenCalledWith(
+      "desktop.command",
+      expect.anything()
+    );
   });
 });
 

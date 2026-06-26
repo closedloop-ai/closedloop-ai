@@ -14,11 +14,11 @@ import type { TransactionClient } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 
-export function parseJsonArtifact<T>(
+export function parseJsonArtifact<T, R>(
   buf: Buffer | null,
   artifactName: string,
-  extract: (parsed: T) => unknown
-): unknown {
+  extract: (parsed: T) => R
+): R | null {
   if (!buf) {
     return null;
   }
@@ -43,21 +43,12 @@ export function parseJsonArtifact<T>(
 export async function upsertEvaluationWithJudgeScores(params: {
   artifactId: string;
   loopId?: string;
-  actionRunId?: string;
   organizationId: string;
   reportType: EvaluationReportType;
   report: JudgesReport;
   tx: TransactionClient;
 }): Promise<void> {
-  const {
-    artifactId,
-    loopId,
-    actionRunId,
-    organizationId,
-    reportType,
-    report,
-    tx,
-  } = params;
+  const { artifactId, loopId, organizationId, reportType, report, tx } = params;
 
   const evaluation = await tx.artifactEvaluation.upsert({
     where: {
@@ -70,16 +61,12 @@ export async function upsertEvaluationWithJudgeScores(params: {
       organizationId,
       artifactId,
       ...(loopId ? { loopId } : {}),
-      ...(actionRunId ? { actionRunId } : {}),
       reportType,
       reportId: report.report_id,
-      reportData: report,
     },
     update: {
       ...(loopId ? { loopId } : {}),
-      ...(actionRunId ? { actionRunId } : {}),
       reportType,
-      reportData: report,
     },
   });
 

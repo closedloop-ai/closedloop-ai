@@ -1,4 +1,5 @@
 import type { LoopEvent } from "@repo/api/src/types/loop";
+import { LoopEventType } from "@repo/api/src/types/loop";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { organizationsService } from "@/app/organizations/service";
@@ -182,9 +183,9 @@ export async function GET(
 
         // Auto-close the stream on terminal events
         if (
-          event.type === "completed" ||
-          event.type === "error" ||
-          event.type === "cancelled"
+          event.type === LoopEventType.Completed ||
+          event.type === LoopEventType.Error ||
+          event.type === LoopEventType.Cancelled
         ) {
           cleanup();
           try {

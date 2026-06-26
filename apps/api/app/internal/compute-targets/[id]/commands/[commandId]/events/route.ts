@@ -1,3 +1,6 @@
+import { BranchViewLocalErrorCode } from "@repo/api/src/types/branch-view-local";
+import { failure } from "@repo/api/src/types/common";
+import { isStoredBranchViewLocalCommand } from "@/lib/branch-view-local-authorization";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { validateInternalSecret } from "@/lib/internal-auth";
 import {
@@ -18,6 +21,19 @@ export async function GET(
   const command = await desktopCommandStore.getCommand(targetId, commandId);
   if (!command) {
     return notFoundResponse("Desktop command");
+  }
+
+  const isLocalContent = await isStoredBranchViewLocalCommand({
+    commandId,
+    computeTargetId: targetId,
+  });
+  if (isLocalContent) {
+    return Response.json(
+      failure(BranchViewLocalErrorCode.PublicEventReadRequired, {
+        code: BranchViewLocalErrorCode.PublicEventReadRequired,
+      }),
+      { status: 403 }
+    );
   }
 
   const url = new URL(request.url);

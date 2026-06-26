@@ -1,20 +1,86 @@
-// Document and Approval types for API contract
-// These are explicitly defined to keep packages/api independent of database
+import {
+  DOCUMENT_STATUS_OPTIONS as SHARED_DOCUMENT_STATUS_OPTIONS,
+  DOCUMENT_TYPE_OPTIONS as SHARED_DOCUMENT_TYPE_OPTIONS,
+  ChecksStatus as SharedChecksStatus,
+  DocumentStatus as SharedDocumentStatus,
+  DocumentType as SharedDocumentType,
+  PullRequestState as SharedPullRequestState,
+  RepositoryRole as SharedRepositoryRole,
+  ReviewDecision as SharedReviewDecision,
+  SnapshotSource as SharedSnapshotSource,
+  artifactRepositoryEntrySchema as sharedArtifactRepositoryEntrySchema,
+  artifactRepositorySnapshotSchema as sharedArtifactRepositorySnapshotSchema,
+} from "@closedloop-ai/loops-api/document";
+import type { z } from "zod";
+import type { Priority } from "./common.js";
+import type { CustomFieldValueDetail } from "./custom-field.js";
+import type { DocumentVersion } from "./document-version.js";
+import type { TagSummary } from "./tag.js";
+import type { BasicUser } from "./user.js";
 
-import type { Priority } from "./common";
-import type { CustomFieldValueDetail } from "./custom-field";
-import type { DocumentVersion } from "./document-version";
-import type { BasicUser } from "./user";
-import type { WorkstreamState } from "./workstream";
+export const artifactRepositoryEntrySchema =
+  sharedArtifactRepositoryEntrySchema;
+export const artifactRepositorySnapshotSchema =
+  sharedArtifactRepositorySnapshotSchema;
+export const ChecksStatus = SharedChecksStatus;
+export const DocumentStatus = SharedDocumentStatus;
+export const DOCUMENT_STATUS_OPTIONS = SHARED_DOCUMENT_STATUS_OPTIONS;
+export const DocumentType = SharedDocumentType;
+export const DOCUMENT_TYPE_OPTIONS = SHARED_DOCUMENT_TYPE_OPTIONS;
+export const PullRequestState = SharedPullRequestState;
+export const RepositoryRole = SharedRepositoryRole;
+export const ReviewDecision = SharedReviewDecision;
+export const SnapshotSource = SharedSnapshotSource;
 
-export const DocumentType = {
-  Prd: "PRD",
-  ImplementationPlan: "IMPLEMENTATION_PLAN",
-  Template: "TEMPLATE",
-  Feature: "FEATURE",
-} as const;
+export type ArtifactRepositoryEntry = z.infer<
+  typeof artifactRepositoryEntrySchema
+>;
+export type ArtifactRepositorySnapshot = z.infer<
+  typeof artifactRepositorySnapshotSchema
+>;
+export type ChecksStatus = (typeof ChecksStatus)[keyof typeof ChecksStatus];
+export type DocumentStatus =
+  (typeof DocumentStatus)[keyof typeof DocumentStatus];
+
+/**
+ * Terminal document lifecycle statuses: the document is finished and will not
+ * progress further. Canonical definition for "is this artifact resolved?"
+ * checks (e.g. dependency/blocker gating).
+ */
+export const TERMINAL_DOCUMENT_STATUSES: ReadonlySet<string> = new Set<string>([
+  DocumentStatus.Done,
+  DocumentStatus.Obsolete,
+]);
+
+/** Whether a document/artifact status string is a terminal lifecycle state. */
+export function isTerminalDocumentStatus(status: string): boolean {
+  return TERMINAL_DOCUMENT_STATUSES.has(status);
+}
 export type DocumentType = (typeof DocumentType)[keyof typeof DocumentType];
-export const DOCUMENT_TYPE_OPTIONS = Object.values(DocumentType);
+export type PullRequestState =
+  (typeof PullRequestState)[keyof typeof PullRequestState];
+export type RepositoryRole =
+  (typeof RepositoryRole)[keyof typeof RepositoryRole];
+export type ReviewDecision =
+  (typeof ReviewDecision)[keyof typeof ReviewDecision];
+export type SnapshotSource =
+  (typeof SnapshotSource)[keyof typeof SnapshotSource];
+
+export type PullRequestInfo = {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: PullRequestState;
+  isDraft: boolean;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+  checksStatus: ChecksStatus | null;
+  reviewDecision: ReviewDecision | null;
+  externalLinkId: string | null;
+  repoFullName: string | null;
+};
 
 /**
  * Maps document types to their URL route prefixes.
@@ -40,32 +106,25 @@ export function getRoutePrefixForType(type: string): string | null {
   return null;
 }
 
-// Document Status
-export const DocumentStatus = {
-  Draft: "DRAFT",
-  InProgress: "IN_PROGRESS",
-  InReview: "IN_REVIEW",
-  Approved: "APPROVED",
-  Executed: "EXECUTED",
-  Done: "DONE",
-  Obsolete: "OBSOLETE",
-} as const;
-export type DocumentStatus =
-  (typeof DocumentStatus)[keyof typeof DocumentStatus];
-export const DOCUMENT_STATUS_OPTIONS = Object.values(DocumentStatus);
-
-export const ChecksStatus = {
-  Unknown: "UNKNOWN",
-  Pending: "PENDING",
-  Passing: "PASSING",
-  Failing: "FAILING",
-} as const;
-export type ChecksStatus = (typeof ChecksStatus)[keyof typeof ChecksStatus];
+/**
+ * Return the primary repository entry from a snapshot, or null when the
+ * snapshot is empty (`source: 'none'`). Consumers that only need the single
+ * primary repo (chat panel local-fs lookup, PR ordering, plan-editor primary
+ * PR selection) use this helper rather than reaching into `repositories[0]`.
+ */
+export function getPrimaryRepoFromSnapshot(
+  snapshot: ArtifactRepositorySnapshot | null | undefined
+): ArtifactRepositoryEntry | null {
+  return (
+    snapshot?.repositories.find((r) => r.role === RepositoryRole.Primary) ??
+    snapshot?.repositories[0] ??
+    null
+  );
+}
 
 export type Document = {
   id: string;
   organizationId: string;
-  workstreamId: string | null;
   projectId: string | null;
   type: DocumentType;
   title: string;
@@ -75,25 +134,28 @@ export type Document = {
   priority: Priority;
   latestVersion: number;
   createdById: string;
+  /** Original artifact creator summary. Null when the creator record is unavailable. */
+  createdBy?: BasicUser | null;
   assigneeId: string | null;
   assignee: BasicUser | null;
   approverId: string | null;
   approver: BasicUser | null;
   tokenUsage: unknown;
-  targetRepo: string | null;
-  targetBranch: string | null;
+  /**
+   * Immutable per-document record of the repositories this artifact was
+   * created against. Populated server-side at creation time and never
+   * editable through `PATCH /documents/:id`. Always present post-backfill
+   * (PLN-602) — documents without any resolved repos carry `source: 'none'`
+   * with an empty `repositories` array.
+   */
+  repositorySnapshot: ArtifactRepositorySnapshot;
   templateForType: DocumentType | null;
   sortOrder: number | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
-export type DocumentWithWorkstream = Document & {
-  workstream?: {
-    id: string;
-    title: string;
-    state: WorkstreamState;
-  } | null;
+export type DocumentWithProject = Document & {
   project?: {
     id: string;
     name: string;
@@ -103,22 +165,39 @@ export type DocumentWithWorkstream = Document & {
   generationStatus?: GenerationStatus;
   /** Custom field values attached to this document. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];
+  tags?: TagSummary[];
 };
 
-/** Detail response from GET /documents/:id and GET /documents/by-slug/:slug. Always includes version content. */
-export type DocumentDetail = DocumentWithWorkstream & {
+/** Detail response from GET /documents/:id and GET /documents/by-slug/:slug. Always includes selected version content. */
+export type DocumentDetail = DocumentWithProject & {
   version: DocumentVersion;
+  /**
+   * Saved content for the current latest version, even when `version` is a
+   * historical selection. Consumers that need latest-version invariants must
+   * read this field instead of assuming `version.content` is latest content.
+   */
+  latestVersionContent: string | null;
 };
 
 export type FindDocumentsOptions = {
   type?: DocumentType;
-  workstreamId?: string;
   projectId?: string;
   assigneeId?: string;
 };
 
+/**
+ * Client-supplied repository selection used to build the document's
+ * `repositorySnapshot` at creation time (PLN-602). When present, the server
+ * assembles a `loop_selection` snapshot from this input. When absent the
+ * snapshot falls through to project defaults. Branch/ref are optional —
+ * projects do not pin branches by default.
+ */
+export type RepositorySelectionInput = {
+  primary: { fullName: string; branch?: string | null };
+  additional?: Array<{ fullName: string; branch?: string | null }>;
+};
+
 export type CreateDocumentInput = {
-  workstreamId?: string;
   projectId: string;
   sourceId?: string;
   type: DocumentType;
@@ -128,10 +207,14 @@ export type CreateDocumentInput = {
   status?: DocumentStatus;
   priority?: Priority;
   content: string;
-  targetRepo?: string;
-  targetBranch?: string;
   assigneeId?: string | null;
   templateForType?: DocumentType | null;
+  /**
+   * Explicit per-document repository selection (e.g. the user picked these in
+   * the Create-Document modal). Accepted by the client validator; the server
+   * builds a `loop_selection` snapshot from it. See PLN-602.
+   */
+  repositorySelection?: RepositorySelectionInput;
 };
 
 export type UpdateDocumentInput = {
@@ -142,8 +225,6 @@ export type UpdateDocumentInput = {
   approverId?: string | null;
   status?: DocumentStatus;
   priority?: Priority;
-  targetRepo?: string | null;
-  targetBranch?: string | null;
   assigneeId?: string | null;
   sortOrder?: number | null;
 };
@@ -153,40 +234,35 @@ export type MergeDocumentsInput = {
   secondaryDocumentId: string;
 };
 
-// Pull Request State
-export const PullRequestState = {
-  Open: "OPEN",
-  Merged: "MERGED",
-  Closed: "CLOSED",
-} as const;
-export type PullRequestState =
-  (typeof PullRequestState)[keyof typeof PullRequestState];
-
-// Review Decision
-export const ReviewDecision = {
-  Approved: "APPROVED",
-  ChangesRequested: "CHANGES_REQUESTED",
-  Commented: "COMMENTED",
-  Dismissed: "DISMISSED",
-} as const;
-export type ReviewDecision =
-  (typeof ReviewDecision)[keyof typeof ReviewDecision];
-
-// Pull Request info returned when an implementation plan is executed
-export type PullRequestInfo = {
+/** Branch artifact summary returned by document and loop projections. */
+export type BranchInfo = {
   id: string;
-  number: number;
-  title: string;
-  htmlUrl: string;
-  state: PullRequestState;
-  headBranch: string;
-  baseBranch: string;
-  createdAt: Date;
+  name: string;
+  htmlUrl: string | null;
+  branchName: string;
+  baseBranch: string | null;
+  headSha: string | null;
   checksStatus: ChecksStatus | null;
-  reviewDecision: ReviewDecision | null;
   externalLinkId: string | null;
   repoFullName: string | null;
+  currentPullRequest: PullRequestInfo | null;
 };
+
+export function pickBranchForRepo(
+  branches: BranchInfo[] | null | undefined,
+  repoFullName: string | null | undefined
+): BranchInfo | null {
+  if (!branches || branches.length === 0) {
+    return null;
+  }
+  return (
+    (repoFullName
+      ? branches.find((branch) => branch.repoFullName === repoFullName)
+      : undefined) ??
+    branches[0] ??
+    null
+  );
+}
 
 export function pickPullRequestForRepo(
   pullRequests: PullRequestInfo[] | null | undefined,
@@ -204,7 +280,7 @@ export function pickPullRequestForRepo(
   );
 }
 
-// Generation status for documents being processed by GitHub Actions or Loops
+// Generation status for documents being processed by a Loop
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
   command:
@@ -226,10 +302,10 @@ export type GenerationStatus = {
   completedAt: Date | null;
   correlationId: string | null;
   /** Identifies the compute backend that produced this status. */
-  source?: "github_actions" | "loop";
+  source?: "loop";
   /** Loop ID when source is "loop". Used for internal navigation to /loops/:id. */
   loopId?: string | null;
-  /** User who initiated the generation (loop or workflow). */
+  /** User who initiated the generation loop. */
   initiatedBy?: {
     firstName: string | null;
     lastName: string | null;
@@ -320,16 +396,36 @@ export type PlanJson = {
   manualTasks?: PlanTask[];
 };
 
-export type BatchCreateDocumentInput = {
-  items: CreateDocumentInput[];
+/**
+ * Metadata entry for a single document returned by the batch-meta endpoint.
+ * `type` is optional because documents with an unrecognized subtype still
+ * appear in the map (with name enrichment) but without a navigable type.
+ */
+export type DocumentMeta = {
+  title: string;
+  type?: DocumentType;
 };
 
 /**
- * Map of document slug to document title.
+ * Map of document slug to document metadata (title and type).
  * Returned by the batch-meta endpoint for lightweight name lookups.
  * Slugs not found in the org are omitted.
  */
-export type DocumentTitleMap = Record<string, string>;
+export type DocumentMetaMap = Record<string, DocumentMeta>;
 
 /** Maximum number of slugs accepted by GET /documents/batch-meta */
 export const BATCH_META_MAX_SLUGS = 50;
+
+/**
+ * Build a document URL path, optionally scoped by org slug.
+ * Callers are responsible for null-checking the route prefix before calling.
+ */
+export function buildScopedDocumentPath(
+  routePrefix: string,
+  slug: string,
+  orgSlug?: string | null
+): string {
+  return orgSlug
+    ? `/${orgSlug}/${routePrefix}/${slug}`
+    : `/${routePrefix}/${slug}`;
+}

@@ -136,13 +136,13 @@ export async function POST(
     })
   );
   const commandId = createResult.command.commandId;
-  const dispatched = await dispatchRelayCommandToRelay({
+  const dispatchResult = await dispatchRelayCommandToRelay({
     targetId: target.id,
     commandId,
     relayOperation: toRelayOperation(commandId, commandInput),
     requestId,
   });
-  if (!dispatched) {
+  if (!dispatchResult.delivered) {
     await desktopCommandStore.markCommandExpired(
       commandId,
       "Security upgrade command dispatch failed"

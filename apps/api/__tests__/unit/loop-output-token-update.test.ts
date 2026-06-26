@@ -9,7 +9,7 @@
  * - validateNormalizedEvent: accepts valid output tokenUsage; rejects non-numeric fields
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -75,9 +75,12 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  issueLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
+  const { createLoopRunnerJwtMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopRunnerJwtMockModule(importOriginal);
+});
 
 vi.mock("@/lib/aws-credentials", () => ({
   getAwsCredentials: vi.fn(),
@@ -135,7 +138,6 @@ vi.mock("@/lib/loops/loop-desktop", async (importActual) => {
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { validateNormalizedEvent } from "@/app/loops/validators";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";

@@ -1,7 +1,9 @@
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
+import { log } from "@repo/observability/log";
 import { desktopCommandStore } from "./desktop-command-store";
 import { isTerminalEventData } from "./desktop-gateway-wire";
+import { failLoopFromTerminalCommandError } from "./loops/rejected-command-loop-failure";
 import { relayEventBus } from "./relay-event-bus";
 import { isRecord } from "./type-guards";
 
@@ -50,6 +52,21 @@ export async function publishLegacyRelayEvent(
       isRecord(event.data) && typeof event.data.error === "string"
         ? event.data.error
         : "Command failed";
+    if (isTerminalEventData(event.data)) {
+      try {
+        await failLoopFromTerminalCommandError({
+          commandId,
+          targetId: command.computeTargetId,
+          error,
+        });
+      } catch (loopFailureError) {
+        log.error("Failed applying terminal command loop failure", {
+          commandId,
+          computeTargetId: command.computeTargetId,
+          error: loopFailureError,
+        });
+      }
+    }
     relayEventBus.publishResult(command.operationId, {
       operationId: command.operationId,
       event: event.data,

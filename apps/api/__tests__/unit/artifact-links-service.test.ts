@@ -3,7 +3,7 @@ import {
   LinkDirection,
   LinkType,
 } from "@repo/api/src/types/artifact";
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
@@ -11,8 +11,13 @@ vi.mock("@repo/database", () => ({
   Prisma: { DbNull: "DbNull" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
+  },
+  LinkType: {
+    PRODUCES: "PRODUCES",
+    BLOCKS: "BLOCKS",
+    RELATES_TO: "RELATES_TO",
   },
 }));
 

@@ -1,9 +1,10 @@
+import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
 import {
   emitProtocolMetric,
   emitQueueMetric,
   type ProtocolMetric,
 } from "@repo/observability/telemetry/metrics";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { relayEventBus } from "@/lib/relay-event-bus";
 
 type ReplayWindowUsageMetric = ProtocolMetric & {
@@ -114,6 +115,7 @@ describe("relayEventBus", () => {
         metric: "replay_frequency",
         count: 1,
         value: eventCount,
+        filterToken: FilterToken.CommandReplay,
       });
 
       unsubscribe();

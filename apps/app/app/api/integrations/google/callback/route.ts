@@ -126,7 +126,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         error:
           apiResponse.status >= 500
             ? "Internal server error"
-            : errorBody.substring(0, 200),
+            : errorBody.slice(0, 200),
       });
       return NextResponse.redirect(
         `${env.NEXT_PUBLIC_APP_URL}/settings?tab=integrations&google=error&message=${encodeURIComponent(GOOGLE_OAUTH_ERRORS.TOKEN_EXCHANGE_FAILED)}`

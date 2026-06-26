@@ -101,7 +101,7 @@ async function downloadDecomposeArtifacts(
 ): Promise<DecomposeArtifacts> {
   const buf = await downloadArtifactFile(stateKeyPrefix, "features.json");
 
-  const result = parseJsonArtifact<DecomposeResult>(
+  const result = parseJsonArtifact<DecomposeResult, DecomposeResult | null>(
     buf,
     "features.json",
     (r) => {
@@ -115,7 +115,7 @@ async function downloadDecomposeArtifacts(
       }
       return parsed.data;
     }
-  ) as DecomposeResult | null;
+  );
 
   return { result };
 }

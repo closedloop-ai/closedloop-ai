@@ -1,12 +1,23 @@
+import { DESKTOP_API_NAMESPACE_CAPABILITY_KEY } from "@repo/api/src/desktop-api-namespace";
+import type {
+  HealthCheckResponse,
+  McpProviderAvailability,
+} from "@repo/api/src/types/compute-target";
 import {
-  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
-  LEGACY_DESKTOP_API_NAMESPACE,
-} from "@repo/api/src/desktop-api-namespace";
-import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+  COMMAND_SIGNING_CAPABILITY_KEY,
+  COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
+  DesktopSecurityStatus,
+  deriveAvailableHarnesses,
+  HarnessType,
+  PluginUpdateOutcome,
+} from "@repo/api/src/types/compute-target";
+import { beforeEach, describe, expect, it, test, vi } from "vitest";
+import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
 
 const mocks = vi.hoisted(() => ({
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
+  loadActiveDesktopManagedGatewayIds: vi.fn(),
+  isAgentSessionSyncSupportedForUser: vi.fn(),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
@@ -21,6 +32,19 @@ vi.mock("@repo/database", () => ({
 vi.mock("@/lib/auth/desktop-managed-pop", () => ({
   isDesktopManagedPopEnforcementEnabled:
     mocks.isDesktopManagedPopEnforcementEnabled,
+}));
+
+vi.mock("@/lib/compute-target-signing-eligibility", () => ({
+  CommandSigningEligibilityStatus: {
+    Eligible: "eligible",
+    Ineligible: "ineligible",
+    Unknown: "unknown",
+  },
+  loadActiveDesktopManagedGatewayIds: mocks.loadActiveDesktopManagedGatewayIds,
+}));
+
+vi.mock("@/lib/agent-session-sync-feature", () => ({
+  isAgentSessionSyncSupportedForUser: mocks.isAgentSessionSyncSupportedForUser,
 }));
 
 import {
@@ -70,6 +94,12 @@ describe("computeTargetsService security status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(true);
+    mocks.loadActiveDesktopManagedGatewayIds.mockResolvedValue({
+      status: "ineligible",
+      gatewayIds: new Set<string>(),
+      reason: "feature_disabled",
+    });
+    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
   it("computes the full owned/shared Desktop security status matrix", async () => {
@@ -173,6 +203,29 @@ describe("computeTargetsService security status", () => {
     });
   });
 
+  it("maps an unknown persisted selectedHarness to claude", async () => {
+    installDb({
+      computeTarget: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            buildTarget({ selectedHarness: "future-harness" }),
+          ]),
+      },
+      apiKey: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    const [target] = await computeTargetsService.listAvailableForOrg(
+      "org-1",
+      "user-1",
+      "clerk-user-1"
+    );
+
+    expect(target?.selectedHarness).toBe(HarnessType.Claude);
+  });
+
   it("degrades to legacy manual without key lookup when the rollout flag is disabled", async () => {
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
     const apiKeyFindMany = vi.fn();
@@ -214,6 +267,84 @@ describe("computeTargetsService security status", () => {
     expect(mocks.isDesktopManagedPopEnforcementEnabled).toHaveBeenCalledWith({
       userId: "user-1",
       clerkUserId: "clerk-user-1",
+    });
+  });
+
+  it("computes target response signing support from each target owner", async () => {
+    const targets = [
+      buildTarget({
+        id: "viewer-target",
+        userId: "user-1",
+        gatewayId: "gateway-viewer",
+        user: { clerkId: "clerk-user-1", firstName: "Viewer", lastName: null },
+      }),
+      buildTarget({
+        id: "shared-target",
+        userId: "owner-2",
+        gatewayId: "gateway-shared",
+        isSharedWithOrg: true,
+        user: {
+          clerkId: "clerk-owner-2",
+          firstName: "Owner",
+          lastName: "Two",
+        },
+      }),
+    ];
+    mocks.loadActiveDesktopManagedGatewayIds.mockImplementation(
+      async (input) =>
+        input.userId === "owner-2"
+          ? {
+              status: "eligible",
+              gatewayIds: new Set(["gateway-shared"]),
+            }
+          : {
+              status: "eligible",
+              gatewayIds: new Set<string>(),
+            }
+    );
+    mocks.isAgentSessionSyncSupportedForUser.mockImplementation(
+      async (identity) => identity.userId === "owner-2"
+    );
+    installDb({
+      computeTarget: {
+        findMany: vi.fn().mockResolvedValue(targets),
+      },
+      apiKey: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    const result = await computeTargetsService.listAvailableForOrg(
+      "org-1",
+      "user-1",
+      "clerk-user-1"
+    );
+    const byId = new Map(result.map((target) => [target.id, target]));
+
+    expect(byId.get("viewer-target")?.serverCapabilities).toBeUndefined();
+    expect(byId.get("shared-target")?.serverCapabilities).toEqual({
+      computeTargetSigning: true,
+      agentSessionSync: true,
+    });
+    expect(mocks.loadActiveDesktopManagedGatewayIds).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      userId: "user-1",
+      clerkUserId: "clerk-user-1",
+      gatewayIds: ["gateway-viewer"],
+    });
+    expect(mocks.loadActiveDesktopManagedGatewayIds).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      userId: "owner-2",
+      clerkUserId: "clerk-owner-2",
+      gatewayIds: ["gateway-shared"],
+    });
+    expect(mocks.isAgentSessionSyncSupportedForUser).toHaveBeenCalledWith({
+      userId: "user-1",
+      clerkUserId: "clerk-user-1",
+    });
+    expect(mocks.isAgentSessionSyncSupportedForUser).toHaveBeenCalledWith({
+      userId: "owner-2",
+      clerkUserId: "clerk-owner-2",
     });
   });
 
@@ -280,8 +411,7 @@ describe("computeTargetsService security status", () => {
       computeTarget: {
         findFirst: vi.fn().mockResolvedValue({
           capabilities: {
-            [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]:
-              LEGACY_DESKTOP_API_NAMESPACE,
+            [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: "engineer", // legacy namespace value — LEGACY_DESKTOP_API_NAMESPACE was deleted in this PR
             pluginVersion: "1.10.0",
           },
         }),
@@ -315,6 +445,53 @@ describe("computeTargetsService security status", () => {
         }),
       })
     );
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
+    expect(mocks.withDb).not.toHaveBeenCalled();
+  });
+
+  it("clears stale command signing enforcement opt-in when current capability payload omits it", async () => {
+    mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
+    const update = vi.fn().mockResolvedValue(
+      buildTarget({
+        capabilities: {
+          [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        },
+      })
+    );
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({
+          capabilities: {
+            [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+            [COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY]: true,
+            pluginVersion: "1.11.3",
+          },
+        }),
+        update,
+      },
+      apiKey: {
+        findMany: vi.fn(),
+      },
+    });
+
+    await computeTargetsService.updateOwned(
+      "target-1",
+      "org-1",
+      "user-1",
+      {
+        capabilities: {
+          [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+        },
+      },
+      "clerk-user-1"
+    );
+
+    const capabilities = update.mock.calls[0][0].data.capabilities;
+    expect(capabilities).toEqual({
+      [COMMAND_SIGNING_CAPABILITY_KEY]: true,
+      pluginVersion: "1.11.3",
+    });
+    expect(hasDesktopCommandSigningEnforcement(capabilities)).toBe(false);
     expect(mocks.withDb.tx).toHaveBeenCalledTimes(1);
     expect(mocks.withDb).not.toHaveBeenCalled();
   });
@@ -662,20 +839,24 @@ describe("computeTargetsService health-check snapshots", () => {
       checkedAt,
       expectedMcpUrl: "https://mcp.example.com",
       latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: true,
       result: {
         checks: [
           { id: "git", label: "Git", required: true, passed: true },
           {
-            id: "github-auth",
-            label: "GitHub Auth",
+            id: "plugin-code",
+            label: "Symphony Plugin",
             required: true,
             passed: false,
+            enableAttempted: true,
+            enableOutcome: PluginUpdateOutcome.Failed,
+            enablePluginIds: ["code@closedloop-ai"],
           },
         ],
         allRequiredPassed: false,
       },
       allRequiredPassed: false,
-      requiredFailureIds: ["github-auth"],
+      requiredFailureIds: ["plugin-code"],
       schemaVersion: 1,
       createdAt: checkedAt,
       updatedAt: checkedAt,
@@ -696,14 +877,18 @@ describe("computeTargetsService health-check snapshots", () => {
       {
         expectedMcpUrl: "https://mcp.example.com",
         latestVersion: "1.2.3",
+        pluginAutoUpdateEnabled: true,
         result: {
           checks: [
             { id: "git", label: "Git", required: true, passed: true },
             {
-              id: "github-auth",
-              label: "GitHub Auth",
+              id: "plugin-code",
+              label: "Symphony Plugin",
               required: true,
               passed: false,
+              enableAttempted: true,
+              enableOutcome: PluginUpdateOutcome.Failed,
+              enablePluginIds: ["code@closedloop-ai"],
             },
           ],
           allRequiredPassed: true,
@@ -716,15 +901,95 @@ describe("computeTargetsService health-check snapshots", () => {
         where: { computeTargetId: "target-1" },
         create: expect.objectContaining({
           allRequiredPassed: false,
-          requiredFailureIds: ["github-auth"],
+          pluginAutoUpdateEnabled: true,
+          requiredFailureIds: ["plugin-code"],
+          result: expect.objectContaining({
+            checks: [
+              { id: "git", label: "Git", required: true, passed: true },
+              expect.objectContaining({
+                enableAttempted: true,
+                enableOutcome: PluginUpdateOutcome.Failed,
+                enablePluginIds: ["code@closedloop-ai"],
+              }),
+            ],
+          }),
         }),
         update: expect.objectContaining({
           allRequiredPassed: false,
-          requiredFailureIds: ["github-auth"],
+          pluginAutoUpdateEnabled: true,
+          requiredFailureIds: ["plugin-code"],
         }),
       })
     );
-    expect(snapshot?.requiredFailureIds).toEqual(["github-auth"]);
+    expect(snapshot?.requiredFailureIds).toEqual(["plugin-code"]);
+    expect(snapshot?.result.checks[1]).toEqual(
+      expect.objectContaining({
+        enableOutcome: PluginUpdateOutcome.Failed,
+        enablePluginIds: ["code@closedloop-ai"],
+      })
+    );
+    expect(snapshot?.pluginAutoUpdateEnabled).toBe(true);
+  });
+
+  it("coerces enabled plugin auto-update snapshots from shared targets to disabled", async () => {
+    const checkedAt = new Date("2026-05-08T16:00:00.000Z");
+    const upsert = vi.fn().mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt,
+      expectedMcpUrl: "https://mcp.example.com",
+      latestVersion: "1.2.3",
+      pluginAutoUpdateEnabled: false,
+      result: {
+        checks: [{ id: "git", label: "Git", required: true, passed: true }],
+        allRequiredPassed: true,
+      },
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: 1,
+      createdAt: checkedAt,
+      updatedAt: checkedAt,
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(
+          buildTarget({
+            isSharedWithOrg: true,
+            userId: "owner-user",
+          })
+        ),
+      },
+      computeTargetHealthCheck: {
+        upsert,
+      },
+    });
+
+    const snapshot = await computeTargetsService.upsertHealthCheckSnapshot(
+      "org-1",
+      "shared-user",
+      "target-1",
+      {
+        latestVersion: "1.2.3",
+        pluginAutoUpdateEnabled: true,
+        result: {
+          checks: [{ id: "git", label: "Git", required: true, passed: true }],
+          allRequiredPassed: true,
+        },
+      }
+    );
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          pluginAutoUpdateEnabled: false,
+        }),
+        update: expect.objectContaining({
+          pluginAutoUpdateEnabled: false,
+        }),
+      })
+    );
+    expect(snapshot?.pluginAutoUpdateEnabled).toBe(false);
   });
 
   it("returns null when upserting a snapshot for an inaccessible target", async () => {
@@ -847,5 +1112,290 @@ describe("computeTargetsService health-check snapshots", () => {
 
     expect(updateMany).toHaveBeenCalledOnce();
     expect(deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("upsertHealthCheckSnapshot auto-default harness selection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function buildHealthCheckResult(
+    claudeAvailable: boolean,
+    codexAvailable: boolean
+  ): HealthCheckResponse {
+    return {
+      checks: [],
+      allRequiredPassed: true,
+      mcpServers: {
+        claude: {
+          available: claudeAvailable,
+          serverName: null,
+          matchedUrl: null,
+          checkedAt: "2026-06-09T00:00:00.000Z",
+        },
+        codex: {
+          available: codexAvailable,
+          serverName: null,
+          matchedUrl: null,
+          checkedAt: "2026-06-09T00:00:00.000Z",
+        },
+      },
+    };
+  }
+
+  const cases: {
+    label: string;
+    currentSelectedHarness: string;
+    claudeAvailable: boolean;
+    codexAvailable: boolean;
+    expectsHarnessUpdate: boolean;
+    expectedHarness?: string;
+  }[] = [
+    {
+      label:
+        "current selectedHarness is available → no update to selectedHarness",
+      currentSelectedHarness: HarnessType.Claude,
+      claudeAvailable: true,
+      codexAvailable: true,
+      expectsHarnessUpdate: false,
+    },
+    {
+      label:
+        "current selectedHarness becomes unavailable but claude is available → sets to claude",
+      currentSelectedHarness: HarnessType.Codex,
+      claudeAvailable: true,
+      codexAvailable: false,
+      expectsHarnessUpdate: true,
+      expectedHarness: HarnessType.Claude,
+    },
+    {
+      label:
+        "current selectedHarness becomes unavailable and only codex is available → sets to codex",
+      currentSelectedHarness: HarnessType.Claude,
+      claudeAvailable: false,
+      codexAvailable: true,
+      expectsHarnessUpdate: true,
+      expectedHarness: HarnessType.Codex,
+    },
+    {
+      label: "neither harness is available → selectedHarness left unchanged",
+      currentSelectedHarness: HarnessType.Claude,
+      claudeAvailable: false,
+      codexAvailable: false,
+      expectsHarnessUpdate: false,
+    },
+    {
+      label:
+        "current selectedHarness was codex and only claude becomes available → switches to claude",
+      currentSelectedHarness: HarnessType.Codex,
+      claudeAvailable: true,
+      codexAvailable: false,
+      expectsHarnessUpdate: true,
+      expectedHarness: HarnessType.Claude,
+    },
+  ];
+
+  test.each(cases)("$label", async ({
+    currentSelectedHarness,
+    claudeAvailable,
+    codexAvailable,
+    expectsHarnessUpdate,
+    expectedHarness,
+  }) => {
+    const computeTargetUpdate = vi.fn().mockResolvedValue(
+      buildTarget({
+        selectedHarness: expectedHarness ?? currentSelectedHarness,
+      })
+    );
+    const healthCheckUpsert = vi.fn().mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt: new Date(),
+      expectedMcpUrl: null,
+      latestVersion: null,
+      pluginAutoUpdateEnabled: false,
+      result: buildHealthCheckResult(claudeAvailable, codexAvailable),
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue(
+            buildTarget({ selectedHarness: currentSelectedHarness })
+          ),
+        update: computeTargetUpdate,
+      },
+      computeTargetHealthCheck: {
+        upsert: healthCheckUpsert,
+      },
+    });
+
+    await computeTargetsService.upsertHealthCheckSnapshot(
+      "org-1",
+      "user-1",
+      "target-1",
+      {
+        result: buildHealthCheckResult(claudeAvailable, codexAvailable),
+      }
+    );
+
+    if (expectsHarnessUpdate) {
+      expect(computeTargetUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "target-1" },
+          data: { selectedHarness: expectedHarness },
+        })
+      );
+    } else {
+      expect(computeTargetUpdate).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not mutate selectedHarness when a shared target health check is stored", async () => {
+    const computeTargetUpdate = vi.fn();
+    const healthCheckUpsert = vi.fn().mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt: new Date(),
+      expectedMcpUrl: null,
+      latestVersion: null,
+      pluginAutoUpdateEnabled: false,
+      result: buildHealthCheckResult(true, false),
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: 1,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(
+          buildTarget({
+            userId: "owner-user",
+            isSharedWithOrg: true,
+            selectedHarness: HarnessType.Codex,
+          })
+        ),
+        update: computeTargetUpdate,
+      },
+      computeTargetHealthCheck: {
+        upsert: healthCheckUpsert,
+      },
+    });
+
+    await computeTargetsService.upsertHealthCheckSnapshot(
+      "org-1",
+      "viewer-user",
+      "target-1",
+      {
+        result: buildHealthCheckResult(true, false),
+      }
+    );
+
+    expect(healthCheckUpsert).toHaveBeenCalledOnce();
+    expect(computeTargetUpdate).not.toHaveBeenCalled();
+  });
+});
+
+function makeNeutralAvailability(available: boolean): McpProviderAvailability {
+  return {
+    available,
+    serverName: null,
+    matchedUrl: null,
+    checkedAt: "2026-06-09T00:00:00.000Z",
+  };
+}
+
+function makeHealthCheck(
+  mcpServers?: HealthCheckResponse["mcpServers"]
+): HealthCheckResponse {
+  return {
+    checks: [],
+    allRequiredPassed: true,
+    ...(mcpServers === undefined ? {} : { mcpServers }),
+  };
+}
+
+describe("deriveAvailableHarnesses", () => {
+  const cases: {
+    label: string;
+    input: HealthCheckResponse;
+    expected: HarnessType[];
+  }[] = [
+    {
+      label: "both claude and codex available → returns both harnesses",
+      input: makeHealthCheck({
+        claude: makeNeutralAvailability(true),
+        codex: makeNeutralAvailability(true),
+      }),
+      expected: [HarnessType.Claude, HarnessType.Codex],
+    },
+    {
+      label: "only claude available → returns claude only",
+      input: makeHealthCheck({
+        claude: makeNeutralAvailability(true),
+        codex: makeNeutralAvailability(false),
+      }),
+      expected: [HarnessType.Claude],
+    },
+    {
+      label: "only codex available → returns codex only",
+      input: makeHealthCheck({
+        claude: makeNeutralAvailability(false),
+        codex: makeNeutralAvailability(true),
+      }),
+      expected: [HarnessType.Codex],
+    },
+    {
+      label: "neither available → returns empty set",
+      input: makeHealthCheck({
+        claude: makeNeutralAvailability(false),
+        codex: makeNeutralAvailability(false),
+      }),
+      expected: [],
+    },
+    {
+      label: "no mcpServers field → returns empty set",
+      input: makeHealthCheck(),
+      expected: [],
+    },
+    {
+      label:
+        "legacy closedloopAvailable=true for claude → includes claude harness",
+      input: makeHealthCheck({
+        claude: {
+          closedloopAvailable: true,
+          checkedAt: "2026-06-09T00:00:00.000Z",
+        },
+        codex: makeNeutralAvailability(false),
+      }),
+      expected: [HarnessType.Claude],
+    },
+    {
+      label: "legacy closedloopAvailable=false for both → returns empty set",
+      input: makeHealthCheck({
+        claude: {
+          closedloopAvailable: false,
+          checkedAt: "2026-06-09T00:00:00.000Z",
+        },
+        codex: {
+          closedloopAvailable: false,
+          checkedAt: "2026-06-09T00:00:00.000Z",
+        },
+      }),
+      expected: [],
+    },
+  ];
+
+  test.each(cases)("$label", ({ input, expected }) => {
+    expect(deriveAvailableHarnesses(input)).toEqual(expected);
   });
 });

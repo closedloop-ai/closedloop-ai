@@ -36,7 +36,7 @@ export const SiteHeader = ({ locale }: SiteHeaderProps) => {
     <header className="sticky top-0 z-40 h-[72px] w-full border-border/60 border-b bg-background">
       <div className="relative mx-auto flex h-full w-full max-w-[1300px] items-center justify-between px-6 md:px-10">
         <Link
-          aria-label="ClosedLoop.ai home"
+          aria-label="Closedloop.ai home"
           className="flex shrink-0 items-center"
           href={localize(locale, "/")}
         >
@@ -87,7 +87,7 @@ export const SiteHeader = ({ locale }: SiteHeaderProps) => {
 
         <div className="flex shrink-0 items-center gap-2">
           <Link
-            aria-label="ClosedLoop on GitHub"
+            aria-label="Closedloop on GitHub"
             className="hidden items-center justify-center rounded-md p-2 text-foreground/70 transition-colors hover:bg-muted hover:text-foreground lg:flex"
             href={GITHUB_REPO_URL}
             rel="noopener noreferrer"

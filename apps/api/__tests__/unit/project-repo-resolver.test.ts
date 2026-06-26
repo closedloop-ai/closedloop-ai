@@ -1,8 +1,9 @@
+import { describe, expect, it } from "vitest";
 /**
  * Unit tests for the pure repository resolution chain in
  * `@repo/api/src/types/project`. Covers project override (with stale-id
- * filtering), single-team inheritance, legacy `defaultRepository` fallback,
- * and the multi-team must-pick null result.
+ * filtering), single-team inheritance, and the multi-team must-pick null
+ * result.
  */
 
 import {
@@ -143,58 +144,9 @@ describe("resolveProjectRepoDefaults", () => {
     expect(result).toBeNull();
   });
 
-  it("falls back to legacy defaultRepository when its repoId is in the team pool", () => {
+  it("returns null for a multi-team project with no override even when the pool has candidates", () => {
     const result = resolveProjectRepoDefaults({
-      projectSettings: {
-        defaultRepository: {
-          repoId: "legacy",
-          repoFullName: "acme/legacy",
-          branch: "main",
-        },
-      },
-      teamRepos: [
-        teamRepo("legacy"),
-        teamRepo("other", { isPrimary: true, isDefaultSelected: true }),
-      ],
-      teamCount: 2,
-    });
-
-    // Multi-team with no override — legacy fallback wins because the legacy
-    // repoId is in the pool.
-    expect(result).toEqual({
-      selectedRepoIds: ["legacy"],
-      primaryRepoId: "legacy",
-    });
-  });
-
-  it("falls back to legacy defaultRepository even when team pool is empty", () => {
-    const result = resolveProjectRepoDefaults({
-      projectSettings: {
-        defaultRepository: {
-          repoId: "legacy",
-          repoFullName: "acme/legacy",
-          branch: "main",
-        },
-      },
-      teamRepos: [],
-      teamCount: 0,
-    });
-
-    expect(result).toEqual({
-      selectedRepoIds: ["legacy"],
-      primaryRepoId: "legacy",
-    });
-  });
-
-  it("ignores legacy defaultRepository when its repoId is not in a non-empty team pool", () => {
-    const result = resolveProjectRepoDefaults({
-      projectSettings: {
-        defaultRepository: {
-          repoId: "legacy",
-          repoFullName: "acme/legacy",
-          branch: "main",
-        },
-      },
+      projectSettings: {},
       teamRepos: [
         teamRepo("a", { isPrimary: true }),
         teamRepo("b", { isPrimary: true }),
@@ -207,24 +159,14 @@ describe("resolveProjectRepoDefaults", () => {
 });
 
 describe("getProjectSettings", () => {
-  it("parses both repositoryOverrides and legacy defaultRepository", () => {
+  it("parses repositoryOverrides", () => {
     const settings = getProjectSettings({
-      defaultRepository: {
-        repoId: "legacy",
-        repoFullName: "acme/legacy",
-        branch: "main",
-      },
       repositoryOverrides: {
         selectedRepoIds: ["a", "b"],
         primaryRepoId: "a",
       },
     });
 
-    expect(settings.defaultRepository).toEqual({
-      repoId: "legacy",
-      repoFullName: "acme/legacy",
-      branch: "main",
-    });
     expect(settings.repositoryOverrides).toEqual({
       selectedRepoIds: ["a", "b"],
       primaryRepoId: "a",
@@ -237,20 +179,9 @@ describe("getProjectSettings", () => {
         selectedRepoIds: ["a"],
         primaryRepoId: "b",
       },
-      defaultRepository: {
-        repoId: "legacy",
-        repoFullName: "acme/legacy",
-        branch: "main",
-      },
     });
 
-    // Override refine fails, but legacy is independent and remains valid.
     expect(settings.repositoryOverrides).toBeUndefined();
-    expect(settings.defaultRepository).toEqual({
-      repoId: "legacy",
-      repoFullName: "acme/legacy",
-      branch: "main",
-    });
   });
 
   it("ignores unknown keys without erroring", () => {

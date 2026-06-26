@@ -11,7 +11,7 @@ import {
   INNER_STROKE_WIDTH,
   RADIUS,
   STROKE_WIDTH,
-} from "./status-icon-shared";
+} from "./internal/status-icon-shared";
 
 interface StatusPercentageIconProps
   extends React.SVGAttributes<SVGSVGElement> {

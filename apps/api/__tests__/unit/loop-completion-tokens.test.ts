@@ -8,7 +8,7 @@
  * - tokensByModel and estimatedCost are calculated and persisted
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -67,9 +67,12 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  issueLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
+  const { createLoopRunnerJwtMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopRunnerJwtMockModule(importOriginal);
+});
 
 vi.mock("@/lib/aws-credentials", () => ({
   getAwsCredentials: vi.fn(),
@@ -94,7 +97,6 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";
@@ -698,6 +700,16 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
         error: expect.objectContaining({ code: "NO_WORK_PRODUCED" }),
       })
     );
+
+    // Error event should be persisted via addEvent with NO_WORK_PRODUCED data
+    expect(mockLoopsService.addEvent).toHaveBeenCalledWith(
+      "loop-1",
+      "org-1",
+      expect.objectContaining({
+        type: "error",
+        data: expect.objectContaining({ code: "NO_WORK_PRODUCED" }),
+      })
+    );
   });
 
   it("EXECUTE 0/0 with already-terminal loop returns []", async () => {
@@ -732,7 +744,7 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
     });
 
     expect(result).toHaveLength(0);
-    // Error event should NOT be persisted on race
+    // Error event should NOT be persisted on race.
     expect(mockLoopsService.addEvent).not.toHaveBeenCalled();
   });
 

@@ -6,7 +6,7 @@
  */
 
 import type { TeamRepository } from "@repo/api/src/types/teams";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getRepositoriesByProject, countTeamsForProject } = vi.hoisted(() => ({
   getRepositoriesByProject: vi.fn(),
@@ -74,13 +74,17 @@ describe("loadProjectRepoDefaults", () => {
       },
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       override: {
         selectedRepoIds: ["repo-a", "repo-b"],
         primaryRepoId: "repo-a",
       },
       primary: { installationRepositoryId: "repo-a", fullName: "acme/a" },
     });
+    expect(result?.teamRepos.map((r) => r.installationRepositoryId)).toEqual([
+      "repo-a",
+      "repo-b",
+    ]);
   });
 
   it("inherits a single team's defaults when no override is set", async () => {
@@ -145,28 +149,16 @@ describe("loadProjectRepoDefaults", () => {
     expect(result).toBeNull();
   });
 
-  it("falls back to legacy fullName when primary is outside the team pool", async () => {
+  it("returns null when the pool is empty and there is no override", async () => {
     getRepositoriesByProject.mockResolvedValueOnce([]);
     countTeamsForProject.mockResolvedValueOnce(0);
 
     const result = await loadProjectRepoDefaults({
       projectId: "proj-1",
       organizationId: "org-1",
-      projectSettings: {
-        defaultRepository: {
-          repoId: "legacy",
-          repoFullName: "acme/legacy",
-          branch: "main",
-        },
-      },
+      projectSettings: {},
     });
 
-    expect(result).toEqual({
-      override: { selectedRepoIds: ["legacy"], primaryRepoId: "legacy" },
-      primary: {
-        installationRepositoryId: "legacy",
-        fullName: "acme/legacy",
-      },
-    });
+    expect(result).toBeNull();
   });
 });

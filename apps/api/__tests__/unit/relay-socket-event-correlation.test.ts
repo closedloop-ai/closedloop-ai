@@ -6,7 +6,7 @@
  * End-to-end propagation is verified in T-6.1.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -54,8 +54,8 @@ vi.mock("@/app/compute-targets/service", () => ({
 
 // --- Imports (after mocks) ---
 
+import { log } from "@repo/observability/log";
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it } from "vitest";
 import { POST } from "@/app/internal/relay/socket-event/route";
 
 // ---------------------------------------------------------------------------
@@ -106,6 +106,12 @@ describe("POST /internal/relay/socket-event — correlation context propagation"
         commandId: "cmd-abc",
         eventType: "status",
         computeTargetId: "target-1",
+        context: expect.objectContaining({
+          commandId: "cmd-abc",
+          computeTargetId: "target-1",
+          gatewaySessionId: GATEWAY_SESSION_ID,
+          schemaVersion: "1",
+        }),
       })
     );
   });
@@ -127,11 +133,13 @@ describe("POST /internal/relay/socket-event — correlation context propagation"
     expect(response.status).toBe(200);
 
     const { desktopCommandStore } = await import("@/lib/desktop-command-store");
-    expect(desktopCommandStore.ingestCommandEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        commandId: "cmd-no-session",
-      })
-    );
+    const call = vi.mocked(desktopCommandStore.ingestCommandEvent).mock
+      .calls[0]?.[0];
+    expect(call).toMatchObject({
+      commandId: "cmd-no-session",
+      computeTargetId: "target-3",
+    });
+    expect(call).not.toHaveProperty("context");
   });
 
   it("accepts a command ack with gatewaySessionId and returns 200", async () => {
@@ -154,7 +162,52 @@ describe("POST /internal/relay/socket-event — correlation context propagation"
       true,
       undefined,
       "target-1",
-      expect.anything()
+      expect.objectContaining({
+        commandId: "cmd-ack-1",
+        computeTargetId: "target-1",
+        gatewaySessionId: GATEWAY_SESSION_ID,
+        schemaVersion: "1",
+      })
     );
+  });
+
+  it("omits lifecycle context for a command ack without gatewaySessionId", async () => {
+    const request = makeRequest({
+      event: "desktop.command.ack",
+      targetId: "target-1",
+      payload: {
+        commandId: "cmd-ack-no-session",
+        accepted: true,
+      },
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    const { desktopCommandStore } = await import("@/lib/desktop-command-store");
+    expect(desktopCommandStore.acknowledgeCommand).toHaveBeenCalledWith(
+      "cmd-ack-no-session",
+      true,
+      undefined,
+      "target-1",
+      undefined
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      "Relay command ack lifecycle context omitted",
+      expect.objectContaining({
+        commandId: "cmd-ack-no-session",
+        computeTargetId: "target-1",
+        reason: "missing_gateway_session",
+      })
+    );
+    expect(
+      vi
+        .mocked(log.info)
+        .mock.calls.some((call) =>
+          String(call[0]).includes(
+            '"metric":"command_ack_lifecycle_context_omitted"'
+          )
+        )
+    ).toBe(true);
   });
 });

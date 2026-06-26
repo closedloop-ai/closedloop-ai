@@ -1,12 +1,14 @@
 import {
   ExecutionResultFileSchema,
   ExecutionResultV2Schema,
-  parseExecutionResultFile,
-  type RepoExecutionResult,
 } from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import type { Loop } from "@repo/api/src/types/loop";
+import {
+  type Loop,
+  parseExecutionResultFile,
+  type RepoExecutionResult,
+} from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
@@ -72,7 +74,7 @@ export async function downloadExecutionArtifacts(
     if (rawData !== null) {
       const parsed = parseExecutionResultFile(rawData, loop.repo?.fullName);
 
-      if (parsed.ok) {
+      if (parsed.ok === true) {
         executionResult = parsed.results;
         log.info("[loop-document-ingestion] Parsed execution result file", {
           loopId: loop.id,
@@ -92,11 +94,11 @@ export async function downloadExecutionArtifacts(
     }
   }
 
-  const codeJudgesReport = parseJsonArtifact<JudgesReport>(
+  const codeJudgesReport = parseJsonArtifact<JudgesReport, JudgesReport>(
     codeJudgesReportBuf,
     "code-judges.json",
     (p) => p
-  ) as JudgesReport | null;
+  );
 
   const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
@@ -127,19 +129,15 @@ export async function ingestExecutionArtifacts(
     return;
   }
 
-  if (!(loop.workstreamId && loop.documentId)) {
-    log.warn(
-      "[loop-document-ingestion] Loop missing workstreamId or artifactId",
-      {
-        loopId: loop.id,
-      }
-    );
+  if (!loop.documentId) {
+    log.warn("[loop-document-ingestion] Loop missing documentId", {
+      loopId: loop.id,
+    });
     return;
   }
 
   const ctx: IngestionContext = {
     organizationId,
-    workstreamId: loop.workstreamId,
     documentId: loop.documentId,
     loopId: loop.id,
   };
@@ -200,7 +198,7 @@ export function executionArtifactsFromUpload(
       parsed.executionResult,
       loop.repo?.fullName
     );
-    if (result.ok) {
+    if (result.ok === true) {
       executionResult = result.results;
     } else {
       log.error(

@@ -1,14 +1,13 @@
 "use client";
 
+import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
 import { Button } from "@repo/design-system/components/ui/button";
+import { useNavigation } from "@repo/navigation/use-navigation";
+import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { Check, ExternalLink, Github, Loader2 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
-import {
-  useGetGitHubConnectUrl,
-  useGitHubIntegrationStatus,
-} from "@/hooks/queries/use-github-integration";
+import { getGitHubConnectUrl } from "@/lib/integration-connect-urls";
 import { setOnboardingReturnCookie } from "../lib/onboarding-constants";
 
 type ConnectGitHubStepProps = {
@@ -16,9 +15,9 @@ type ConnectGitHubStepProps = {
 };
 
 export function ConnectGitHubStep({ onNext }: ConnectGitHubStepProps) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const githubConnectUrl = useGetGitHubConnectUrl("install");
+  const navigation = useNavigation();
+  const searchParams = useSearchParamsValue();
+  const githubConnectUrl = getGitHubConnectUrl("install");
   const toastedRef = useRef(false);
 
   const { data: githubStatus, isLoading } = useGitHubIntegrationStatus();
@@ -33,13 +32,13 @@ export function ConnectGitHubStep({ onNext }: ConnectGitHubStepProps) {
     if (github === "connected") {
       toastedRef.current = true;
       toast.success("GitHub connected successfully");
-      router.replace("/onboarding", { scroll: false });
+      navigation.replace("/onboarding", { scroll: false });
     } else if (github === "error") {
       toastedRef.current = true;
       toast.error("Failed to connect GitHub");
-      router.replace("/onboarding", { scroll: false });
+      navigation.replace("/onboarding", { scroll: false });
     }
-  }, [searchParams, router]);
+  }, [searchParams, navigation]);
 
   const handleConnect = () => {
     setOnboardingReturnCookie();
@@ -106,7 +105,7 @@ function GitHubAction({
 
   if (isConnected) {
     return (
-      <div className="flex items-center gap-1 text-green-500 text-sm">
+      <div className="flex items-center gap-1 text-sm text-success">
         <Check className="h-4 w-4" />
         Connected
       </div>

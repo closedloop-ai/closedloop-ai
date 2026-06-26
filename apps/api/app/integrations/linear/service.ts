@@ -1,3 +1,4 @@
+import { DocumentStatus } from "@repo/api/src/types/document";
 import type { LinearIntegration } from "@repo/database";
 import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import {
@@ -95,16 +96,30 @@ async function ensureValidAccessToken(
       });
       accessToken = integration.accessToken;
     }
-    return { success: true, accessToken: accessToken as string };
+    if (!accessToken) {
+      log.warn(`${logPrefix} Missing access token`, { organizationId });
+      return {
+        success: false,
+        error: "Linear access token is unavailable. Please reconnect Linear.",
+      };
+    }
+    return { success: true, accessToken };
   }
 
   try {
     const rawRefreshToken = await resolveIntegrationToken(
       integration.refreshTokenEncrypted,
-      integration.refreshToken as string
+      integration.refreshToken
     );
+    if (!rawRefreshToken) {
+      log.warn(`${logPrefix} Missing refresh token`, { organizationId });
+      return {
+        success: false,
+        error: "Linear refresh token is unavailable. Please reconnect Linear.",
+      };
+    }
 
-    const tokens = await refreshAccessToken(rawRefreshToken as string);
+    const tokens = await refreshAccessToken(rawRefreshToken);
 
     let encryptedAccessToken: string | null = null;
     let encryptedRefreshToken: string | null = null;
@@ -374,7 +389,7 @@ export const linearService = {
       };
     }
 
-    if (artifact.status !== "APPROVED") {
+    if (artifact.status !== DocumentStatus.Approved) {
       return {
         success: false,
         error: "Only approved implementation plans can be exported to Linear",
@@ -497,22 +512,22 @@ export const linearService = {
       };
     }
 
-    // Store created issues in database for tracking
-    if (artifact.workstreamId) {
-      const workstreamId = artifact.workstreamId; // Capture for type narrowing
-      await withDb((db) =>
-        db.linearSubtask.createMany({
-          data: createdIssues.map((issue) => ({
-            workstreamId,
-            linearId: issue.id,
-            linearKey: issue.identifier,
-            linearUrl: issue.url,
-            title: issue.title,
-            isCompleted: false,
-          })),
-        })
-      );
-    }
+    // Mirror the created Linear issues locally so the export stays idempotent
+    // and so subtask state can be read back without round-tripping Linear.
+    // PLN-787 re-anchored LinearSubtask from workstreamId to documentId.
+    await withDb((db) =>
+      db.linearSubtask.createMany({
+        data: createdIssues.map((issue) => ({
+          organizationId,
+          documentId,
+          linearId: issue.id,
+          linearKey: issue.identifier,
+          linearUrl: issue.url,
+          title: issue.title,
+          isCompleted: false,
+        })),
+      })
+    );
 
     log.info("[linear/export] Exported implementation plan to Linear", {
       userId,

@@ -1,0 +1,37 @@
+{
+  "sessionId": "fixture-copilot-bb22",
+  "creationDate": "2026-05-20T11:00:00.000Z",
+  "lastMessageDate": "2026-05-20T11:00:30.000Z",
+  "requests": [
+    {
+      "id": "req-1",
+      "message": { "text": "explain the build script" },
+      "response": { "value": "The build script orchestrates..." },
+      "timestamp": "2026-05-20T11:00:05.000Z",
+      "responseTimestamp": "2026-05-20T11:00:08.000Z",
+      "usage": {
+        "input_tokens": 600,
+        "output_tokens": 220,
+        "cache_read_tokens": 2000,
+        "cache_write_tokens": 300
+      }
+    },
+    {
+      "id": "req-2",
+      "message": { "text": "now make it faster" },
+      "response": { "value": "Adding parallel build steps..." },
+      "timestamp": "2026-05-20T11:00:15.000Z",
+      "responseTimestamp": "2026-05-20T11:00:25.000Z",
+      "toolCalls": [
+        { "name": "read_file", "args": { "path": "build.sh" } },
+        { "name": "edit_file", "args": { "path": "build.sh" } }
+      ],
+      "usage": {
+        "input_tokens": 800,
+        "output_tokens": 350,
+        "cache_read_tokens": 4500,
+        "cache_write_tokens": 200
+      }
+    }
+  ]
+}

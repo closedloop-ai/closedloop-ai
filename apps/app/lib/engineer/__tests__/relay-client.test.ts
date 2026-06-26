@@ -1,3 +1,4 @@
+import type { BrowserSignedCommandId } from "@repo/api/src/types/compute-target";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
@@ -9,10 +10,10 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 import { log } from "@repo/observability/log";
+import type { RelayHttpRequestPayload } from "@repo/shared-platform/relay-request-model";
 import {
   isStreamingGatewayRequest,
   RelayClient,
-  type RelayHttpRequestPayload,
 } from "@/lib/engineer/relay-client";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
@@ -81,9 +82,9 @@ describe("isStreamingGatewayRequest", () => {
     );
   });
 
-  it("classifies legacy engineer streaming endpoints after normalization", () => {
+  it("classifies /api/gateway/terminal-chat as a streaming endpoint", () => {
     expect(
-      isStreamingGatewayRequest("POST", "/api/engineer/terminal-chat", null)
+      isStreamingGatewayRequest("POST", "/api/gateway/terminal-chat", null)
     ).toBe(true);
   });
 
@@ -154,7 +155,7 @@ describe("RelayClient.executeOperation preserves body fields", () => {
     });
   });
 
-  it("accepts legacy engineer paths when creating relay commands", async () => {
+  it("accepts /api/gateway/ paths when creating relay commands", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -181,7 +182,7 @@ describe("RelayClient.executeOperation preserves body fields", () => {
     const client = new RelayClient("http://api.test", "token-123");
     await client.executeOperation("target-1", {
       method: "POST",
-      path: "/api/engineer/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
+      path: "/api/gateway/symphony/chat/pr-42?repo=%2Ftmp%2Frepo",
       headers: { "content-type": "application/json" },
       body: {
         kind: "json",
@@ -193,7 +194,56 @@ describe("RelayClient.executeOperation preserves body fields", () => {
     const createBody = JSON.parse(createCall[1]?.body as string) as {
       path: string;
     };
-    expect(createBody.path).toBe("/api/engineer/symphony/chat/pr-42");
+    expect(createBody.path).toBe("/api/gateway/symphony/chat/pr-42");
+  });
+
+  it("passes browser command signing fields through to command creation", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const commandId =
+      "0196b1bb-7a00-7000-8000-000000000004" as BrowserSignedCommandId;
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        data: { commandId, status: "queued" },
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        `data: ${JSON.stringify({
+          commandId,
+          sequence: 1,
+          eventType: "result",
+          data: { statusCode: 200, body: { ok: true } },
+          createdAt: "2026-05-08T12:00:00.000Z",
+        })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }
+      )
+    );
+
+    const client = new RelayClient("http://api.test", "token-123");
+    await client.executeOperation(
+      "target-1",
+      makeRelayRequest("/api/gateway/git?repo=%2Ftmp%2Frepo&mode=status"),
+      {
+        commandId,
+        signature: "signature-base64",
+        signaturePayload: '{"signed":true}',
+        publicKeyFingerprint: "cl:testfingerprint",
+      }
+    );
+
+    const createBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(createBody).toMatchObject({
+      commandId,
+      path: "/api/gateway/git",
+      query: { repo: "/tmp/repo", mode: "status" },
+      signature: "signature-base64",
+      signaturePayload: '{"signed":true}',
+      publicKeyFingerprint: "cl:testfingerprint",
+    });
   });
 });
 
@@ -1036,5 +1086,69 @@ describe("RelayClient.resumeStream", () => {
     const chunkLine = JSON.parse(lines[2]);
     expect(chunkLine._seq).toBe(6);
     expect(chunkLine.content).toBe("continued");
+  });
+
+  it("classifies local-content resume and authorizes through the public event route", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            success: false,
+            error: "branch_view_public_event_read_required",
+            code: "branch_view_public_event_read_required",
+          },
+          { status: 403 }
+        )
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: [
+            {
+              commandId: "cmd-local",
+              sequence: 6,
+              eventType: "done",
+              data: {},
+              createdAt: "2026-03-06T12:00:01.000Z",
+            },
+          ],
+        })
+      );
+
+    const client = new RelayClient(
+      "http://api.test",
+      "token-123",
+      "internal-secret"
+    );
+    const options = await client.resolveResumeOptions("target-1", "cmd-local");
+    const { stream } = client.resumeStream("target-1", "cmd-local", 5, options);
+
+    const outputPromise = readAllChunks(stream.getReader());
+    await vi.advanceTimersByTimeAsync(1000);
+    await outputPromise;
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://api.test/internal/compute-targets/target-1/commands/cmd-local/events?afterSequence=0",
+      expect.objectContaining({
+        headers: { "x-internal-secret": "internal-secret" },
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://api.test/compute-targets/target-1/commands/cmd-local/events?afterSequence=0",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer token-123" },
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "http://api.test/compute-targets/target-1/commands/cmd-local/events?afterSequence=5",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer token-123" },
+      })
+    );
   });
 });

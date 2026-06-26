@@ -2,20 +2,7 @@
 
 Authenticated Next.js app (App Router). Port 3000. For Server Component vs Client Component vs Server Action mental model, see `SERVER_CLIENT.md`.
 
-## Data Access Pattern
-
-**Do NOT import `@repo/database`.** All DB access via TanStack Query hooks → `apps/api` → services → database.
-
-## TanStack Query Conventions
-
-All data fetching in `hooks/queries/use-*.ts`:
-- Export `<entity>Keys` factory (e.g., `documentKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
-- Query hooks: `queryKey` + `queryFn` + `enabled` + `...options` spread
-- Mutations: invalidate relevant caches in `onSuccess`
-- Prefer `mutate` over `mutateAsync`. `mutateAsync` can throw and thus requires try/catch, which is overly verbose.
-- `useApiClient()` provides the HTTP client (throws `ApiError`)
-- Only `staleTime` acceptable as default; omit gcTime, refetchOnMount, refetchOnWindowFocus
-- Use `refetchInterval` for polling (e.g., generation status)
+> **Agents:** also read `AGENTS.md` in this directory for coding patterns, security rules, and domain conventions.
 
 ## File Organization
 
@@ -23,65 +10,14 @@ All data fetching in `hooks/queries/use-*.ts`:
 hooks/
 ├── queries/
 │   ├── use-documents.ts    # documentKeys + useDocument, useCreateDocument, etc.
-│   ├── use-projects.ts     # projectKeys + useProject, useCreateProject, etc.
-│   ├── use-workstreams.ts
-│   ├── use-teams.ts
-│   ├── use-users.ts
-│   └── use-organizations.ts
-├── use-api-client.ts       # HTTP client hook used by all query hooks
+│   ├── use-loops.ts        # loopKeys + useRunLoop, etc.
+│   └── use-*.ts            # remaining query hooks not yet migrated
+├── use-api-client.ts       # deprecated re-export of the @repo/app transport port
 └── use-*.ts                # Other non-query hooks
 ```
 
-## Learned Patterns
-
-### TanStack Query
-- **[pattern]**: New hooks: queryKey + queryFn + enabled + `...options` spread. Export `queryKeys` factory (.all, .detail(id)). Cache invalidation in mutations. Only `staleTime` acceptable as default.
-- **[pattern]**: `queryClient.clear()` for org switching is correct when: (1) routes use withAnyAuth() with orgId from JWT/API key, (2) services filter by organizationId, (3) frontend uses authenticated API client.
-- **[pattern]**: `AuthGate` in `layout.tsx` gates all authenticated content on Clerk `isLoaded`. If `useApiClient` is ever used above the gate boundary, add `enabled: isLoaded` in query options to prevent 401 race on first render.
-- **[mistake]**: Do not use `mutateAsync`. This requires wrapping the call in try/catch, and is a code smell. There is generally no reason to do this. Instead, prefer `mutate` with an `onSuccess` handler.
-
-### Tables & Sorting
-- **[pattern]**: Sort nested object fields via SortConfig accessor function. `sortItems()` handles nulls-last.
-- **[pattern]**: Multiple sortable tables on same page: each `useSortParams` needs unique `paramPrefix`.
-
-### React & Components
-- **[pattern]**: Clerk client components (UserButton, OrganizationSwitcher) need mounted state hydration guard.
-- **[insight]**: Check existing component props before adding new ones — data may already be available.
-- **[pattern]**: Radix Dialog `modal={false}` still fires `onInteractOutside` and `onPointerDownOutside`. Non-modal panels: `e.preventDefault()` on both.
-- **[pattern]**: Multi-provider AI context injection must be provider-aware. Skip client-side formatting for non-target providers — use server-side.
-- **[convention]**: Async cancellation in useEffect: `let cancelled = false` + cleanup return, NOT AbortController/useRef.
-- **[pattern]**: Shared client-only UI state that must survive component remounts, route transitions, or browser back/forward should live in a small `useSyncExternalStore` store module, following `lib/engineer/routing-store.ts` and `lib/engineer/electron-detection.ts`. Keep reset semantics explicit: module memory for current-tab only, `localStorage` only when refresh/new-tab persistence is intended.
-- **[mistake]**: Do not put navigation-sensitive shared state in component module-local `Set`/`Map`/`let` values or ad hoc `window` globals. This repo does not currently use Zustand in `apps/app`; do not add it just to store small client-only state unless a human explicitly asks for a state-library migration.
-
-### UI Patterns
-- **[pattern]**: Collapsible sections in document sidebar: PropertiesPanel pattern with CollapsibleTrigger/Content, ChevronUp/Down, default collapsed.
-- **[pattern]**: Convert tabs to collapsible: MetadataPanel + space-y-6 + separate useState(bool) per section + Collapsible components.
-- **[pattern]**: Document metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in `app/(authenticated)/{document-type}/[slug]/components/`.
-- **[pattern]**: Check document type via `document.type === DocumentType.Prd` etc. Import from `@repo/api/src/types/document`.
-
-### Testing
-- **[pattern]**: After adding required props, run typecheck to find test files with outdated mock/defaultProps.
-- **[mistake]**: Mocking `next/navigation` in Vitest: must provide useRouter, usePathname, AND useSearchParams.
-
-### CSS & Animations
-- **[mistake]**: Tailwind v4 `translate-x-[-50%]` compiles to individual CSS `translate`, not `transform`. Don't put translate in `transform` keyframes — use getBoundingClientRect() pixel deltas.
-- **[pattern]**: Animation destinations: use `querySelector` + `getBoundingClientRect()`, never hardcode pixel offsets.
-
-### Liveblocks
-- **[mistake]**: RoomProvider needs LiveblocksProvider ancestor. When Provider is conditional on user loading, mount minimal Provider during loading states.
-- **[mistake]**: Loading/bootstrap LiveblocksProvider needs LiveblocksErrorBoundary for auth/runtime errors.
-- **[pattern]**: Nesting LiveblocksErrorBoundary with manual LiveblocksAvailabilityContext.Provider: place manual override inside error boundary.
-- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `documentType` in room-utils.ts. Legacy rooms may still have `artifactType`/`artifactSubtype` — the resolver reads both.
-
-### OAuth Integrations
-- **[pattern]**: Three-part architecture: (1) Frontend OAuth routes handle PKCE/state/redirect, (2) Callback validates state + calls API for token storage, (3) TanStack Query hooks for status/disconnect/mutations. Reference: Linear integration.
-
-### Engineer Feature Debugging
-- **[insight]**: `codex review` outputs `session id:` in startup banner. Capture it in the context-scoped Codex chat state file so follow-up `codex exec resume` uses the correct surface/session.
-- **[pattern]**: Claude CLI stream handlers must: capture session_id for ALL results (including errors), check `is_error` before `subtype`, fire `onResultEvent` for all types, enqueue terminal event in every path. Else branch for unrecognized subtypes.
-- **[mistake]**: Codex review route: `sessionIdHolder.value` and regex must be assigned BEFORE any `await` — data handler reads on same event tick.
-- **[pattern]**: ReviewChatPane resolveFullPath returns `string | 'ambiguous' | null`. Keep no-file findings, exclude ambiguous. Cache result.
-- **[insight]**: Investigate full call chain before choosing fix location. Filter-level fix may be simpler than handler-level.
-- **[insight]**: `claudeProcess` set to null before stdout flushes. `if (!proc) return` guard in makeResultKillTimer is required — prevents useless timer.
-- **[insight]**: Auto-start cleanup must execute. Broken guard → useCommentChat sees old messages → skips init.
-- **[pattern]**: Kill-timer: use `makeResultKillTimer(getProcess, label)` factory from `lib/engineer/stream-events.ts`. Codex review route uses separate inline pattern.
+**Migration note (PLN-810 Phase 3):** surface-agnostic query hooks are moving
+into `@repo/app/<feature>/hooks/` (e.g. `@repo/app/projects/hooks/use-projects`,
+`@repo/app/teams/hooks/use-teams`, `@repo/app/judges-analytics/hooks/use-judges`).
+New portable hooks go there, not here. Hooks that import `@repo/auth`, crypto, or
+the engineer/run-loop-launcher seam stay in `apps/app` until those ports land.

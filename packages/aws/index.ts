@@ -30,65 +30,6 @@ const s3Client = new S3Client({
 });
 
 /**
- * Upload content to S3.
- * Returns the S3 key (path) of the uploaded object.
- */
-export async function uploadArtifact(
-  key: string,
-  content: Buffer | string,
-  contentType?: string,
-  bucket?: string
-): Promise<string> {
-  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
-  if (!resolvedBucket) {
-    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
-  }
-
-  const body = typeof content === "string" ? Buffer.from(content) : content;
-
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: resolvedBucket,
-      Key: key,
-      Body: body,
-      ContentType: contentType || "application/octet-stream",
-    })
-  );
-
-  return key;
-}
-
-/**
- * Download content from S3.
- */
-export async function downloadArtifact(
-  key: string,
-  bucket?: string
-): Promise<Buffer> {
-  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
-  if (!resolvedBucket) {
-    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
-  }
-
-  const response = await s3Client.send(
-    new GetObjectCommand({
-      Bucket: resolvedBucket,
-      Key: key,
-    })
-  );
-
-  if (!response.Body) {
-    throw new Error(`No body returned for key: ${key}`);
-  }
-
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-
-/**
  * Delete an object from S3.
  */
 export async function deleteArtifact(
@@ -179,15 +120,4 @@ export async function getSignedDownloadUrlWithDisposition(
   });
 
   return await s3GetSignedUrl(s3Client, command, { expiresIn });
-}
-
-/**
- * Generate the full S3 URL for an artifact.
- */
-export function getArtifactUrl(key: string): string {
-  if (!config.FILE_ATTACHMENTS_BUCKET) {
-    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
-  }
-
-  return `https://${config.FILE_ATTACHMENTS_BUCKET}.s3.${config.AWS_REGION}.amazonaws.com/${key}`;
 }

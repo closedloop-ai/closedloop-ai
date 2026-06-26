@@ -3,11 +3,11 @@
  *
  * Tests:
  * - ingestPlanArtifacts: fanOutJudgeScores is called when judgesReport is present
- * - ingestPlanArtifacts: reportData dual-write is preserved in the upsert
+ * - ingestPlanArtifacts: upsert is called with correct fields when judgesReport is present
  * - ingestExecutionArtifacts: fanOutJudgeScores is called when codeJudgesReport is present
- * - ingestExecutionArtifacts: reportData dual-write is preserved in the upsert
+ * - ingestExecutionArtifacts: upsert is called with correct fields when codeJudgesReport is present
  */
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMockWithDb,
   mockWithDbCall,
@@ -113,7 +113,7 @@ function buildExecutionArtifacts(
         fullName: "org/repo",
         prUrl: "https://github.com/org/repo/pull/42",
         prNumber: 42,
-        prTitle: "ClosedLoop: feature",
+        prTitle: "Closedloop: feature",
         branchName: "symphony/feature",
         baseBranch: "main",
         hasChanges: true,
@@ -186,7 +186,7 @@ describe("ingestPlanArtifacts", () => {
     });
   });
 
-  it("writes reportData in the upsert (dual-write preserved)", async () => {
+  it("upsert is called with correct fields when judgesReport is present", async () => {
     const loop = buildLoop();
     const artifacts = buildPlanArtifacts({ judgesReport: JUDGES_REPORT });
 
@@ -224,10 +224,10 @@ describe("ingestPlanArtifacts", () => {
     expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
-          reportData: JUDGES_REPORT,
+          reportId: JUDGES_REPORT.report_id,
         }),
         update: expect.objectContaining({
-          reportData: JUDGES_REPORT,
+          reportType: expect.any(String),
         }),
       })
     );
@@ -290,7 +290,7 @@ describe("ingestExecutionArtifacts", () => {
     });
   });
 
-  it("writes reportData in the upsert (dual-write preserved)", async () => {
+  it("upsert is called with correct fields when codeJudgesReport is present", async () => {
     const loop = buildLoop({ command: "EXECUTE" });
     const artifacts = buildExecutionArtifacts({
       codeJudgesReport: CODE_JUDGES_REPORT,
@@ -329,10 +329,10 @@ describe("ingestExecutionArtifacts", () => {
     expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
-          reportData: CODE_JUDGES_REPORT,
+          reportId: CODE_JUDGES_REPORT.report_id,
         }),
         update: expect.objectContaining({
-          reportData: CODE_JUDGES_REPORT,
+          reportType: expect.any(String),
         }),
       })
     );

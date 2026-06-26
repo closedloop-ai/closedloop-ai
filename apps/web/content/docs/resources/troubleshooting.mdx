@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Common failure modes, diagnostic steps, and fixes for the desktop client, the gateway, and the plugins.
 ---
 
-Most ClosedLoop.ai failures fall into one of a few categories. This page is the first place to look when something goes wrong.
+Most Closedloop.ai failures fall into one of a few categories. This page is the first place to look when something goes wrong.
 
 ## Tray says `error` or `degraded`
 
@@ -44,7 +44,7 @@ Most ClosedLoop.ai failures fall into one of a few categories. This page is the 
 
 - API key is invalid or revoked
 - the tray shows `Authentication failed — verify your API key in Settings`
-- re-paste the key; confirm it matches an active key in the ClosedLoop.ai web app
+- re-paste the key; confirm it matches an active key in the Closedloop.ai web app
 
 ## `claude`, `codex`, `gh`, `git`, or `python3` not found
 
@@ -113,5 +113,15 @@ All under `app.getPath("userData")`:
 - quit and relaunch the desktop client; the `BootRecoveryService` reattaches live jobs and finalizes dead ones
 - check `./plugins/code/scripts/preflight-check.sh` under `plugins/self-learning/scripts/` (bundled with the plugin) for Python, jq, awk, git, and PyYAML presence
 - rerun the plugin install script to restore any missing plugin files
+- repair Closedloop plugins into user scope if System Check reports project-scoped or disabled plugins:
+
+```bash
+for plugin in bootstrap code code-review judges platform self-learning; do
+  claude plugin uninstall "$plugin@closedloop-ai" --scope project
+  claude plugin install "$plugin@closedloop-ai" --scope user
+  claude plugin enable "$plugin@closedloop-ai" --scope user
+done
+claude plugin list --json
+```
 
 See also the [FAQ](./faq) for common questions.

@@ -1,4 +1,5 @@
 import type {
+  CommandSignatureFields,
   CreateDesktopCommandInput,
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
@@ -38,7 +39,8 @@ export function appendQuery(
 
 export function toRelayOperation(
   commandId: string,
-  input: CreateDesktopCommandInput
+  input: CreateDesktopCommandInput,
+  signatureFields?: CommandSignatureFields
 ): RelayOperationDispatchRequest {
   return {
     operationId: input.operationId,
@@ -55,6 +57,13 @@ export function toRelayOperation(
       timeoutMs: input.timeoutMs ?? null,
       requiresApproval: input.requiresApproval ?? null,
       approvalReason: input.approvalReason ?? null,
+      ...(signatureFields
+        ? {
+            signature: signatureFields.signature,
+            signaturePayload: signatureFields.signaturePayload,
+            publicKeyFingerprint: signatureFields.publicKeyFingerprint,
+          }
+        : {}),
     },
     streaming: input.streaming ?? false,
   };
@@ -95,7 +104,7 @@ export async function dispatchRelayCommandToRelay(input: {
   commandId: string;
   relayOperation: RelayOperationDispatchRequest;
   requestId?: string;
-}): Promise<boolean> {
+}): Promise<RelayDispatchResult> {
   const wireCommand = toWireCommandFromRelayOperation(input.relayOperation);
   if (!wireCommand) {
     log.error("Failed to convert relay operation to wire command", {
@@ -103,7 +112,7 @@ export async function dispatchRelayCommandToRelay(input: {
       computeTargetId: input.targetId,
       commandId: input.commandId,
     });
-    return false;
+    return { delivered: false, reason: "wire_conversion_failed" };
   }
 
   const relayApiUrl = env.RELAY_API_URL;
@@ -114,8 +123,14 @@ export async function dispatchRelayCommandToRelay(input: {
       computeTargetId: input.targetId,
       commandId: input.commandId,
     });
-    relayEventBus.publishOperation(input.targetId, input.relayOperation);
-    return true;
+    const result = relayEventBus.publishOperation(
+      input.targetId,
+      input.relayOperation
+    );
+    return {
+      delivered: result.deliveredToSubscriber,
+      reason: result.deliveredToSubscriber ? undefined : "target_offline",
+    };
   }
 
   log.info("Dispatching command to relay", {
@@ -144,7 +159,12 @@ export async function dispatchRelayCommandToRelay(input: {
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
-      const result = await response.json().catch(() => ({ delivered: true }));
+      const result = (await response
+        .json()
+        .catch(() => ({ delivered: true }))) as {
+        delivered?: unknown;
+        reason?: unknown;
+      };
       log.info("Relay dispatch result", {
         targetId: input.targetId,
         computeTargetId: input.targetId,
@@ -152,7 +172,10 @@ export async function dispatchRelayCommandToRelay(input: {
         delivered: result.delivered,
         reason: result.reason,
       });
-      return true;
+      return {
+        delivered: result.delivered !== false,
+        reason: typeof result.reason === "string" ? result.reason : undefined,
+      };
     }
     const body = await response.text().catch(() => "");
     log.error("Relay dispatch failed", {
@@ -162,7 +185,7 @@ export async function dispatchRelayCommandToRelay(input: {
       status: response.status,
       body,
     });
-    return false;
+    return { delivered: false, reason: `relay_http_${response.status}` };
   } catch (dispatchError) {
     log.error("Failed to dispatch command to relay", {
       targetId: input.targetId,
@@ -170,6 +193,11 @@ export async function dispatchRelayCommandToRelay(input: {
       commandId: input.commandId,
       error: dispatchError,
     });
-    return false;
+    return { delivered: false, reason: "relay_dispatch_failed" };
   }
 }
+
+export type RelayDispatchResult = {
+  delivered: boolean;
+  reason?: string;
+};

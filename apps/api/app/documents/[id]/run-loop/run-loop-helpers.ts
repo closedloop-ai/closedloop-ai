@@ -2,6 +2,7 @@ import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
 import { conflictBody } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
+  getPrimaryRepoFromSnapshot,
   type PullRequestInfo,
   PullRequestState,
   pickPullRequestForRepo,
@@ -17,9 +18,9 @@ import { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import type { documentGenerationService } from "@/app/documents/generation-service";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
 import { loopsService } from "@/app/loops/service";
 import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
+import type { UserComputePreferences } from "@/lib/loops/compute-target-resolver";
 import {
   type ComputeTargetRouteResult,
   resolveComputeTargetForRoute,
@@ -203,8 +204,8 @@ export async function resolveEvaluateCodeBranchForRunLoop(
 }
 
 /**
- * Resolve workstream, repo, branch, context refs, and parent loop for a
- * run-loop request. Extracted to keep the route handler's complexity low.
+ * Resolve repo, branch, context refs, and parent loop for a run-loop request.
+ * Extracted to keep the route handler's complexity low.
  */
 export async function resolveLoopContext(
   artifact: NonNullable<
@@ -219,20 +220,12 @@ export async function resolveLoopContext(
   },
   handler: ReturnType<typeof getCommandHandler>,
   organizationId: string,
-  userId: string,
+  _userId: string,
   documentId: string,
   resolvedComputeTargetId?: string
 ) {
-  const { workstream: resolvedWorkstream, source } =
-    await documentWorkstreamService.findOrCreateWorkstream(
-      organizationId,
-      artifact,
-      userId
-    );
-
-  const workstream = resolvedWorkstream ?? artifact.workstream;
-
-  const project = workstream?.project ?? null;
+  const source = artifact.sourcePrd;
+  const project = artifact.project;
   const resolvedRepoDefaults = project
     ? await loadProjectRepoDefaults({
         projectId: project.id,
@@ -241,10 +234,17 @@ export async function resolveLoopContext(
       })
     : null;
 
+  const artifactPrimary = getPrimaryRepoFromSnapshot(
+    artifact.repositorySnapshot
+  );
+  const sourcePrimary = source
+    ? getPrimaryRepoFromSnapshot(source.repositorySnapshot)
+    : null;
+
   const targetRepo =
     body.repo?.fullName ??
-    artifact.targetRepo ??
-    source?.targetRepo ??
+    artifactPrimary?.fullName ??
+    sourcePrimary?.fullName ??
     resolvedRepoDefaults?.primary.fullName;
 
   // Per Q-002 of PLN-237, the resolved branch is no longer stored on the
@@ -253,8 +253,8 @@ export async function resolveLoopContext(
   // an upstream artifact/source. We keep "main" only as a last-resort guard.
   const targetBranch =
     body.repo?.branch ??
-    artifact.targetBranch ??
-    source?.targetBranch ??
+    artifactPrimary?.branch ??
+    sourcePrimary?.branch ??
     "main";
 
   const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];
@@ -295,7 +295,6 @@ export async function resolveLoopContext(
   const additionalRepos = body.additionalRepos ?? inheritedAdditionalRepos;
 
   return {
-    workstream,
     targetRepo,
     targetBranch,
     contextRefs,
@@ -383,7 +382,8 @@ export async function checkBackendMismatch(
 export function resolveRunLoopComputeTarget(
   organizationId: string,
   userId: string,
-  computeTargetIdHint: string | null | undefined
+  computeTargetIdHint: string | null | undefined,
+  userComputePreferences?: UserComputePreferences
 ): Promise<ComputeTargetRouteResult> {
   if (computeTargetIdHint === null) {
     return Promise.resolve({ computeTargetId: undefined });
@@ -391,6 +391,7 @@ export function resolveRunLoopComputeTarget(
   return resolveComputeTargetForRoute(
     organizationId,
     userId,
-    computeTargetIdHint
+    computeTargetIdHint,
+    userComputePreferences
   );
 }

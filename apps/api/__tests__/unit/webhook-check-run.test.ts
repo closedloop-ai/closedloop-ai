@@ -25,11 +25,23 @@ import {
 vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
+  const sql = (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    strings,
+    values,
+  });
   return {
     ArtifactType: {
       DOCUMENT: "DOCUMENT",
-      PULL_REQUEST: "PULL_REQUEST",
+      BRANCH: "BRANCH",
+
       DEPLOYMENT: "DEPLOYMENT",
+    },
+    GitHubInstallationStatus: {
+      ACTIVE: "ACTIVE",
+    },
+    Prisma: {
+      join: (values: unknown[]) => values,
+      sql,
     },
     withDb: mockWithDb,
   };
@@ -47,14 +59,19 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+import {
+  BranchViewCheckKind,
+  BranchViewChecksProviderState,
+} from "@repo/api/src/types/branch-view";
+import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github";
+import { GitHubInstallationStatus } from "@repo/database";
 // Import after mocking
 import { queryStatusCheckRollup } from "@repo/github";
 import { getMockWithDb } from "@/__tests__/utils/db-helpers";
-import {
-  handleCheckRun,
-  mapRollupStateToChecksStatus,
-} from "@/app/webhooks/github/handlers/check-run-handler";
+import { handleCheckRun } from "@/app/webhooks/github/handlers/check-run-handler";
+import { mapRollupStateToChecksStatus } from "@/lib/github-checks-status";
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
+import { statusRollup } from "../utils/status-check-helpers";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
@@ -63,6 +80,32 @@ const mockQueryStatusCheckRollup = queryStatusCheckRollup as unknown as Mock;
 // Mock database clients
 let mockDb: any;
 let mockTx: any;
+
+function makeBranchDetailRow(
+  partial: Parameters<typeof makePrDetailRow>[0] & {
+    branchName?: string;
+    currentPullRequestDetailId?: string | null;
+  }
+) {
+  const pr = makePrDetailRow(partial);
+  return {
+    artifactId: partial.artifactId,
+    branchName: partial.branchName ?? "feature/test-branch",
+    checksStatus: partial.checksStatus ?? "UNKNOWN",
+    headSha: partial.headSha ?? null,
+    currentPullRequestDetailId:
+      partial.currentPullRequestDetailId ?? "pr-detail-1",
+    currentPullRequestDetail: {
+      number: partial.number ?? 0,
+      title: partial.title ?? "",
+      htmlUrl: partial.externalUrl ?? "",
+    },
+    artifact: {
+      ...pr.artifact,
+      organizationId: partial.organizationId ?? "org-1",
+    },
+  };
+}
 
 /**
  * Helper to create a minimal check_run event for testing
@@ -132,14 +175,24 @@ describe("handleCheckRun", () => {
       gitHubInstallationRepository: {
         findFirst: vi.fn(),
       },
-      pullRequestDetail: {
+      branchDetail: {
         findFirst: vi.fn(),
       },
     };
 
     mockTx = {
-      pullRequestDetail: {
+      $executeRaw: vi.fn(),
+      branchDetail: {
+        findFirst: vi.fn(),
         findUnique: vi.fn(),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn(),
+        upsert: vi.fn(),
+      },
+      pullRequestDetail: {
         update: vi.fn(),
       },
       workstreamEvent: {
@@ -147,6 +200,16 @@ describe("handleCheckRun", () => {
       },
     };
 
+    mockTx.branchDetail.findFirst.mockImplementation(async (args: any) => {
+      const row = await mockTx.branchDetail.findUnique();
+      if (!row || row.deletedAt || row.headSha !== args.where.headSha) {
+        return null;
+      }
+      return {
+        artifactId: args.where.artifactId,
+        checksStatus: row.checksStatus,
+      };
+    });
     mockWithDb.mockImplementation((fn: any) => fn(mockDb));
     mockWithDb.tx.mockImplementation((fn: any) => fn(mockTx));
   });
@@ -211,8 +274,20 @@ describe("handleCheckRun", () => {
       expect(
         mockDb.gitHubInstallationRepository.findFirst
       ).toHaveBeenCalledWith({
-        where: { githubRepoId: String(event.repository.id) },
-        select: { id: true, owner: true, name: true },
+        where: {
+          githubRepoId: String(event.repository.id),
+          fullName: event.repository.full_name,
+          installation: {
+            installationId: String(event.installation.id),
+            status: GitHubInstallationStatus.ACTIVE,
+          },
+        },
+        select: {
+          id: true,
+          installation: { select: { organizationId: true } },
+          name: true,
+          owner: true,
+        },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
       expect(mockWithDb.tx).not.toHaveBeenCalled();
@@ -232,14 +307,13 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(null);
+      mockDb.branchDetail.findFirst.mockResolvedValue(null);
 
       const response = await handleCheckRun(event);
 
-      expect(mockDb.pullRequestDetail.findFirst).toHaveBeenCalledWith(
+      expect(mockDb.branchDetail.findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            prState: "OPEN",
             repositoryId: "repo-uuid-123",
           }),
         })
@@ -263,8 +337,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-123",
           number: 42,
           title: "Test PR",
@@ -275,7 +349,15 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(null);
+      mockQueryStatusCheckRollup.mockResolvedValue({
+        ok: false,
+        reason: StatusCheckRollupFailureReason.GraphqlError,
+      });
+      mockTx.branchDetail.findUnique.mockResolvedValue({
+        headSha,
+        checksStatus: "UNKNOWN",
+        deletedAt: null,
+      });
 
       const response = await handleCheckRun(event);
 
@@ -285,7 +367,21 @@ describe("handleCheckRun", () => {
         "repo",
         headSha
       );
-      expect(mockWithDb.tx).not.toHaveBeenCalled();
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          checksDetailProviderState:
+            BranchViewChecksProviderState.ProviderUnavailable,
+          checksDetailUnavailableReason:
+            StatusCheckRollupFailureReason.GraphqlError,
+        }),
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-pr-123",
+          deletedAt: null,
+          headSha,
+        },
+      });
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -293,7 +389,7 @@ describe("handleCheckRun", () => {
   });
 
   describe("successful check_run.completed for matching open PR", () => {
-    it("calls rollup, updates checksStatus, and creates workstream event when status changes", async () => {
+    it("calls rollup and updates checksStatus when status changes", async () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const installationId = 99;
       const repositoryId = 12_345;
@@ -308,8 +404,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-123",
           number: 42,
           title: "Test PR",
@@ -320,15 +416,15 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
 
-      // TOCTOU guard: re-read in tx returns same headSha, OPEN state, different checksStatus
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+      // TOCTOU guard: re-read in tx returns same headSha and different checksStatus
+      mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
-        prState: "OPEN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
       });
-      mockTx.pullRequestDetail.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       const response = await handleCheckRun(event);
@@ -344,39 +440,164 @@ describe("handleCheckRun", () => {
       // Verify transaction was opened
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
 
-      // Verify TOCTOU re-read on pullRequestDetail
-      expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-123" },
-        select: { headSha: true, checksStatus: true, prState: true },
-      });
-
-      // Verify checksStatus update on pullRequestDetail
-      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-123" },
-        data: { checksStatus: "PASSING" },
-      });
-
-      // Verify workstream event creation
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: {
-          workstreamId: "ws-uuid-123",
-          type: "GITHUB_CI_STATUS_CHANGED",
-          actorType: "system",
-          data: {
-            prNumber: 42,
-            prTitle: "Test PR",
-            prUrl: "https://github.com/org/repo/pull/42",
-            documentId: "artifact-doc-123",
-            slug: "test-slug",
-            checksStatus: "PASSING",
-            previousChecksStatus: "UNKNOWN",
-            headSha,
-          },
+      // Verify TOCTOU re-read on branchDetail
+      expect(mockTx.branchDetail.findFirst).toHaveBeenCalledWith({
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-pr-123",
+          deletedAt: null,
+          headSha,
         },
+        select: { artifactId: true, checksStatus: true },
       });
+
+      // Verify checksStatus update on BranchDetail only; PullRequestDetail
+      // keeps review/comment-specific PR state after Migration B.
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-pr-123",
+          deletedAt: null,
+          headSha,
+        },
+        data: expect.objectContaining({ checksStatus: "PASSING" }),
+      });
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+    });
+
+    it("persists status check rows with one batch upsert statement", async () => {
+      const headSha = "abc123def456abc123def456abc123def456abc1";
+      const event = createCheckRunEvent({ headSha });
+
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-123",
+        owner: "org",
+        name: "repo",
+      });
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
+          artifactId: "artifact-pr-123",
+          number: 42,
+          title: "Test PR",
+          externalUrl: "https://github.com/org/repo/pull/42",
+          checksStatus: "PASSING",
+          headSha,
+          workstreamId: "ws-uuid-123",
+          linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
+        })
+      );
+      mockQueryStatusCheckRollup.mockResolvedValue({
+        ok: true,
+        state: "SUCCESS",
+        totalCount: 1,
+        truncated: false,
+        checks: [
+          {
+            id: "check-run-1",
+            kind: BranchViewCheckKind.CheckRun,
+            providerNodeId: "node-1",
+            name: "Build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+            targetUrl: "https://github.com/org/repo/actions/runs/1",
+            position: 0,
+          },
+        ],
+      });
+      mockTx.branchDetail.findUnique.mockResolvedValue({
+        headSha,
+        checksStatus: "PASSING",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
+      });
+
+      const response = await handleCheckRun(event);
+
+      expect(mockTx.branchStatusCheck.deleteMany).toHaveBeenCalledWith({
+        where: {
+          branchArtifactId: "artifact-pr-123",
+          headSha,
+          providerKey: { notIn: ["check-run-1"] },
+        },
+      });
+      expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(mockTx.branchStatusCheck.upsert).not.toHaveBeenCalled();
+
+      const data = await response.json();
+      expect(data.ok).toBe(true);
+    });
+
+    it("prefers the check suite head branch over another branch with the same head SHA", async () => {
+      const headSha = "abc123def456abc123def456abc123def456abc1";
+      const event = createCheckRunEvent({
+        headBranch: "feature/right-branch",
+        headSha,
+      });
+      const wrongBranch = makeBranchDetailRow({
+        artifactId: "artifact-wrong-same-sha",
+        branchName: "feature/wrong-branch",
+        number: 50,
+        title: "Wrong branch",
+        externalUrl: "https://github.com/org/repo/pull/50",
+        headSha,
+        workstreamId: "ws-wrong",
+        linkedDoc: null,
+      });
+      const rightBranch = makeBranchDetailRow({
+        artifactId: "artifact-right-branch",
+        branchName: "feature/right-branch",
+        number: 51,
+        title: "Right branch",
+        externalUrl: "https://github.com/org/repo/pull/51",
+        headSha,
+        workstreamId: "ws-right",
+        linkedDoc: null,
+      });
+
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-same-sha",
+        owner: "org",
+        name: "repo",
+      });
+      mockDb.branchDetail.findFirst.mockImplementation(({ where }: any) => {
+        if (where.branchName === "feature/right-branch") {
+          return Promise.resolve(rightBranch);
+        }
+        if (where.headSha === headSha) {
+          return Promise.resolve(wrongBranch);
+        }
+        return Promise.resolve(null);
+      });
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockTx.branchDetail.findUnique.mockResolvedValue({
+        headSha,
+        checksStatus: "UNKNOWN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
+      });
+
+      const response = await handleCheckRun(event);
+
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-right-branch",
+          deletedAt: null,
+          headSha,
+        },
+        data: expect.objectContaining({ checksStatus: "PASSING" }),
+      });
+      expect(mockTx.branchDetail.updateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            artifactId: "artifact-wrong-same-sha",
+          }),
+        })
+      );
+      expect(await response.json()).toMatchObject({ ok: true });
     });
   });
 
@@ -390,8 +611,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-idempotent",
           number: 43,
           title: "Idempotent PR",
@@ -403,20 +624,29 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
 
       // TOCTOU re-read returns same status (PASSING == PASSING after mapping SUCCESS)
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+      mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "PASSING",
-        prState: "OPEN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
       });
 
       const response = await handleCheckRun(event);
 
-      // Transaction was opened but no writes were made
+      // Detail rows/metadata refresh even when the aggregate status is unchanged.
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        data: expect.objectContaining({ checksStatus: "PASSING" }),
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-pr-idempotent",
+          deletedAt: null,
+          headSha,
+        },
+      });
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -435,8 +665,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-toctou",
           number: 44,
           title: "TOCTOU PR",
@@ -447,20 +677,70 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
 
       // TX re-read returns a different headSha (synchronize event arrived)
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+      mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha: newHeadSha,
         checksStatus: "UNKNOWN",
-        prState: "OPEN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
       });
 
       const response = await handleCheckRun(event);
 
       // Transaction opened but no writes
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
+      expect(mockTx.branchDetail.updateMany).not.toHaveBeenCalled();
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
+
+      const data = await response.json();
+      expect(data.ok).toBe(true);
+    });
+
+    it("skips rows and events when the guarded current-head write misses", async () => {
+      const headSha = "abc123def456abc123def456abc123def456abc1";
+      const event = createCheckRunEvent({ headSha });
+
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-toctou-write",
+        owner: "org",
+        name: "repo",
+      });
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
+          artifactId: "artifact-pr-toctou-write",
+          number: 44,
+          title: "TOCTOU write PR",
+          externalUrl: "https://github.com/org/repo/pull/44",
+          headSha,
+          workstreamId: "ws-uuid-toctou-write",
+          linkedDoc: null,
+        })
+      );
+
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockTx.branchDetail.findUnique.mockResolvedValue({
+        headSha,
+        checksStatus: "UNKNOWN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
+      });
+      mockTx.branchDetail.updateMany.mockResolvedValue({ count: 0 });
+
+      const response = await handleCheckRun(event);
+
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        data: expect.objectContaining({ checksStatus: "PASSING" }),
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-pr-toctou-write",
+          deletedAt: null,
+          headSha,
+        },
+      });
+      expect(mockTx.branchStatusCheck.deleteMany).not.toHaveBeenCalled();
+      expect(mockTx.branchStatusCheck.upsert).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -468,8 +748,8 @@ describe("handleCheckRun", () => {
     });
   });
 
-  describe("PR state guard in transaction", () => {
-    it("skips update when PR state is no longer OPEN (e.g. MERGED) in tx re-read", async () => {
+  describe("branch delete guard in transaction", () => {
+    it("skips update when branch is deleted in tx re-read", async () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha });
 
@@ -478,8 +758,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-merged",
           number: 45,
           title: "Merged PR",
@@ -490,20 +770,21 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
 
-      // TX re-read shows PR was merged between initial read and tx
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+      // TX re-read shows the branch was deleted between initial read and tx.
+      mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
-        prState: "MERGED",
+        deletedAt: new Date("2026-05-15T00:00:00Z"),
+        currentPullRequestDetailId: "pr-detail-1",
       });
 
       const response = await handleCheckRun(event);
 
       // Transaction opened but no writes
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
+      expect(mockTx.branchDetail.updateMany).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -521,8 +802,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-gone",
           number: 46,
           title: "Gone PR",
@@ -533,15 +814,15 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
 
       // TX re-read: PR was deleted
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
+      mockTx.branchDetail.findUnique.mockResolvedValue(null);
 
       const response = await handleCheckRun(event);
 
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
+      expect(mockTx.branchDetail.updateMany).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -559,8 +840,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-fail",
           number: 47,
           title: "Failing PR",
@@ -572,39 +853,26 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("FAILURE");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("FAILURE"));
 
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+      mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "PASSING",
-        prState: "OPEN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
       });
-      mockTx.pullRequestDetail.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       const response = await handleCheckRun(event);
 
-      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-fail" },
-        data: { checksStatus: "FAILING" },
-      });
-
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: {
-          workstreamId: "ws-uuid-fail",
-          type: "GITHUB_CI_STATUS_CHANGED",
-          actorType: "system",
-          data: {
-            prNumber: 47,
-            prTitle: "Failing PR",
-            prUrl: "https://github.com/org/repo/pull/47",
-            documentId: "artifact-doc-fail",
-            slug: "fail-slug",
-            checksStatus: "FAILING",
-            previousChecksStatus: "PASSING",
-            headSha,
-          },
+      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+        where: {
+          artifact: { organizationId: "org-1" },
+          artifactId: "artifact-pr-fail",
+          deletedAt: null,
+          headSha,
         },
+        data: expect.objectContaining({ checksStatus: "FAILING" }),
       });
 
       const data = await response.json();
@@ -622,8 +890,8 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.pullRequestDetail.findFirst.mockResolvedValue(
-        makePrDetailRow({
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
           artifactId: "artifact-pr-tx",
           number: 48,
           title: "TX PR",
@@ -634,14 +902,14 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
+      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
 
-      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+      mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
-        prState: "OPEN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
       });
-      mockTx.pullRequestDetail.update.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handleCheckRun(event);

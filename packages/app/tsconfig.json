@@ -1,0 +1,16 @@
+{
+  "extends": "@repo/typescript-config/react-library.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      // Resolve workspace packages from source (same mechanism as apps/app
+      // and @repo/typescript-config/nextjs.json): @repo/design-system's
+      // exports map points at dist/, which is not built in CI typecheck.
+      // FEA-1512 (design system as live workspace dependency) supersedes this.
+      "@closedloop-ai/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@repo/*": ["../../packages/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}

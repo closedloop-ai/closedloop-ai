@@ -1,0 +1,58 @@
+{
+  "$schema_note": "Representative sequence of Claude Code hook events. Each entry is a single POST body for /api/hooks/event — { hook_type, data }.",
+  "session_id": "fixture-claude-dd44",
+  "events": [
+    {
+      "hook_type": "UserPromptSubmit",
+      "data": {
+        "session_id": "fixture-claude-dd44",
+        "cwd": "/Users/dev/repo",
+        "transcript_path": "/tmp/fixture-transcript.jsonl",
+        "prompt": "refactor the auth flow"
+      }
+    },
+    {
+      "hook_type": "PreToolUse",
+      "data": {
+        "session_id": "fixture-claude-dd44",
+        "tool_name": "Read",
+        "tool_input": { "file_path": "/Users/dev/repo/src/auth.ts" }
+      }
+    },
+    {
+      "hook_type": "PostToolUse",
+      "data": {
+        "session_id": "fixture-claude-dd44",
+        "tool_name": "Read",
+        "tool_response": "ok"
+      }
+    },
+    {
+      "hook_type": "PreToolUse",
+      "data": {
+        "session_id": "fixture-claude-dd44",
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "/Users/dev/repo/src/auth.ts",
+          "old_string": "validateToken",
+          "new_string": "validateAndRefreshToken"
+        }
+      }
+    },
+    {
+      "hook_type": "PostToolUse",
+      "data": {
+        "session_id": "fixture-claude-dd44",
+        "tool_name": "Edit",
+        "tool_response": "ok"
+      }
+    },
+    {
+      "hook_type": "Stop",
+      "data": {
+        "session_id": "fixture-claude-dd44",
+        "transcript_path": "/tmp/fixture-transcript.jsonl"
+      }
+    }
+  ]
+}

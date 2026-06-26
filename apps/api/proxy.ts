@@ -1,7 +1,7 @@
 import { authMiddleware } from "@repo/auth/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { isTrustedOrigin } from "@/lib/trusted-origins";
+import { addCorsHeaders, getCorsHeaders } from "@/lib/cors";
 
 export default authMiddleware((_, request) => {
   if (request.method === "OPTIONS") {
@@ -21,31 +21,6 @@ export const config = {
     "/((?!_next|internal).*)",
   ],
 };
-
-function getCorsHeaders(origin: string | null): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-Requested-With",
-    "Access-Control-Max-Age": "86400",
-  };
-
-  if (origin && isTrustedOrigin(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
-    headers["Access-Control-Allow-Credentials"] = "true";
-    headers.Vary = "Origin"; // important with CDN caching
-  }
-
-  return headers;
-}
-
-function addCorsHeaders(response: Response, origin: string | null) {
-  const corsHeaders = getCorsHeaders(origin);
-  for (const [key, value] of Object.entries(corsHeaders)) {
-    response.headers.set(key, value);
-  }
-  return response;
-}
 
 const handleOptions = (request: NextRequest) => {
   const origin = request.headers.get("origin");

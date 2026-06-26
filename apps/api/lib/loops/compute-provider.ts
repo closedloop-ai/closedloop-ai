@@ -6,12 +6,14 @@
  * itself has zero `if (loop.computeTargetId)` branching.
  */
 
-import type { DesktopApiNamespace } from "@repo/api/src/desktop-api-namespace";
+import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
+import type { HarnessType } from "@repo/api/src/types/compute-target";
 import type {
   AdditionalRepoRefWithToken,
   Loop,
   LoopCommand,
 } from "@repo/api/src/types/loop";
+import type { LoopBranchMaterializationEnvelope } from "@repo/api/src/types/loop-body";
 import type { LoopCommandHandler } from "./loop-commands/loop-command-handler";
 import type { ContextPack } from "./loop-state";
 
@@ -23,9 +25,12 @@ import type { ContextPack } from "./loop-state";
 export type LaunchContext = {
   loopId: string;
   organizationId: string;
+  userId: string;
   command: LoopCommand;
   contextPack: ContextPack;
   closedLoopAuthToken: string;
+  tokenId: string;
+  expiresAt: Date;
   apiBaseUrl: string;
   anthropicApiKey: string | undefined;
   githubToken: string | undefined;
@@ -39,8 +44,19 @@ export type LaunchContext = {
   parentSessionId: string | null;
   localRepoPath: string | undefined;
   computeTargetId: string | null;
+  runnerCapabilities: JsonObject;
   additionalRepos?: AdditionalRepoRefWithToken[];
-  desktopApiNamespace: DesktopApiNamespace | undefined;
+  branchMaterialization?: LoopBranchMaterializationEnvelope;
+  desktopUserIntentSignature?: DesktopUserIntentSignature;
+  harness?: HarnessType;
+};
+
+export type DesktopUserIntentSignature = {
+  commandId: string;
+  signature: string;
+  signaturePayload: string;
+  publicKeyFingerprint: string;
+  body: JsonValue;
 };
 
 // ---------------------------------------------------------------------------

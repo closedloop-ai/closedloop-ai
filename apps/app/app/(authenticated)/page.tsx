@@ -1,6 +1,7 @@
-import { ClientRedirect } from "@/components/client-redirect";
+"use client";
 
-export default function App() {
-  // Work around a Next App Router dev bug triggered by server redirects here.
+import { ClientRedirect } from "@repo/app/shared/components/client-redirect";
+
+export default function AuthenticatedRootPage() {
   return <ClientRedirect href="/my-tasks" />;
 }

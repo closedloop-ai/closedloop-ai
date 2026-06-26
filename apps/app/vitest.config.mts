@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+import { sharedPlatformAliases } from "./vitest-shared-aliases";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const appRoot = path.resolve(__dirname, "./");
@@ -39,7 +40,13 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./"),
+      // shared-platform subpath aliases (must precede the catch-all @repo).
+      ...sharedPlatformAliases,
       "@repo": path.resolve(import.meta.dirname, "../../packages"),
+      "@closedloop-ai/loops-api": path.resolve(
+        import.meta.dirname,
+        "../../packages/loops-api/src"
+      ),
       // Mock heavy/browser-dependent editor dependencies at the bundler level
       // so they never load sandpack/stitches/CSSOM in jsdom
       "@mdxeditor/editor/style.css": path.resolve(

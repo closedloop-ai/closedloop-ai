@@ -1,20 +1,94 @@
 import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/room-management";
+import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/server/room-management";
+import type {
+  CommentData,
+  ThreadData,
+} from "@repo/collaboration/server/webhook";
 import {
   generateDocumentRoomId,
   parseDocumentRoomId,
-} from "@repo/collaboration/room-utils";
-import type { CommentData, ThreadData } from "@repo/collaboration/webhook";
+} from "@repo/collaboration/shared/room-utils";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { z } from "zod";
+import { parseJsonObject } from "@/lib/json-schema";
 import { extractPlainText } from "./plain-text";
+
+export const GitHubReviewThreadResolutionAttributionKind = {
+  ConnectedUser: "connected_user",
+  ExternalUnconnected: "external_unconnected",
+  LegacyMissing: "legacy_missing",
+} as const;
+
+export type GitHubReviewThreadResolutionAttributionKind =
+  (typeof GitHubReviewThreadResolutionAttributionKind)[keyof typeof GitHubReviewThreadResolutionAttributionKind];
+
+export const GITHUB_REVIEW_THREAD_RESOLUTION_ATTRIBUTION_KEY =
+  "githubReviewThreadResolutionAttribution";
+
+export type GitHubReviewThreadResolutionAttribution = {
+  kind: GitHubReviewThreadResolutionAttributionKind;
+  githubUserId: string | null;
+  githubNodeId: string | null;
+  githubLogin: string | null;
+  source: "pull_request_review_thread";
+  recordedAt: string;
+};
+
+const githubReviewThreadResolutionAttributionSchema: z.ZodType<GitHubReviewThreadResolutionAttribution> =
+  z.object({
+    kind: z.union([
+      z.literal(GitHubReviewThreadResolutionAttributionKind.ConnectedUser),
+      z.literal(
+        GitHubReviewThreadResolutionAttributionKind.ExternalUnconnected
+      ),
+      z.literal(GitHubReviewThreadResolutionAttributionKind.LegacyMissing),
+    ]),
+    githubUserId: z.string().nullable(),
+    githubNodeId: z.string().nullable(),
+    githubLogin: z.string().nullable(),
+    source: z.literal("pull_request_review_thread"),
+    recordedAt: z.string(),
+  });
+
+export type GitHubReviewThreadResolutionInput = {
+  resolvedAt: Date;
+  resolvedById?: string | null;
+  attribution: GitHubReviewThreadResolutionAttribution;
+};
+
+export type CommentThreadResolutionMutationKind =
+  | "transition"
+  | "metadata_repair"
+  | "noop";
+
+export type CommentThreadResolutionMutationResult = {
+  kind: CommentThreadResolutionMutationKind;
+  thread: {
+    id: string;
+    status: ThreadStatus;
+    resolvedAt: Date | null;
+    resolvedById: string | null;
+    metadata: JsonObject | null;
+  };
+} | null;
 
 export const commentsService = {
   /**
    * Upsert a thread from Liveblocks webhook data.
    * Uses @@unique([organizationId, externalId]) for idempotent upserts.
+   *
+   * On create, `createdAtVersion` is sourced from
+   * `thread.metadata.version` (set client-side by the composer at the
+   * moment the user is composing). Falls back to the artifact's current
+   * `latestVersion` only when no client-supplied version is present —
+   * this matters for race conditions where the artifact advances between
+   * the composer opening and the thread being submitted, and for legacy
+   * threads created before the composer started stamping the field.
+   * On update, leaves `createdAtVersion` untouched (immutable for the
+   * life of the thread).
    */
   async upsertThreadFromLiveblocks(
     organizationId: string,
@@ -23,6 +97,11 @@ export const commentsService = {
   ) {
     const artifact = await findArtifactForRoom(organizationId, thread.roomId);
     const metadata = thread.metadata ?? Prisma.JsonNull;
+    const metadataVersion = thread.metadata?.version;
+    const createdAtVersion =
+      typeof metadataVersion === "number"
+        ? metadataVersion
+        : (artifact?.latestVersion ?? null);
 
     return withDb((db) =>
       db.commentThread.upsert({
@@ -41,6 +120,7 @@ export const commentsService = {
           status: thread.resolved ? ThreadStatus.Resolved : ThreadStatus.Open,
           resolvedAt: thread.resolved ? thread.updatedAt : null,
           metadata,
+          createdAtVersion,
           createdAt: thread.createdAt,
           createdById: createdBy,
         },
@@ -178,27 +258,89 @@ export const commentsService = {
   },
 
   /**
-   * Mark a thread as resolved.
+   * Mark a thread as resolved and return whether durable state changed.
+   * GitHub review-thread webhooks pass attribution metadata; Liveblocks callers
+   * keep the legacy behavior by omitting it.
    */
   resolveThread(
     organizationId: string,
     threadExternalId: string,
-    resolvedAt: Date
-  ) {
-    return withDb((db) =>
-      db.commentThread.update({
+    resolvedAt: Date,
+    options?: Omit<GitHubReviewThreadResolutionInput, "resolvedAt">
+  ): Promise<CommentThreadResolutionMutationResult> {
+    // Read-mutate-write in a single transaction so concurrent resolve calls
+    // can't lost-update each other's metadata mutation.
+    return withDb.tx(async (tx) => {
+      const existing = await tx.commentThread.findUnique({
         where: {
           organizationId_externalId: {
             organizationId,
             externalId: threadExternalId,
           },
         },
+        select: {
+          id: true,
+          status: true,
+          resolvedAt: true,
+          resolvedById: true,
+          metadata: true,
+        },
+      });
+      if (!existing) {
+        return null;
+      }
+
+      const metadata = commentThreadMetadataObject(existing.metadata);
+      const existingAttribution = getResolutionAttribution(metadata);
+      const nextMetadata = options?.attribution
+        ? {
+            ...metadata,
+            [GITHUB_REVIEW_THREAD_RESOLUTION_ATTRIBUTION_KEY]:
+              options.attribution,
+          }
+        : metadata;
+      const isResolved = existing.status === ThreadStatus.Resolved;
+      const shouldRepairMetadata =
+        isResolved &&
+        options?.attribution !== undefined &&
+        isRepairableResolutionAttribution(existingAttribution);
+
+      if (isResolved && !shouldRepairMetadata) {
+        return {
+          kind: "noop",
+          thread: {
+            ...existing,
+            status: existing.status as ThreadStatus,
+            metadata,
+          },
+        };
+      }
+
+      const thread = await tx.commentThread.update({
+        where: { id: existing.id },
         data: {
           status: ThreadStatus.Resolved,
-          resolvedAt,
+          resolvedAt: isResolved
+            ? (existing.resolvedAt ?? resolvedAt)
+            : resolvedAt,
+          resolvedById: isResolved
+            ? (existing.resolvedById ?? options?.resolvedById ?? null)
+            : (options?.resolvedById ?? null),
+          metadata: nextMetadata,
         },
-      })
-    );
+        select: {
+          id: true,
+          status: true,
+          resolvedAt: true,
+          resolvedById: true,
+          metadata: true,
+        },
+      });
+      return {
+        kind: shouldRepairMetadata ? "metadata_repair" : "transition",
+        thread: toResolutionThreadResult(thread),
+      };
+    });
   },
 
   /**
@@ -216,23 +358,75 @@ export const commentsService = {
   },
 
   /**
-   * Mark a thread as unresolved.
+   * Mark a thread as unresolved, clearing resolution attribution without
+   * disturbing unrelated thread metadata.
    */
-  unresolveThread(organizationId: string, threadExternalId: string) {
-    return withDb((db) =>
-      db.commentThread.update({
+  unresolveThread(
+    organizationId: string,
+    threadExternalId: string
+  ): Promise<CommentThreadResolutionMutationResult> {
+    // Read-mutate-write in a single transaction so concurrent unresolve calls
+    // can't lost-update each other's metadata mutation.
+    return withDb.tx(async (tx) => {
+      const existing = await tx.commentThread.findUnique({
         where: {
           organizationId_externalId: {
             organizationId,
             externalId: threadExternalId,
           },
         },
+        select: {
+          id: true,
+          status: true,
+          resolvedAt: true,
+          resolvedById: true,
+          metadata: true,
+        },
+      });
+      if (!existing) {
+        return null;
+      }
+
+      const metadata = commentThreadMetadataObject(existing.metadata);
+      const nextMetadata = clearResolutionAttribution(metadata);
+      const hadStaleResolutionData =
+        existing.resolvedAt !== null ||
+        existing.resolvedById !== null ||
+        getResolutionAttribution(metadata) !== null;
+      const isTransition = existing.status === ThreadStatus.Resolved;
+
+      if (!(isTransition || hadStaleResolutionData)) {
+        return {
+          kind: "noop",
+          thread: {
+            ...existing,
+            status: existing.status as ThreadStatus,
+            metadata,
+          },
+        };
+      }
+
+      const thread = await tx.commentThread.update({
+        where: { id: existing.id },
         data: {
           status: ThreadStatus.Open,
           resolvedAt: null,
+          resolvedById: null,
+          metadata: nextMetadata,
         },
-      })
-    );
+        select: {
+          id: true,
+          status: true,
+          resolvedAt: true,
+          resolvedById: true,
+          metadata: true,
+        },
+      });
+      return {
+        kind: isTransition ? "transition" : "metadata_repair",
+        thread: toResolutionThreadResult(thread),
+      };
+    });
   },
 
   /**
@@ -250,10 +444,56 @@ export const commentsService = {
           artifactId: entityId,
           status: options?.status,
         },
-        include: {
+        select: {
+          id: true,
+          organizationId: true,
+          source: true,
+          externalId: true,
+          roomId: true,
+          artifactId: true,
+          status: true,
+          metadata: true,
+          createdAtVersion: true,
+          resolvedAt: true,
+          resolvedById: true,
+          createdById: true,
+          createdAt: true,
+          updatedAt: true,
           comments: {
             where: { deletedAt: null },
-            include: { reactions: true, attachments: true },
+            select: {
+              id: true,
+              threadId: true,
+              authorId: true,
+              body: true,
+              plainText: true,
+              externalId: true,
+              editedAt: true,
+              deletedAt: true,
+              createdAt: true,
+              updatedAt: true,
+              reactions: {
+                select: {
+                  id: true,
+                  commentId: true,
+                  userId: true,
+                  emoji: true,
+                  createdAt: true,
+                },
+              },
+              attachments: {
+                select: {
+                  id: true,
+                  commentId: true,
+                  externalId: true,
+                  name: true,
+                  size: true,
+                  mimeType: true,
+                  url: true,
+                  createdAt: true,
+                },
+              },
+            },
             orderBy: { createdAt: "asc" },
           },
         },
@@ -280,11 +520,18 @@ async function createDocumentThread(
 ): Promise<{ threadId: string; commentId: string }> {
   const roomId = generateDocumentRoomId(organizationId, documentSlug);
 
+  // Look up the artifact's current latestVersion so we can stamp it into
+  // Liveblocks ThreadMetadata.version at creation time. The subsequent DB
+  // upsert (`upsertThreadFromLiveblocks`) re-resolves this and writes
+  // `createdAtVersion` to keep both sources of truth in sync.
+  const artifact = await findArtifactForRoom(organizationId, roomId);
+
   const threadData = await createLiveblocksThread({
     roomId,
     userId,
     bodyText,
     anchorText,
+    version: artifact?.latestVersion ?? undefined,
   });
 
   const firstComment = threadData.comments[0];
@@ -312,6 +559,53 @@ async function createDocumentThread(
   return { threadId: threadData.id, commentId: firstComment.id };
 }
 
+function commentThreadMetadataObject(metadata: unknown): JsonObject {
+  return metadata === Prisma.JsonNull ? {} : (parseJsonObject(metadata) ?? {});
+}
+
+function getResolutionAttribution(
+  metadata: JsonObject
+): GitHubReviewThreadResolutionAttribution | null {
+  const value = metadata[GITHUB_REVIEW_THREAD_RESOLUTION_ATTRIBUTION_KEY];
+  const parsed = githubReviewThreadResolutionAttributionSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function isRepairableResolutionAttribution(
+  attribution: GitHubReviewThreadResolutionAttribution | null
+): boolean {
+  return (
+    attribution === null ||
+    attribution.kind ===
+      GitHubReviewThreadResolutionAttributionKind.LegacyMissing
+  );
+}
+
+function clearResolutionAttribution(metadata: JsonObject): JsonObject {
+  const nextMetadata = { ...metadata };
+  Reflect.deleteProperty(
+    nextMetadata,
+    GITHUB_REVIEW_THREAD_RESOLUTION_ATTRIBUTION_KEY
+  );
+  return nextMetadata;
+}
+
+function toResolutionThreadResult(thread: {
+  id: string;
+  status: string;
+  resolvedAt: Date | null;
+  resolvedById: string | null;
+  metadata: unknown;
+}): NonNullable<CommentThreadResolutionMutationResult>["thread"] {
+  return {
+    id: thread.id,
+    status: thread.status as ThreadStatus,
+    resolvedAt: thread.resolvedAt,
+    resolvedById: thread.resolvedById,
+    metadata: commentThreadMetadataObject(thread.metadata),
+  };
+}
+
 /**
  * Map a Prisma CommentThread row (with comments included) to the API type.
  * `resolvedBy` and `createdBy` are not fetched — set to null.
@@ -319,38 +613,112 @@ async function createDocumentThread(
  */
 function toCommentThreadWithComments(
   row: Prisma.CommentThreadGetPayload<{
-    include: {
-      comments: { include: { reactions: true; attachments: true } };
+    select: {
+      id: true;
+      organizationId: true;
+      source: true;
+      externalId: true;
+      roomId: true;
+      artifactId: true;
+      status: true;
+      metadata: true;
+      createdAtVersion: true;
+      resolvedAt: true;
+      resolvedById: true;
+      createdById: true;
+      createdAt: true;
+      updatedAt: true;
+      comments: {
+        select: {
+          id: true;
+          threadId: true;
+          authorId: true;
+          body: true;
+          plainText: true;
+          externalId: true;
+          editedAt: true;
+          deletedAt: true;
+          createdAt: true;
+          updatedAt: true;
+          reactions: {
+            select: {
+              id: true;
+              commentId: true;
+              userId: true;
+              emoji: true;
+              createdAt: true;
+            };
+          };
+          attachments: {
+            select: {
+              id: true;
+              commentId: true;
+              externalId: true;
+              name: true;
+              size: true;
+              mimeType: true;
+              url: true;
+              createdAt: true;
+            };
+          };
+        };
+      };
     };
   }>
 ): CommentThreadWithComments {
   return {
-    ...row,
+    id: row.id,
+    organizationId: row.organizationId,
+    source: row.source,
+    externalId: row.externalId,
+    roomId: row.roomId,
+    artifactId: row.artifactId,
+    status: row.status,
     metadata: row.metadata as JsonObject | null,
+    createdAtVersion: row.createdAtVersion,
+    resolvedAt: row.resolvedAt,
+    resolvedById: row.resolvedById,
+    createdById: row.createdById,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
     resolvedBy: null,
     createdBy: null,
     comments: row.comments.map((c) => ({
-      ...c,
+      id: c.id,
+      threadId: c.threadId,
+      authorId: c.authorId,
       body: c.body as JsonObject,
+      plainText: c.plainText,
+      externalId: c.externalId,
+      editedAt: c.editedAt,
+      deletedAt: c.deletedAt,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+      reactions: c.reactions,
+      attachments: c.attachments,
     })),
   };
 }
 
 /**
- * Parse roomId to find the associated artifact entity.
- * Returns null for non-artifact rooms or if artifact not found.
+ * Parse roomId to find the associated artifact entity and the document's
+ * current `latestVersion` (used as a fallback when stamping
+ * `CommentThread.createdAtVersion`). Returns null for non-artifact rooms
+ * or when the artifact is not found. `latestVersion` is null when the
+ * artifact exists but has no `Document` row (e.g. branch artifacts) so
+ * callers can distinguish "no document" from "document at v1".
  */
 async function findArtifactForRoom(
   organizationId: string,
   roomId: string
-): Promise<{ artifactId: string } | null> {
+): Promise<{ artifactId: string; latestVersion: number | null } | null> {
   try {
     const { slug } = parseDocumentRoomId(roomId);
 
     const artifact = await withDb((db) =>
       db.artifact.findUnique({
         where: { organizationId_slug: { organizationId, slug } },
-        select: { id: true },
+        select: { id: true, document: { select: { latestVersion: true } } },
       })
     );
 
@@ -358,7 +726,10 @@ async function findArtifactForRoom(
       return null;
     }
 
-    return { artifactId: artifact.id };
+    return {
+      artifactId: artifact.id,
+      latestVersion: artifact.document?.latestVersion ?? null,
+    };
   } catch {
     // Non-artifact room format — expected, not an error
     return null;

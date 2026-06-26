@@ -1,2 +1,36 @@
 @import "tailwindcss";
 @import "@repo/design-system/styles/globals.css";
+/* Relative path: @repo/app has no package.json `exports` map, and Turbopack's
+   PostCSS resolver rejects bare package CSS subpaths without one. */
+@import "../../../packages/app/styles.css";
+@import "react-grid-layout/css/styles.css";
+@import "react-resizable/css/styles.css";
+
+.insights-dashboard-grid {
+  isolation: isolate;
+  position: relative;
+  z-index: 0;
+}
+
+.insights-dashboard-grid .react-grid-item {
+  overflow: visible;
+  z-index: 0;
+}
+
+.insights-dashboard-grid .react-grid-item:hover,
+.insights-dashboard-grid .react-grid-item:focus-within,
+.insights-dashboard-grid .react-grid-item.react-draggable-dragging,
+.insights-dashboard-grid .react-grid-item.resizing {
+  z-index: 30 !important;
+}
+
+.insights-dashboard-grid .react-resizable-handle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 20;
+}
+
+.insights-dashboard-grid .react-grid-item:hover .react-resizable-handle,
+.insights-dashboard-grid .react-grid-item:focus-within .react-resizable-handle {
+  opacity: 1;
+}

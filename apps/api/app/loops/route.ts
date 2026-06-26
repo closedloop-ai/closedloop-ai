@@ -1,10 +1,14 @@
 import type {
+  CreateLoopRequest,
   CreateLoopResponse,
   LoopAlreadyActiveBody,
+  LoopCommand,
+  LoopListFilters,
+  LoopStatus,
   LoopWithUser,
 } from "@repo/api/src/types/loop";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { resolveDocumentId, resolveWorkstreamId } from "@/lib/identifier-utils";
+import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -42,10 +46,16 @@ export const GET = withAnyAuth<LoopWithUser[], "/loops">(
         resolvedArtifactId = aId;
       }
 
-      const loops = await loopsService.findAll(user.organizationId, {
+      const filters: LoopListFilters = {
         documentId: resolvedArtifactId,
-        ...restQuery,
-      });
+        status: restQuery.status as LoopStatus | undefined,
+        command: restQuery.command as LoopCommand | undefined,
+        projectId: restQuery.projectId,
+        limit: restQuery.limit,
+        offset: restQuery.offset,
+      };
+
+      const loops = await loopsService.findAll(user.organizationId, filters);
 
       return successResponse(loops);
     } catch (error) {
@@ -69,7 +79,10 @@ export const POST = withAnyAuth<CreateLoopRouteResponse, "/loops">(
         return parseError;
       }
 
-      const resolved = { ...body };
+      const resolved: CreateLoopRequest = {
+        ...body,
+        command: body.command as LoopCommand,
+      };
       if (body.documentId) {
         const docId = await resolveDocumentId(
           body.documentId,
@@ -80,17 +93,6 @@ export const POST = withAnyAuth<CreateLoopRouteResponse, "/loops">(
         }
         resolved.documentId = docId;
       }
-      if (body.workstreamId) {
-        const wsId = await resolveWorkstreamId(
-          body.workstreamId,
-          user.organizationId
-        );
-        if (!wsId) {
-          return notFoundResponse("Workstream");
-        }
-        resolved.workstreamId = wsId;
-      }
-
       const result = await loopsService.create(
         user.organizationId,
         user.id,

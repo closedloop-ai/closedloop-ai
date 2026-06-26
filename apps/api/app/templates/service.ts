@@ -2,6 +2,7 @@ import {
   type Document,
   DocumentStatus,
   DocumentType,
+  SnapshotSource,
 } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
 import {
@@ -118,7 +119,16 @@ export const documentTemplatesService = {
             slug: generateSlug(),
             status: DocumentStatus.Draft,
             document: {
-              create: { templateForType: DocumentType.Prd, latestVersion: 1 },
+              create: {
+                templateForType: DocumentType.Prd,
+                latestVersion: 1,
+                // Templates aren't bound to a repo. Snapshot is required on
+                // DocumentDetail post-PLN-602.
+                repositorySnapshot: {
+                  repositories: [],
+                  source: SnapshotSource.None,
+                },
+              },
             },
           },
           select: { id: true },

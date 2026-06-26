@@ -493,3 +493,87 @@ describe("flush() batching and empty-buffer behaviour", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// (g) HTTP response handling — retryable vs non-retryable status codes
+// ---------------------------------------------------------------------------
+
+describe("HTTP response handling — retryable and non-retryable status codes", () => {
+  it("treats HTTP 200 as success and resets retryCount", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("success");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("retries on HTTP 429 — does not drop the batch", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("rate limited");
+    await log.flush();
+
+    // Should retry up to MAX_RETRY_COUNT + 1 times
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries on HTTP 500 — does not drop the batch", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("server error");
+    await log.flush();
+
+    // Should retry up to MAX_RETRY_COUNT + 1 times
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops batch on HTTP 401 without retry", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("unauthorized");
+    await log.flush();
+
+    // Non-retryable — exactly one call, no retries
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("drops batch on HTTP 403 without retry", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 403 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("forbidden");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});

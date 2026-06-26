@@ -4,7 +4,7 @@ import {
   getNotificationEntityPath,
   NotificationEntityKind,
 } from "@repo/api/src/types/notification-routes";
-import { AssignmentEntityType } from "@repo/collaboration/inbox-notifications";
+import { AssignmentEntityType } from "@repo/collaboration/server/inbox-notifications";
 import { documentService } from "@/app/documents/document-service";
 import { dispatchAssignmentNotification } from "@/lib/assignment-notifications";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -22,6 +22,7 @@ import {
 } from "../../custom-fields/route-helpers";
 import { documentVersionService } from "../document-version-service";
 import { updateDocumentValidator } from "../validators";
+import { resolveLatestVersionContent } from "../version-route-helpers";
 
 export const GET = withAnyAuth<DocumentDetail, "/documents/[id]">(
   async ({ user }, request, params) => {
@@ -67,8 +68,17 @@ export const GET = withAnyAuth<DocumentDetail, "/documents/[id]">(
         );
       }
 
+      const latestVersionContent = await resolveLatestVersionContent(
+        artifact,
+        version
+      );
+
+      if (!latestVersionContent) {
+        return notFoundResponse("Artifact latest version");
+      }
+
       const response = await mergeCustomFieldsIntoResponse(
-        { ...artifact, version },
+        { ...artifact, ...latestVersionContent, version },
         CustomFieldEntityType.Document,
         user.organizationId
       );

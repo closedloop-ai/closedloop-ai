@@ -5,6 +5,7 @@ import { POST } from "@/app/internal/api-keys/verify/route";
 
 const mockVerifyKeyWithMetadata = vi.hoisted(() => vi.fn());
 const mockTouchLastUsedAt = vi.hoisted(() => vi.fn());
+const mockUsersFindById = vi.hoisted(() => vi.fn());
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 const mockWaitUntil = vi.hoisted(() => vi.fn());
 
@@ -12,6 +13,12 @@ vi.mock("@/app/api-keys/service", () => ({
   apiKeysService: {
     touchLastUsedAt: mockTouchLastUsedAt,
     verifyKeyWithMetadata: mockVerifyKeyWithMetadata,
+  },
+}));
+
+vi.mock("@/app/users/service", () => ({
+  usersService: {
+    findById: mockUsersFindById,
   },
 }));
 
@@ -48,6 +55,7 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
     vi.clearAllMocks();
     mockIsFeatureEnabled.mockResolvedValue(true);
     mockTouchLastUsedAt.mockResolvedValue(undefined);
+    mockUsersFindById.mockResolvedValue({ clerkId: "clerk-user-1" });
   });
 
   it("preserves bearer compatibility for USER_CREATED keys without PoP headers", async () => {
@@ -69,6 +77,7 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
       data: {
         userId: "user-1",
         organizationId: "org-1",
+        clerkUserId: "clerk-user-1",
         scopes: ["write"],
       },
     });
@@ -149,6 +158,7 @@ describe("POST /internal/api-keys/verify desktop managed PoP", () => {
       data: {
         userId: "user-1",
         organizationId: "org-1",
+        clerkUserId: "clerk-user-1",
         scopes: ["write"],
       },
     });

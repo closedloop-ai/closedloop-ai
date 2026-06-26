@@ -5,7 +5,7 @@
   "envMode": "loose",
   "tasks": {
     "build": {
-      "dependsOn": ["^build", "test"],
+      "dependsOn": ["^build"],
       "outputs": [
         ".next/**",
         "!.next/cache/**",
@@ -17,16 +17,89 @@
       "cache": false,
       "dependsOn": ["^build"]
     },
-    "@repo/mcp#build": {
+    "@repo/api#build": {
       "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "mcp#build": {
+      "dependsOn": ["^build", "@closedloop-ai/loops-api#build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
       "outputs": ["dist/**"]
     },
     "@closedloop-ai/loops-api#build": {
       "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
       "outputs": ["dist/**"]
     },
+    "@closedloop-ai/design-system#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "@closedloop-ai/telemetry-contract#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "@closedloop-ai/shared-platform#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "desktop#build": {
+      "cache": false,
+      "dependsOn": [
+        "^build",
+        "@closedloop-ai/design-system#build",
+        "@closedloop-ai/loops-api#build"
+      ],
+      "outputs": ["dist/**", "!dist/**/*.d.ts", "!dist/**/*.d.ts.map"]
+    },
     "typecheck": {
-      "dependsOn": ["^typecheck"]
+      "dependsOn": ["^typecheck"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "@closedloop-ai/design-system#typecheck": {
+      "dependsOn": ["^typecheck", "@closedloop-ai/loops-api#build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "@repo/api#typecheck": {
+      "dependsOn": [
+        "^typecheck",
+        "@closedloop-ai/loops-api#build",
+        "@closedloop-ai/shared-platform#build"
+      ],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "api#typecheck": {
+      "dependsOn": ["^typecheck", "@closedloop-ai/loops-api#build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "lint": {
+      "outputs": []
+    },
+    "desktop#lint": {
+      "dependsOn": [],
+      "cache": false,
+      "outputs": []
+    },
+    "desktop#typecheck": {
+      "dependsOn": [
+        "@closedloop-ai/design-system#build",
+        "@closedloop-ai/loops-api#build",
+        "@closedloop-ai/telemetry-contract#build",
+        "@repo/api#build"
+      ],
+      "cache": false,
+      "outputs": []
+    },
+    "@repo/observability#typecheck": {
+      "dependsOn": [
+        "^typecheck",
+        "@closedloop-ai/loops-api#build",
+        "@closedloop-ai/telemetry-contract#build"
+      ],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
     },
     "figma:typecheck": {
       "dependsOn": ["^figma:typecheck"]
@@ -34,11 +107,55 @@
     "test": {
       "dependsOn": ["^test"]
     },
+    "@repo/observability#test": {
+      "dependsOn": [
+        "^test",
+        "@closedloop-ai/loops-api#build",
+        "@closedloop-ai/telemetry-contract#build"
+      ]
+    },
     "api#test": {
-      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+      "dependsOn": [
+        "^test",
+        "@closedloop-ai/loops-api#build",
+        "@repo/database#build"
+      ]
     },
     "app#test": {
       "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
+    "@repo/app#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
+    "@repo/github#test": {
+      "dependsOn": ["^test", "@closedloop-ai/loops-api#build"]
+    },
+    "@repo/rich-text#test": {
+      "dependsOn": ["^test", "@closedloop-ai/design-system#build"]
+    },
+    "desktop#test": {
+      "dependsOn": [
+        "@closedloop-ai/design-system#build",
+        "@closedloop-ai/loops-api#build",
+        "@closedloop-ai/telemetry-contract#build",
+        "@repo/api#build"
+      ],
+      "outputs": []
+    },
+    "desktop#clean:package": {
+      "dependsOn": [],
+      "cache": false,
+      "outputs": []
+    },
+    "desktop#stage:package": {
+      "dependsOn": ["desktop#build"],
+      "cache": false,
+      "outputs": []
+    },
+    "desktop#package:turbo": {
+      "dependsOn": ["desktop#clean:package", "desktop#stage:package"],
+      "cache": false,
+      "outputs": []
     },
     "analyze": {
       "dependsOn": ["^analyze"]

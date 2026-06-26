@@ -3,6 +3,8 @@ import { DocumentStatus } from "@repo/api/src/types/document.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  asRecord,
+  buildDocumentUrlFromRecord,
   describeIdOrSlug,
   encodePathSegment,
   withErrorHandling,
@@ -16,7 +18,7 @@ export function registerUpdateDocument(
     "update-document",
     {
       description:
-        "Update a document's title, status, or project by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim. Use create-document-version for content edits.",
+        "Update a document's title, status, project, or assignee by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim. Use create-document-version for content edits.\n\nStatus lifecycle: DRAFT → IN_PROGRESS → IN_REVIEW → APPROVED → EXECUTED → DONE (or OBSOLETE).\nUpdate status as work progresses — set IN_PROGRESS when starting, IN_REVIEW when a PR is created, DONE when merged.",
       inputSchema: {
         documentId: z
           .string()
@@ -35,9 +37,17 @@ export function registerUpdateDocument(
           .enum(DocumentStatus)
           .optional()
           .describe("New status for the document"),
+        assigneeId: z
+          .string()
+          .uuid()
+          .nullable()
+          .optional()
+          .describe(
+            "UUID of the user to assign this document to. Use list-users to find valid user IDs. Pass null to unassign."
+          ),
       },
     },
-    ({ documentId, projectId, title, status }) =>
+    ({ documentId, projectId, title, status, assigneeId }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {};
         if (projectId !== undefined) {
@@ -49,16 +59,20 @@ export function registerUpdateDocument(
         if (status !== undefined) {
           body.status = status;
         }
+        if (assigneeId !== undefined) {
+          body.assigneeId = assigneeId;
+        }
 
         const document = await apiClient.put<unknown>(
           `/documents/${encodePathSegment(documentId)}`,
           body
         );
+        const webUrl = buildDocumentUrlFromRecord(asRecord(document));
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(document, null, 2),
+              text: JSON.stringify({ ...asRecord(document), webUrl }, null, 2),
             },
           ],
         };

@@ -7,7 +7,7 @@
  */
 import { generateKeyPairSync } from "node:crypto";
 import { ApiKeySource } from "@repo/database";
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
 const mockWaitUntil = vi.hoisted(() => vi.fn());

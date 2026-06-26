@@ -29,7 +29,7 @@ describe("resolveOgMetadata", () => {
         "http://localhost:3002/documents/by-slug/my-prd/meta",
         expect.any(Object)
       );
-      expect(metadata.title).toBe("My PRD | ClosedLoop.ai");
+      expect(metadata.title).toBe("My PRD | Closedloop.ai");
       expect(metadata.description).toBe("PRD");
     });
 
@@ -49,7 +49,7 @@ describe("resolveOgMetadata", () => {
         "http://localhost:3002/documents/by-slug/auth-plan/meta",
         expect.any(Object)
       );
-      expect(metadata.title).toBe("Auth Plan | ClosedLoop.ai");
+      expect(metadata.title).toBe("Auth Plan | Closedloop.ai");
       expect(metadata.description).toBe("Plan");
     });
 
@@ -64,7 +64,7 @@ describe("resolveOgMetadata", () => {
         "http://localhost:3002/documents/by-slug/some-slug/meta",
         expect.any(Object)
       );
-      expect(metadata.title).toBe("Some Document | ClosedLoop.ai");
+      expect(metadata.title).toBe("Some Document | Closedloop.ai");
     });
   });
 
@@ -80,7 +80,7 @@ describe("resolveOgMetadata", () => {
         "http://localhost:3002/documents/by-slug/fix-login-bug/meta",
         expect.any(Object)
       );
-      expect(metadata.title).toBe("Fix login bug | ClosedLoop.ai");
+      expect(metadata.title).toBe("Fix login bug | Closedloop.ai");
       expect(metadata.description).toBe("Feature — In Progress");
     });
   });
@@ -89,25 +89,25 @@ describe("resolveOgMetadata", () => {
     it("returns fallback metadata for unknown paths", async () => {
       const metadata = await resolveOgMetadata("settings");
 
-      expect(metadata.title).toBe("ClosedLoop.ai");
+      expect(metadata.title).toBe("Closedloop.ai");
     });
 
     it("returns fallback metadata for empty string", async () => {
       const metadata = await resolveOgMetadata("");
 
-      expect(metadata.title).toBe("ClosedLoop.ai");
+      expect(metadata.title).toBe("Closedloop.ai");
     });
 
     it("returns fallback metadata for nested unknown paths", async () => {
       const metadata = await resolveOgMetadata("teams/abc/projects/def");
 
-      expect(metadata.title).toBe("ClosedLoop.ai");
+      expect(metadata.title).toBe("Closedloop.ai");
     });
 
     it("returns fallback metadata when API returns 404", async () => {
       const metadata = await resolveOgMetadata("prds/nonexistent");
 
-      expect(metadata.title).toBe("ClosedLoop.ai");
+      expect(metadata.title).toBe("Closedloop.ai");
     });
 
     it("returns fallback metadata when fetch throws", async () => {
@@ -117,7 +117,80 @@ describe("resolveOgMetadata", () => {
 
       const metadata = await resolveOgMetadata("prds/my-slug");
 
-      expect(metadata.title).toBe("ClosedLoop.ai");
+      expect(metadata.title).toBe("Closedloop.ai");
+    });
+  });
+
+  describe("org-scoped paths", () => {
+    it("fetches metadata for org-scoped prds path", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "My PRD", type: "PRD" })
+      );
+
+      const metadata = await resolveOgMetadata("acme/prds/my-prd");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/my-prd/meta?org=acme",
+        expect.any(Object)
+      );
+      expect(metadata.title).toBe("My PRD | Closedloop.ai");
+    });
+
+    it("fetches metadata for org-scoped features path", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "Auth Feature", status: "DRAFT" })
+      );
+
+      const metadata = await resolveOgMetadata("acme/features/FEA-42");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/FEA-42/meta?org=acme",
+        expect.any(Object)
+      );
+      expect(metadata.title).toBe("Auth Feature | Closedloop.ai");
+    });
+
+    it("fetches metadata for org-scoped implementation-plans path", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "My Plan", type: "IMPLEMENTATION_PLAN" })
+      );
+
+      const metadata = await resolveOgMetadata(
+        "acme/implementation-plans/PLN-7"
+      );
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/PLN-7/meta?org=acme",
+        expect.any(Object)
+      );
+      expect(metadata.title).toBe("My Plan | Closedloop.ai");
+    });
+
+    it("still works without org slug prefix (backward compat)", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "Old PRD", type: "PRD" })
+      );
+
+      const metadata = await resolveOgMetadata("prds/old-prd");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/old-prd/meta",
+        expect.any(Object)
+      );
+      expect(metadata.title).toBe("Old PRD | Closedloop.ai");
+    });
+
+    it("encodes org slug with special characters in query param", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "A PRD", type: "PRD" })
+      );
+
+      await resolveOgMetadata("org-with-hyphens/prds/PRD-1");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/PRD-1/meta?org=org-with-hyphens",
+        expect.any(Object)
+      );
     });
   });
 
@@ -130,14 +203,14 @@ describe("resolveOgMetadata", () => {
       const metadata = await resolveOgMetadata("prds/my-prd");
 
       expect(metadata.openGraph).toEqual({
-        title: "My PRD | ClosedLoop.ai",
+        title: "My PRD | Closedloop.ai",
         description: "PRD",
         type: "website",
-        siteName: "ClosedLoop.ai",
+        siteName: "Closedloop.ai",
       });
       expect(metadata.twitter).toEqual({
         card: "summary",
-        title: "My PRD | ClosedLoop.ai",
+        title: "My PRD | Closedloop.ai",
         description: "PRD",
       });
     });
@@ -147,7 +220,7 @@ describe("resolveOgMetadata", () => {
 
       expect(metadata.openGraph).toEqual(
         expect.objectContaining({
-          title: "ClosedLoop.ai",
+          title: "Closedloop.ai",
           description: "Sign in to view this content.",
         })
       );

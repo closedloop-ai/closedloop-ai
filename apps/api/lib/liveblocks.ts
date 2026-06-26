@@ -1,11 +1,13 @@
 import "server-only";
 import {
+  broadcastRoomEvent,
   type CreateRoomOptions,
   createRoom,
   deleteRoom,
+  type RoomEventPayload,
   resetRoom,
   updateRoomMetadata,
-} from "@repo/collaboration/room-management";
+} from "@repo/collaboration/server/room-management";
 import { log } from "@repo/observability/log";
 
 /**
@@ -73,6 +75,31 @@ export async function resetLiveblocksRoom(
   if (!result.success) {
     log.error("Failed to reset Liveblocks room", {
       roomId,
+      error: result.error,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Broadcast a typed event to every connected client in a Liveblocks room.
+ * This function handles errors gracefully and will not throw.
+ *
+ * @param roomId - The ID of the room to broadcast into
+ * @param event - The event payload
+ * @returns Promise that resolves with success status
+ */
+export async function broadcastLiveblocksRoomEvent(
+  roomId: string,
+  event: RoomEventPayload
+): Promise<{ success: true } | { success: false; error: string }> {
+  const result = await broadcastRoomEvent(roomId, event);
+
+  if (!result.success) {
+    log.error("Failed to broadcast Liveblocks room event", {
+      roomId,
+      eventType: event.type,
       error: result.error,
     });
   }

@@ -18,7 +18,7 @@ export const GET = withAnyAuth<
 >(async ({ user }, _request, params) => {
   try {
     const { id: targetId, commandId } = await params;
-    const target = await computeTargetsService.findOwnedById(
+    const target = await computeTargetsService.findAccessibleById(
       targetId,
       user.organizationId,
       user.id

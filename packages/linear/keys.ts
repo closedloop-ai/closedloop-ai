@@ -4,7 +4,7 @@ import { z } from "zod";
 /**
  * Linear integration keys.
  * Made optional because Linear is an optional integration - validated at runtime
- * when the integration is actually used. See isLinearConfigured().
+ * when the integration is actually used.
  *
  * - LINEAR_CLIENT_ID: Needed by both app (OAuth initiation) and API (token exchange)
  * - LINEAR_CLIENT_SECRET: Only needed by API (token exchange) - never expose to frontend

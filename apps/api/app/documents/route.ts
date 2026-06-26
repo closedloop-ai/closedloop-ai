@@ -1,14 +1,12 @@
-import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type {
   Document,
-  DocumentWithWorkstream,
+  DocumentWithProject,
 } from "@repo/api/src/types/document";
 import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   resolveArtifactIdentifier,
   resolveProjectId,
-  resolveWorkstreamId,
 } from "@/lib/identifier-utils";
 import {
   badRequestResponse,
@@ -17,7 +15,6 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { customFieldValuesService } from "../custom-fields/values-service";
 import {
   createDocumentValidator,
   findDocumentsQueryValidator,
@@ -27,7 +24,7 @@ import {
  * GET /documents - List documents
  * Accepts API key authentication (sk_live_) or Clerk session authentication.
  */
-export const GET = withAnyAuth<DocumentWithWorkstream[], "/documents">(
+export const GET = withAnyAuth<DocumentWithProject[], "/documents">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
@@ -44,7 +41,7 @@ export const GET = withAnyAuth<DocumentWithWorkstream[], "/documents">(
         );
       }
 
-      const { projectId, workstreamId, ...restQuery } = parseResult.data;
+      const { projectId, ...restQuery } = parseResult.data;
       let resolvedProjectId: string | undefined;
       if (projectId) {
         const pId = await resolveProjectId(projectId, user.organizationId);
@@ -53,52 +50,14 @@ export const GET = withAnyAuth<DocumentWithWorkstream[], "/documents">(
         }
         resolvedProjectId = pId;
       }
-      let resolvedWorkstreamId: string | undefined;
-      if (workstreamId) {
-        const wId = await resolveWorkstreamId(
-          workstreamId,
-          user.organizationId
-        );
-        if (!wId) {
-          return notFoundResponse("Workstream");
-        }
-        resolvedWorkstreamId = wId;
-      }
 
-      const documents = await documentService.findAll({
+      const documents = await documentService.findAllWithCustomFields({
         organizationId: user.organizationId,
         projectId: resolvedProjectId,
-        workstreamId: resolvedWorkstreamId,
         ...restQuery,
       });
 
-      // Batch-load custom field values for all documents in a single query
-      const documentIds = documents.map((a) => a.id);
-      const allValues =
-        documentIds.length > 0
-          ? await customFieldValuesService.getValuesForEntity(
-              CustomFieldEntityType.Document,
-              documentIds,
-              user.organizationId
-            )
-          : [];
-
-      const valuesByEntityId = new Map(
-        documents.map((a) => [a.id, [] as typeof allValues])
-      );
-      for (const value of allValues) {
-        const list = valuesByEntityId.get(value.entityId);
-        if (list) {
-          list.push(value);
-        }
-      }
-
-      const documentsWithFields = documents.map((a) => ({
-        ...a,
-        customFields: valuesByEntityId.get(a.id) ?? [],
-      }));
-
-      return successResponse(documentsWithFields);
+      return successResponse(documents);
     } catch (error) {
       return errorResponse("Failed to fetch documents", error);
     }
@@ -123,17 +82,6 @@ export const POST = withAnyAuth<Document, "/documents">(
       if (!resolvedProjectId) {
         return notFoundResponse("Project");
       }
-      let resolvedWorkstreamId: string | undefined;
-      if (body.workstreamId) {
-        const wId = await resolveWorkstreamId(
-          body.workstreamId,
-          user.organizationId
-        );
-        if (!wId) {
-          return notFoundResponse("Workstream");
-        }
-        resolvedWorkstreamId = wId;
-      }
       let resolvedSourceId: string | undefined;
       if (body.sourceId) {
         const sId = await resolveArtifactIdentifier(
@@ -152,7 +100,6 @@ export const POST = withAnyAuth<Document, "/documents">(
         {
           ...body,
           projectId: resolvedProjectId,
-          workstreamId: resolvedWorkstreamId,
           sourceId: resolvedSourceId,
         }
       );

@@ -273,35 +273,36 @@ function ViewerCore({
     setInitialScale(fit.scale);
   }, [svgDimensions]);
 
-  // Wheel zoom. Attached via `addEventListener` (not React's `onWheel`)
-  // because we need `{ passive: false }` to call `preventDefault` and stop
-  // the page from scrolling while zooming.
+  // Wheel handler. Trackpad pinch (wheel + ctrlKey) still zooms; plain wheel
+  // events pan the diagram by their delta. Attached via `addEventListener`
+  // (not React's `onWheel`) for `{ passive: false }` so we can call
+  // `preventDefault` and stop the page from scrolling underneath.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) {
       return;
     }
-    function computeWheelFactor(e: WheelEvent): number {
-      // Trackpad pinch → wheel + ctrlKey with fine-grained deltaY. Regular
-      // wheel → discrete ticks in ZOOM_FACTOR increments.
-      if (e.ctrlKey) {
-        return 1 - e.deltaY * 0.01;
-      }
-      return e.deltaY > 0 ? 1 - ZOOM_FACTOR : 1 + ZOOM_FACTOR;
-    }
     function onWheel(e: WheelEvent) {
       e.preventDefault();
       e.stopPropagation();
-      const factor = computeWheelFactor(e);
-      const rect = container!.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      const cur = transformRef.current;
-      const newScale = Math.min(
-        Math.max(cur.scale * factor, MIN_SCALE),
-        MAX_SCALE
-      );
-      setTransform(zoomAtPoint(cur, newScale, cx, cy));
+      if (e.ctrlKey) {
+        const factor = 1 - e.deltaY * 0.01;
+        const rect = container!.getBoundingClientRect();
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        const cur = transformRef.current;
+        const newScale = Math.min(
+          Math.max(cur.scale * factor, MIN_SCALE),
+          MAX_SCALE
+        );
+        setTransform(zoomAtPoint(cur, newScale, cx, cy));
+        return;
+      }
+      setTransform((prev) => ({
+        ...prev,
+        x: prev.x - e.deltaX,
+        y: prev.y - e.deltaY,
+      }));
     }
     container.addEventListener("wheel", onWheel, { passive: false });
     return () => container.removeEventListener("wheel", onWheel);
@@ -414,7 +415,7 @@ function ViewerCore({
         // top-left and declare scale-from-top-left. Makes the pan/zoom math
         // linear and easy to reason about.
         className="absolute top-0 left-0 origin-top-left"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid generates safe SVG
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: SVG is DOMPurify-sanitized via prepareSvg before rendering
         dangerouslySetInnerHTML={{ __html: processedSvg }}
         ref={contentRef}
         style={{
@@ -688,6 +689,7 @@ function Minimap({
 
   return (
     <button
+      aria-label="Navigate diagram via minimap"
       className={`absolute right-3 bottom-3 z-20 cursor-crosshair overflow-hidden rounded-md border-0 bg-background/80 p-0 shadow-md ring-1 ring-border/40 backdrop-blur-sm transition-opacity duration-200 ${visible ? "opacity-100" : "pointer-events-none opacity-0"}`}
       onClick={handleClick}
       style={{ width: contentW, height: contentH }}

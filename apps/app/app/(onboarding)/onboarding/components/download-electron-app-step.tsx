@@ -2,19 +2,19 @@
 
 import { useAnalytics } from "@repo/analytics/client";
 import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
+import { useCreatePlatformApiKey } from "@repo/app/api-keys/hooks/use-platform-api-keys";
+import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
+import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
+import { isUpdateAvailable } from "@repo/app/shared/lib/version-utils";
 import { Button } from "@repo/design-system/components/ui/button";
+import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
 import { useEffect, useRef, useState } from "react";
-import { ConfirmationDialog } from "@/components/confirmation-dialog";
 import {
   useCreateDesktopProvisioningAttempt,
   useDesktopProvisioningCapability,
 } from "@/hooks/queries/use-desktop-provisioning";
-import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
-import { useCreatePlatformApiKey } from "@/hooks/queries/use-platform-api-keys";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildDesktopOnboardingCommand } from "@/lib/desktop-managed-onboarding";
 import { getClientDesktopProvisioningPlatform } from "@/lib/desktop-provisioning-platform";
-import { isUpdateAvailable } from "@/lib/version-utils";
 import {
   AutomatedProvisioningCard,
   DesktopStatusPanel,
@@ -106,7 +106,7 @@ export function DownloadElectronAppStep({
 
   const handleGenerateKey = () => {
     createApiKey.mutate(
-      { name: "ClosedLoop Desktop" },
+      { name: "Closedloop Desktop" },
       {
         onSuccess: (data) => {
           setGeneratedKey(data.plaintext);
@@ -199,7 +199,7 @@ export function DownloadElectronAppStep({
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="font-semibold text-lg">Set up ClosedLoop Desktop</h2>
+        <h2 className="font-semibold text-lg">Set up Closedloop Desktop</h2>
         <p className="text-muted-foreground text-sm">
           Use the recommended automated setup to install or update Desktop and
           connect it to your account.
@@ -271,7 +271,7 @@ export function DownloadElectronAppStep({
       <ConfirmationDialog
         cancelLabel="Download now"
         confirmLabel="Skip anyway"
-        description="Without the ClosedLoop Desktop app, you won't be able to run any loops or jobs. You can always install it later from Settings."
+        description="Without the Closedloop Desktop app, you won't be able to run any loops or jobs. You can always install it later from Settings."
         onConfirm={handleSkipConfirm}
         onOpenChange={handleSkipWarningOpenChange}
         open={isSkipWarningOpen}

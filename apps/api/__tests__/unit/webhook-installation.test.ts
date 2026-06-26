@@ -5,7 +5,8 @@
  * - Handle installation created/deleted/suspended/unsuspended events
  * - Manage installation status and organization linking
  * - Sync repositories when installation is created
- * - Clear organization link when installation is deleted
+ * - Preserve organization link on installation deletion so same-account
+ *   reconnect can reuse the row in-place (see PLN-634)
  * - Preserve/restore status appropriately on suspension/unsuspension
  */
 
@@ -432,6 +433,7 @@ function createMockInstallation(
     claimedByUserId: "user-uuid",
     suspendedAt: null,
     suspendedBy: null,
+    pendingNewInstallationId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...partial,
@@ -685,7 +687,7 @@ describe("handleInstallationDeleted", () => {
     vi.restoreAllMocks();
   });
 
-  it("marks installation as UNINSTALLED and clears organizationId", async () => {
+  it("marks installation as UNINSTALLED while preserving organizationId", async () => {
     const event = createInstallationDeletedEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
@@ -705,7 +707,6 @@ describe("handleInstallationDeleted", () => {
       where: { id: "installation-uuid" },
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
-        organizationId: null,
       },
     });
   });
@@ -721,7 +722,7 @@ describe("handleInstallationDeleted", () => {
     expect(mockDb.gitHubInstallation.update).not.toHaveBeenCalled();
   });
 
-  it("clears organizationId even if installation was already SUSPENDED", async () => {
+  it("preserves organizationId even if installation was already SUSPENDED", async () => {
     const event = createInstallationDeletedEvent(123_456, "test-org");
     const existingInstallation = createMockInstallation({
       id: "installation-uuid",
@@ -739,7 +740,6 @@ describe("handleInstallationDeleted", () => {
       where: { id: "installation-uuid" },
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
-        organizationId: null,
       },
     });
   });
@@ -1038,7 +1038,6 @@ describe("integration scenarios", () => {
       where: { id: "installation-uuid" },
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
-        organizationId: null,
       },
     });
   });

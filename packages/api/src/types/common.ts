@@ -1,3 +1,5 @@
+import { Priority as SharedPriority } from "@closedloop-ai/loops-api/common";
+
 /**
  * JSON-compatible types for API input/output
  * These match Prisma's JsonValue types
@@ -19,7 +21,13 @@ export type JsonArray = JsonValue[];
  */
 export type ApiResult<T> =
   | { success: true; data: T }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      code?: string;
+      details?: JsonObject;
+      timestamp?: string;
+    };
 
 /**
  * Helper to create a success result
@@ -29,10 +37,22 @@ export function success<T>(data: T): ApiResult<T> {
 }
 
 /**
- * Helper to create an error result
+ * Helper to create an error result.
+ *
+ * Optional metadata is additive so existing `failure(error)` callers and
+ * clients that only read `error` remain compatible.
  */
-export function failure(error: string): ApiResult<never> {
-  return { success: false, error };
+export function failure(
+  error: string,
+  options?: { code?: string; details?: JsonObject; timestamp?: string }
+): ApiResult<never> {
+  return {
+    success: false,
+    error,
+    ...(options?.code ? { code: options.code } : {}),
+    ...(options?.details ? { details: options.details } : {}),
+    ...(options?.timestamp ? { timestamp: options.timestamp } : {}),
+  };
 }
 
 /**
@@ -62,11 +82,5 @@ export type ApiConflictBody<F> = {
 export function conflictBody<F>(error: string, data: F): ApiConflictBody<F> {
   return { success: false, error, data };
 }
-
-export const Priority = {
-  Low: "LOW",
-  Medium: "MEDIUM",
-  High: "HIGH",
-  Urgent: "URGENT",
-} as const;
+export const Priority = SharedPriority;
 export type Priority = (typeof Priority)[keyof typeof Priority];

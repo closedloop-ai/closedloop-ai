@@ -9,6 +9,7 @@ import {
 } from "@/lib/route-utils";
 import { mergeCustomFieldsIntoResponse } from "../../../custom-fields/route-helpers";
 import { documentVersionService } from "../../document-version-service";
+import { resolveLatestVersionContent } from "../../version-route-helpers";
 
 export const GET = withAuth<DocumentDetail, "/documents/by-slug/[slug]">(
   async ({ user }, request, params) => {
@@ -49,8 +50,17 @@ export const GET = withAuth<DocumentDetail, "/documents/by-slug/[slug]">(
         );
       }
 
+      const latestVersionContent = await resolveLatestVersionContent(
+        artifact,
+        version
+      );
+
+      if (!latestVersionContent) {
+        return notFoundResponse("Artifact latest version");
+      }
+
       const response = await mergeCustomFieldsIntoResponse(
-        { ...artifact, version },
+        { ...artifact, ...latestVersionContent, version },
         CustomFieldEntityType.Document,
         user.organizationId
       );

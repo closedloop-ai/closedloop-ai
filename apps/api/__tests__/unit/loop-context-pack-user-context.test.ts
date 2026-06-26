@@ -11,7 +11,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // --- Mocks (must come before imports) ---
 
 vi.mock("@repo/database", () => ({
-  ArtifactType: { PRD: "PRD", TEMPLATE: "TEMPLATE" },
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    PRD: "PRD",
+    BRANCH: "BRANCH",
+    TEMPLATE: "TEMPLATE",
+  },
   withDb: Object.assign(vi.fn(), {
     tx: vi.fn((fn: () => Promise<unknown>) => fn()),
   }),
@@ -31,6 +36,14 @@ vi.mock("@/app/documents/document-version-service", () => ({
 vi.mock("@/app/documents/document-service", () => ({
   documentService: {
     findByIdSimple: vi.fn(),
+    findSlugById: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/documents/document-pull-request-service", () => ({
+  documentPullRequestService: {
+    getDocumentPullRequest: vi.fn(),
+    getPullRequestHeadContext: vi.fn(),
   },
 }));
 
@@ -65,14 +78,25 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 // --- Imports (after mocks) ---
 
+import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
+import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
+import { documentService } from "@/app/documents/document-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
+import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { buildContextPackInMemory } from "@/lib/loops/loop-context-pack";
 
 type MockFn = ReturnType<typeof vi.fn>;
 const mockGetByVersion = documentVersionService.getByVersion as MockFn;
 const mockGetLatest = documentVersionService.getLatest as MockFn;
+const mockFindByIdSimple = documentService.findByIdSimple as MockFn;
+const mockFindSlugById = documentService.findSlugById as MockFn;
+const mockFindLoopById = loopsService.findById as MockFn;
+const mockGetDocumentPullRequest =
+  documentPullRequestService.getDocumentPullRequest as MockFn;
+const mockGetPullRequestHeadContext =
+  documentPullRequestService.getPullRequestHeadContext as MockFn;
 const mockGetCommandHandler = getCommandHandler as MockFn;
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -99,6 +123,14 @@ describe("buildContextPackInMemory — userContext", () => {
     mockGetCommandHandler.mockReturnValue(undefined);
     // Default: no primary artifact found
     mockGetLatest.mockResolvedValue(null);
+    mockFindByIdSimple.mockResolvedValue(null);
+    mockFindSlugById.mockResolvedValue(null);
+    mockFindLoopById.mockResolvedValue(null);
+    mockGetDocumentPullRequest.mockResolvedValue(null);
+    mockGetPullRequestHeadContext.mockResolvedValue({
+      headSha: null,
+      repositoryFullName: null,
+    });
   });
 
   it("returns userContext from ArtifactVersion v1 for PLAN command", async () => {
@@ -186,5 +218,110 @@ describe("buildContextPackInMemory — userContext", () => {
 
     expect(pack.userContext).toHaveLength(16_000);
     expect(pack.userContext).toBe(oversizedContent.slice(0, 16_000));
+  });
+
+  it("separates direct context refs into supportingArtifacts while preserving artifacts", async () => {
+    mockGetCommandHandler.mockReturnValue({
+      requiresRepo: false,
+      requiresParent: false,
+      includePrimaryArtifact: true,
+    });
+    mockFindByIdSimple.mockImplementation(async (id: string) => ({
+      id,
+      type: id === "feature-1" ? DocumentType.Feature : DocumentType.Prd,
+      title: `Title ${id}`,
+    }));
+    mockGetLatest.mockImplementation(async (id: string) => ({
+      content: `Content ${id}`,
+    }));
+
+    const pack = await buildContextPackInMemory(
+      {
+        ...BASE_LOOP,
+        command: LoopCommand.EvaluatePrd,
+        documentId: "primary-prd",
+        contextRefs: [
+          { sourceId: "ref-prd", include: "full" },
+          { sourceId: "primary-prd", include: "full" },
+          { sourceId: "feature-1", include: "summary" },
+        ],
+      },
+      "org-1"
+    );
+
+    expect(pack.supportingArtifacts?.map((artifact) => artifact.id)).toEqual([
+      "ref-prd",
+      "feature-1",
+    ]);
+    expect(pack.artifacts.map((artifact) => artifact.id)).toEqual([
+      "ref-prd",
+      "feature-1",
+      "primary-prd",
+    ]);
+  });
+
+  it("builds codeEvaluationContext for EVALUATE_CODE from Symphony metadata", async () => {
+    mockGetCommandHandler.mockReturnValue({
+      requiresRepo: true,
+      requiresParent: false,
+      includePrimaryArtifact: true,
+    });
+    mockFindByIdSimple.mockResolvedValue({
+      id: "plan-1",
+      type: DocumentType.ImplementationPlan,
+      title: "Plan",
+    });
+    mockGetLatest.mockResolvedValue({ content: "Plan content" });
+    mockFindLoopById.mockResolvedValue({
+      id: "parent-loop",
+      command: LoopCommand.Execute,
+      status: "COMPLETED",
+      branchName: "feat/parent",
+      sessionId: "019e1fbd-65eb-71ef-a7ac-59e2eba5b70d",
+      s3StateKey: null,
+    });
+    mockGetDocumentPullRequest.mockResolvedValue({
+      id: "pr-artifact-1",
+      number: 42,
+      htmlUrl: "https://github.com/closedloop/repo/pull/42",
+      headBranch: "feat/context",
+      baseBranch: "main",
+      repoFullName: "closedloop/repo",
+    });
+    mockFindSlugById.mockResolvedValue("fea-585");
+    mockGetPullRequestHeadContext.mockResolvedValue({
+      headSha: "abc123",
+      repositoryFullName: "closedloop/repo",
+    });
+
+    const pack = await buildContextPackInMemory(
+      {
+        ...BASE_LOOP,
+        command: LoopCommand.EvaluateCode,
+        documentId: "plan-1",
+        parentLoopId: "parent-loop",
+        repo: { fullName: "closedloop/repo", branch: "main" },
+        metadata: { localRepoPath: "/workspace/repo" },
+      },
+      "org-1"
+    );
+
+    expect(pack.codeEvaluationContext).toEqual({
+      schemaVersion: 1,
+      repo: { fullName: "closedloop/repo", branch: "main" },
+      localRepoPath: "/workspace/repo",
+      parentBranchName: "feat/parent",
+      parentSessionId: "019e1fbd-65eb-71ef-a7ac-59e2eba5b70d",
+      artifactSlug: "fea-585",
+      pullRequest: {
+        number: 42,
+        url: "https://github.com/closedloop/repo/pull/42",
+        headBranch: "feat/context",
+        baseBranch: "main",
+        headSha: "abc123",
+        repositoryFullName: "closedloop/repo",
+      },
+      detected: null,
+    });
   });
 });

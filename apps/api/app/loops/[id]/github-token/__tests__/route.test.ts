@@ -1,8 +1,12 @@
-import { verifyLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { extractBearerToken } from "@/lib/auth/loop-runner-jwt";
+import type * as LoopRunnerJwtLib from "@/lib/auth/loop-runner-jwt";
+import {
+  authenticateLoopRunnerRequest,
+  JTI_MISMATCH_ERROR_CODE,
+} from "@/lib/auth/loop-runner-jwt";
 import { resolveGitHubToken } from "@/lib/loops/loop-orchestrator";
+import { jtiMismatchResponse } from "../../../../../__tests__/utils/loop-runner-test-helpers";
 import { loopsService } from "../../../service";
 import { POST } from "../route";
 
@@ -13,33 +17,33 @@ vi.mock("../../../service", () => ({
   },
 }));
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
-  extractBearerToken: vi.fn(),
-}));
-
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  verifyLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@/lib/auth/loop-runner-jwt", async (importOriginal) => {
+  const actual = await importOriginal<typeof LoopRunnerJwtLib>();
+  return {
+    ...actual,
+    authenticateLoopRunnerRequest: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/loops/loop-orchestrator", () => ({
   resolveGitHubToken: vi.fn(),
 }));
 
 describe("POST /api/loops/:id/github-token", () => {
+  const loopId = "loop-123";
+  const orgId = "org-456";
+  const token = "mock-jwt-token";
+
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
   test("returns fresh token and additionalRepoTokens when additionalRepos exist", async () => {
-    const loopId = "loop-123";
-    const orgId = "org-456";
-    const token = "mock-jwt-token";
-
-    vi.mocked(extractBearerToken).mockReturnValue(token);
-    vi.mocked(verifyLoopRunnerToken).mockResolvedValue({
+    vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue({
       loopId,
       organizationId: orgId,
-    } as any);
+      tokenId: "jti-abc",
+    });
 
     vi.mocked(loopsService.findById).mockResolvedValue({
       id: loopId,
@@ -81,15 +85,11 @@ describe("POST /api/loops/:id/github-token", () => {
   });
 
   test("returns only fresh token when additionalRepos is empty", async () => {
-    const loopId = "loop-123";
-    const orgId = "org-456";
-    const token = "mock-jwt-token";
-
-    vi.mocked(extractBearerToken).mockReturnValue(token);
-    vi.mocked(verifyLoopRunnerToken).mockResolvedValue({
+    vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue({
       loopId,
       organizationId: orgId,
-    } as any);
+      tokenId: "jti-abc",
+    });
 
     vi.mocked(loopsService.findById).mockResolvedValue({
       id: loopId,
@@ -119,17 +119,36 @@ describe("POST /api/loops/:id/github-token", () => {
     expect(resolveGitHubToken).toHaveBeenCalledTimes(1);
   });
 
-  describe("request body additionalRepos handling", () => {
-    const loopId = "loop-123";
-    const orgId = "org-456";
-    const token = "mock-jwt-token";
+  test("returns 401 with jti_mismatch code when activeTokenJti does not match presented jti", async () => {
+    vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue(
+      jtiMismatchResponse()
+    );
 
+    const req = new NextRequest(
+      `http://localhost/api/loops/${loopId}/github-token`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+
+    const res = await POST(req, { params: Promise.resolve({ id: loopId }) });
+    expect(res.status).toBe(401);
+
+    const body = await res.json();
+    expect(body.error).toBe(JTI_MISMATCH_ERROR_CODE);
+
+    expect(resolveGitHubToken).not.toHaveBeenCalled();
+  });
+
+  describe("request body additionalRepos handling", () => {
     beforeEach(() => {
-      vi.mocked(extractBearerToken).mockReturnValue(token);
-      vi.mocked(verifyLoopRunnerToken).mockResolvedValue({
+      vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue({
         loopId,
         organizationId: orgId,
-      } as any);
+        tokenId: "jti-abc",
+      });
+
       vi.mocked(resolveGitHubToken).mockImplementation(
         async (_orgId, repoFullName) => `token-for-${repoFullName}`
       );

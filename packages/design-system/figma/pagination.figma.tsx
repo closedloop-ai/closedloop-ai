@@ -9,7 +9,7 @@ import {
 } from "@repo/design-system/components/ui/pagination";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=546-5848";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=546-5848";
 
 figma.connect(Pagination, FIGMA_URL, {
   example: () => (

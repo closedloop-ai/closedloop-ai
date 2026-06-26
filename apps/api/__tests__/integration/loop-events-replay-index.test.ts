@@ -1,5 +1,6 @@
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { describe, expect, it } from "vitest";
 import { createTestOrganization, createTestUser } from "../utils/db-helpers";
 
 const env = keys();

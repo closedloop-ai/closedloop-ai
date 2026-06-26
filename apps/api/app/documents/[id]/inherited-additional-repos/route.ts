@@ -1,6 +1,9 @@
-import { LoopCommandSchema } from "@closedloop-ai/loops-api/commands";
 import { success } from "@repo/api/src/types/common";
-import type { InheritedAdditionalRepos } from "@repo/api/src/types/loop";
+import {
+  type InheritedAdditionalRepos,
+  type LoopCommand,
+  LoopCommandSchema,
+} from "@repo/api/src/types/loop";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -42,7 +45,7 @@ export const GET = withAnyAuth<
     const result = await loopsService.findInheritedAdditionalRepos(
       documentId,
       user.organizationId,
-      parsedCommand.data
+      parsedCommand.data as LoopCommand
     );
 
     return NextResponse.json(success(result));

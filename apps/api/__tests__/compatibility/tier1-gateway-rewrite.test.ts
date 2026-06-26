@@ -46,6 +46,18 @@ describe("EXACT_OPERATION_IDS", () => {
     );
   });
 
+  it("maps Branch View local gateway routes before the generic git prefix", () => {
+    expect(EXACT_OPERATION_IDS["/api/gateway/git/local-changes"]).toBe(
+      "git_local_changes"
+    );
+    expect(EXACT_OPERATION_IDS["/api/gateway/git/local-changes/diff"]).toBe(
+      "git_local_changes"
+    );
+    expect(
+      EXACT_OPERATION_IDS["/api/gateway/git/local-changes/commit-push"]
+    ).toBe("git_local_commit_push");
+  });
+
   it("contains only string values", () => {
     for (const value of Object.values(EXACT_OPERATION_IDS)) {
       expect(typeof value).toBe("string");
@@ -86,6 +98,18 @@ describe("PREFIX_OPERATION_IDS", () => {
     expect(entry?.[1]).toBe("git_action");
   });
 
+  it("resolves Branch View local routes as exact matches", () => {
+    expect(resolveOperationId("/api/gateway/git/local-changes")).toBe(
+      "git_local_changes"
+    );
+    expect(resolveOperationId("/api/gateway/git/local-changes/diff")).toBe(
+      "git_local_changes"
+    );
+    expect(
+      resolveOperationId("/api/gateway/git/local-changes/commit-push")
+    ).toBe("git_local_commit_push");
+  });
+
   it("orders /api/gateway/codex/argue/ before /api/gateway/codex/ (more-specific first)", () => {
     const argueIndex = PREFIX_OPERATION_IDS.findIndex(
       ([prefix]) => prefix === "/api/gateway/codex/argue/"
@@ -115,14 +139,12 @@ describe("resolveOperationId", () => {
     expect(resolveOperationId("")).toBeNull();
   });
 
-  it("resolves exact match: /api/gateway/health-check → health_check", () => {
-    expect(resolveOperationId("/api/gateway/health-check")).toBe(
-      "health_check"
-    );
+  it("returns null for /api/engineer/health-check (legacy namespace intentionally dropped)", () => {
+    expect(resolveOperationId("/api/engineer/health-check")).toBeNull();
   });
 
-  it("resolves exact match: /api/engineer/health-check → health_check", () => {
-    expect(resolveOperationId("/api/engineer/health-check")).toBe(
+  it("resolves exact match: /api/gateway/health-check → health_check", () => {
+    expect(resolveOperationId("/api/gateway/health-check")).toBe(
       "health_check"
     );
   });
@@ -145,12 +167,6 @@ describe("resolveOperationId", () => {
 
   it("resolves prefix match: /api/gateway/symphony/chat/<id> → symphony_chat", () => {
     expect(resolveOperationId("/api/gateway/symphony/chat/run-abc-123")).toBe(
-      "symphony_chat"
-    );
-  });
-
-  it("resolves prefix match: /api/engineer/symphony/chat/<id> → symphony_chat", () => {
-    expect(resolveOperationId("/api/engineer/symphony/chat/run-abc-123")).toBe(
       "symphony_chat"
     );
   });

@@ -1,3 +1,4 @@
+import { HarnessType } from "@repo/api/src/types/compute-target";
 import {
   LoopCommand,
   LoopEventType,
@@ -17,8 +18,12 @@ import { dbUtilsModuleMock } from "../../../__tests__/fixtures/loops-service-moc
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 // Mock modules before importing the service
+const { mockWithDbTx } = vi.hoisted(() => ({
+  mockWithDbTx: vi.fn(),
+}));
+
 vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
+  withDb: Object.assign(vi.fn(), { tx: mockWithDbTx }),
   GitHubInstallationStatus: {
     PENDING_CLAIM: "PENDING_CLAIM",
     ACTIVE: "ACTIVE",
@@ -33,6 +38,7 @@ vi.mock("@repo/github", () => ({
 
 vi.mock("@/app/documents/document-pull-request-service", () => ({
   documentPullRequestService: {
+    getDocumentBranches: vi.fn(),
     getDocumentPullRequests: vi.fn(),
   },
 }));
@@ -54,16 +60,25 @@ vi.mock("@/lib/loops/loop-state", () => ({
   ),
 }));
 
+// Blocker resolution defaults to "no blockers" so existing create tests behave
+// exactly as before; the gating tests override this per-case.
+vi.mock("@/lib/loops/loop-blockers", () => ({
+  findNonTerminalBlockers: vi.fn().mockResolvedValue([]),
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
+import { findNonTerminalBlockers } from "@/lib/loops/loop-blockers";
 import { generateDownloadUrl } from "@/lib/loops/loop-state";
 import {
   BranchNotFoundError,
+  isInvalidStatusTransitionError,
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
   NestedManualLoopError,
+  RepoNotInProjectPoolError,
   UnauthorizedRepoError,
 } from "../loop-errors";
 import { authorizeAdditionalRepos, loopsService } from "../service";
@@ -103,6 +118,25 @@ const NEW_LOOP_FIXTURE = {
 /** Mock org lookup — returns null settings so fetchOrgLoopLimit uses defaults. */
 const mockOrgFindUnique = vi.fn().mockResolvedValue({ settings: null });
 
+/**
+ * Wires `withDb.tx` for `reapStalePendingLoops`: it runs `loop.updateMany`,
+ * runner-token cleanup, and `loopEvent.create` in one transaction. Tests only
+ * care about `updateMany`; the other writes are fire-and-forget no-ops.
+ */
+function mockWithDbTxForReaper(updateMany: Mock) {
+  mockWithDbTx.mockImplementation((callback: (db: unknown) => unknown) =>
+    callback({
+      loop: { update: vi.fn().mockResolvedValue({}), updateMany },
+      loopTokenRefresh: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      loopEvent: {
+        create: vi.fn().mockResolvedValue({}),
+      },
+    })
+  );
+}
+
 function createMockResumeDb(
   parentOverrides?: Record<string, unknown>,
   extraModels?: Record<string, unknown>
@@ -111,6 +145,7 @@ function createMockResumeDb(
     .fn()
     .mockResolvedValue(makeParentFixture(parentOverrides));
   const mockFindFirst = vi.fn().mockResolvedValue(null);
+  const mockFindMany = vi.fn().mockResolvedValue([]);
   const mockCount = vi.fn().mockResolvedValue(0);
   const mockCreate = vi.fn().mockResolvedValue(NEW_LOOP_FIXTURE);
   const mockUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
@@ -120,6 +155,7 @@ function createMockResumeDb(
       loop: {
         findUnique: mockFindUnique,
         findFirst: mockFindFirst,
+        findMany: mockFindMany,
         count: mockCount,
         create: mockCreate,
         updateMany: mockUpdateMany,
@@ -130,11 +166,14 @@ function createMockResumeDb(
     return callback(mockDb);
   });
 
+  mockWithDbTxForReaper(mockUpdateMany);
+
   return {
     mockCreate,
     mockCount,
     mockFindUnique,
     mockFindFirst,
+    mockFindMany,
     mockUpdateMany,
   };
 }
@@ -179,7 +218,6 @@ describe("loopsService.resume", () => {
   it("creates the resumed loop with copied context and an explicit compute target", async () => {
     const { mockCreate } = mockResumeDb({
       artifactId: "artifact-222",
-      workstreamId: "workstream-333",
       repo: { fullName: "acme/frontend", branch: "main" },
       contextRefs: [{ type: "document", id: "doc-1" }],
       s3StateKey: "s3://bucket/key",
@@ -196,7 +234,6 @@ describe("loopsService.resume", () => {
     const createCall = mockCreate.mock.calls[0][0];
     expect(createCall.data).toMatchObject({
       artifactId: "artifact-222",
-      workstreamId: "workstream-333",
       parentLoopId: TEST_PARENT_LOOP_ID,
       repo: { fullName: "acme/frontend", branch: "main" },
       contextRefs: [{ type: "document", id: "doc-1" }],
@@ -204,6 +241,22 @@ describe("loopsService.resume", () => {
       status: LoopStatus.Pending,
     });
     expect(createCall.data).not.toHaveProperty("s3StateKey");
+  });
+
+  it("preserves the parent harness when resuming a loop", async () => {
+    const { mockCreate } = mockResumeDb({
+      harness: HarnessType.Codex,
+    });
+
+    await loopsService.resume(
+      TEST_PARENT_LOOP_ID,
+      TEST_ORG_ID,
+      TEST_USER_ID,
+      {}
+    );
+
+    const createCall = mockCreate.mock.calls[0][0];
+    expect(createCall.data.harness).toBe(HarnessType.Codex);
   });
 
   it("does not inherit parent computeTargetId when none provided", async () => {
@@ -432,11 +485,13 @@ describe("loopsService.create (MANUAL)", () => {
       status: LoopStatus.Pending,
     }),
     findFirst = vi.fn().mockResolvedValue(null),
+    findMany = vi.fn().mockResolvedValue([]),
     updateMany = vi.fn().mockResolvedValue({ count: 0 }),
   }: {
     count?: Mock;
     create?: Mock;
     findFirst?: Mock;
+    findMany?: Mock;
     updateMany?: Mock;
   } = {}) {
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
@@ -445,6 +500,7 @@ describe("loopsService.create (MANUAL)", () => {
           count,
           create,
           findFirst,
+          findMany,
           updateMany,
         },
         organization: { findUnique: mockOrgFindUnique },
@@ -452,7 +508,9 @@ describe("loopsService.create (MANUAL)", () => {
       return callback(mockDb);
     });
 
-    return { count, create, findFirst, updateMany };
+    mockWithDbTxForReaper(updateMany);
+
+    return { count, create, findFirst, findMany, updateMany };
   }
 
   it("creates a MANUAL loop in RUNNING status with startedAt set", async () => {
@@ -857,6 +915,8 @@ describe("loopsService.updateManualLoopFields", () => {
 
 const mockGetDocumentPullRequests =
   documentPullRequestService.getDocumentPullRequests as unknown as Mock;
+const mockGetDocumentBranches =
+  documentPullRequestService.getDocumentBranches as unknown as Mock;
 
 /**
  * Minimal Prisma loop row fixture returned by db.loop.findUnique in findById.
@@ -884,6 +944,7 @@ function makeLoopDbRow(overrides: Record<string, unknown> = {}) {
     estimatedCost: null,
     branchName: null,
     sessionId: null,
+    sessionArtifactId: null,
     computeTargetId: null,
     containerId: null,
     s3StateKey: null,
@@ -923,6 +984,7 @@ function makePrInfo(repoFullName: string) {
 describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetDocumentBranches.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -968,6 +1030,7 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
 
     expect(result).not.toBeNull();
     expect(result?.additionalRepos).toEqual(expected);
+    expect(mockGetDocumentBranches).not.toHaveBeenCalled();
     expect(mockGetDocumentPullRequests).not.toHaveBeenCalled();
   });
 
@@ -991,6 +1054,7 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
     );
 
     const matchingPr = makePrInfo("acme/frontend");
+    mockGetDocumentBranches.mockResolvedValue([]);
     mockGetDocumentPullRequests.mockResolvedValue([matchingPr]);
 
     const result = await loopsService.findById("loop-enrich-1", "org-enrich");
@@ -1036,6 +1100,29 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
 
     const primaryPr = makePrInfo("acme/primary");
     const frontendPr = makePrInfo("acme/frontend");
+    const primaryBranch = {
+      id: "branch-primary",
+      name: "feature/primary",
+      htmlUrl: "https://github.com/acme/primary/tree/feature%2Fprimary",
+      branchName: "feature/primary",
+      baseBranch: "main",
+      headSha: "abc123",
+      checksStatus: "PASSING",
+      externalLinkId: "branch-primary",
+      repoFullName: "acme/primary",
+      currentPullRequest: primaryPr,
+    };
+    const frontendBranch = {
+      ...primaryBranch,
+      id: "branch-frontend",
+      name: "feature/frontend",
+      htmlUrl: "https://github.com/acme/frontend/tree/feature%2Ffrontend",
+      branchName: "feature/frontend",
+      externalLinkId: "branch-frontend",
+      repoFullName: "acme/frontend",
+      currentPullRequest: frontendPr,
+    };
+    mockGetDocumentBranches.mockResolvedValue([primaryBranch, frontendBranch]);
     mockGetDocumentPullRequests.mockResolvedValue([primaryPr, frontendPr]);
 
     const result = await loopsService.findById("loop-enrich-1", "org-enrich");
@@ -1049,8 +1136,15 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
     expect(result?.primaryPullRequest).toMatchObject({
       repoFullName: "acme/primary",
     });
+    expect(result?.primaryBranch).toMatchObject({
+      branchName: "feature/primary",
+      repoFullName: "acme/primary",
+    });
 
     const repos = result?.additionalRepos ?? [];
+    expect(
+      repos.find((r) => r.fullName === "acme/frontend")?.branchArtifact
+    ).toMatchObject({ branchName: "feature/frontend" });
     expect(
       repos.find((r) => r.fullName === "acme/frontend")?.pullRequest
     ).toMatchObject({ repoFullName: "acme/frontend" });
@@ -1205,5 +1299,601 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
           "https://download.example/org-enrich%2Floops%2Floop-support-3%2Frun-1%2Fsupport%2Fclaude-output.jsonl",
       },
     ]);
+  });
+});
+
+// PLN-529 T-4.1: defense-in-depth check that loops on a project-scoped
+// document only target repos curated on the project's team pool. Bypasses
+// `authorizeAdditionalRepos` (returns the same in-pool repos) and exercises
+// the second-pass check exclusively.
+describe("loopsService.create — project-pool membership (PLN-529)", () => {
+  const POOL_ORG = "org-pool-1";
+  const POOL_USER = "user-pool-1";
+  const POOL_DOC = "doc-pool-1";
+  const POOL_PROJECT = "project-pool-1";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockVerifyBranch.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  type MakeDbArgs = {
+    teamRepos: Array<{ fullName: string }>;
+    artifactProjectId?: string | null;
+    installationRepoFullNames: string[];
+  };
+
+  function makeDb({
+    teamRepos,
+    artifactProjectId = POOL_PROJECT,
+    installationRepoFullNames,
+  }: MakeDbArgs) {
+    const mockArtifactFindFirst = vi
+      .fn()
+      .mockResolvedValue(
+        artifactProjectId ? { projectId: artifactProjectId } : null
+      );
+    const mockTeamRepoFindMany = vi
+      .fn()
+      .mockResolvedValue(
+        teamRepos.map((r) => ({ repository: { fullName: r.fullName } }))
+      );
+    const mockInstallationRepoFindMany = vi
+      .fn()
+      .mockResolvedValue(
+        installationRepoFullNames.map((n) => makeInstallationRepo(n))
+      );
+    const mockLoopCount = vi.fn().mockResolvedValue(0);
+    const mockLoopFindFirst = vi.fn().mockResolvedValue(null);
+    const mockLoopFindMany = vi.fn().mockResolvedValue([]);
+    const mockLoopUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const mockLoopCreate = vi
+      .fn()
+      .mockResolvedValue({ id: "loop-pool-1", status: LoopStatus.Pending });
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: {
+          count: mockLoopCount,
+          create: mockLoopCreate,
+          findFirst: mockLoopFindFirst,
+          findMany: mockLoopFindMany,
+          updateMany: mockLoopUpdateMany,
+        },
+        organization: { findUnique: mockOrgFindUnique },
+        artifact: { findFirst: mockArtifactFindFirst },
+        teamRepository: { findMany: mockTeamRepoFindMany },
+        gitHubInstallationRepository: {
+          findMany: mockInstallationRepoFindMany,
+        },
+      })
+    );
+
+    mockWithDbTxForReaper(mockLoopUpdateMany);
+
+    return {
+      mockArtifactFindFirst,
+      mockTeamRepoFindMany,
+      mockInstallationRepoFindMany,
+      mockLoopCreate,
+    };
+  }
+
+  it("creates the loop when every repo is in the project's team pool", async () => {
+    const { mockLoopCreate } = makeDb({
+      teamRepos: [{ fullName: "acme/frontend" }, { fullName: "acme/backend" }],
+      installationRepoFullNames: ["acme/frontend", "acme/backend"],
+    });
+
+    await loopsService.create(POOL_ORG, POOL_USER, {
+      command: LoopCommand.Plan,
+      documentId: POOL_DOC,
+      repo: { fullName: "acme/frontend", branch: "main" },
+      additionalRepos: [{ fullName: "acme/backend", branch: "develop" }],
+    });
+
+    expect(mockLoopCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects with RepoNotInProjectPoolError when a repo is outside the project's team pool", async () => {
+    const { mockLoopCreate } = makeDb({
+      teamRepos: [{ fullName: "acme/frontend" }],
+      installationRepoFullNames: ["acme/frontend", "acme/payments"],
+    });
+
+    await expect(
+      loopsService.create(POOL_ORG, POOL_USER, {
+        command: LoopCommand.Plan,
+        documentId: POOL_DOC,
+        repo: { fullName: "acme/frontend", branch: "main" },
+        additionalRepos: [{ fullName: "acme/payments", branch: "main" }],
+      })
+    ).rejects.toBeInstanceOf(RepoNotInProjectPoolError);
+
+    expect(mockLoopCreate).not.toHaveBeenCalled();
+  });
+
+  it("falls through (no membership check) when the project has zero team-curated repos", async () => {
+    const { mockLoopCreate } = makeDb({
+      teamRepos: [],
+      installationRepoFullNames: ["acme/frontend"],
+    });
+
+    await loopsService.create(POOL_ORG, POOL_USER, {
+      command: LoopCommand.Plan,
+      documentId: POOL_DOC,
+      repo: { fullName: "acme/frontend", branch: "main" },
+    });
+
+    expect(mockLoopCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the membership check when there is no documentId on the request", async () => {
+    const { mockLoopCreate, mockArtifactFindFirst } = makeDb({
+      teamRepos: [],
+      installationRepoFullNames: ["acme/frontend"],
+    });
+
+    await loopsService.create(POOL_ORG, POOL_USER, {
+      command: LoopCommand.Plan,
+      repo: { fullName: "acme/frontend", branch: "main" },
+    });
+
+    expect(mockLoopCreate).toHaveBeenCalledTimes(1);
+    expect(mockArtifactFindFirst).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-005: toLoop() leakage guard — runner-internal fields must not appear in
+// the engineer-facing GET /api/loops/:id response body.
+// ---------------------------------------------------------------------------
+describe("toLoop() — AC-005 leakage guard (runner-internal fields omitted)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDocumentBranches.mockResolvedValue([]);
+    mockGetDocumentPullRequests.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not include tokenExpiresAt, lastRunnerHeartbeatAt, or runnerCapabilities in the findById result", async () => {
+    // Build a Prisma row with all three sensitive fields populated to non-null
+    // values to ensure they are actively stripped — not merely absent by default.
+    const dbRowWithSensitiveFields = {
+      ...makeLoopDbRow(),
+      tokenExpiresAt: new Date("2026-06-01T00:00:00.000Z"),
+      lastRunnerHeartbeatAt: new Date("2026-06-01T00:00:00.000Z"),
+      runnerCapabilities: {
+        loopRunnerRefreshSupported: true,
+        loopRunnerHeartbeatSupported: true,
+      },
+    };
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) =>
+        callback({
+          loop: {
+            findUnique: vi.fn().mockResolvedValue(dbRowWithSensitiveFields),
+          },
+          loopEvent: { findMany: vi.fn().mockResolvedValue([]) },
+        })
+    );
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    // These three fields must NOT appear — they are runner-internal and belong
+    // only in the admin-only GET /api/loops/:id/runtime response (AC-005).
+    expect(result).not.toHaveProperty("tokenExpiresAt");
+    expect(result).not.toHaveProperty("lastRunnerHeartbeatAt");
+    expect(result).not.toHaveProperty("runnerCapabilities");
+  });
+
+  it("does not leak sessionArtifactId (internal Loop→SESSION linkage, FEA-1718) in the findById result", async () => {
+    // Populate the field to a non-null value to prove it is actively stripped
+    // by toLoop()'s destructure, not merely absent because the row lacked it.
+    const dbRowWithSessionArtifact = {
+      ...makeLoopDbRow(),
+      sessionArtifactId: "11111111-1111-1111-1111-111111111111",
+    };
+
+    (mockWithDb as Mock).mockImplementation(
+      (callback: (db: unknown) => unknown) =>
+        callback({
+          loop: {
+            findUnique: vi.fn().mockResolvedValue(dbRowWithSessionArtifact),
+          },
+          loopEvent: { findMany: vi.fn().mockResolvedValue([]) },
+        })
+    );
+
+    const result = await loopsService.findById("loop-enrich-1", "org-enrich");
+
+    expect(result).not.toBeNull();
+    // sessionArtifactId is an internal materialization FK, not part of the
+    // public Loop response contract — it must never reach API consumers.
+    expect(result).not.toHaveProperty("sessionArtifactId");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-002 (PR #1206 review fix): getLoopRuntime parses Prisma row `status`
+// through a Zod validator. An unrecognized status value surfaces as a logged
+// warning and a null return (mapped by the route to 404) rather than a silent
+// `as LoopStatus` cast that would lie to downstream consumers.
+// ---------------------------------------------------------------------------
+describe("loopsService.getLoopRuntime — status validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const runtimeRow = (status: string) => ({
+    id: TEST_LOOP_ID,
+    status,
+    tokenExpiresAt: null,
+    lastRunnerHeartbeatAt: null,
+    activeTokenJti: null,
+    runnerCapabilities: {
+      loopRunnerRefreshSupported: false,
+      loopRunnerHeartbeatSupported: false,
+    },
+  });
+
+  it("returns the runtime state when the Prisma row has a known LoopStatus value", async () => {
+    (mockWithDb as Mock).mockImplementation((cb: (db: unknown) => unknown) =>
+      cb({
+        loop: {
+          findUnique: vi.fn().mockResolvedValue(runtimeRow(LoopStatus.Running)),
+        },
+      })
+    );
+
+    const result = await loopsService.getLoopRuntime(
+      TEST_LOOP_ID,
+      TEST_ORG_ID_OWN
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe(LoopStatus.Running);
+  });
+
+  it("returns null when the Prisma row carries an unrecognized status value", async () => {
+    (mockWithDb as Mock).mockImplementation((cb: (db: unknown) => unknown) =>
+      cb({
+        loop: {
+          findUnique: vi
+            .fn()
+            .mockResolvedValue(runtimeRow("not-a-real-status-value")),
+        },
+      })
+    );
+
+    const result = await loopsService.getLoopRuntime(
+      TEST_LOOP_ID,
+      TEST_ORG_ID_OWN
+    );
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("loopsService.updateStatus — TIMED_OUT → RUNNING is not a generic transition", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects an unguarded TIMED_OUT → RUNNING via updateStatus (revival must go through reviveTimedOutLoop)", async () => {
+    // CAS matches no rows (the loop is TIMED_OUT, not a valid RUNNING source),
+    // then the re-read reports the current status so the method can explain why.
+    const mockUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const mockFindUnique = vi
+      .fn()
+      .mockResolvedValue({ status: LoopStatus.TimedOut });
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: { updateMany: mockUpdateMany, findUnique: mockFindUnique },
+      })
+    );
+
+    const error = await loopsService
+      .updateStatus(TEST_LOOP_ID, TEST_ORG_ID_OWN, LoopStatus.Running)
+      .then(
+        () => null,
+        (e: unknown) => e
+      );
+    expect(isInvalidStatusTransitionError(error)).toBe(true);
+
+    // The CAS only permits the live RUNNING sources (PENDING, CLAIMED); TIMED_OUT
+    // is absent, so a timed-out loop never matches.
+    const casWhere = mockUpdateMany.mock.calls[0][0].where;
+    expect(casWhere.status.in).not.toContain(LoopStatus.TimedOut);
+  });
+});
+
+describe("loopsService.create — dependency-aware dispatch gating", () => {
+  const ORG = "org-block-1";
+  const USER = "user-block-1";
+  const DOC = "doc-block-1";
+
+  function makeDb(existingBlocked: { id: string } | null = null): {
+    mockLoopCreate: Mock;
+  } {
+    const mockLoopCreate = vi
+      .fn()
+      .mockImplementation(({ data }: { data: { status: string } }) =>
+        Promise.resolve({ id: "loop-block-1", status: data.status })
+      );
+    const mockLoopUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: {
+          count: vi.fn().mockResolvedValue(0),
+          create: mockLoopCreate,
+          findFirst: vi.fn().mockResolvedValue(existingBlocked),
+          findMany: vi.fn().mockResolvedValue([]),
+          updateMany: mockLoopUpdateMany,
+        },
+        organization: { findUnique: mockOrgFindUnique },
+        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+      })
+    );
+    mockWithDbTxForReaper(mockLoopUpdateMany);
+    return { mockLoopCreate };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defers an autonomous loop as BLOCKED when a linked blocker is non-terminal", async () => {
+    const { mockLoopCreate } = makeDb();
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([
+      { id: "feat-1", name: "FEA-1", status: "IN_REVIEW" },
+    ]);
+
+    const result = await loopsService.create(ORG, USER, {
+      command: LoopCommand.Execute,
+      documentId: DOC,
+    });
+
+    expect(result.status).toBe(LoopStatus.Blocked);
+    const createData = mockLoopCreate.mock.calls[0][0].data;
+    expect(createData.status).toBe(LoopStatus.Blocked);
+    expect(createData.startedAt).toBeUndefined();
+    expect(createData.metadata).toEqual({ blockedBy: ["feat-1"] });
+  });
+
+  it("reuses an existing BLOCKED loop instead of creating a duplicate", async () => {
+    const { mockLoopCreate } = makeDb({ id: "loop-existing-blocked" });
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([
+      { id: "feat-1", name: "FEA-1", status: "IN_REVIEW" },
+    ]);
+
+    const result = await loopsService.create(ORG, USER, {
+      command: LoopCommand.Execute,
+      documentId: DOC,
+    });
+
+    expect(result).toEqual({
+      loopId: "loop-existing-blocked",
+      status: LoopStatus.Blocked,
+    });
+    expect(mockLoopCreate).not.toHaveBeenCalled();
+  });
+
+  it("resolves a concurrent deferred-dispatch race idempotently when the blocked index rejects the insert", async () => {
+    // Both creators pass the optimistic findFirst (null), one insert wins, the
+    // loser's create() throws the blocked partial-unique-index P2002; the
+    // recovery re-query returns the winner.
+    const blockedIndexError = {
+      code: "P2002",
+      meta: { target: "loops_blocked_artifact_command_key" },
+    };
+    const mockLoopCreate = vi.fn().mockRejectedValue(blockedIndexError);
+    const mockFindFirst = vi
+      .fn()
+      .mockResolvedValueOnce(null) // create() optimistic idempotency check
+      .mockResolvedValueOnce(null) // active-gate pre-insert lookup
+      .mockResolvedValue({ id: "loop-race-winner" }); // recovery re-query
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: {
+          count: vi.fn().mockResolvedValue(0),
+          create: mockLoopCreate,
+          findFirst: mockFindFirst,
+          findMany: vi.fn().mockResolvedValue([]),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+        organization: { findUnique: mockOrgFindUnique },
+        artifact: { findFirst: vi.fn().mockResolvedValue(null) },
+      })
+    );
+    mockWithDbTxForReaper(vi.fn().mockResolvedValue({ count: 0 }));
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([
+      { id: "feat-1", name: "FEA-1", status: "IN_REVIEW" },
+    ]);
+
+    const result = await loopsService.create(ORG, USER, {
+      command: LoopCommand.Execute,
+      documentId: DOC,
+    });
+
+    expect(result).toEqual({
+      loopId: "loop-race-winner",
+      status: LoopStatus.Blocked,
+    });
+  });
+
+  it("dispatches as PENDING when no blocker is non-terminal", async () => {
+    const { mockLoopCreate } = makeDb();
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([]);
+
+    const result = await loopsService.create(ORG, USER, {
+      command: LoopCommand.Execute,
+      documentId: DOC,
+    });
+
+    expect(result.status).toBe(LoopStatus.Pending);
+    expect(mockLoopCreate.mock.calls[0][0].data.status).toBe(
+      LoopStatus.Pending
+    );
+  });
+
+  it("never gates a MANUAL loop", async () => {
+    const { mockLoopCreate } = makeDb();
+
+    const result = await loopsService.create(ORG, USER, {
+      command: LoopCommand.Manual,
+      documentId: DOC,
+    });
+
+    expect(result.status).toBe(LoopStatus.Running);
+    expect(findNonTerminalBlockers).not.toHaveBeenCalled();
+    expect(mockLoopCreate.mock.calls[0][0].data.status).toBe(
+      LoopStatus.Running
+    );
+  });
+});
+
+describe("loopsService.reconcileBlockedLoops", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("releases a blocked loop (BLOCKED → PENDING) once its blockers clear, clearing stale blockedBy metadata", async () => {
+    const mockUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const mockFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "loop-b1",
+        organizationId: "org-1",
+        artifactId: "doc-1",
+        metadata: { blockedBy: ["feat-1"], origin: "nightly" },
+      },
+    ]);
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({ loop: { findMany: mockFindMany, updateMany: mockUpdateMany } })
+    );
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([]);
+
+    const released = await loopsService.reconcileBlockedLoops();
+
+    expect(released).toBe(1);
+    // blockedBy is dropped; every other metadata key is preserved.
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "loop-b1",
+        organizationId: "org-1",
+        status: LoopStatus.Blocked,
+      },
+      data: {
+        status: LoopStatus.Pending,
+        metadata: { origin: "nightly" },
+      },
+    });
+  });
+
+  it("leaves a loop BLOCKED while a blocker is still non-terminal", async () => {
+    const mockUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const mockFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "loop-b2",
+        organizationId: "org-1",
+        artifactId: "doc-2",
+        metadata: { blockedBy: ["feat-x"] },
+      },
+    ]);
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({ loop: { findMany: mockFindMany, updateMany: mockUpdateMany } })
+    );
+    vi.mocked(findNonTerminalBlockers).mockResolvedValue([
+      { id: "feat-x", name: "FEA-X", status: "APPROVED" },
+    ]);
+
+    const released = await loopsService.reconcileBlockedLoops();
+
+    expect(released).toBe(0);
+    expect(mockUpdateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("loopsService.reapStaleBlockedLoops", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("force-cancels a BLOCKED loop past the staleness threshold and records a cancelled event", async () => {
+    const mockUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const mockFindMany = vi
+      .fn()
+      .mockResolvedValue([{ id: "loop-stale", organizationId: "org-1" }]);
+    // findUnique backs addEvent's terminal-state check; create backs its insert.
+    const mockFindUnique = vi
+      .fn()
+      .mockResolvedValue({ status: LoopStatus.Cancelled });
+    const mockEventCreate = vi.fn().mockResolvedValue({ id: "evt-1" });
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: {
+          findMany: mockFindMany,
+          updateMany: mockUpdateMany,
+          findUnique: mockFindUnique,
+        },
+        loopEvent: { create: mockEventCreate },
+      })
+    );
+
+    const cancelled = await loopsService.reapStaleBlockedLoops();
+
+    expect(cancelled).toBe(1);
+    const updateArg = mockUpdateMany.mock.calls[0][0];
+    expect(updateArg.where).toEqual({
+      id: "loop-stale",
+      organizationId: "org-1",
+      status: LoopStatus.Blocked,
+    });
+    expect(updateArg.data.status).toBe(LoopStatus.Cancelled);
+    expect(updateArg.data.error.code).toBe("BLOCKED_TIMEOUT");
+    expect(mockEventCreate).toHaveBeenCalled();
+  });
+
+  it("does nothing when no BLOCKED loop is stale", async () => {
+    const mockUpdateMany = vi.fn();
+    const mockFindMany = vi.fn().mockResolvedValue([]);
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({ loop: { findMany: mockFindMany, updateMany: mockUpdateMany } })
+    );
+
+    const cancelled = await loopsService.reapStaleBlockedLoops();
+
+    expect(cancelled).toBe(0);
+    expect(mockUpdateMany).not.toHaveBeenCalled();
   });
 });

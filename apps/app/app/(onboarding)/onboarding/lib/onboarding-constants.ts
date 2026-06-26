@@ -8,6 +8,7 @@ export const ONBOARDING_STEPS = [
   OnboardingStep.ConnectGitHub,
   OnboardingStep.AddAnthropicKey,
   OnboardingStep.ConnectOptionalIntegrations,
+  OnboardingStep.InviteTeammates,
   OnboardingStep.Complete,
 ] as const;
 

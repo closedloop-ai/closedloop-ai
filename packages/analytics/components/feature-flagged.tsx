@@ -7,12 +7,14 @@ type FeatureFlaggedProps = {
   flag: string;
   enabled?: boolean;
   children: React.ReactNode;
+  fallback?: React.ReactNode;
 };
 
 export function FeatureFlagged({
   flag,
   enabled,
   children,
+  fallback = null,
 }: FeatureFlaggedProps) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -26,5 +28,5 @@ export function FeatureFlagged({
     return null;
   }
 
-  return resolvedEnabled ? children : null;
+  return resolvedEnabled ? children : fallback;
 }

@@ -14,7 +14,7 @@ export async function generateMetadata({ params }: BlogPostPageProps) {
   const post = getBlogPost(slug);
 
   if (!post) {
-    return createPageMetadata("Blog", "ClosedLoop.ai blog");
+    return createPageMetadata("Blog", "Closedloop.ai blog");
   }
 
   return createPageMetadata(post.title, post.description);

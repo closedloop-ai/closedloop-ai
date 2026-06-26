@@ -127,20 +127,21 @@ export async function handleInstallationDeleted(
     return;
   }
 
-  // Clear organizationId when installation is deleted - ensures clean state for reconnection
+  // Preserve organizationId so a subsequent same-account reconnect can reuse
+  // this row in-place (see reconnectByAccount). Different-account reconnect
+  // explicitly clears it after admin confirmation (see cleanupForDifferentAccount).
   await withDb((db) =>
     db.gitHubInstallation.update({
       where: { id: existingInstallation.id },
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
-        organizationId: null,
       },
     })
   );
 
   log.info("[handleInstallationDeleted] Marked installation as uninstalled", {
     installationId: existingInstallation.id,
-    previousOrganizationId: existingInstallation.organizationId,
+    organizationId: existingInstallation.organizationId,
   });
 }
 

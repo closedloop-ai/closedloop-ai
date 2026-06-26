@@ -1,5 +1,5 @@
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 
 const mockState = vi.hoisted(() => ({
@@ -36,7 +36,6 @@ vi.mock("@/lib/loops/launch-plan-loop", () => {
   };
 });
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { documentExecutionService } from "@/app/documents/execution-service";
 import { LoopAlreadyActiveError } from "@/app/loops/loop-errors";
 import { POST } from "@/app/plans/start-loop-from-local/route";

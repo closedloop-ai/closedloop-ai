@@ -8,6 +8,7 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { organizationsService } from "../service";
+import { updateOrganizationForRoute } from "../update-organization-for-route";
 import { updateOrganizationValidator } from "../validators";
 
 export const GET = withAuth<Organization, "/organizations/[id]">(
@@ -34,7 +35,7 @@ export const GET = withAuth<Organization, "/organizations/[id]">(
 );
 
 export const PUT = withAuth<Organization, "/organizations/[id]">(
-  async ({ user }, request, params) => {
+  async ({ clerkUserId, user }, request, params) => {
     try {
       const { id } = await params;
 
@@ -51,13 +52,11 @@ export const PUT = withAuth<Organization, "/organizations/[id]">(
         return parseError;
       }
 
-      const organization = await organizationsService.update(id, body);
-
-      if (!organization) {
-        return notFoundResponse("Organization");
-      }
-
-      return successResponse(organization);
+      return await updateOrganizationForRoute({
+        body,
+        clerkUserId,
+        id,
+      });
     } catch (error) {
       return errorResponse("Failed to update organization", error);
     }

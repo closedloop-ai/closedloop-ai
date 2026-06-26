@@ -17,6 +17,7 @@ import {
   Heading1,
   Heading2,
   Heading3,
+  ImagePlus,
   Italic,
   Link as LinkIcon,
   List,
@@ -28,13 +29,15 @@ import {
   Table as TableIcon,
   Undo,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { TiptapEditor } from "./types";
 
 export type TiptapToolbarProps = {
   editor: Editor | null;
   readOnly?: boolean;
   hasLiveblocksExtension?: boolean;
   onPasteMarkdown?: () => void;
+  onUploadInlineImage?: (file: File) => void;
   className?: string;
 };
 
@@ -43,17 +46,29 @@ export function TiptapToolbar({
   readOnly = false,
   hasLiveblocksExtension = false,
   onPasteMarkdown,
+  onUploadInlineImage,
   className,
 }: Readonly<TiptapToolbarProps>) {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [editorUploadHandler, setEditorUploadHandler] = useState<
+    ((file: File) => Promise<void>) | undefined
+  >();
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   const updateHistoryState = useCallback(() => {
-    if (editor) {
-      setCanUndo(editor.can().undo());
-      setCanRedo(editor.can().redo());
+    if (!editor) {
+      setCanUndo(false);
+      setCanRedo(false);
+      setEditorUploadHandler(undefined);
+      return;
     }
-  }, [editor]);
+    setCanUndo(editor.can().undo());
+    setCanRedo(editor.can().redo());
+    setEditorUploadHandler(() =>
+      readOnly ? undefined : (editor as TiptapEditor).insertInlineImageFile
+    );
+  }, [editor, readOnly]);
 
   useEffect(() => {
     if (!editor) {
@@ -85,6 +100,10 @@ export function TiptapToolbar({
 
     editor?.chain().extendMarkRange("link").setLink({ href: url }).run();
   }
+
+  const uploadHandler = readOnly
+    ? undefined
+    : (onUploadInlineImage ?? editorUploadHandler);
 
   return (
     <TooltipProvider>
@@ -182,6 +201,14 @@ export function TiptapToolbar({
             })
           }
         />
+        {uploadHandler && (
+          <ToolbarButton
+            disabled={readOnly}
+            icon={ImagePlus}
+            label="Insert Image"
+            onClick={() => imageInputRef.current?.click()}
+          />
+        )}
         <ToolbarDivider />
         <ToolbarButton
           disabled={readOnly}
@@ -211,11 +238,30 @@ export function TiptapToolbar({
             icon={MessageSquarePlus}
             label="Add Comment"
             onClick={() => {
-              // addPendingComment is added by the Liveblocks extension at runtime
+              // addPendingComment is added by the Liveblocks extension at
+              // runtime; guard the call so a missing/unregistered extension
+              // is a no-op rather than a TypeError.
               (
-                editor?.commands as unknown as { addPendingComment: () => void }
-              ).addPendingComment();
+                editor?.commands as
+                  | { addPendingComment?: () => void }
+                  | undefined
+              )?.addPendingComment?.();
             }}
+          />
+        )}
+        {uploadHandler && (
+          <input
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) {
+                uploadHandler(file);
+              }
+            }}
+            ref={imageInputRef}
+            type="file"
           />
         )}
       </div>
@@ -242,6 +288,7 @@ function ToolbarButton({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
+          aria-label={label}
           className={cn("h-8 w-8 p-0 text-foreground", active && "bg-accent")}
           disabled={disabled}
           onClick={onClick}

@@ -1,4 +1,5 @@
 import { log } from "../log";
+import type { FilterToken } from "./filter-tokens";
 import type { Origin } from "./origin";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,8 @@ export type QueueMetric = {
   fromStatus?: string;
   toStatus?: string;
   commandId?: string;
+  filterToken?: FilterToken;
+  reason?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -58,6 +61,7 @@ type ProtocolBaseMetric = {
     | "presence_received_latency"
     | "reconnect_frequency"
     | "event_ordering_gaps"
+    | "command_ack_lifecycle_context_omitted"
     | "connection_churn_rate"
     | "replay_window_usage";
   origin: Origin;
@@ -75,76 +79,21 @@ export type ProtocolMetric = ConnectionStateCountMetric | ProtocolBaseMetric;
 // ---------------------------------------------------------------------------
 
 /**
- * Emit a queue/executor metric. Logged as JSON with _telemetryMetric marker
- * for downstream aggregation.
+ * Emit any telemetry metric as JSON with the `_telemetryMetric: true` marker
+ * that the Datadog log-to-metric pipeline filters on. Use this directly for
+ * domain-specific metric types (e.g. loop.runner.*); use the typed wrappers
+ * below for the queue/protocol metric families.
  */
+export function emitTelemetryMetric<T extends { metric: string }>(
+  metric: T
+): void {
+  log.info(JSON.stringify({ ...metric, _telemetryMetric: true }));
+}
+
 export function emitQueueMetric(metric: QueueMetric): void {
-  log.info(JSON.stringify({ ...metric, _telemetryMetric: true }));
+  emitTelemetryMetric(metric);
 }
 
-/**
- * Emit a protocol/connection health metric. Logged as JSON with
- * _telemetryMetric marker for downstream aggregation.
- */
 export function emitProtocolMetric(metric: ProtocolMetric): void {
-  log.info(JSON.stringify({ ...metric, _telemetryMetric: true }));
-}
-
-/**
- * Emit a validation-failed counter event tagged with optional computeTargetId.
- */
-export function emitValidationFailedCounter(context: {
-  computeTargetId?: string;
-}): void {
-  log.warn(
-    JSON.stringify({
-      metric: "telemetry.validation_failed_count",
-      count: 1,
-      ...context,
-      _telemetryMetric: true,
-    })
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot aggregation
-// ---------------------------------------------------------------------------
-
-/**
- * Filter log lines where _telemetryMetric === true and aggregate a single
- * numeric per metric name. When both `count` and `value` are present on a
- * line, `value` wins — `count` is typically a per-occurrence sentinel (e.g.
- * `replay_frequency` emits `count: 1, value: events.length`), and summing
- * the sentinel would collapse depth information. Lines with only `count`
- * or only `value` sum that field directly; lines with neither fall back to 1.
- */
-export function computeMetricSnapshot(
-  logLines: Record<string, unknown>[]
-): Record<string, number> {
-  const result: Record<string, number> = {};
-
-  for (const line of logLines) {
-    if (line._telemetryMetric !== true) {
-      continue;
-    }
-
-    const metricName =
-      typeof line.metric === "string" ? line.metric : undefined;
-    if (metricName === undefined) {
-      continue;
-    }
-
-    let numeric: number;
-    if (typeof line.value === "number") {
-      numeric = line.value;
-    } else if (typeof line.count === "number") {
-      numeric = line.count;
-    } else {
-      numeric = 1;
-    }
-
-    result[metricName] = (result[metricName] ?? 0) + numeric;
-  }
-
-  return result;
+  emitTelemetryMetric(metric);
 }

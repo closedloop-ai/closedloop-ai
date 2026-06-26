@@ -3,6 +3,7 @@
 import "./tiptap-editor.css";
 
 import { cn } from "@repo/design-system/lib/utils";
+import { Extension } from "@tiptap/core";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { Table } from "@tiptap/extension-table";
@@ -10,13 +11,90 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
 import { Markdown } from "@tiptap/markdown";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef } from "react";
+import { InlineImageExtension } from "./inline-image-extension";
+import {
+  getInlineImageFilesFromTransfer,
+  type InlineImageUploadPlaceholder,
+  insertInlineImageFileForEditor,
+} from "./inline-image-upload";
 import { MermaidExtension } from "./mermaid-extension";
 import { RichTextToolbar } from "./rich-text-toolbar";
 import { setEditorMarkdown } from "./set-editor-markdown";
 import type { RichTextEditorProps, TiptapEditor } from "./types";
+
+const inlineImageUploadPlaceholderKey = new PluginKey<DecorationSet>(
+  "inlineImageUploadPlaceholder"
+);
+
+const InlineImageUploadPlaceholderExtension = Extension.create({
+  name: "inlineImageUploadPlaceholder",
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<DecorationSet>({
+        key: inlineImageUploadPlaceholderKey,
+        state: {
+          init: () => DecorationSet.empty,
+          apply(transaction, decorations) {
+            let nextDecorations = decorations.map(
+              transaction.mapping,
+              transaction.doc
+            );
+            const action = transaction.getMeta(
+              inlineImageUploadPlaceholderKey
+            ) as
+              | { type: "add"; id: string; pos: number; label: string }
+              | { type: "remove"; id: string }
+              | undefined;
+
+            if (action?.type === "add") {
+              const element = document.createElement("span");
+              element.className = "inline-image-upload-placeholder";
+              element.dataset.inlineImageUploadId = action.id;
+              element.textContent = action.label;
+              nextDecorations = nextDecorations.add(transaction.doc, [
+                Decoration.widget(action.pos, element, { id: action.id }),
+              ]);
+            }
+
+            if (action?.type === "remove") {
+              nextDecorations = nextDecorations.remove(
+                nextDecorations.find(
+                  undefined,
+                  undefined,
+                  (spec) => spec.id === action.id
+                )
+              );
+            }
+
+            return nextDecorations;
+          },
+        },
+        props: {
+          decorations(state) {
+            return this.getState(state);
+          },
+        },
+      }),
+    ];
+  },
+});
+
+function findInlineImagePlaceholderPosition(
+  editor: TiptapEditor,
+  uploadId: string
+): number | null {
+  const decorations = inlineImageUploadPlaceholderKey.getState(editor.state);
+  const placeholder = decorations
+    ?.find(undefined, undefined, (spec) => spec.id === uploadId)
+    .at(0);
+  return placeholder?.from ?? null;
+}
 
 export function TiptapEditorCore({
   value,
@@ -31,11 +109,72 @@ export function TiptapEditorCore({
   externalToolbar = false,
   toolbarMode = "always",
   mermaidEnhancementsEnabled = false,
+  inlineImagesEnabled = false,
+  uploadInlineImage,
+  resolveInlineImages,
+  validateInlineImageFile,
+  onInlineImageUploadError,
 }: Readonly<RichTextEditorProps>) {
   const hasSeededContent = useRef(false);
   // Capture initial content on first render to avoid it being cleared by onChange
   const initialContentRef = useRef(value);
+  const editorRef = useRef<TiptapEditor | null>(null);
   const isOuterScroll = scrollMode === "outer";
+
+  const removeInlineImagePlaceholder = useCallback((uploadId: string) => {
+    const activeEditor = editorRef.current;
+    if (!activeEditor) {
+      return;
+    }
+    activeEditor.view.dispatch(
+      activeEditor.state.tr.setMeta(inlineImageUploadPlaceholderKey, {
+        type: "remove",
+        id: uploadId,
+      })
+    );
+  }, []);
+
+  const addInlineImagePlaceholder = useCallback(
+    ({ id, pos, label }: InlineImageUploadPlaceholder) => {
+      const activeEditor = editorRef.current;
+      if (!activeEditor) {
+        return;
+      }
+      activeEditor.view.dispatch(
+        activeEditor.state.tr.setMeta(inlineImageUploadPlaceholderKey, {
+          type: "add",
+          id,
+          pos,
+          label,
+        })
+      );
+    },
+    []
+  );
+
+  const insertInlineImageFile = useCallback(
+    async (file: File) => {
+      await insertInlineImageFileForEditor({
+        addInlineImagePlaceholder,
+        editor: editorRef.current,
+        file,
+        findPlaceholderPosition: findInlineImagePlaceholderPosition,
+        inlineImagesEnabled,
+        onInlineImageUploadError,
+        removeInlineImagePlaceholder,
+        uploadInlineImage,
+        validateInlineImageFile,
+      });
+    },
+    [
+      addInlineImagePlaceholder,
+      inlineImagesEnabled,
+      onInlineImageUploadError,
+      removeInlineImagePlaceholder,
+      uploadInlineImage,
+      validateInlineImageFile,
+    ]
+  );
 
   const editor = useEditor({
     extensions: [
@@ -67,6 +206,11 @@ export function TiptapEditorCore({
       MermaidExtension.configure({
         enhancementsEnabled: mermaidEnhancementsEnabled,
       }),
+      InlineImageExtension.configure({
+        enabled: inlineImagesEnabled,
+        resolveInlineImages,
+      }),
+      InlineImageUploadPlaceholderExtension,
       Table.configure({
         resizable: true,
       }),
@@ -90,11 +234,47 @@ export function TiptapEditorCore({
           className
         ),
       },
+      handleDOMEvents: {
+        drop: (_view, event) => {
+          const files = Array.from(event.dataTransfer?.files ?? []);
+          if (!(inlineImagesEnabled && uploadInlineImage && files.length > 0)) {
+            return false;
+          }
+          const imageFiles = getInlineImageFilesFromTransfer(files);
+          if (imageFiles.length === 0) {
+            return false;
+          }
+          event.preventDefault();
+          for (const file of imageFiles) {
+            insertInlineImageFile(file).catch(() => undefined);
+          }
+          return true;
+        },
+        paste: (_view, event) => {
+          const files = Array.from(event.clipboardData?.files ?? []);
+          if (!(inlineImagesEnabled && uploadInlineImage && files.length > 0)) {
+            return false;
+          }
+          const imageFiles = getInlineImageFilesFromTransfer(files);
+          if (imageFiles.length === 0) {
+            return false;
+          }
+          event.preventDefault();
+          for (const file of imageFiles) {
+            insertInlineImageFile(file).catch(() => undefined);
+          }
+          return true;
+        },
+      },
     },
     onCreate: ({ editor }) => {
       const editorWithReset = editor as TiptapEditor;
       editorWithReset.resetContent = (markdown: string) =>
         setEditorMarkdown(editor, markdown);
+      if (inlineImagesEnabled && uploadInlineImage) {
+        editorWithReset.insertInlineImageFile = insertInlineImageFile;
+      }
+      editorRef.current = editorWithReset;
       onEditorReady?.(editorWithReset);
     },
     onUpdate: ({ editor }) => {
@@ -107,6 +287,26 @@ export function TiptapEditorCore({
       setEditorMarkdown(editor, markdown);
     },
     [editor]
+  );
+
+  useEffect(
+    function trackEditorRef() {
+      const typedEditor = editor as TiptapEditor | null;
+      if (typedEditor) {
+        typedEditor.insertInlineImageFile =
+          inlineImagesEnabled && uploadInlineImage
+            ? insertInlineImageFile
+            : undefined;
+      }
+      editorRef.current = typedEditor;
+      editor?.view.dispatch(editor.state.tr.setMeta("inlineImageUpload", true));
+      return () => {
+        if (editorRef.current === editor) {
+          editorRef.current = null;
+        }
+      };
+    },
+    [editor, inlineImagesEnabled, insertInlineImageFile, uploadInlineImage]
   );
 
   useEffect(

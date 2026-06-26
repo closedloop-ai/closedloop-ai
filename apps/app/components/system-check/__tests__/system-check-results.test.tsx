@@ -1,3 +1,4 @@
+import { PluginUpdateOutcome } from "@repo/api/src/types/compute-target";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
@@ -142,7 +143,7 @@ describe("SystemCheckResults — required/optional partition", () => {
           requiredPassed,
           {
             id: "plugin-code",
-            label: "ClosedLoop Plugin",
+            label: "Closedloop Plugin",
             required: true,
             passed: true,
           },
@@ -177,7 +178,7 @@ describe("SystemCheckResults — required/optional partition", () => {
       "Git"
     );
     expect(getCategoryCard(requiredSection, "Plugins").textContent).toContain(
-      "ClosedLoop Plugin"
+      "Closedloop Plugin"
     );
     expect(getCategoryCard(requiredSection, "Apps").textContent).toContain(
       "Gateway Version"
@@ -188,6 +189,36 @@ describe("SystemCheckResults — required/optional partition", () => {
     expect(getCategoryCard(optionalSection, "MCP").textContent).toContain(
       "Claude MCP"
     );
+  });
+
+  test("renders plugin-code and user-scope enable remediation in the Plugins group", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: false,
+            error: "Disabled",
+            remediation:
+              "Run: claude plugin enable code@closedloop-ai --scope user",
+          },
+        ]}
+      />
+    );
+
+    const requiredSection = getSectionByHeading("Required");
+    const pluginsCard = getCategoryCard(requiredSection, "Plugins");
+
+    expect(
+      within(pluginsCard).getByText("Symphony Plugin")
+    ).toBeInTheDocument();
+    expect(
+      within(pluginsCard).getByText(
+        "Run: claude plugin enable code@closedloop-ai --scope user"
+      )
+    ).toBeInTheDocument();
   });
 
   test("passing advisory rows display their remediation without rendering as failures", () => {
@@ -201,7 +232,7 @@ describe("SystemCheckResults — required/optional partition", () => {
             passed: true,
             version: "0.14.10",
             error: "Update available: 0.14.11",
-            remediation: "Open the ClosedLoop Gateway app to update",
+            remediation: "Open the Closedloop Gateway app to update",
           },
         ]}
       />
@@ -210,7 +241,7 @@ describe("SystemCheckResults — required/optional partition", () => {
     expect(screen.getByText("Gateway Version")).toBeInTheDocument();
     expect(screen.getByText("Update available: 0.14.11")).toBeInTheDocument();
     expect(
-      screen.getByText("Open the ClosedLoop Gateway app to update")
+      screen.getByText("Open the Closedloop Gateway app to update")
     ).toBeInTheDocument();
   });
 
@@ -238,5 +269,150 @@ describe("SystemCheckResults — required/optional partition", () => {
     expect(value).not.toHaveAttribute("tabindex");
     expect(value).toHaveTextContent(worktreePath);
     expect(value).toHaveClass("truncate");
+  });
+
+  test("renders plugin update metadata and structured remediation links only when enabled", () => {
+    const pluginCheck: CheckResult = {
+      id: "plugin-code",
+      label: "Symphony Plugin",
+      required: true,
+      passed: false,
+      error: "Automatic update was attempted but did not succeed.",
+      remediation: "Run claude plugin update code@closedloop-ai --scope user",
+      remediationLinks: [
+        {
+          label: "Update Closedloop plugins manually",
+          url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+        },
+      ],
+      updateAttempted: true,
+      updateOutcome: PluginUpdateOutcome.Failed,
+      updatePluginIds: ["plugin-code"],
+    };
+
+    const { rerender } = render(
+      <SystemCheckResults
+        checks={[pluginCheck]}
+        pluginAutoUpdateEnabled={false}
+      />
+    );
+
+    expect(screen.queryByText("Update failed")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", {
+        name: "Update Closedloop plugins manually",
+      })
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <SystemCheckResults checks={[pluginCheck]} pluginAutoUpdateEnabled />
+    );
+
+    expect(screen.getByText("Update failed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Update Closedloop plugins manually",
+      })
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/closedloop-ai/claude-plugins#quick-start"
+    );
+  });
+
+  test("renders plugin enable outcome badges separately from update badges", () => {
+    const { rerender } = render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: true,
+            enableAttempted: true,
+            enableOutcome: PluginUpdateOutcome.Success,
+            enablePluginIds: ["code@closedloop-ai"],
+          },
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Enabled")).toBeInTheDocument();
+
+    rerender(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: false,
+            enableAttempted: true,
+            enableOutcome: "timeout",
+            enablePluginIds: ["code@closedloop-ai"],
+          },
+        ]}
+      />
+    );
+    expect(screen.getByText("Enable timed out")).toBeInTheDocument();
+
+    rerender(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: false,
+            enableAttempted: false,
+            enableOutcome: "skipped",
+            enablePluginIds: ["code@closedloop-ai"],
+          },
+        ]}
+      />
+    );
+    expect(screen.getByText("Setup required")).toBeInTheDocument();
+  });
+
+  test("omits plugin enable badge for old Desktop payloads", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: true,
+          },
+        ]}
+      />
+    );
+
+    expect(screen.queryByText("Enabled")).not.toBeInTheDocument();
+    expect(screen.queryByText("Setup required")).not.toBeInTheDocument();
+    expect(screen.queryByText("Enable timed out")).not.toBeInTheDocument();
+  });
+
+  test("tokenizes legacy remediation https URLs into anchors", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "plugin-code",
+            label: "Symphony Plugin",
+            required: true,
+            passed: false,
+            error: "Update failed",
+            remediation:
+              "See https://github.com/closedloop-ai/claude-plugins#quick-start",
+          },
+        ]}
+      />
+    );
+
+    expect(
+      screen.getByRole("link", {
+        name: "https://github.com/closedloop-ai/claude-plugins#quick-start",
+      })
+    ).toBeInTheDocument();
   });
 });

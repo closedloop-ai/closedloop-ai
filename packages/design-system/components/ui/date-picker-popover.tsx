@@ -63,6 +63,14 @@ function DatePickerPopover({
     onSelect(null);
   };
 
+  const handleClearKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      onSelect(null);
+    }
+  };
+
   const defaultTrigger = iconOnly ? (
     <Button
       variant="ghost"
@@ -89,9 +97,19 @@ function DatePickerPopover({
       {value ? (
         <div className="flex items-center justify-between flex-1">
           <span>{format(value, dateFormat)}</span>
+          {/* Not a <button>: this trigger is rendered via PopoverTrigger
+              asChild, so the parent is already a <button> — nesting one would
+              be invalid DOM. Use a focusable role=button on the icon instead.
+              `pointer-events-auto` overrides the Button base's
+              `[&_svg]:pointer-events-none` so the icon receives mouse clicks
+              and hover (otherwise the click falls through to the trigger). */}
           <XIcon
-            className="h-4 w-4 opacity-50 hover:opacity-100"
+            aria-label="Clear date"
+            className="h-4 w-4 cursor-pointer opacity-50 pointer-events-auto hover:opacity-100"
             onClick={handleClear}
+            onKeyDown={handleClearKeyDown}
+            role="button"
+            tabIndex={0}
           />
         </div>
       ) : (

@@ -15,16 +15,16 @@ vi.mock("next/navigation", () => ({
         typeof import("next/navigation").useSearchParams
       >
   ),
-  useParams: vi.fn(() => ({ teamId: "team-1" })),
+  useParams: vi.fn(() => ({ orgSlug: "test-org", teamId: "team-1" })),
 }));
 
 // Mock useOrganizationUsers — avoids needing a QueryClient provider
-vi.mock("@/hooks/queries/use-users", () => ({
+vi.mock("@repo/app/users/hooks/use-users", () => ({
   useOrganizationUsers: vi.fn(() => ({ data: [] })),
 }));
 
 // Mock favorites hooks — avoids needing ClerkProvider for useAuth
-vi.mock("@/hooks/queries/use-projects", () => ({
+vi.mock("@repo/app/projects/hooks/use-projects", () => ({
   useIsFavorite: vi.fn(() => false),
   useToggleFavorite: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
@@ -46,7 +46,7 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => ({
 
 // Import after mocks
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
-import { ProjectsTable } from "@/app/(authenticated)/teams/[teamId]/projects/components/projects-table";
+import { ProjectsTable } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/components/projects-table";
 
 const makeProject = (
   overrides?: Partial<ProjectWithDetails>

@@ -2,6 +2,7 @@ import {
   type GenerationStatus,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/document";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 
 export const NONE_STATUS: GenerationStatus = {
   status: "NONE",
@@ -14,20 +15,25 @@ export const NONE_STATUS: GenerationStatus = {
 
 /** Map LoopStatus (Prisma enum) to GenerationStatus status field. */
 export function mapLoopStatus(
-  loopStatus: string
+  loopStatus: LoopStatus
 ): GenerationStatus["status"] | null {
   switch (loopStatus) {
-    case "PENDING":
+    case LoopStatus.Pending:
       return "PENDING";
-    case "CLAIMED":
+    // A deferred (blocker-gated) loop is queued work that will start
+    // automatically once unblocked, so it surfaces as a pending generation
+    // rather than disappearing from the document status panel.
+    case LoopStatus.Blocked:
+      return "PENDING";
+    case LoopStatus.Claimed:
       return "QUEUED";
-    case "RUNNING":
+    case LoopStatus.Running:
       return "RUNNING";
-    case "COMPLETED":
+    case LoopStatus.Completed:
       return "SUCCESS";
-    case "FAILED":
-    case "CANCELLED":
-    case "TIMED_OUT":
+    case LoopStatus.Failed:
+    case LoopStatus.Cancelled:
+    case LoopStatus.TimedOut:
       return "FAILURE";
     default:
       return null;
@@ -35,31 +41,33 @@ export function mapLoopStatus(
 }
 
 /** Map LoopCommand (Prisma enum, UPPER_CASE) to GenerationStatus command (lowercase). */
-export function mapLoopCommand(command: string): GenerationStatus["command"] {
+export function mapLoopCommand(
+  command: LoopCommand
+): GenerationStatus["command"] {
   switch (command) {
-    case "PLAN":
+    case LoopCommand.Plan:
       return "plan";
-    case "EXECUTE":
+    case LoopCommand.Execute:
       return "execute";
-    case "CHAT":
+    case LoopCommand.Chat:
       return "chat";
-    case "EXPLORE":
+    case LoopCommand.Explore:
       return "explore";
-    case "REQUEST_CHANGES":
+    case LoopCommand.RequestChanges:
       return "request_changes";
-    case "DECOMPOSE":
+    case LoopCommand.Decompose:
       return "decompose";
-    case "EVALUATE_PRD":
+    case LoopCommand.EvaluatePrd:
       return "evaluate_prd";
-    case "EVALUATE_PLAN":
+    case LoopCommand.EvaluatePlan:
       return "evaluate_plan";
-    case "EVALUATE_CODE":
+    case LoopCommand.EvaluateCode:
       return "evaluate_code";
-    case "EVALUATE_FEATURE":
+    case LoopCommand.EvaluateFeature:
       return "evaluate_feature";
-    case "REQUEST_PRD_CHANGES":
+    case LoopCommand.RequestPrdChanges:
       return "request_prd_changes";
-    case "GENERATE_PRD":
+    case LoopCommand.GeneratePrd:
       return "generate_prd";
     default:
       return null;

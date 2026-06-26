@@ -7,13 +7,21 @@
  * (e) setValueForEntity rejects peopleValueIds not in org (returned count < input count)
  * (g) attachField to a Project cascades settings to child Workstreams and Features with skipDuplicates: true
  */
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {
@@ -235,7 +243,7 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
 });
 
 // ---------------------------------------------------------------------------
-// attachField — Project cascade to Workstreams and Issues (case g)
+// attachField — Project cascade to Feature documents (case g)
 // ---------------------------------------------------------------------------
 
 describe("customFieldValuesService.attachField — Project cascade", () => {
@@ -247,7 +255,7 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
     vi.restoreAllMocks();
   });
 
-  it("cascades settings to child Workstreams and Features with skipDuplicates: true when attaching to a Project", async () => {
+  it("cascades settings to child Features with skipDuplicates: true when attaching to a Project", async () => {
     // Arrange
     const TEST_PROJECT_ID = "project-1";
 
@@ -303,9 +311,6 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
           create: mockCreate,
           createMany: mockCreateMany,
         },
-        workstream: {
-          findMany: vi.fn().mockResolvedValue([{ id: "ws-1" }, { id: "ws-2" }]),
-        },
         artifact: {
           findMany: vi
             .fn()
@@ -332,27 +337,20 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
 
     const createManyArgs = mockCreateMany.mock.calls[0][0];
 
-    // 2 workstreams + 2 feature-typed documents = 4 child setting records
-    expect(createManyArgs.data).toHaveLength(4);
+    // 2 feature-typed documents = 2 child setting records
+    expect(createManyArgs.data).toHaveLength(2);
 
-    const workstreamRecords = createManyArgs.data.filter(
-      (d: any) => d.entityType === CustomFieldEntityType.Workstream
-    );
     const documentRecords = createManyArgs.data.filter(
       (d: any) => d.entityType === CustomFieldEntityType.Document
     );
 
-    expect(workstreamRecords).toHaveLength(2);
-    expect(workstreamRecords.map((r: any) => r.entityId)).toEqual(
-      expect.arrayContaining(["ws-1", "ws-2"])
-    );
     expect(documentRecords).toHaveLength(2);
     expect(documentRecords.map((r: any) => r.entityId)).toEqual(
       expect.arrayContaining(["doc-feat-1", "doc-feat-2"])
     );
   });
 
-  it("does not call createMany when the Project has no child Workstreams or Features", async () => {
+  it("does not call createMany when the Project has no child Features", async () => {
     // Arrange
     const TEST_PROJECT_ID = "project-empty";
 
@@ -405,9 +403,6 @@ describe("customFieldValuesService.attachField — Project cascade", () => {
         customFieldSetting: {
           create: mockCreate,
           createMany: mockCreateMany,
-        },
-        workstream: {
-          findMany: vi.fn().mockResolvedValue([]),
         },
         artifact: {
           findMany: vi.fn().mockResolvedValue([]),

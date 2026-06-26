@@ -1,10 +1,27 @@
+import {
+  IMAGE_MIME_TYPES as SHARED_IMAGE_MIME_TYPES,
+  MAX_ATTACHMENT_FILE_SIZE_BYTES as SHARED_MAX_ATTACHMENT_FILE_SIZE_BYTES,
+  AttachmentPurpose as SharedAttachmentPurpose,
+  AttachmentPurposeSelector as SharedAttachmentPurposeSelector,
+  isDocumentMimeType as sharedIsDocumentMimeType,
+  isImageMimeType as sharedIsImageMimeType,
+} from "@closedloop-ai/loops-api/attachment";
+
 // Attachment types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
-/**
- * Represents a file attachment associated with a document.
- * createdAt is ISO 8601 string — use .toISOString() in service mapping.
- */
+export const AttachmentPurpose = SharedAttachmentPurpose;
+export type AttachmentPurpose =
+  (typeof AttachmentPurpose)[keyof typeof AttachmentPurpose];
+export const AttachmentPurposeSelector = SharedAttachmentPurposeSelector;
+export type AttachmentPurposeSelector =
+  (typeof AttachmentPurposeSelector)[keyof typeof AttachmentPurposeSelector];
+export const IMAGE_MIME_TYPES = SHARED_IMAGE_MIME_TYPES;
+export const MAX_ATTACHMENT_FILE_SIZE_BYTES =
+  SHARED_MAX_ATTACHMENT_FILE_SIZE_BYTES;
+export const isDocumentMimeType = sharedIsDocumentMimeType;
+export const isImageMimeType = sharedIsImageMimeType;
+
 export type FileAttachment = {
   id: string;
   artifactId: string;
@@ -13,32 +30,9 @@ export type FileAttachment = {
   sizeBytes: number;
   createdAt: string;
   createdById: string;
-  /** Presigned inline URL for image previews. Only present for image/* mime types. */
+  purpose?: AttachmentPurpose;
   previewUrl?: string;
 };
-
-const IMAGE_MIME_TYPES: readonly string[] = [
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-] as const;
-
-export function isImageMimeType(mimeType: string): boolean {
-  return IMAGE_MIME_TYPES.includes(mimeType);
-}
-
-const DOCUMENT_MIME_TYPES: readonly string[] = [
-  "application/pdf",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "text/markdown",
-  "text/html",
-] as const;
-
-export function isDocumentMimeType(mimeType: string): boolean {
-  return DOCUMENT_MIME_TYPES.includes(mimeType);
-}
 
 /**
  * Response returned after initiating a file upload.
@@ -48,6 +42,8 @@ export type CreateAttachmentResponse = {
   attachmentId: string;
   uploadUrl: string;
   key: string;
+  /** API-owned upload URL expiry. Optional for version-skewed producers. */
+  expiresAt?: string;
 };
 
 /**
@@ -55,6 +51,34 @@ export type CreateAttachmentResponse = {
  */
 export type AttachmentDownloadResponse = {
   downloadUrl: string;
+};
+
+export const InlineImageResolveSkipReason = {
+  NotFound: "not_found",
+  NotInline: "not_inline",
+  NotImage: "not_image",
+  SigningFailed: "signing_failed",
+} as const;
+export type InlineImageResolveSkipReason =
+  (typeof InlineImageResolveSkipReason)[keyof typeof InlineImageResolveSkipReason];
+
+export type ResolvedInlineImage = {
+  attachmentId: string;
+  url: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  expiresAt: string;
+};
+
+export type SkippedInlineImage = {
+  attachmentId: string;
+  reason: InlineImageResolveSkipReason;
+};
+
+export type ResolveInlineImagesResponse = {
+  images: ResolvedInlineImage[];
+  skipped: SkippedInlineImage[];
 };
 
 /**

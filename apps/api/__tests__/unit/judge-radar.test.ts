@@ -6,7 +6,7 @@
  * deriveCharacteristicLabels, and the insufficient-data gate in getJudgeDetail.
  */
 import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
-import { vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMock } = await import("../fixtures/database-mock");

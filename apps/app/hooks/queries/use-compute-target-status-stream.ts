@@ -1,12 +1,12 @@
 "use client";
 
+import { useWaitForAuthLoaded } from "@repo/app/shared/auth/use-wait-for-auth-loaded";
 import { useAuth } from "@repo/auth/client";
 import type { QueryClient } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { resolveApiUrl } from "@/hooks/use-api-client";
-import { useWaitForAuthLoaded } from "@/hooks/use-wait-for-auth-loaded";
-import { computeTargetKeys } from "./use-compute-targets";
+import { computeTargetKeys } from "./compute-target-query-keys";
 
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 2000;

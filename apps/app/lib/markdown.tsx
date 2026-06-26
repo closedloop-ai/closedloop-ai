@@ -9,6 +9,11 @@ import { getTextContent } from "@/lib/engineer/utils";
 
 const LANGUAGE_REGEX = /language-(\w+)/;
 const TRAILING_NEWLINE_REGEX = /\n$/;
+// Hidden metadata markers our tooling injects into PR comment bodies, e.g.
+// `<!-- closedloop-code-review: {...} -->` and `<!-- closedloop-review-finding ... -->`.
+// These carry machine-readable data and must never surface to readers.
+const HTML_COMMENT_REGEX = /<!--[\s\S]*?-->/g;
+const EXCESS_BLANK_LINES_REGEX = /\n{3,}/g;
 
 /**
  * Shared ReactMarkdown component overrides for rendering GitHub-flavored
@@ -90,8 +95,20 @@ export function CommentMarkdown({
         components={commentMarkdownComponents}
         remarkPlugins={[remarkGfm]}
       >
-        {children}
+        {stripHiddenCommentMetadata(children)}
       </ReactMarkdown>
     </div>
   );
+}
+
+/**
+ * Strip hidden HTML-comment metadata markers from a comment body before render.
+ * `react-markdown` already skips raw HTML, but removing the markers explicitly
+ * collapses the blank space they leave behind and guards the plain-text path.
+ */
+function stripHiddenCommentMetadata(body: string): string {
+  return body
+    .replace(HTML_COMMENT_REGEX, "")
+    .replace(EXCESS_BLANK_LINES_REGEX, "\n\n")
+    .trim();
 }

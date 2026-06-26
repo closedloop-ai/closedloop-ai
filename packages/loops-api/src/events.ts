@@ -18,10 +18,38 @@ export const LoopEventType = {
   Completed: "completed",
   Error: "error",
   Cancelled: "cancelled",
+  TokenRefreshed: "token_refreshed",
+  TokensCleared: "tokens_cleared",
+  ReapReversed: "reap_reversed",
 } as const;
 export type LoopEventType = (typeof LoopEventType)[keyof typeof LoopEventType];
 
 export const LoopEventTypeSchema = z.enum(LoopEventType);
+
+/**
+ * Event types a runner is allowed to POST to `/loops/[id]/events`.
+ *
+ * Excludes system-internal audit events (`tokens_cleared`, `token_refreshed`)
+ * that are emitted exclusively by the orchestrator from inside trusted
+ * transactions. Accepting those over the runner-facing endpoint would let a
+ * runner with a valid JWT inject fake audit rows that are indistinguishable
+ * from those written by the platform.
+ */
+export const RunnerLoopEventType = {
+  Started: LoopEventType.Started,
+  Output: LoopEventType.Output,
+  Progress: LoopEventType.Progress,
+  ToolCall: LoopEventType.ToolCall,
+  ArtifactCreated: LoopEventType.ArtifactCreated,
+  SupportBundleUploaded: LoopEventType.SupportBundleUploaded,
+  Completed: LoopEventType.Completed,
+  Error: LoopEventType.Error,
+  Cancelled: LoopEventType.Cancelled,
+} as const;
+export type RunnerLoopEventType =
+  (typeof RunnerLoopEventType)[keyof typeof RunnerLoopEventType];
+
+export const RunnerLoopEventTypeSchema = z.enum(RunnerLoopEventType);
 
 // --- Completed event result shape ---
 
@@ -264,6 +292,22 @@ export const LoopEventCancelledSchema = z.object({
   loopId: z.string().optional(),
 });
 
+export type LoopEventTokensCleared = {
+  type: "tokens_cleared";
+  status: string;
+  timestamp: string;
+  correlationId?: string;
+  loopId?: string;
+};
+
+export const LoopEventTokensClearedSchema = z.object({
+  type: z.literal("tokens_cleared"),
+  status: z.string(),
+  timestamp: z.string(),
+  correlationId: z.string().optional(),
+  loopId: z.string().optional(),
+});
+
 // --- Discriminated union ---
 
 export type LoopEvent =
@@ -275,7 +319,8 @@ export type LoopEvent =
   | LoopEventSupportBundleUploaded
   | LoopEventCompleted
   | LoopEventError
-  | LoopEventCancelled;
+  | LoopEventCancelled
+  | LoopEventTokensCleared;
 
 export const LoopEventSchema = z.discriminatedUnion("type", [
   LoopEventStartedSchema,
@@ -287,6 +332,7 @@ export const LoopEventSchema = z.discriminatedUnion("type", [
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
   LoopEventCancelledSchema,
+  LoopEventTokensClearedSchema,
 ]);
 
 // --- Query/response types ---

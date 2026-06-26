@@ -10,13 +10,13 @@
  * - Schedules via waitUntil for stale open PRs
  *
  * repairSinglePrLink (invoked via captured waitUntil promise):
- * - Stamps lastRefreshAttemptAt on the PullRequestDetail
+ * - Stamps lastRefreshAttemptAt on the current PullRequestDetail
  * - Skips when PR URL cannot be parsed
  * - Skips when installationId cannot be resolved
  * - Skips when getSinglePullRequest returns null
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Module-level mocks ---
 
@@ -33,7 +33,7 @@ vi.mock("@repo/database", () => ({
   },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   GitHubInstallationStatus: {
@@ -56,12 +56,14 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+import { BranchViewPrLifecycleRepairStatus } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import {
+  getPrReadRepairStatus,
   type PrReadRepairInput,
   schedulePrReadRepair,
 } from "@/lib/pr-read-repair";
@@ -88,7 +90,6 @@ function makeInput(
   return {
     id: "link-uuid-1",
     externalUrl: "https://github.com/acme/my-repo/pull/42",
-    workstreamId: "ws-uuid-1",
     projectId: "proj-uuid-1",
     organizationId: ORG_ID,
     prState: GitHubPRState.Open,
@@ -199,6 +200,50 @@ describe("schedulePrReadRepair — eligibility filtering", () => {
     schedulePrReadRepair([mergedVerified, fresh, eligible], ORG_ID);
     expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
+
+  it("keeps client status pending during a short in-flight repair attempt", () => {
+    const nowMs = Date.now();
+    expect(
+      getPrReadRepairStatus(
+        makeInput({
+          prState: GitHubPRState.Open,
+          lastVerifiedAt: null,
+          lastRefreshAttemptAt: null,
+        }),
+        nowMs
+      )
+    ).toBe(BranchViewPrLifecycleRepairStatus.Pending);
+    expect(
+      getPrReadRepairStatus(
+        makeInput({
+          prState: GitHubPRState.Open,
+          lastVerifiedAt: new Date(nowMs - 60 * 60 * 1000),
+          lastRefreshAttemptAt: null,
+        }),
+        nowMs
+      )
+    ).toBe(BranchViewPrLifecycleRepairStatus.Idle);
+    expect(
+      getPrReadRepairStatus(
+        makeInput({
+          prState: GitHubPRState.Open,
+          lastVerifiedAt: null,
+          lastRefreshAttemptAt: new Date(nowMs - 10 * 1000),
+        }),
+        nowMs
+      )
+    ).toBe(BranchViewPrLifecycleRepairStatus.Pending);
+    expect(
+      getPrReadRepairStatus(
+        makeInput({
+          prState: GitHubPRState.Open,
+          lastVerifiedAt: null,
+          lastRefreshAttemptAt: new Date(nowMs - 30 * 60 * 1000),
+        }),
+        nowMs
+      )
+    ).toBe(BranchViewPrLifecycleRepairStatus.Idle);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -228,6 +273,7 @@ function makeFreshPr(
     isDraft: boolean;
     headSha: string;
     baseSha: string;
+    mergeCommitSha: string | null;
   }> = {}
 ) {
   return {
@@ -244,6 +290,7 @@ function makeFreshPr(
     isDraft: false,
     headSha: "abc123",
     baseSha: "def456",
+    mergeCommitSha: null,
     ...overrides,
   };
 }
@@ -260,37 +307,66 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       lastVerifiedAt: null,
     });
     const mockDetailUpdate = vi.fn().mockResolvedValue({});
+    const mockExistingDetailFindFirst = vi.fn().mockResolvedValue({
+      id: "detail-1",
+      repositoryId: "repo-uuid-99",
+    });
 
-    // Call 1: pullRequestDetail.update (stamp)
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: mockDetailUpdate } })
-    );
-    // Call 2: resolveRepositoryId — returns null (no match)
+    // Call 1: resolveRepositoryId → valid
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
         gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(null),
+          findFirst: vi.fn().mockResolvedValue({
+            id: "repo-uuid-99",
+            installation: { installationId: "install-99" },
+          }),
         },
       })
     );
-    // Call 3: resolveInstallationId primary: no detail → fallback
+    // Call 2: existing detail lookup
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
-        pullRequestDetail: { findUnique: vi.fn().mockResolvedValue(null) },
+        pullRequestDetail: {
+          findFirst: mockExistingDetailFindFirst,
+        },
       })
     );
-    // Call 4: resolveInstallationId fallback: 0 installations
+    // Call 3: shared lifecycle helper stamps before calling GitHub
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
-        gitHubInstallation: { findMany: vi.fn().mockResolvedValue([]) },
+        pullRequestDetail: {
+          updateMany: mockDetailUpdate.mockResolvedValue({ count: 1 }),
+        },
       })
     );
+    mockGetSinglePullRequest.mockResolvedValueOnce(null);
 
     await runRepair([input]);
 
+    expect(mockExistingDetailFindFirst).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { artifactId: input.id },
+          { branchArtifactId: input.id, isCurrent: true },
+        ],
+        branchArtifact: { organizationId: input.organizationId },
+        repository: {
+          installation: { organizationId: input.organizationId },
+        },
+      },
+      select: { id: true, repositoryId: true },
+    });
     expect(mockDetailUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { artifactId: input.id },
+        where: {
+          id: "detail-1",
+          branchArtifactId: input.id,
+          repositoryId: "repo-uuid-99",
+          branchArtifact: { organizationId: input.organizationId },
+          repository: {
+            installation: { organizationId: input.organizationId },
+          },
+        },
         data: expect.objectContaining({
           lastRefreshAttemptAt: expect.any(Date),
         }),
@@ -312,12 +388,9 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
 
   it("skips the GitHub API call when no installationId can be resolved", async () => {
     const input = makeInput();
+    const mockFallbackDetailFindFirst = vi.fn().mockResolvedValue(null);
 
-    // Call 1: stamp
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
-    );
-    // Call 2: resolveRepositoryId → null
+    // Call 1: resolveRepositoryId → null
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
         gitHubInstallationRepository: {
@@ -325,13 +398,13 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
         },
       })
     );
-    // Call 3: resolveInstallationId primary → no detail
+    // Call 2: resolveInstallationId primary → no detail
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
-        pullRequestDetail: { findUnique: vi.fn().mockResolvedValue(null) },
+        pullRequestDetail: { findFirst: mockFallbackDetailFindFirst },
       })
     );
-    // Call 4: resolveInstallationId fallback → 0 installations
+    // Call 3: resolveInstallationId fallback → 0 installations
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
         gitHubInstallation: { findMany: vi.fn().mockResolvedValue([]) },
@@ -340,18 +413,93 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
 
     await runRepair([input]);
 
+    expect(mockFallbackDetailFindFirst).toHaveBeenCalledWith({
+      where: {
+        OR: [{ artifactId: input.id }, { branchArtifactId: input.id }],
+        branchArtifact: { organizationId: input.organizationId },
+        repository: {
+          installation: { organizationId: input.organizationId },
+        },
+      },
+      select: { repositoryId: true },
+    });
     expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("resolves fallback repository installation through the input organization", async () => {
+    const input = makeInput();
+    const mockFallbackDetailFindFirst = vi
+      .fn()
+      .mockResolvedValue({ repositoryId: "repo-uuid-99" });
+    const mockScopedRepoFindFirst = vi.fn().mockResolvedValue({
+      installation: { installationId: "install-99" },
+    });
+    const mockExistingDetailFindFirst = vi.fn().mockResolvedValue(null);
+
+    // Call 1: resolveRepositoryId → no owner/repo match
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      })
+    );
+    // Call 2: resolveInstallationId primary → detail points to a repo
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        pullRequestDetail: { findFirst: mockFallbackDetailFindFirst },
+      })
+    );
+    // Call 3: resolveInstallationId repository lookup must stay org-scoped
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: { findFirst: mockScopedRepoFindFirst },
+      })
+    );
+    // Call 4: existing detail lookup misses, so the backfill path fetches.
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { findFirst: mockExistingDetailFindFirst } })
+    );
+    mockGetSinglePullRequest.mockResolvedValueOnce(null);
+
+    await runRepair([input]);
+
+    expect(mockFallbackDetailFindFirst).toHaveBeenCalledWith({
+      where: {
+        OR: [{ artifactId: input.id }, { branchArtifactId: input.id }],
+        branchArtifact: { organizationId: input.organizationId },
+        repository: {
+          installation: { organizationId: input.organizationId },
+        },
+      },
+      select: { repositoryId: true },
+    });
+    expect(mockScopedRepoFindFirst).toHaveBeenCalledWith({
+      where: {
+        id: "repo-uuid-99",
+        installation: { organizationId: input.organizationId },
+      },
+      select: { installation: { select: { installationId: true } } },
+    });
+    expect(mockExistingDetailFindFirst).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { artifactId: input.id },
+          { branchArtifactId: input.id, isCurrent: true },
+        ],
+        branchArtifact: { organizationId: input.organizationId },
+        repository: {
+          installation: { organizationId: input.organizationId },
+        },
+      },
+      select: { id: true, repositoryId: true },
+    });
   });
 
   it("skips update when getSinglePullRequest returns null", async () => {
     const input = makeInput();
-    const mockDetailUpdate = vi.fn().mockResolvedValue({});
 
-    // Call 1: stamp
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: mockDetailUpdate } })
-    );
-    // Call 2: resolveRepositoryId → valid
+    // Call 1: resolveRepositoryId → valid
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
         gitHubInstallationRepository: {
@@ -362,13 +510,15 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
         },
       })
     );
+    // Call 2: existing detail lookup misses, so backfill path fetches once.
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) } })
+    );
 
     mockGetSinglePullRequest.mockResolvedValueOnce(null);
 
     await runRepair([input]);
 
-    // Only the stamp call; tx never entered
-    expect(mockDetailUpdate).toHaveBeenCalledTimes(1);
     expect(mockWithDb.tx).not.toHaveBeenCalled();
     expect(mockLog.warn).toHaveBeenCalledWith(
       expect.stringContaining("getSinglePullRequest returned null"),
@@ -385,31 +535,17 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       installation: { installationId: "install-target" },
     });
 
-    // Call 1: stamp
-    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
-    );
-    // Call 2: resolveRepositoryId
+    // Call 1: resolveRepositoryId
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
       cb({
         gitHubInstallationRepository: { findFirst: mockRepoFindFirst },
       })
     );
-
-    mockGetSinglePullRequest.mockResolvedValueOnce(
-      makeFreshPr({ githubId: "gh-pr-target", number: 7 })
+    // Call 2: existing detail lookup misses, so the backfill path fetches.
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) } })
     );
-
-    // tx: detail exists → apply update
-    mockWithDb.tx.mockImplementationOnce((cb: (tx: unknown) => unknown) =>
-      cb({
-        pullRequestDetail: {
-          findUnique: vi.fn().mockResolvedValue({ artifactId: input.id }),
-          update: vi.fn().mockResolvedValue({}),
-        },
-        artifact: { update: vi.fn().mockResolvedValue({}) },
-      })
-    );
+    mockGetSinglePullRequest.mockResolvedValueOnce(null);
 
     await runRepair([input]);
 
@@ -438,18 +574,20 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       installation: { installationId: "install-shared" },
     });
 
-    // Input A: stamp + resolveRepositoryId (DB hit)
+    // Input A: resolveRepositoryId (DB hit), then existing detail misses.
     mockWithDb
       .mockImplementationOnce((cb: (db: unknown) => unknown) =>
-        cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
+        cb({ gitHubInstallationRepository: { findFirst: mockRepoFindFirst } })
       )
       .mockImplementationOnce((cb: (db: unknown) => unknown) =>
-        cb({ gitHubInstallationRepository: { findFirst: mockRepoFindFirst } })
+        cb({
+          pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) },
+        })
       );
 
-    // Input B: stamp only — resolveRepositoryId uses cache
+    // Input B: resolveRepositoryId uses cache, then existing detail misses.
     mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
-      cb({ pullRequestDetail: { update: vi.fn().mockResolvedValue({}) } })
+      cb({ pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) } })
     );
 
     mockGetSinglePullRequest
@@ -461,17 +599,25 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       .mockImplementationOnce((cb: (tx: unknown) => unknown) =>
         cb({
           pullRequestDetail: {
-            findUnique: vi.fn().mockResolvedValue(null),
+            findFirst: vi.fn().mockResolvedValue(null),
           },
-          artifact: { create: vi.fn().mockResolvedValue({}) },
+          artifact: {
+            create: vi
+              .fn()
+              .mockResolvedValue({ id: "created-a", pullRequestDetails: [] }),
+          },
         })
       )
       .mockImplementationOnce((cb: (tx: unknown) => unknown) =>
         cb({
           pullRequestDetail: {
-            findUnique: vi.fn().mockResolvedValue(null),
+            findFirst: vi.fn().mockResolvedValue(null),
           },
-          artifact: { create: vi.fn().mockResolvedValue({}) },
+          artifact: {
+            create: vi
+              .fn()
+              .mockResolvedValue({ id: "created-b", pullRequestDetails: [] }),
+          },
         })
       );
 
@@ -479,4 +625,68 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
 
     expect(mockRepoFindFirst).toHaveBeenCalledOnce();
   });
+
+  it("repairs eligible links concurrently rather than sequentially", async () => {
+    // Explicit short timeout: a regression to a sequential loop deadlocks the
+    // barrier below, and this surfaces it as a fast failure rather than waiting
+    // out the runner's default timeout.
+    const inputA = makeInput({
+      id: "input-a",
+      externalUrl: "https://github.com/acme/repo-a/pull/10",
+    });
+    const inputB = makeInput({
+      id: "input-b",
+      externalUrl: "https://github.com/acme/repo-b/pull/11",
+    });
+
+    // Drop any once-queued implementations leaked from earlier tests so the
+    // persistent barrier implementations below take effect on the first call.
+    mockWithDb.mockReset();
+    mockGetSinglePullRequest.mockReset();
+
+    // Generic db stub: satisfies both resolveRepositoryId and the existing
+    // detail lookup regardless of concurrent call interleaving.
+    mockWithDb.mockImplementation((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "repo-shared",
+            installation: { installationId: "install-shared" },
+          }),
+        },
+        pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) },
+      })
+    );
+    mockWithDb.tx.mockImplementation((cb: (tx: unknown) => unknown) =>
+      cb({
+        pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) },
+        artifact: {
+          create: vi
+            .fn()
+            .mockResolvedValue({ id: "created", pullRequestDetails: [] }),
+        },
+      })
+    );
+
+    // Barrier: each GitHub fetch blocks until BOTH links have reached it. A
+    // sequential loop would await the first fetch forever (the second link
+    // never starts), so this only completes when the repairs run concurrently.
+    let started = 0;
+    let releaseBoth: () => void = () => undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    mockGetSinglePullRequest.mockImplementation(async () => {
+      started += 1;
+      if (started === 2) {
+        releaseBoth();
+      }
+      await bothStarted;
+      return makeFreshPr();
+    });
+
+    await runRepair([inputA, inputB]);
+
+    expect(mockGetSinglePullRequest).toHaveBeenCalledTimes(2);
+  }, 2000);
 });

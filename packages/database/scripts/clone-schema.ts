@@ -1,7 +1,11 @@
 import type pg from "pg";
 import { createSslClient, quoteIdentifier } from "./db-utils";
 
-const CLONE_SKIP_TABLES = new Set(["_prisma_migrations", "preview_schemas"]);
+const CLONE_SKIP_TABLES = new Set([
+  "_prisma_migrations",
+  "preview_schemas",
+  "preview_schemas_observations",
+]);
 
 type ColInfo = {
   column_name: string;

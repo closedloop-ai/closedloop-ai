@@ -7,7 +7,7 @@ import { action } from "storybook/actions";
  * An opinionated toast component for React.
  */
 const meta: Meta<typeof Toaster> = {
-  title: "ui/Sonner",
+  title: "Design System/Primitives/Sonner",
   component: Toaster,
   tags: ["autodocs"],
   argTypes: {},

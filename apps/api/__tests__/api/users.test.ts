@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 
 // Create a mock authContext that tests can configure
@@ -137,5 +137,34 @@ describe("GET /api/users", () => {
     // Should not include inactive users
     expect(json.data.length).toBe(1);
     expect(json.data[0].active).toBe(true);
+  });
+
+  it("excludes inactive GitHub shadow users from the user list", async () => {
+    const mockActiveUsers = [
+      {
+        id: "1",
+        clerkId: "clerk_active",
+        email: "active@example.com",
+        firstName: "Active",
+        lastName: "User",
+        active: true,
+      },
+    ];
+    vi.mocked(usersService.findByOrganization).mockResolvedValue(
+      mockActiveUsers as any
+    );
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/users",
+    });
+    const routeContext = createMockRouteContext({});
+    const response = await GET(request, routeContext);
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual(mockActiveUsers);
+    expect(JSON.stringify(json.data)).not.toContain("github-shadow:");
+    expect(usersService.findByOrganization).toHaveBeenCalledWith("test-org-id");
   });
 });

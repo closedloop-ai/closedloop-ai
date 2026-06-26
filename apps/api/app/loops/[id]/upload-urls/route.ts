@@ -1,6 +1,5 @@
-import { verifyLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { z } from "zod";
-import { extractBearerToken } from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";
 import {
   generateUploadUrl,
   validateKeyBelongsToLoop,
@@ -27,18 +26,13 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const token = extractBearerToken(request);
-    if (token instanceof Response) {
-      return token;
-    }
-
-    const claims = await verifyLoopRunnerToken(token);
-    if (claims.loopId !== loopId) {
-      return errorResponse(
-        "Token does not match loop",
-        new Error("Forbidden"),
-        403
-      );
+    const claims = await authenticateLoopRunnerRequest(
+      request,
+      loopId,
+      "loops/[id]/upload-urls"
+    );
+    if (claims instanceof Response) {
+      return claims;
     }
 
     const { body, errorResponse: parseError } = await parseBody(

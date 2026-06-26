@@ -1,12 +1,9 @@
-import {
-  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
-  type DesktopApiNamespace,
-  LEGACY_DESKTOP_API_NAMESPACE,
-} from "@repo/api/src/desktop-api-namespace";
-import { success } from "@repo/api/src/types/common";
+import { type JsonValue, success } from "@repo/api/src/types/common";
 import type {
   BackendMismatchBody,
+  ComputePreferenceRequiredBody,
   ComputeTargetConflictBody,
+  HarnessType,
 } from "@repo/api/src/types/compute-target";
 import type {
   CreateLoopResponse,
@@ -14,18 +11,26 @@ import type {
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { documentExecutionService } from "@/app/documents/execution-service";
+import {
+  computeTargetsService,
+  parseSelectedHarness,
+} from "@/app/compute-targets/service";
 import { documentGenerationService } from "@/app/documents/generation-service";
 import { handleLoopServiceError } from "@/app/loops/loop-error-responses";
 import { loopsService } from "@/app/loops/service";
+import { computePreferenceService } from "@/app/settings/compute-preference/compute-preference-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import { buildMissingExplicitPreferenceResponse } from "@/lib/loops/explicit-compute-selection";
+import {
+  type HarnessSelectionIdentity,
+  isHarnessSelectionEnabled,
+} from "@/lib/loops/harness-selection-feature";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { buildLoopPrompt } from "@/lib/loops/prompts";
 import {
   badRequestResponse,
-  conflictResponse,
   notFoundResponse,
   parseBody,
   scheduleLogFlushAfter,
@@ -37,23 +42,13 @@ import {
   resolveLoopContext,
   resolveRunLoopComputeTarget,
 } from "./run-loop-helpers";
+import { resolveEffectiveSignedRunLoopIntent } from "./signing";
 import { runLoopSchema } from "./validators";
-
-function getLoopMetadata(
-  desktopApiNamespace: DesktopApiNamespace | undefined
-): Record<string, DesktopApiNamespace> | undefined {
-  if (desktopApiNamespace !== LEGACY_DESKTOP_API_NAMESPACE) {
-    return undefined;
-  }
-
-  return {
-    [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]: desktopApiNamespace,
-  };
-}
 
 type RunLoopResponse =
   | CreateLoopResponse
   | ComputeTargetConflictBody
+  | ComputePreferenceRequiredBody
   | BackendMismatchBody
   | LoopAlreadyActiveBody;
 
@@ -85,35 +80,40 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
 
       const handler = getCommandHandler(COMMAND_MAP[body.command]);
 
+      const explicitSelectionGate =
+        await buildMissingExplicitPreferenceResponse({
+          clerkUserId: user.clerkId,
+          computeTargetId: body.computeTargetId,
+          userId: user.id,
+        });
+      if (explicitSelectionGate.response) {
+        return explicitSelectionGate.response;
+      }
+
       const ctRouteResult = await resolveRunLoopComputeTarget(
         user.organizationId,
         user.id,
-        body.computeTargetId
+        body.computeTargetId,
+        explicitSelectionGate.userComputePreferences
       );
       if ("errorResponse" in ctRouteResult) {
         return ctRouteResult.errorResponse;
       }
       const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
-
-      // Guard: prevent launching a loop for artifacts originally planned via
-      // GH Actions. State cannot migrate between backends, so the earliest
-      // execution determines the canonical backend.
-      // Commands that build on prior state (requiresParent) are locked to
-      // the original backend. Fresh-start commands (like PLAN) are exempt.
-      if (handler?.requiresParent) {
-        const rejection =
-          await documentExecutionService.assertLoopBackendAllowed(
-            documentId,
-            user.organizationId,
-            artifact.workstreamId
-          );
-        if (rejection) {
-          return conflictResponse(rejection);
-        }
+      const signedIntentResult = await resolveEffectiveSignedRunLoopIntent({
+        computeTargetId: resolvedComputeTargetId,
+        requesterUserId: user.id,
+        requesterOrganizationId: user.organizationId,
+        requesterClerkUserId: user.clerkId,
+        documentId,
+        body,
+      });
+      if (!signedIntentResult.ok) {
+        return signedIntentResult.response;
       }
+      const effectiveSignedUserIntent = signedIntentResult.userIntentSignature;
 
       const {
-        workstream,
         targetRepo,
         targetBranch: resolvedTargetBranch,
         contextRefs,
@@ -174,13 +174,22 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         resolvedAdditionalRepos
       );
 
+      const harness = await resolveLaunchHarness(
+        resolvedComputeTargetId,
+        user.organizationId,
+        {
+          clerkUserId: user.clerkId,
+          userId: user.id,
+        }
+      );
+
       const loopResponse = await loopsService.create(
         user.organizationId,
         user.id,
         {
           command,
+          harness,
           documentId,
-          workstreamId: workstream?.id,
           parentLoopId,
           computeTargetId: resolvedComputeTargetId,
           prompt,
@@ -189,13 +198,24 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
             : undefined,
           additionalRepos: resolvedAdditionalRepos,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
-          metadata: getLoopMetadata(body.desktopApiNamespace),
         }
       );
 
       const launchPromise = launchLoop(
         loopResponse.loopId,
-        user.organizationId
+        user.organizationId,
+        effectiveSignedUserIntent
+          ? {
+              desktopUserIntentSignature: {
+                commandId: effectiveSignedUserIntent.commandId,
+                signature: effectiveSignedUserIntent.signature,
+                signaturePayload: effectiveSignedUserIntent.signaturePayload,
+                publicKeyFingerprint:
+                  effectiveSignedUserIntent.publicKeyFingerprint,
+                body: effectiveSignedUserIntent.body as JsonValue,
+              },
+            }
+          : undefined
       ).catch((error) => {
         log.error("[run-loop] Failed to launch loop", {
           loopId: loopResponse.loopId,
@@ -213,3 +233,45 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
     }
   }
 );
+
+/**
+ * Resolves the harness a loop should launch with, enforcing the
+ * harness-selection rollback at this consumer boundary. The flag gates only the
+ * picker UI, but a persisted harness (a ComputeTarget's `selectedHarness` for
+ * Local, or `User.preferredHarness` for Cloud) outlives a flag-off rollback —
+ * so when the flag is off for the requesting user, a value saved during a
+ * flag-on session is coerced to the default harness (`parseSelectedHarness(null)`)
+ * rather than launched.
+ *
+ * Local: a resolved compute target supplies its per-row `selectedHarness`.
+ * Cloud: no compute target resolves (`cloud_resolved`), so the user-scoped
+ * `preferredHarness` is read instead. Returns undefined only when a resolved
+ * target cannot be found.
+ */
+async function resolveLaunchHarness(
+  resolvedComputeTargetId: string | null | undefined,
+  organizationId: string,
+  identity: HarnessSelectionIdentity
+): Promise<HarnessType | undefined> {
+  const harnessSelectionEnabled = await isHarnessSelectionEnabled(identity);
+
+  if (!resolvedComputeTargetId) {
+    const preferredHarness = await computePreferenceService.getPreferredHarness(
+      identity.userId,
+      organizationId
+    );
+    return parseSelectedHarness(
+      harnessSelectionEnabled ? preferredHarness : null
+    );
+  }
+
+  const resolvedComputeTarget = await computeTargetsService.findById(
+    resolvedComputeTargetId
+  );
+  if (!resolvedComputeTarget) {
+    return undefined;
+  }
+  return parseSelectedHarness(
+    harnessSelectionEnabled ? resolvedComputeTarget.selectedHarness : null
+  );
+}

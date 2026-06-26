@@ -4,8 +4,9 @@
  * Validates that readNdjsonLines correctly handles all standard NDJSON
  * reading scenarios using a mocked ReadableStream with controlled chunks.
  */
+
+import { readNdjsonLines } from "@repo/app/chat/lib/stream-utils";
 import { describe, expect, it } from "vitest";
-import { readNdjsonLines } from "@/lib/engineer/stream-utils";
 
 // ---------------------------------------------------------------------------
 // Helpers

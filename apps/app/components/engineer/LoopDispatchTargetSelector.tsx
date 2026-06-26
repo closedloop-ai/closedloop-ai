@@ -63,8 +63,8 @@ export function LoopDispatchTargetSelector({
                       className={cn(
                         "mr-2 inline-block size-2 rounded-full",
                         target.status === "online"
-                          ? "bg-emerald-500"
-                          : "bg-red-500"
+                          ? "bg-success"
+                          : "bg-destructive"
                       )}
                     />
                     <span className="truncate text-sm">

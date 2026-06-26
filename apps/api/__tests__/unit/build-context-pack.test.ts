@@ -44,6 +44,10 @@ vi.mock("@/lib/loops/loop-event-bus", () => ({
   loopEventBus: { publish: vi.fn() },
 }));
 
+vi.mock("@/lib/loops/loop-commands", () => ({
+  getCommandHandler: vi.fn(),
+}));
+
 vi.mock("@/app/documents/attachments-service", () => ({
   ATTACHMENT_SIGNED_URL_MAX_FILES: 20,
   attachmentsService: {
@@ -59,12 +63,14 @@ import { attachmentsService } from "@/app/documents/attachments-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 
 import { loopsService } from "@/app/loops/service";
+import { getCommandHandler } from "@/lib/loops/loop-commands";
 import {
   buildContextPack,
   buildContextPackInMemory,
   fetchAttachmentsForContextPack,
 } from "@/lib/loops/loop-context-pack";
 import { uploadContextPack } from "@/lib/loops/loop-state";
+import { wrapUntrustedLoopArtifactContent } from "@/lib/loops/untrusted-loop-input";
 
 const mockAttachmentsService = attachmentsService as unknown as {
   findByIdSimple: ReturnType<typeof vi.fn>;
@@ -84,11 +90,17 @@ const mockLoopsService = loopsService as unknown as {
   findById: ReturnType<typeof vi.fn>;
   updateStatus: ReturnType<typeof vi.fn>;
 };
+const mockGetCommandHandler = getCommandHandler as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 describe("buildContextPack", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUploadContextPack.mockResolvedValue("s3://mock-key");
+    mockGetCommandHandler.mockImplementation((command: LoopCommand) => ({
+      includePrimaryArtifact: command !== LoopCommand.Plan,
+    }));
   });
 
   it("includes feature-typed document via contextRef with sourceType FEATURE", async () => {
@@ -135,7 +147,13 @@ describe("buildContextPack", () => {
       id: "feature-1",
       type: "FEATURE",
       title: "User login flow",
-      content: "Implement the user login flow with OAuth",
+      content: wrapUntrustedLoopArtifactContent(
+        "Implement the user login flow with OAuth",
+        {
+          artifactType: DocumentType.Feature,
+          title: "User login flow",
+        }
+      ),
     });
   });
 
@@ -289,7 +307,12 @@ describe("buildContextPack", () => {
 
     expect(contextPack.artifacts).toHaveLength(1);
     expect(contextPack.artifacts[0].type).toBe(DocumentType.Prd);
-    expect(contextPack.artifacts[0].content).toBe("# PRD Content");
+    expect(contextPack.artifacts[0].content).toBe(
+      wrapUntrustedLoopArtifactContent("# PRD Content", {
+        artifactType: DocumentType.Prd,
+        title: "My PRD",
+      })
+    );
   });
 
   it("attaches raw plan state for desktop EXECUTE on implementation plans", async () => {
@@ -411,6 +434,9 @@ describe("fetchAttachmentsForContextPack", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetCommandHandler.mockImplementation((command: LoopCommand) => ({
+      includePrimaryArtifact: command !== LoopCommand.Plan,
+    }));
   });
 
   it("calls listWithSignedUrlsByDocument for feature-typed contextRef", async () => {

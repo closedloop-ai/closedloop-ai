@@ -1,6 +1,9 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
+import { usePath } from "@repo/navigation/use-path";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { HealthCheckDialog } from "@/components/engineer/HealthCheckDialog";
@@ -9,7 +12,7 @@ import {
   useComputeTargetHealthCheckSnapshot,
   useComputeTargets,
 } from "@/hooks/queries/use-compute-targets";
-import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
+import { shouldRunAmbientDesktopBootstrap } from "@/lib/engineer/ambient-desktop-routes";
 import {
   CLOUD_RELAY_ENABLED,
   COMPUTE_TARGETS_QUERY_OPTIONS,
@@ -22,6 +25,7 @@ import {
 import { resolveTargetLabel } from "@/lib/engineer/routing-label";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { isHealthCheckCacheEntryFresh } from "@/lib/system-check/health-check-freshness";
+import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "@/lib/system-check/plugin-auto-update";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 import { useSystemCheckEligibility } from "@/lib/system-check/use-system-check-eligibility";
 
@@ -46,10 +50,25 @@ function getAmbientRelayTargetId(
 }
 
 export function SystemCheckBootstrap() {
+  const pathname = usePath();
+  if (!shouldRunAmbientDesktopBootstrap(pathname)) {
+    return null;
+  }
+
+  return <SystemCheckBootstrapContent />;
+}
+
+function SystemCheckBootstrapContent() {
   const { isLoading, shouldRunSystemCheck } = useSystemCheckEligibility();
   const preLoopGate = useOptionalPreLoopSystemCheckGate();
   const routing = useEngineerRoutingSelection();
   const queryClient = useQueryClient();
+  const pluginAutoUpdateFlag = useFeatureFlag(
+    PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY
+  );
+  const pluginAutoUpdateFlagEnabled =
+    Boolean(env.NEXT_PUBLIC_POSTHOG_KEY) &&
+    pluginAutoUpdateFlag?.enabled === true;
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
   const { data: targets = [] } = useComputeTargets({
     ...COMPUTE_TARGETS_QUERY_OPTIONS,
@@ -65,8 +84,16 @@ export function SystemCheckBootstrap() {
       staleTime: LATEST_RELEASE_STALE_TIME_MS,
     });
   const latestVersion = latestRelease?.version ?? null;
+  const relayTarget = relayTargetId
+    ? targets.find((target) => target.id === relayTargetId)
+    : null;
+  const isOwnedTarget =
+    routing.mode === EngineerRoutingMode.LocalElectron ||
+    (Boolean(relayTarget) && !relayTarget?.ownerName);
+  const pluginAutoUpdateEnabled = pluginAutoUpdateFlagEnabled && isOwnedTarget;
   const persistedSnapshotQuery = useComputeTargetHealthCheckSnapshot(
     relayTargetId,
+    pluginAutoUpdateEnabled,
     {
       enabled: prefetchEnabled && Boolean(relayTargetId),
       staleTime: 60_000,
@@ -85,9 +112,11 @@ export function SystemCheckBootstrap() {
         checkedAt: persistedSnapshot?.checkedAt ?? 0,
         expectedMcpUrl: persistedSnapshot?.expectedMcpUrl ?? null,
         latestVersion: persistedSnapshot?.latestVersion ?? null,
+        pluginAutoUpdateEnabled: persistedSnapshot?.pluginAutoUpdateEnabled,
       },
       expectedMcpUrl,
       latestVersion,
+      pluginAutoUpdateEnabled,
     });
 
   useEffect(() => {
@@ -98,6 +127,7 @@ export function SystemCheckBootstrap() {
     const options = healthCheckOptions(targetKey, expectedMcpUrl, {
       latestVersion,
       relayTargetId,
+      pluginAutoUpdateEnabled,
     });
     const snapshotUpdatedAt = persistedSnapshot.checkedAt.getTime();
     const existingState = queryClient.getQueryState<HealthCheckResponse>(
@@ -118,6 +148,7 @@ export function SystemCheckBootstrap() {
     hasFreshPersistedSnapshot,
     latestVersion,
     persistedSnapshot,
+    pluginAutoUpdateEnabled,
     queryClient,
     relayTargetId,
     targetKey,
@@ -139,6 +170,7 @@ export function SystemCheckBootstrap() {
         healthCheckOptions(targetKey, expectedMcpUrl, {
           latestVersion,
           relayTargetId,
+          pluginAutoUpdateEnabled,
         })
       )
       .catch(() => undefined);
@@ -148,6 +180,7 @@ export function SystemCheckBootstrap() {
     isLatestReleaseLoading,
     latestVersion,
     persistedSnapshotQuery.isLoading,
+    pluginAutoUpdateEnabled,
     prefetchEnabled,
     queryClient,
     relayTargetId,
@@ -165,8 +198,10 @@ export function SystemCheckBootstrap() {
 
   return (
     <HealthCheckDialog
+      isOwnedTarget={isOwnedTarget}
       key={targetKey}
       latestVersionOverride={isLatestReleaseLoading ? undefined : latestVersion}
+      pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
       relayTargetId={relayTargetId}
       targetKey={targetKey}
       targetLabel={targetLabel}

@@ -14,9 +14,8 @@ import {
  * Document generation-status service.
  *
  * Owns single-document generation-status reads + dismissals. Status is
- * derived from the most recent `gitHubActionRun` whose
- * `triggerData.documentId` matches and from `loop` rows for the document;
- * `pickBestStatus` reconciles them with active > terminal > none semantics.
+ * derived from `loop` rows for the document; `pickBestStatus` reconciles them
+ * with active > terminal > none semantics.
  *
  * Dismissed failures (rows in `documentGenerationStatusDismissal`) are
  * suppressed once per `runKey` so the same FAILURE state stops surfacing
@@ -27,9 +26,8 @@ import {
  */
 export const documentGenerationStatusService = {
   /**
-   * Resolve the active generation status for a document by reconciling
-   * GitHub Actions runs and Loop records, then suppressing any user-dismissed
-   * failure.
+   * Resolve the active generation status for a document from its Loop records,
+   * then suppress any user-dismissed failure.
    */
   async getGenerationStatus(
     documentId: string,
@@ -38,7 +36,7 @@ export const documentGenerationStatusService = {
     const artifact = await withDb((db) =>
       db.artifact.findUnique({
         where: { id: documentId, organizationId },
-        select: { id: true, workstreamId: true, type: true },
+        select: { id: true, type: true },
       })
     );
 
@@ -46,10 +44,7 @@ export const documentGenerationStatusService = {
       return null;
     }
 
-    const status = await fetchBestGenerationStatusForDocument(
-      artifact.id,
-      artifact.workstreamId
-    );
+    const status = await fetchBestGenerationStatusForDocument(artifact.id);
     const dismissedRunKey = await getDismissedFailureRunKey(artifact.id);
 
     return suppressDismissedFailure(status, dismissedRunKey);
@@ -70,7 +65,7 @@ export const documentGenerationStatusService = {
     const artifact = await withDb((db) =>
       db.artifact.findUnique({
         where: { id: documentId, organizationId },
-        select: { id: true, workstreamId: true, type: true },
+        select: { id: true, type: true },
       })
     );
 
@@ -78,10 +73,7 @@ export const documentGenerationStatusService = {
       return null;
     }
 
-    const status = await fetchBestGenerationStatusForDocument(
-      artifact.id,
-      artifact.workstreamId
-    );
+    const status = await fetchBestGenerationStatusForDocument(artifact.id);
     const currentRunKey = status.runKey ?? getGenerationStatusRunKey(status);
 
     const canDismiss =

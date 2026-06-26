@@ -3,10 +3,13 @@
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { parseComputeTargetConflict } from "@repo/app/loops/lib/compute-target-conflict";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useRef, useState } from "react";
 import { useDocumentRunLoop } from "@/hooks/document-editing/use-document-run-loop";
-import { parseComputeTargetConflict } from "@/lib/compute-target-conflict";
+import { refreshComputeTargetForReplay } from "@/hooks/queries/compute-target-replay-refresh";
+import { useApiClient } from "@/hooks/use-api-client";
 
 type UsePrdActionsConfig = {
   documentId: string;
@@ -36,6 +39,8 @@ type UsePrdActionsConfig = {
  * **Important:** Request changes returns a Promise<boolean> for modal handling.
  */
 export function usePrdActions({ documentId }: UsePrdActionsConfig) {
+  const apiClient = useApiClient();
+  const queryClient = useQueryClient();
   const {
     runLoop,
     makeRequestChangesHandler,
@@ -53,6 +58,7 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
   const [decomposeTargetState, setDecomposeTargetState] = useState<{
     availableTargets: ComputeTargetConflictBody["availableTargets"];
   } | null>(null);
+  const lastDecomposeTargetStateRef = useRef<typeof decomposeTargetState>(null);
 
   /**
    * Request changes to the PRD via Loops.
@@ -94,7 +100,24 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
     );
   };
 
-  const handleDecomposeFeatures = (computeTargetId?: string) => {
+  const handleDecomposeFeatures = async (computeTargetId?: string) => {
+    if (computeTargetId) {
+      try {
+        await refreshComputeTargetForReplay(
+          apiClient,
+          queryClient,
+          computeTargetId
+        );
+      } catch (error) {
+        setDecomposeTargetState(lastDecomposeTargetStateRef.current);
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to refresh compute target before decomposition"
+        );
+        return;
+      }
+    }
     setPendingCommand(RunLoopCommand.Decompose);
     runLoop.mutate(
       { documentId, command: RunLoopCommand.Decompose, computeTargetId },
@@ -107,9 +130,11 @@ export function usePrdActions({ documentId }: UsePrdActionsConfig) {
           setPendingCommand(null);
           const conflict = parseComputeTargetConflict(error);
           if (conflict) {
-            setDecomposeTargetState({
+            const nextState = {
               availableTargets: conflict.availableTargets,
-            });
+            };
+            lastDecomposeTargetStateRef.current = nextState;
+            setDecomposeTargetState(nextState);
           } else {
             routeConflictError(error);
           }

@@ -1,9 +1,9 @@
 "use client";
 
+import { useCompleteWizard } from "@repo/app/onboarding/hooks/use-onboarding";
 import { Button } from "@repo/design-system/components/ui/button";
+import { useNavigation } from "@repo/navigation/use-navigation";
 import { Check, Loader2, PartyPopper } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useCompleteWizard } from "@/hooks/queries/use-onboarding";
 
 type CompleteStepProps = {
   readonly createdTeamName: string | null;
@@ -20,16 +20,22 @@ export function CompleteStep({
   createdProjectId,
   onComplete,
 }: CompleteStepProps) {
-  const router = useRouter();
+  const navigation = useNavigation();
   const completeWizard = useCompleteWizard();
 
-  const handleFinish = async () => {
-    await completeWizard.mutateAsync({
-      createdTeamId: createdTeamId ?? undefined,
-      createdProjectId: createdProjectId ?? undefined,
-    });
-    onComplete?.();
-    router.push("/my-tasks?from=onboarding");
+  const handleFinish = () => {
+    completeWizard.mutate(
+      {
+        createdTeamId: createdTeamId ?? undefined,
+        createdProjectId: createdProjectId ?? undefined,
+      },
+      {
+        onSuccess: () => {
+          onComplete?.();
+          navigation.navigate("/my-tasks?from=onboarding");
+        },
+      }
+    );
   };
 
   return (
@@ -48,7 +54,7 @@ export function CompleteStep({
       <div className="w-full max-w-xs space-y-2">
         {createdTeamName && (
           <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-left text-sm">
-            <Check className="h-4 w-4 shrink-0 text-green-500" />
+            <Check className="h-4 w-4 shrink-0 text-success" />
             <span>
               Team: <span className="font-medium">{createdTeamName}</span>
             </span>
@@ -56,7 +62,7 @@ export function CompleteStep({
         )}
         {createdProjectName && (
           <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-left text-sm">
-            <Check className="h-4 w-4 shrink-0 text-green-500" />
+            <Check className="h-4 w-4 shrink-0 text-success" />
             <span>
               Project: <span className="font-medium">{createdProjectName}</span>
             </span>

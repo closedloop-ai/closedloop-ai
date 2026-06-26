@@ -1,12 +1,23 @@
 import type { JsonValue } from "@repo/api/src/types/common";
-import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
+import type {
+  DesktopCommandEventType,
+  DesktopHelloNackReason,
+} from "@repo/api/src/types/compute-target";
+import type { ApiKeySource } from "@repo/database";
 import type { Server } from "socket.io";
 
 export const PROTOCOL_VERSION = "1";
 
+/** Maximum time (ms) any single async operation may take during the hello handshake. */
+export const HELLO_OPERATION_TIMEOUT_MS = 5000;
+
 export type DesktopAuthContext = {
   organizationId: string;
   userId: string;
+  clerkUserId?: string | null;
+  apiKeySource: ApiKeySource;
+  apiKeyGatewayId: string | null;
+  apiKeyBoundPublicKey: string | null;
 };
 
 export type DesktopHelloPayload = {
@@ -26,6 +37,7 @@ export type SocketConnectionContext = {
   targetId: string;
   organizationId: string;
   userId: string;
+  clerkUserId?: string | null;
   sessionId: string;
   pluginVersion?: string;
   unsubscribeOperations: () => void;
@@ -47,6 +59,14 @@ export type WireCommandPayload = {
   requiresApproval?: boolean;
   approvalReason?: string;
   streaming?: boolean;
+  signature?: string;
+  signaturePayload?: string;
+  publicKeyFingerprint?: string;
+};
+
+export type DesktopHelloNackPayload = {
+  reason: DesktopHelloNackReason;
+  message?: string;
 };
 
 export type Envelope<T> = T & {

@@ -1,13 +1,41 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @source "../**/*.{ts,tsx}";
+/* The shared app-core layer (@repo/app) lives in packages/app and is consumed
+   via node_modules symlinks, so Tailwind's automatic content detection can miss
+   it. Scan it explicitly so classes used only there (e.g. the document title's
+   text-3xl) are always generated. */
+@source "../../app/**/*.{ts,tsx}";
 
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
 
+.cl-mobile-only {
+  display: block;
+}
+
+.cl-desktop-block,
+.cl-desktop-table {
+  display: none;
+}
+
+@media (width >= 48rem) {
+  .cl-mobile-only {
+    display: none;
+  }
+
+  .cl-desktop-block {
+    display: block;
+  }
+
+  .cl-desktop-table {
+    display: table;
+  }
+}
+
 :root {
-  --background: oklch(0.985 0.001 267);
+  --background: oklch(0.989 0 0);
   --foreground: oklch(0.232 0 0);
   --card: oklch(0.989 0 0);
   --card-foreground: oklch(0.232 0 0);
@@ -35,11 +63,26 @@
   --input: oklch(1 0 0 / 0);
   --input-border: oklch(0.5 0.008 267 / 0.14);
   --ring: oklch(0.861 0.04 250);
+  /* Categorical palette — 10 hues spread around the wheel so series stay
+     distinguishable before the sequence repeats. chart-2 (blue) and chart-3
+     (green) were near-white (L ~0.91) and washed out on the light surface;
+     dropped lightness + raised chroma so they read as real colors. */
   --chart-1: oklch(0.554 0.214 266.2);
-  --chart-2: oklch(0.923 0.056 211);
-  --chart-3: oklch(0.908 0.115 148.6);
+  --chart-2: oklch(0.74 0.13 221);
+  --chart-3: oklch(0.72 0.16 148.6);
   --chart-4: oklch(0.902 0.128 87.8);
   --chart-5: oklch(0.756 0.162 38);
+  --chart-6: oklch(0.62 0.21 25);
+  --chart-7: oklch(0.66 0.2 330);
+  --chart-8: oklch(0.55 0.22 295);
+  --chart-9: oklch(0.7 0.13 195);
+  --chart-10: oklch(0.78 0.17 125);
+  /* Chart axis line + tick-label colors. Dedicated tokens (not opacity-shifted
+     border/muted-foreground) so the axis baseline and its labels can be tuned
+     independently of the grid/text tokens. Axis lines render; tick marks are
+     hidden in the chart components. */
+  --chart-axis: oklch(0.75 0.008 267);
+  --chart-axis-label: oklch(0.5 0.006 267);
   --radius: 0.5rem;
   --sidebar: oklch(0.96 0.005 267);
   --sidebar-foreground: oklch(0.253 0 0);
@@ -54,6 +97,12 @@
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
   --highlight: rgb(0 89 255 / 0.15);
+  --surface-0: oklch(0.982 0.002 267);
+  --surface-1: oklch(0.975 0.002 267);
+  --surface-2: oklch(0.962 0.004 267);
+  --surface-3: oklch(0.942 0.006 267);
+  --surface-4: oklch(0.91 0.008 267);
+  --surface-5: oklch(0.87 0.01 267);
 
   /* Progress badge (agent status pill): fill, stroke, text. Same in dark (cascade from :root). */
   --progress-badge-bg: oklch(0.94 0.035 317.076);
@@ -69,7 +118,7 @@
 .dark {
   --background: oklch(0.24 0.005 270);
   --foreground: oklch(0.948 0.002 270);
-  --card: oklch(0.285 0.012 270);
+  --card: oklch(0.255 0.008 270);
   --card-foreground: oklch(0.943 0 0);
   --popover: oklch(0.27 0.007 270);
   --popover-foreground: oklch(0.943 0 0);
@@ -95,11 +144,21 @@
   --input: oklch(0.27 0.007 270);
   --input-border: oklch(0.5 0.01 270 / 0.25);
   --ring: oklch(0.5 0.1 270 / 0.8);
-  --chart-1: oklch(0.385 0.158 266);
-  --chart-2: oklch(0.437 0.081 221);
-  --chart-3: oklch(0.43 0.093 158);
-  --chart-4: oklch(0.473 0.099 119);
-  --chart-5: oklch(0.4 0.094 52);
+  /* Dark-mode categorical palette: brightened (L ~0.66–0.80) and re-saturated
+     so series read clearly against the dark background — the prior values
+     (L ~0.4) sat too close to the card/background and looked muddy. */
+  --chart-1: oklch(0.66 0.2 266);
+  --chart-2: oklch(0.74 0.14 221);
+  --chart-3: oklch(0.73 0.15 158);
+  --chart-4: oklch(0.8 0.17 119);
+  --chart-5: oklch(0.74 0.16 52);
+  --chart-6: oklch(0.68 0.2 25);
+  --chart-7: oklch(0.72 0.18 330);
+  --chart-8: oklch(0.66 0.2 295);
+  --chart-9: oklch(0.78 0.12 195);
+  --chart-10: oklch(0.82 0.17 125);
+  --chart-axis: oklch(0.6 0.008 267);
+  --chart-axis-label: oklch(0.72 0.004 270);
   --sidebar: oklch(0.22 0 0);
   --sidebar-foreground: oklch(0.887 0 0);
   --sidebar-primary: oklch(0.476 0.199 270);
@@ -113,6 +172,12 @@
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
   --highlight: rgb(0 89 255 / 0.25);
+  --surface-0: oklch(0.24 0.005 270);
+  --surface-1: oklch(0.285 0.012 270);
+  --surface-2: oklch(0.31 0.013 270);
+  --surface-3: oklch(0.335 0.014 270);
+  --surface-4: oklch(0.38 0.015 270);
+  --surface-5: oklch(0.43 0.016 270);
 
   --progress-badge-bg: oklch(0.3 0.04 317.076);
   --progress-badge-border: oklch(0.3 0.04 317.076);
@@ -139,6 +204,11 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  --color-chart-10: var(--chart-10);
+  --color-chart-9: var(--chart-9);
+  --color-chart-8: var(--chart-8);
+  --color-chart-7: var(--chart-7);
+  --color-chart-6: var(--chart-6);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -175,6 +245,12 @@
   --color-highlight: var(--highlight);
   --color-ai: var(--ai);
   --color-ai-foreground: var(--ai-foreground);
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-4: var(--surface-4);
+  --color-surface-5: var(--surface-5);
   --shadow-inset: var(--shadow-inset);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -182,7 +258,6 @@
   --radius-xl: calc(var(--radius) + 4px);
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
-
   @keyframes accordion-down {
     from {
       height: 0;
@@ -273,4 +348,37 @@
   --tw-prose-invert-pre-bg: var(--color-background);
   --tw-prose-invert-th-borders: var(--color-border);
   --tw-prose-invert-td-borders: var(--color-border);
+}
+
+@layer components {
+  .surface-panel {
+    @apply bg-surface-1 border-border rounded-xl border;
+  }
+}
+
+/*
+ * Overlay-style scrollbar: thin rounded thumb, no visible track. The thumb is
+ * derived from currentColor so it adapts to the surrounding text color in both
+ * themes, and stays subtle until hovered. Keeps the element scrollable.
+ */
+@utility scrollbar-overlay {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, currentColor 22%, transparent)
+    transparent;
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, currentColor 22%, transparent);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, currentColor 38%, transparent);
+  }
 }

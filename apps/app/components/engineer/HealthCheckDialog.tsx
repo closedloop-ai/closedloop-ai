@@ -1,5 +1,6 @@
 "use client";
 
+import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -30,7 +31,6 @@ import { toast } from "sonner";
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
-import { useLatestElectronRelease } from "@/hooks/queries/use-electron-release";
 import type {
   CheckResult,
   HealthCheckResponse,
@@ -65,8 +65,10 @@ type HealthCheckDialogProps = Readonly<{
   targetLabel?: string;
   mode?: HealthCheckDialogMode;
   initialData?: HealthCheckResponse;
+  isOwnedTarget?: boolean;
   relayTargetId?: string | null;
   latestVersionOverride?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
   onCancel?: () => void;
   onResolvedAfterRecheck?: () => void;
   onRecheckClick?: () => void;
@@ -114,8 +116,10 @@ export function HealthCheckDialog({
   targetLabel,
   mode = "ambient",
   initialData,
+  isOwnedTarget = true,
   relayTargetId = null,
   latestVersionOverride,
+  pluginAutoUpdateEnabled = false,
   onCancel,
   onResolvedAfterRecheck,
   onRecheckClick,
@@ -157,13 +161,24 @@ export function HealthCheckDialog({
     latestVersionOverride === undefined
       ? (latestRelease?.version ?? null)
       : latestVersionOverride;
+  let systemCheckTargetKind: "local" | "owned_relay" | "shared_relay" = "local";
+  if (relayTargetId) {
+    systemCheckTargetKind = isOwnedTarget ? "owned_relay" : "shared_relay";
+  }
   const healthCheckQueryOptions = useMemo(
     () =>
       healthCheckOptions(targetKey, expectedMcpUrl, {
         latestVersion,
         relayTargetId,
+        pluginAutoUpdateEnabled,
       }),
-    [expectedMcpUrl, latestVersion, relayTargetId, targetKey]
+    [
+      expectedMcpUrl,
+      latestVersion,
+      pluginAutoUpdateEnabled,
+      relayTargetId,
+      targetKey,
+    ]
   );
 
   // Client-only mount flag — avoids SSR/hydration mismatch
@@ -420,10 +435,13 @@ export function HealthCheckDialog({
   const showWorktreeSetup =
     worktreeCheck && !worktreeCheck.passed && revealedCount >= requiredCount;
 
-  // claude-plugins check failed — show inline install guidance (only after it's revealed)
-  const pluginCheck = data?.checks?.find((c) => c.id === "claude-plugins");
+  // Closedloop plugin check failed — show inline install/enable guidance after reveal.
+  const pluginCheckFailed = data?.checks?.some(
+    (c) =>
+      (c.id === "claude-plugins" || c.id.startsWith("plugin-")) && !c.passed
+  );
   const showPluginGuidance =
-    pluginCheck && !pluginCheck.passed && revealedCount >= requiredCount;
+    pluginCheckFailed && revealedCount >= requiredCount;
 
   // claude-cli check failed — show rich debug info (only after it's revealed)
   const claudeCliCheck = data?.checks?.find((c) => c.id === "claude-cli");
@@ -463,7 +481,7 @@ export function HealthCheckDialog({
 
         {showSuccess ? (
           <div className="fade-in zoom-in-95 flex animate-in flex-col items-center justify-center gap-3 py-8 duration-300">
-            <CheckCircle2 className="size-10 text-emerald-500" />
+            <CheckCircle2 className="size-10 text-success" />
             <p className="font-medium text-foreground text-sm">
               All pre-checks passed
             </p>
@@ -485,7 +503,9 @@ export function HealthCheckDialog({
                 })}
                 checks={renderableChecks}
                 isLoading={showLoadingChecks}
+                pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
                 revealedCount={revealedCount}
+                targetKind={systemCheckTargetKind}
               />
             </div>
 
@@ -522,6 +542,9 @@ export function HealthCheckDialog({
   );
 }
 
+const CLAUDE_PLUGIN_INSTALL_COMMAND =
+  "/bin/bash -c 'set -e && install_script=\"$(mktemp)\" && trap '\\''rm -f \"$install_script\"'\\'' EXIT && curl -fsSL https://raw.githubusercontent.com/closedloop-ai/claude-plugins/main/install.sh -o \"$install_script\" && /bin/bash \"$install_script\"'";
+
 function PluginInstallGuidance() {
   return (
     <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
@@ -530,12 +553,11 @@ function PluginInstallGuidance() {
         <p className="font-medium text-sm">Install Claude Code plugins</p>
       </div>
       <p className="text-muted-foreground text-xs">
-        Required ClosedLoop plugins are not yet installed. Run the following
-        command in your terminal to install them:
+        Required Closedloop plugins are not installed at user scope or are not
+        enabled. Run the installer in your terminal:
       </p>
       <p className="select-all rounded bg-muted px-2 py-1 font-mono text-[11px]">
-        claude plugin install code@closedloop-ai self-learning@closedloop-ai
-        judges@closedloop-ai code-review@closedloop-ai platform@closedloop-ai
+        {CLAUDE_PLUGIN_INSTALL_COMMAND}
       </p>
     </div>
   );

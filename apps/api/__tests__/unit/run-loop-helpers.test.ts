@@ -8,8 +8,10 @@
  *                 GitHub default branch is the canonical choice and is supplied
  *                 by the caller; project-stored branches are ignored)
  *
- * Also verifies contextRefs construction, workstream resolution, and
- * parentLoopId lookup gating on handler.requiresParent.
+ * Also verifies contextRefs construction and parentLoopId lookup gating on
+ * handler.requiresParent. Workstream-related fixtures were removed in
+ * PLN-787; resolveLoopContext now reads `artifact.project` and
+ * `artifact.sourcePrd` directly rather than looking up a workstream.
  */
 
 import {
@@ -18,20 +20,13 @@ import {
   PullRequestState,
 } from "@repo/api/src/types/document";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
-import { documentWorkstreamService } from "@/app/documents/workstream-service";
 
 // --- Mocks (must come before imports) ---
 
 vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock("@/app/documents/workstream-service", () => ({
-  documentWorkstreamService: {
-    findOrCreateWorkstream: vi.fn(),
-  },
 }));
 
 vi.mock("@/app/documents/document-pull-request-service", () => ({
@@ -56,7 +51,6 @@ vi.mock("@/app/teams/service", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import {
   resolveEvaluateCodeBranchForRunLoop,
   resolveEvaluateCodeTargetBranch,
@@ -67,9 +61,6 @@ import { loopsService } from "@/app/loops/service";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
-const mockArtifactsService = documentWorkstreamService as unknown as {
-  findOrCreateWorkstream: MockFn;
-};
 const mockDocumentPullRequestService =
   documentPullRequestService as unknown as {
     getDocumentPullRequests: MockFn;
@@ -83,32 +74,43 @@ const mockLoopsService = loopsService as unknown as {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+function snapshotFor(
+  targetRepo: string | null | undefined,
+  targetBranch: string | null | undefined
+) {
+  if (!targetRepo) {
+    return { repositories: [], source: "none" };
+  }
+  return {
+    repositories: [
+      {
+        fullName: targetRepo,
+        role: "primary",
+        position: 0,
+        ...(targetBranch ? { branch: targetBranch } : {}),
+      },
+    ],
+    source: "project_defaults",
+  };
+}
+
 function buildArtifact(
   overrides: Partial<{
     targetRepo: string | null;
     targetBranch: string | null;
-    workstream: unknown;
+    project: unknown;
+    sourcePrd: unknown;
   }> = {}
 ) {
+  const { targetRepo, targetBranch, project, sourcePrd, ...rest } = overrides;
   return {
     id: "artifact-1",
     organizationId: "org-1",
-    targetRepo: null,
-    targetBranch: null,
-    workstream: null,
-    ...overrides,
-  };
-}
-
-function buildWorkstream(
-  projectSettings: Record<string, unknown> = {}
-): NonNullable<ReturnType<typeof buildArtifact>["workstream"]> {
-  return {
-    id: "ws-1",
-    project: {
-      id: "project-1",
-      settings: projectSettings,
-    },
+    project:
+      project === undefined ? { id: "project-1", settings: {} } : project,
+    sourcePrd: sourcePrd === undefined ? null : sourcePrd,
+    repositorySnapshot: snapshotFor(targetRepo, targetBranch),
+    ...rest,
   };
 }
 
@@ -118,9 +120,10 @@ function buildSource(
   return {
     id: "source-1",
     type: DocumentType.Prd,
-    targetRepo: undefined as string | undefined,
-    targetBranch: undefined as string | undefined,
-    ...overrides,
+    repositorySnapshot: snapshotFor(
+      overrides.targetRepo,
+      overrides.targetBranch
+    ),
   };
 }
 
@@ -153,11 +156,6 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
 
   it("uses body.repo.fullName when provided", async () => {
     const artifact = buildArtifact({ targetRepo: "artifact/repo" });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: buildSource({ targetRepo: "source/repo" }),
-    });
-
     const result = await resolveLoopContext(
       artifact as any,
       { repo: { fullName: "body/repo", branch: "main" }, command: "plan" },
@@ -171,12 +169,10 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
   });
 
   it("falls back to source.targetRepo when artifact has no targetRepo", async () => {
-    const artifact = buildArtifact({ targetRepo: null });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: buildSource({ targetRepo: "source/repo" }),
+    const artifact = buildArtifact({
+      targetRepo: null,
+      sourcePrd: buildSource({ targetRepo: "source/repo" }),
     });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -189,40 +185,8 @@ describe("resolveLoopContext — targetRepo fallback chain", () => {
     expect(result.targetRepo).toBe("source/repo");
   });
 
-  it("falls back to legacy projectSettings.defaultRepository.repoFullName when team pool is empty", async () => {
-    // Pre-migration project: team pool empty so the resolver picks up the
-    // legacy `defaultRepository` for primary fullName.
-    const artifact = buildArtifact({ targetRepo: null });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream({
-        defaultRepository: {
-          repoId: "repo-id-1",
-          repoFullName: "project/default-repo",
-          branch: "develop",
-        },
-      }),
-      source: buildSource(), // no targetRepo
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.targetRepo).toBe("project/default-repo");
-  });
-
   it("returns undefined targetRepo when all fallbacks are exhausted", async () => {
     const artifact = buildArtifact({ targetRepo: null });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(), // empty settings — no defaultRepository
-      source: null,
-    });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -247,11 +211,6 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
 
   it("uses body.repo.branch when provided", async () => {
     const artifact = buildArtifact({ targetBranch: "artifact-branch" });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: buildSource({ targetBranch: "source-branch" }),
-    });
-
     const result = await resolveLoopContext(
       artifact as any,
       {
@@ -268,12 +227,13 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
   });
 
   it("falls back to source.targetBranch when artifact has no targetBranch", async () => {
-    const artifact = buildArtifact({ targetBranch: null });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: buildSource({ targetBranch: "source-branch" }),
+    const artifact = buildArtifact({
+      targetBranch: null,
+      sourcePrd: buildSource({
+        targetRepo: "source/repo",
+        targetBranch: "source-branch",
+      }),
     });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -286,41 +246,8 @@ describe("resolveLoopContext — targetBranch fallback chain", () => {
     expect(result.targetBranch).toBe("source-branch");
   });
 
-  it("ignores any branch stored on projectSettings.defaultRepository (Q-002)", async () => {
-    // The pre-migration `defaultRepository.branch` is no longer honored — the
-    // resolver only consumes the repo identity. The fallback chain skips the
-    // project-level branch entirely and lands on the "main" last-resort guard.
-    const artifact = buildArtifact({ targetBranch: null });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream({
-        defaultRepository: {
-          repoId: "repo-id-1",
-          repoFullName: "project/default-repo",
-          branch: "develop",
-        },
-      }),
-      source: buildSource(), // no targetBranch
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.targetBranch).toBe("main");
-  });
-
   it("defaults to 'main' when all fallbacks are exhausted", async () => {
     const artifact = buildArtifact({ targetBranch: null });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(), // empty settings
-      source: null,
-    });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -344,13 +271,9 @@ describe("resolveLoopContext — contextRefs", () => {
   });
 
   it("includes source contextRef when source is present", async () => {
-    const artifact = buildArtifact();
-    const source = buildSource({ targetRepo: "org/repo" });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source,
+    const artifact = buildArtifact({
+      sourcePrd: buildSource({ targetRepo: "org/repo" }),
     });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -381,10 +304,6 @@ describe("resolveLoopContext — parentLoopId", () => {
 
   it("looks up parentLoopId when handler.requiresParent is true", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
     mockLoopsService.findLatestCompletedForArtifact.mockResolvedValue({
       id: "parent-loop-1",
     });
@@ -406,10 +325,6 @@ describe("resolveLoopContext — parentLoopId", () => {
 
   it("prefers the latest state-bearing desktop parent when launching on desktop", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
     mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
       {
         id: "desktop-parent-1",
@@ -439,10 +354,6 @@ describe("resolveLoopContext — parentLoopId", () => {
 
   it("falls back to the latest completed parent when no state-bearing desktop loop exists", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
     mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
       null
     );
@@ -472,11 +383,6 @@ describe("resolveLoopContext — parentLoopId", () => {
 
   it("skips parentLoopId lookup when handler.requiresParent is false", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -497,10 +403,6 @@ describe("resolveLoopContext — parentLoopId", () => {
 
   it("returns undefined parentLoopId when no completed loop exists", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
     mockLoopsService.findLatestCompletedForArtifact.mockResolvedValue(null);
 
     const result = await resolveLoopContext(
@@ -527,10 +429,6 @@ describe("resolveLoopContext — additionalRepos inheritance", () => {
 
   it("inherits additionalRepos from parent loop on EXECUTE when body omits them", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
     mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
       null
     );
@@ -559,10 +457,6 @@ describe("resolveLoopContext — additionalRepos inheritance", () => {
 
   it("body.additionalRepos overrides parent loop additionalRepos", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
     mockLoopsService.findLatestStateBearingDesktopForArtifact.mockResolvedValue(
       null
     );
@@ -586,11 +480,6 @@ describe("resolveLoopContext — additionalRepos inheritance", () => {
 
   it("does not inherit when handler.requiresParent is false (e.g., PLAN)", async () => {
     const artifact = buildArtifact();
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: buildWorkstream(),
-      source: null,
-    });
-
     const result = await resolveLoopContext(
       artifact as any,
       { command: "plan" },
@@ -608,35 +497,6 @@ describe("resolveLoopContext — additionalRepos inheritance", () => {
 });
 
 // ---------------------------------------------------------------------------
-// workstream resolution
-// ---------------------------------------------------------------------------
-
-describe("resolveLoopContext — workstream", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("falls back to artifact.workstream when findOrCreateWorkstream returns null workstream", async () => {
-    const artifactWorkstream = buildWorkstream();
-    const artifact = buildArtifact({ workstream: artifactWorkstream });
-    mockArtifactsService.findOrCreateWorkstream.mockResolvedValue({
-      workstream: null,
-      source: null,
-    });
-
-    const result = await resolveLoopContext(
-      artifact as any,
-      { command: "plan" },
-      noParentHandler,
-      "org-1",
-      "user-1",
-      "artifact-1"
-    );
-
-    expect(result.workstream).toBe(artifactWorkstream);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // resolveEvaluateCodeTargetBranch — PR-gated EVALUATE_CODE
 // ---------------------------------------------------------------------------
@@ -658,6 +518,7 @@ function buildPullRequestInfo(
     externalLinkId: null,
     repoFullName: "o/r",
     ...overrides,
+    isDraft: overrides.isDraft ?? false,
   };
 }
 

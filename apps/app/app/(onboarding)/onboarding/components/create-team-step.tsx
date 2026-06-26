@@ -1,11 +1,11 @@
 "use client";
 
+import { useCreateTeam } from "@repo/app/teams/hooks/use-teams";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Check, Loader2, Users } from "lucide-react";
 import { useState } from "react";
-import { useCreateTeam } from "@/hooks/queries/use-teams";
 
 type CreateTeamStepProps = {
   readonly onNext: (teamId: string, teamName: string) => void;
@@ -25,8 +25,8 @@ export function CreateTeamStep({
   if (createdTeamId && createdTeamName) {
     return (
       <div className="flex flex-col items-center gap-4 py-8 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
-          <Check className="h-6 w-6 text-green-500" />
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
+          <Check className="h-6 w-6 text-success" />
         </div>
         <div className="space-y-1">
           <p className="font-semibold">Team created</p>
@@ -39,15 +39,17 @@ export function CreateTeamStep({
     );
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) {
       return;
     }
 
-    const team = await createTeam.mutateAsync({ name: trimmed });
-    onNext(team.id, team.name);
+    createTeam.mutate(
+      { name: trimmed },
+      { onSuccess: (team) => onNext(team.id, team.name) }
+    );
   };
 
   return (

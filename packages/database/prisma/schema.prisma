@@ -14,33 +14,6 @@ datasource db {
 // ENUMS
 // =============================================================================
 
-enum WorkstreamType {
-  FEATURE_DELIVERY
-  BUG_FIX
-  TECH_DEBT
-  SPIKE
-}
-
-enum WorkstreamState {
-  INITIATED
-  REQUIREMENTS_GENERATING
-  REQUIREMENTS_PENDING_APPROVAL
-  DESIGN_IN_PROGRESS
-  DESIGN_PENDING_APPROVAL
-  IMPLEMENTATION_PLANNING
-  IMPLEMENTATION_IN_PROGRESS
-  IMPLEMENTATION_PENDING_REVIEW
-  CODE_REVIEW_RUNNING
-  CODE_REVIEW_PENDING_APPROVAL
-  VISUAL_QA_RUNNING
-  VISUAL_QA_PENDING_APPROVAL
-  MERGING
-  DEPLOYED
-  COMPLETED
-  BLOCKED
-  CANCELLED
-}
-
 // Relationship types between entities (source → target, where source is the origin/cause)
 enum LinkType {
   PRODUCES // source produces target (PRD → Plan, Plan → PR, PR → Preview)
@@ -84,53 +57,10 @@ enum ApproverRole {
   STAKEHOLDER
 }
 
-enum WorkstreamEventType {
-  STATE_CHANGED
-  ARTIFACT_CREATED
-  ARTIFACT_UPDATED
-  APPROVAL_REQUESTED
-  APPROVAL_GRANTED
-  APPROVAL_REJECTED
-  REVISION_REQUESTED
-  LINEAR_ISSUE_CREATED
-  LINEAR_ISSUE_UPDATED
-  LINEAR_SUBTASK_CREATED
-  GITHUB_PR_CREATED
-  GITHUB_PR_MERGED
-  GITHUB_PR_CLOSED
-  GITHUB_PR_REVIEW_SUBMITTED
-  GITHUB_PR_COMMENT_ADDED
-  GITHUB_PR_LINKED
-  GITHUB_ACTION_TRIGGERED
-  GITHUB_ACTION_COMPLETED
-  GITHUB_CI_STATUS_CHANGED
-  SLACK_NOTIFICATION_SENT
-  COMMENT_ADDED
-  ASSIGNEE_CHANGED
-  BLOCKED
-  UNBLOCKED
-  LOOP_COMPLETED
-}
-
-enum LinearSyncStatus {
-  SYNCED
-  PENDING
-  ERROR
-}
-
 enum GitHubPRState {
   OPEN
   MERGED
   CLOSED
-}
-
-enum GitHubActionStatus {
-  PENDING
-  QUEUED
-  RUNNING
-  SUCCESS
-  FAILURE
-  CANCELLED
 }
 
 enum ChecksStatus {
@@ -144,12 +74,6 @@ enum ReviewDecision {
   APPROVED
   CHANGES_REQUESTED
   COMMENTED
-  DISMISSED
-}
-
-enum PRReviewCommentState {
-  PENDING
-  ADDRESSED
   DISMISSED
 }
 
@@ -194,6 +118,11 @@ enum LoopStatus {
   FAILED
   CANCELLED
   TIMED_OUT
+  // Deferred at dispatch because a linked blocking artifact is still
+  // non-terminal. Re-evaluated by the loop reconciliation cron, which
+  // transitions BLOCKED -> PENDING once every blocker resolves. Non-claimable
+  // (the orchestrator only claims PENDING loops) and non-terminal.
+  BLOCKED
 }
 
 enum LoopCommand {
@@ -213,6 +142,14 @@ enum LoopCommand {
   EVALUATE_FEATURE
 }
 
+// Discriminates how a SessionDetail row was produced: a synced desktop agent
+// run (DESKTOP_SYNC) vs. a materialized orchestration Loop (LOOP). Lets the
+// unified Sessions list tell the two apart. See FEA-1718 / PLN-921.
+enum SessionOrigin {
+  DESKTOP_SYNC
+  LOOP
+}
+
 enum CustomFieldType {
   TEXT
   NUMBER
@@ -224,7 +161,6 @@ enum CustomFieldType {
 
 enum CustomFieldEntityType {
   PROJECT
-  WORKSTREAM
   DOCUMENT
 }
 
@@ -243,6 +179,7 @@ enum LabelPosition {
 enum ThreadSource {
   NATIVE
   LIVEBLOCKS
+  GITHUB
 }
 
 enum ThreadStatus {
@@ -250,17 +187,50 @@ enum ThreadStatus {
   RESOLVED
 }
 
+enum ExternalCommentProvider {
+  GITHUB
+}
+
+enum GitHubCommentThreadKind {
+  REVIEW_THREAD
+  ISSUE_COMMENT
+}
+
+enum GitHubDiffSide {
+  LEFT
+  RIGHT
+}
+
+enum GitHubLegacyCommentState {
+  PENDING
+  ADDRESSED
+  DISMISSED
+}
+
 enum PreferredComputeMode {
   LOCAL
   CLOUD
+}
+
+// FEA-1684: Relation type for session↔PR links (deterministic extraction).
+// Shared with PRD-463 Stage 2 which adds PROBABILISTIC rows on top.
+enum SessionPrRelationType {
+  CREATED
+  REFERENCED
+}
+
+// FEA-1684: Source confidence tier for session↔PR links.
+enum SessionPrLinkSource {
+  DETERMINISTIC
 }
 
 // Kinds of first-class artifacts tracked in the `artifacts` parent table.
 // Added in Chunk 2a of PLN-321 alongside the Artifact/DocumentDetail models.
 enum ArtifactType {
   DOCUMENT
-  PULL_REQUEST
+  BRANCH
   DEPLOYMENT
+  SESSION
 }
 
 // Narrower classification for DOCUMENT-typed artifacts (carries values that
@@ -285,6 +255,13 @@ model PreviewSchema {
   @@map("preview_schemas")
 }
 
+model PreviewSchemaObservation {
+  schemaName      String   @id @map("schema_name")
+  firstObservedAt DateTime @default(now()) @map("first_observed_at") @db.Timestamptz
+
+  @@map("preview_schemas_observations")
+}
+
 model Organization {
   id                    String    @id @default(uuid(7)) @db.Uuid
   clerkId               String    @unique @map("clerk_id")
@@ -295,7 +272,6 @@ model Organization {
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
   settings              Json      @default("{}") // settings.computeMode deprecated -- use User.preferredComputeMode instead
-  publicDashboardToken  String?   @unique @map("public_dashboard_token")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
@@ -304,7 +280,6 @@ model Organization {
   teams                     Team[]
   artifactRatings           ArtifactRating[]
   projects                  Project[]
-  workstreams               Workstream[]
   artifacts                 Artifact[]
   githubInstallation        GitHubInstallation?
   loops                     Loop[]
@@ -317,6 +292,12 @@ model Organization {
   commentThreads            CommentThread[]
   agents                    Agent[]
   repoBootstrapConfigs      RepoBootstrapConfig[]
+  userPublicKeys            UserPublicKey[]
+  publicRepositories        PublicRepository[]
+  externalCommentAuthors    ExternalCommentAuthor[]
+  githubUserConnections     GitHubUserConnection[]
+  tags                      Tag[]
+  linearSubtasks            LinearSubtask[]
 
   @@map("organizations")
 }
@@ -340,6 +321,7 @@ model User {
   claudeApiKeySetAt        DateTime?             @map("claude_api_key_set_at")
   preferredComputeMode     PreferredComputeMode? @map("preferred_compute_mode")
   preferredComputeTargetId String?               @map("preferred_compute_target_id") @db.Uuid
+  preferredHarness         String?               @map("preferred_harness")
   createdAt                DateTime              @default(now()) @map("created_at")
   updatedAt                DateTime              @updatedAt @map("updated_at")
 
@@ -349,15 +331,15 @@ model User {
   teamMemberships             TeamMember[]
   artifactRatings             ArtifactRating[]
   favoriteProjects            FavoriteProject[]
+  favoriteArtifacts           FavoriteArtifact[]
   assignedProjects            Project[]                           @relation("ProjectAssignee")
   createdProjects             Project[]                           @relation("ProjectCreatedBy")
   assignedArtifacts           Artifact[]                          @relation("ArtifactAssignee")
   createdArtifacts            Artifact[]                          @relation("ArtifactCreatedBy")
   approvedDocumentDetails     DocumentDetail[]                    @relation("DocumentDetailApprover")
-  createdWorkstreams          Workstream[]                        @relation("WorkstreamCreatedBy")
-  assignedWorkstreams         Workstream[]                        @relation("WorkstreamAssignee")
   loops                       Loop[]
   computeTargets              ComputeTarget[]
+  sessionDetails              SessionDetail[]
   chatSessions                ChatSession[]
   judgeHumanScores            JudgeHumanScore[]
   createdCustomFields         CustomField[]
@@ -365,6 +347,10 @@ model User {
   dismissedGenerationStatuses DocumentGenerationStatusDismissal[]
   createdAgents               Agent[]                             @relation("AgentCreatedBy")
   agentVersionChanges         AgentVersion[]                      @relation("AgentVersionChangedBy")
+  publicKeys                  UserPublicKey[]
+  externalCommentAuthors      ExternalCommentAuthor[]
+  githubUserConnections       GitHubUserConnection[]
+  createdTags                 Tag[]                               @relation("TagCreatedBy")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -375,27 +361,47 @@ model User {
   @@map("users")
 }
 
-model ComputeTarget {
-  id                  String   @id @default(uuid(7)) @db.Uuid
-  organizationId      String   @map("organization_id") @db.Uuid
-  userId              String   @map("user_id") @db.Uuid
-  machineName         String   @map("machine_name")
-  platform            String
-  capabilities        Json     @default("{}")
-  supportedOperations Json     @default("[]") @map("supported_operations")
-  lastSeenAt          DateTime @default(now()) @map("last_seen_at")
-  isOnline            Boolean  @default(false) @map("is_online")
-  isSharedWithOrg     Boolean  @default(false) @map("is_shared_with_org")
-  gatewayId           String?  @map("gateway_id")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
+model UserPublicKey {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  publicKeyBase64 String   @map("public_key_base64")
+  fingerprint     String
+  createdAt       DateTime @default(now()) @map("created_at")
 
-  organization    Organization              @relation(fields: [organizationId], references: [id])
-  user            User                      @relation(fields: [userId], references: [id])
-  preferringUsers User[]                    @relation("UserPreferredComputeTarget")
-  desktopCommands DesktopCommand[]
-  loops           Loop[]
-  healthCheck     ComputeTargetHealthCheck?
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@index([organizationId])
+  @@map("user_public_keys")
+}
+
+model ComputeTarget {
+  id                     String    @id @default(uuid(7)) @db.Uuid
+  organizationId         String    @map("organization_id") @db.Uuid
+  userId                 String    @map("user_id") @db.Uuid
+  machineName            String    @map("machine_name")
+  platform               String
+  capabilities           Json      @default("{}")
+  supportedOperations    Json      @default("[]") @map("supported_operations")
+  lastSeenAt             DateTime  @default(now()) @map("last_seen_at")
+  lastAgentSessionSyncAt DateTime? @map("last_agent_session_sync_at")
+  isOnline               Boolean   @default(false) @map("is_online")
+  isSharedWithOrg        Boolean   @default(false) @map("is_shared_with_org")
+  gatewayId              String?   @map("gateway_id")
+  selectedHarness        String    @default("claude") @map("selected_harness")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  organization                        Organization                         @relation(fields: [organizationId], references: [id])
+  user                                User                                 @relation(fields: [userId], references: [id])
+  preferringUsers                     User[]                               @relation("UserPreferredComputeTarget")
+  desktopCommands                     DesktopCommand[]
+  loopExecutionCredentialConsumptions LoopExecutionCredentialConsumption[]
+  loops                               Loop[]
+  sessionDetails                      SessionDetail[]
+  healthCheck                         ComputeTargetHealthCheck?
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
@@ -410,24 +416,169 @@ model ComputeTarget {
 }
 
 model ComputeTargetHealthCheck {
-  id                 String   @id @default(uuid(7)) @db.Uuid
-  organizationId     String   @map("organization_id") @db.Uuid
-  computeTargetId    String   @unique @map("compute_target_id") @db.Uuid
-  checkedAt          DateTime @map("checked_at")
-  expectedMcpUrl     String?  @map("expected_mcp_url")
-  latestVersion      String?  @map("latest_version")
-  result             Json
-  allRequiredPassed  Boolean  @map("all_required_passed")
-  requiredFailureIds Json     @default("[]") @map("required_failure_ids")
-  schemaVersion      Int      @default(1) @map("schema_version")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  id                      String   @id @default(uuid(7)) @db.Uuid
+  organizationId          String   @map("organization_id") @db.Uuid
+  computeTargetId         String   @unique @map("compute_target_id") @db.Uuid
+  checkedAt               DateTime @map("checked_at")
+  expectedMcpUrl          String?  @map("expected_mcp_url")
+  latestVersion           String?  @map("latest_version")
+  pluginAutoUpdateEnabled Boolean  @default(false) @map("plugin_auto_update_enabled")
+  result                  Json
+  allRequiredPassed       Boolean  @map("all_required_passed")
+  requiredFailureIds      Json     @default("[]") @map("required_failure_ids")
+  schemaVersion           Int      @default(1) @map("schema_version")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
 
   organization  Organization  @relation(fields: [organizationId], references: [id])
   computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, checkedAt])
   @@map("compute_target_health_checks")
+}
+
+// Type-specific detail for SESSION-typed artifacts (captured agent/session
+// runs synced from the desktop). 1:1 with `Artifact` via shared `artifact_id`
+// primary key, mirroring document_detail / branch_detail / deployment_detail.
+// Hoisted to the parent `artifacts` row: organizationId, projectId, name,
+// status. The raw harness status string is stored on `artifacts.status`
+// (free-form TEXT) — the curated session lifecycle is a deferred follow-up.
+model SessionDetail {
+  artifactId         String        @id @map("artifact_id") @db.Uuid
+  // Session owner. Nullable + SetNull so a session survives its creator's
+  // deletion as an org-owned artifact (matches assignee_id/created_by_id).
+  userId             String?       @map("user_id") @db.Uuid
+  computeTargetId    String        @map("compute_target_id") @db.Uuid
+  externalSessionId  String        @map("external_session_id")
+  harness            String        @default("unknown")
+  // How this session row was produced: synced desktop run vs. materialized Loop
+  // (FEA-1718). Existing rows default to DESKTOP_SYNC.
+  origin             SessionOrigin @default(DESKTOP_SYNC)
+  // Per-session billing mode resolved by the desktop (subscription vs. API-key
+  // plan, from the desktop's billing_mode column). Opaque string; the usage
+  // cost split classifies it for DESKTOP_SYNC sessions that have no source Loop.
+  billingMode        String?       @map("billing_mode")
+  cwd                String?
+  repositoryFullName String?       @map("repository_full_name")
+  worktreePath       String?       @map("worktree_path")
+  model              String?
+  deviceTimeZone     String?       @map("device_time_zone")
+  sessionStartedAt   DateTime      @map("session_started_at")
+  sessionUpdatedAt   DateTime      @map("session_updated_at")
+  // Genuine-activity timestamp: MAX(agent_session_events.event_created_at)
+  // floored at sessionStartedAt. Unlike sessionUpdatedAt (bumped by desktop
+  // OTEL ingest / enrichment / sync bookkeeping) this advances only on real
+  // agent activity, and is the default sort for the Sessions list. Nullable for
+  // pre-backfill rows; readers fall back to sessionStartedAt.
+  lastActivityAt     DateTime?     @map("last_activity_at")
+  sessionEndedAt     DateTime?     @map("session_ended_at")
+  awaitingInputSince DateTime?     @map("awaiting_input_since")
+  sourceArtifactId   String?       @map("source_artifact_id")
+  sourceLoopId       String?       @map("source_loop_id")
+  issueId            String?       @map("issue_id")
+  baseBranch         String?       @map("base_branch")
+  state              String?
+  branch             String?
+  issues             Json?
+  pullRequests       Json?         @map("pull_requests")
+  wallClock          String?       @map("wall_clock")
+  activeAgent        String?       @map("active_agent")
+  waitingUser        String?       @map("waiting_user")
+  linesAdded         Int?          @map("lines_added")
+  linesRemoved       Int?          @map("lines_removed")
+  filesChanged       Int?          @map("files_changed")
+  // Provenance of the lines_*/files_changed scalars: "git" when the desktop
+  // sent source-tagged gitDiffStats, null when only heuristic/agent-estimated
+  // scalars were synced. Readers rehydrate gitDiffStats from this marker.
+  locSource          String?       @map("loc_source")
+  // Branch-level LOC (working-branch changes vs the author's contributed lines):
+  // a distinct metric from the authored gitDiffStats scalars, so it lives in its
+  // own columns. Readers rehydrate branchDiffStats from these; branch_loc_source
+  // records its provenance independently of loc_source.
+  branchLinesAdded   Int?          @map("branch_lines_added")
+  branchLinesRemoved Int?          @map("branch_lines_removed")
+  branchFilesChanged Int?          @map("branch_files_changed")
+  branchLocSource    String?       @map("branch_loc_source")
+  turns              Int?
+  steeringEpisodes   Int?          @map("steering_episodes")
+  autonomy           Int?
+  activityBuckets    Json?         @map("activity_buckets")
+  sessionSpan        Json?         @map("session_span")
+  markers            Json?
+  throttles          Json?
+  tracePhaseSources  Json?         @map("trace_phase_sources")
+  throttleSources    Json?         @map("throttle_sources")
+  correctionSources  Json?         @map("correction_sources")
+  phases             Json?
+  phaseIterations    Json?         @map("phase_iterations")
+  phaseLoopbacks     Json?         @map("phase_loopbacks")
+  inputTokens        Int           @default(0) @map("input_tokens")
+  outputTokens       Int           @default(0) @map("output_tokens")
+  cacheReadTokens    Int           @default(0) @map("cache_read_tokens")
+  cacheWriteTokens   Int           @default(0) @map("cache_write_tokens")
+  estimatedCost      Decimal       @default(0) @map("estimated_cost") @db.Decimal(10, 6)
+  agentCount         Int           @default(0) @map("agent_count")
+  toolUseCount       Int           @default(0) @map("tool_use_count")
+  errorCount         Int           @default(0) @map("error_count")
+  metadata           Json?
+  agents             Json          @default("[]")
+  dataRevision       Int?          @map("data_revision")
+  lastSyncedAt       DateTime      @default(now()) @map("last_synced_at")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  artifact          Artifact                 @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  user              User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  computeTarget     ComputeTarget            @relation(fields: [computeTargetId], references: [id], onDelete: Restrict)
+  tokenUsageByModel AgentSessionTokenUsage[]
+  events            AgentSessionEvent[]
+
+  @@unique([computeTargetId, externalSessionId])
+  @@index([sessionStartedAt])
+  @@index([userId, sessionStartedAt])
+  @@index([harness, sessionStartedAt])
+  @@index([computeTargetId, sessionUpdatedAt])
+  @@index([computeTargetId, lastActivityAt])
+  @@index([lastActivityAt])
+  @@map("session_detail")
+}
+
+model AgentSessionEvent {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  agentSessionId  String   @map("agent_session_id") @db.Uuid
+  externalEventId String   @map("external_event_id")
+  agentExternalId String?  @map("agent_external_id")
+  eventType       String   @map("event_type")
+  toolName        String?  @map("tool_name")
+  summary         String?
+  data            Json?
+  eventCreatedAt  DateTime @map("event_created_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  session SessionDetail @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
+
+  @@unique([agentSessionId, externalEventId])
+  @@index([agentSessionId, eventCreatedAt])
+  @@map("agent_session_events")
+}
+
+model AgentSessionTokenUsage {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  agentSessionId   String   @map("agent_session_id") @db.Uuid
+  model            String
+  inputTokens      Int      @default(0) @map("input_tokens")
+  outputTokens     Int      @default(0) @map("output_tokens")
+  cacheReadTokens  Int      @default(0) @map("cache_read_tokens")
+  cacheWriteTokens Int      @default(0) @map("cache_write_tokens")
+  estimatedCost    Decimal  @default(0) @map("estimated_cost") @db.Decimal(10, 6)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  session SessionDetail @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
+
+  @@unique([agentSessionId, model])
+  @@index([model])
+  @@map("agent_session_token_usage")
 }
 
 model DesktopCommand {
@@ -446,8 +597,9 @@ model DesktopCommand {
   startedAt          DateTime? @map("started_at")
   finishedAt         DateTime? @map("finished_at")
 
-  computeTarget ComputeTarget         @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
-  events        DesktopCommandEvent[]
+  computeTarget                      ComputeTarget                       @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  events                             DesktopCommandEvent[]
+  loopExecutionCredentialConsumption LoopExecutionCredentialConsumption?
 
   // NOTE: A partial unique index on (compute_target_id, idempotency_key) WHERE
   // idempotency_key IS NOT NULL is maintained via raw migrations. Prisma cannot
@@ -457,6 +609,23 @@ model DesktopCommand {
   @@index([computeTargetId, status, createdAt])
   @@index([operationId])
   @@map("desktop_commands")
+}
+
+model LoopExecutionCredentialConsumption {
+  commandId       String   @id @map("command_id") @db.Uuid
+  loopId          String   @map("loop_id") @db.Uuid
+  computeTargetId String   @map("compute_target_id") @db.Uuid
+  gatewayId       String   @map("gateway_id")
+  action          String
+  consumedAt      DateTime @default(now()) @map("consumed_at")
+
+  command       DesktopCommand @relation(fields: [commandId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget  @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  loop          Loop           @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@index([loopId])
+  @@index([computeTargetId, gatewayId], map: "loop_execution_credential_consumptions_compute_target_id_gatewa")
+  @@map("loop_execution_credential_consumptions")
 }
 
 model DesktopCommandEvent {
@@ -495,10 +664,10 @@ model Project {
   organization Organization      @relation(fields: [organizationId], references: [id])
   assignee     User?             @relation("ProjectAssignee", fields: [assigneeId], references: [id])
   createdBy    User              @relation("ProjectCreatedBy", fields: [createdById], references: [id])
-  workstreams  Workstream[]
   artifacts    Artifact[]
   teams        ProjectTeam[]
   favoritedBy  FavoriteProject[]
+  tagProjects  TagProject[]
 
   @@unique([organizationId, slug])
   @@index([assigneeId])
@@ -596,59 +765,20 @@ model FavoriteProject {
   @@map("favorite_projects")
 }
 
-// =============================================================================
-// WORKSTREAM
-// =============================================================================
-
-model Workstream {
-  id             String          @id @default(uuid(7)) @db.Uuid
-  organizationId String          @map("organization_id") @db.Uuid
-  projectId      String          @map("project_id") @db.Uuid
-  title          String
-  description    String?
-  type           WorkstreamType  @default(FEATURE_DELIVERY)
-  state          WorkstreamState @default(INITIATED)
-  stateChangedAt DateTime        @default(now()) @map("state_changed_at")
-  createdById    String          @map("created_by_id") @db.Uuid
-  assigneeId     String?         @map("assigned_to_id") @db.Uuid
-  priority       Priority        @default(MEDIUM)
-  slug           String?
-  hasUIChanges   Boolean         @default(false) @map("has_ui_changes")
-  startedAt      DateTime        @default(now()) @map("started_at")
-  completedAt    DateTime?       @map("completed_at")
-  metrics        Json?
-  createdAt      DateTime        @default(now()) @map("created_at")
-  updatedAt      DateTime        @updatedAt @map("updated_at")
+/// Per-user favorite artifacts for quick access and filtering
+model FavoriteArtifact {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  artifactId String   @map("artifact_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdBy    User         @relation("WorkstreamCreatedBy", fields: [createdById], references: [id])
-  assignee     User?        @relation("WorkstreamAssignee", fields: [assigneeId], references: [id])
-  artifacts    Artifact[]
-  loops        Loop[]
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, slug])
-  @@index([organizationId, projectId, state])
-  @@index([organizationId, assigneeId])
-  @@index([projectId])
-  @@map("workstreams")
-}
-
-model WorkstreamEvent {
-  id           String              @id @default(uuid(7)) @db.Uuid
-  workstreamId String              @map("workstream_id") @db.Uuid
-  type         WorkstreamEventType
-  fromState    WorkstreamState?    @map("from_state")
-  toState      WorkstreamState?    @map("to_state")
-  actorId      String?             @map("actor_id") @db.Uuid
-  actorType    String              @default("system") @map("actor_type")
-  data         Json                @default("{}")
-  createdAt    DateTime            @default(now()) @map("created_at")
-
-  @@index([workstreamId, type])
-  @@index([workstreamId, createdAt])
-  @@map("workstream_events")
+  @@unique([userId, artifactId])
+  @@index([artifactId])
+  @@map("favorite_artifacts")
 }
 
 // =============================================================================
@@ -689,8 +819,10 @@ model DocumentVersion {
 model Artifact {
   id             String           @id @default(uuid(7)) @db.Uuid
   organizationId String           @map("organization_id") @db.Uuid
-  projectId      String           @map("project_id") @db.Uuid
-  workstreamId   String?          @map("workstream_id") @db.Uuid
+  // Nullable so machine-generated SESSION artifacts captured outside any project
+  // can exist unparented. The project requirement for DOCUMENT/BRANCH/DEPLOYMENT
+  // is enforced at the service layer (apps/api), not the column.
+  projectId      String?          @map("project_id") @db.Uuid
   type           ArtifactType
   subtype        ArtifactSubtype?
   name           String
@@ -707,26 +839,33 @@ model Artifact {
 
   // Relations
   organization              Organization                       @relation(fields: [organizationId], references: [id])
-  project                   Project                            @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workstream                Workstream?                        @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project                   Project?                           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   assignee                  User?                              @relation("ArtifactAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   createdBy                 User?                              @relation("ArtifactCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   document                  DocumentDetail?
+  branch                    BranchDetail?
   pullRequest               PullRequestDetail?
   deployment                DeploymentDetail?
-  deployments               DeploymentDetail[]                 @relation("DeploymentOfPullRequest")
+  session                   SessionDetail?
+  loopSession               Loop?                              @relation("LoopSessionArtifact")
+  branchDeployments         DeploymentDetail[]                 @relation("DeploymentOfBranch")
+  pullRequestDetails        PullRequestDetail[]                @relation("BranchPullRequests")
   sourceLinks               ArtifactLink[]                     @relation("ArtifactLinkSource")
   targetLinks               ArtifactLink[]                     @relation("ArtifactLinkTarget")
+  sessionPrLinks            SessionPullRequestLink[]           @relation("SessionPrLinks")
   ratings                   ArtifactRating[]
   evaluations               ArtifactEvaluation[]
   commentThreads            CommentThread[]
   fileAttachments           FileAttachment[]
   loops                     Loop[]
   generationStatusDismissal DocumentGenerationStatusDismissal?
+  tagArtifacts              TagArtifact[]
+  favoritedBy               FavoriteArtifact[]
+  linearSubtasks            LinearSubtask[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, projectId, type])
-  @@index([organizationId, workstreamId, type])
+  @@index([organizationId, projectId, sortOrder])
   @@index([organizationId, type, status])
   @@index([organizationId, assigneeId])
   @@map("artifacts")
@@ -736,53 +875,159 @@ model Artifact {
 // shared `artifact_id` primary key. Other detail tables (pull_request_detail,
 // deployment_detail) arrive in Chunk 2b.
 model DocumentDetail {
-  artifactId      String           @id @map("artifact_id") @db.Uuid
-  fileName        String?          @map("file_name")
-  approverId      String?          @map("approver_id") @db.Uuid
-  templateForType ArtifactSubtype? @map("template_for_type")
-  latestVersion   Int              @default(1) @map("latest_version")
-  targetRepo      String?          @map("target_repo")
-  targetBranch    String?          @map("target_branch")
+  artifactId         String           @id @map("artifact_id") @db.Uuid
+  fileName           String?          @map("file_name")
+  approverId         String?          @map("approver_id") @db.Uuid
+  templateForType    ArtifactSubtype? @map("template_for_type")
+  latestVersion      Int              @default(1) @map("latest_version")
+  repositorySnapshot Json             @map("repository_snapshot")
 
-  artifact     Artifact                     @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  approver     User?                        @relation("DocumentDetailApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  versions     DocumentVersion[]
-  performances GitHubActionRunPerformance[]
+  artifact Artifact          @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  approver User?             @relation("DocumentDetailApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  versions DocumentVersion[]
 
   @@map("document_detail")
 }
 
-// Type-specific detail for PULL_REQUEST-typed artifacts. 1:1 with `Artifact`
-// via shared `artifact_id` primary key. Rows are backfilled from the legacy
-// `github_pull_requests` table in Chunk 2B; that table is retired in the
-// final contract migration.
+// Branch-owned detail for BRANCH-typed artifacts.
+model BranchDetail {
+  artifactId                    String       @id @map("artifact_id") @db.Uuid
+  repositoryId                  String       @map("repository_id") @db.Uuid
+  branchName                    String       @map("branch_name")
+  baseBranch                    String?      @map("base_branch")
+  baseBranchSource              String?      @map("base_branch_source")
+  headSha                       String?      @map("head_sha")
+  headShaSource                 String?      @map("head_sha_source")
+  headShaObservedAt             DateTime?    @map("head_sha_observed_at")
+  // Genuine-activity timestamp for the branch: monotonic GREATEST() of real
+  // git/GitHub events — a pushed commit (headShaObservedAt), PR open/merge/close,
+  // and PR review submission. Deliberately NOT bumped by CI check runs, file/
+  // checks cache refreshes, sync bookkeeping, or session activity. Default sort
+  // for the Branches list. Nullable for pre-backfill rows; readers fall back to
+  // the Artifact createdAt.
+  lastActivityAt                DateTime?    @map("last_activity_at")
+  lastPushBeforeSha             String?      @map("last_push_before_sha")
+  currentPullRequestDetailId    String?      @map("current_pull_request_detail_id") @db.Uuid
+  deletedAt                     DateTime?    @map("deleted_at")
+  checksStatus                  ChecksStatus @default(UNKNOWN) @map("checks_status")
+  checksDetailHeadSha           String?      @map("checks_detail_head_sha")
+  checksDetailTotalCount        Int          @default(0) @map("checks_detail_total_count")
+  checksDetailTruncated         Boolean      @default(false) @map("checks_detail_truncated")
+  checksDetailProviderState     String?      @map("checks_detail_provider_state")
+  checksDetailUnavailableReason String?      @map("checks_detail_unavailable_reason")
+  checksDetailUpdatedAt         DateTime?    @map("checks_detail_updated_at")
+  fileCacheStatus               String       @default("absent") @map("file_cache_status")
+  fileCacheHeadSha              String?      @map("file_cache_head_sha")
+  fileCacheFileCount            Int          @default(0) @map("file_cache_file_count")
+  fileCachePatchBytes           Int          @default(0) @map("file_cache_patch_bytes")
+  fileCacheUpdatedAt            DateTime?    @map("file_cache_updated_at")
+  syncStatus                    String       @default("idle") @map("sync_status")
+  lastSyncStartedAt             DateTime?    @map("last_sync_started_at")
+  lastSyncCompletedAt           DateTime?    @map("last_sync_completed_at")
+  lastSyncErrorCode             String?      @map("last_sync_error_code")
+  lastSyncErrorMessage          String?      @map("last_sync_error_message") @db.Text
+  createdAt                     DateTime     @default(now()) @map("created_at")
+  updatedAt                     DateTime     @updatedAt @map("updated_at")
+
+  artifact                 Artifact                        @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  repository               GitHubInstallationRepository    @relation(fields: [repositoryId], references: [id])
+  currentPullRequestDetail PullRequestDetail?              @relation("CurrentBranchPullRequest", fields: [currentPullRequestDetailId], references: [id], onDelete: SetNull)
+  fileChanges              BranchFileChange[]
+  statusChecks             BranchStatusCheck[]
+  githubCommentProjections GitHubCommentThreadProjection[]
+
+  @@unique([repositoryId, branchName])
+  @@index([repositoryId, headSha])
+  @@index([currentPullRequestDetailId])
+  @@index([syncStatus])
+  @@index([lastActivityAt])
+  @@map("branch_detail")
+}
+
+// Bounded current-head GitHub status/check context projection for Branch View.
+model BranchStatusCheck {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchArtifactId String   @map("branch_artifact_id") @db.Uuid
+  headSha          String   @map("head_sha")
+  providerKey      String   @map("provider_key") @db.VarChar(160)
+  kind             String   @db.VarChar(32)
+  providerNodeId   String?  @map("provider_node_id") @db.VarChar(255)
+  name             String   @db.VarChar(255)
+  status           String?  @db.VarChar(64)
+  conclusion       String?  @db.VarChar(64)
+  targetUrl        String?  @map("target_url") @db.VarChar(2048)
+  position         Int
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  branch BranchDetail @relation(fields: [branchArtifactId], references: [artifactId], onDelete: Cascade)
+
+  @@unique([branchArtifactId, headSha, providerKey], map: "branch_status_checks_branch_head_provider_key")
+  @@index([branchArtifactId, headSha, position], map: "branch_status_checks_branch_head_position_idx")
+  @@map("branch_status_checks")
+}
+
+// GitHub pull request conversation detail. These rows are nested under branch
+// artifacts and preserve current or historical PR-specific review state.
 model PullRequestDetail {
-  artifactId           String          @id @map("artifact_id") @db.Uuid
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  artifactId           String?         @unique @map("artifact_id") @db.Uuid
+  branchArtifactId     String          @map("branch_artifact_id") @db.Uuid
   repositoryId         String          @map("repository_id") @db.Uuid
   githubId             String          @unique @map("github_id")
   number               Int
+  title                String?
+  htmlUrl              String?         @map("html_url")
   body                 String?         @db.Text
-  headBranch           String          @map("head_branch")
-  baseBranch           String          @map("base_branch")
-  headSha              String?         @map("head_sha")
   prState              GitHubPRState   @default(OPEN) @map("pr_state")
   isDraft              Boolean         @default(false) @map("is_draft")
-  checksStatus         ChecksStatus    @default(UNKNOWN) @map("checks_status")
   reviewDecision       ReviewDecision? @map("review_decision")
+  isCurrent            Boolean         @default(false) @map("is_current")
   closedAt             DateTime?       @map("closed_at")
   mergedAt             DateTime?       @map("merged_at")
   mergeCommitSha       String?         @map("merge_commit_sha")
   lastVerifiedAt       DateTime?       @map("last_verified_at")
   lastRefreshAttemptAt DateTime?       @map("last_refresh_attempt_at")
 
-  artifact       Artifact                     @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  repository     GitHubInstallationRepository @relation(fields: [repositoryId], references: [id])
-  reviews        GitHubPRReview[]
-  reviewComments GitHubPRReviewComment[]
+  artifact                       Artifact?                       @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  branchArtifact                 Artifact                        @relation("BranchPullRequests", fields: [branchArtifactId], references: [id], onDelete: Cascade)
+  repository                     GitHubInstallationRepository    @relation(fields: [repositoryId], references: [id])
+  reviews                        GitHubPRReview[]
+  githubCommentThreadProjections GitHubCommentThreadProjection[]
+  currentForBranches             BranchDetail[]                  @relation("CurrentBranchPullRequest")
+  sessionPrLinks                 SessionPullRequestLink[]
 
   @@unique([repositoryId, number])
-  @@index([headSha])
+  @@unique([id, branchArtifactId], map: "pull_request_detail_id_branch_artifact_id_key")
+  @@index([branchArtifactId, isCurrent])
   @@map("pull_request_detail")
+}
+
+// Bounded branch file-change metadata cache. Raw file contents stay in GitHub
+// and are fetched only through explicit diff/content paths.
+model BranchFileChange {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchArtifactId   String   @map("branch_artifact_id") @db.Uuid
+  headSha            String   @map("head_sha")
+  path               String
+  previousPath       String?  @map("previous_path")
+  status             String
+  additions          Int?
+  deletions          Int?
+  changes            Int?
+  patch              String?  @db.Text
+  patchBytes         Int      @default(0) @map("patch_bytes")
+  patchOmittedReason String?  @map("patch_omitted_reason")
+  isBinary           Boolean  @default(false) @map("is_binary")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  branch BranchDetail @relation(fields: [branchArtifactId], references: [artifactId], onDelete: Cascade)
+
+  @@unique([branchArtifactId, headSha, path])
+  @@index([branchArtifactId, path])
+  @@index([branchArtifactId, headSha])
+  @@map("branch_file_changes")
 }
 
 // Type-specific detail for DEPLOYMENT-typed artifacts. 1:1 with `Artifact`
@@ -792,20 +1037,20 @@ model PullRequestDetail {
 // loosely shaped. Deployment state lives only on the parent `artifact.status`
 // (plain TEXT so any vendor value round-trips).
 model DeploymentDetail {
-  artifactId            String   @id @map("artifact_id") @db.Uuid
-  environment           String?
-  ref                   String?
-  sha                   String?
-  githubStatusUrl       String?  @map("github_status_url")
-  githubDeploymentUrl   String?  @map("github_deployment_url")
-  transient             Boolean?
-  production            Boolean?
-  pullRequestArtifactId String?  @map("pull_request_artifact_id") @db.Uuid
+  artifactId          String   @id @map("artifact_id") @db.Uuid
+  environment         String?
+  ref                 String?
+  sha                 String?
+  githubStatusUrl     String?  @map("github_status_url")
+  githubDeploymentUrl String?  @map("github_deployment_url")
+  transient           Boolean?
+  production          Boolean?
+  branchArtifactId    String?  @map("branch_artifact_id") @db.Uuid
 
-  artifact            Artifact  @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  pullRequestArtifact Artifact? @relation("DeploymentOfPullRequest", fields: [pullRequestArtifactId], references: [id], onDelete: SetNull)
+  artifact       Artifact  @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  branchArtifact Artifact? @relation("DeploymentOfBranch", fields: [branchArtifactId], references: [id], onDelete: SetNull)
 
-  @@index([pullRequestArtifactId])
+  @@index([branchArtifactId])
   @@index([ref, sha])
   @@map("deployment_detail")
 }
@@ -831,15 +1076,42 @@ model ArtifactLink {
   @@map("artifact_links")
 }
 
+// FEA-1684 / PRD-463 7.1: Deterministic session↔PR associations extracted from
+// desktop transcripts. Denormalized repo+number with nullable FK to
+// PullRequestDetail (best-effort resolved). Stage 2 (LLM classification) adds
+// PROBABILISTIC rows. Do not re-create this table.
+model SessionPullRequestLink {
+  id                  String                @id @default(uuid(7)) @db.Uuid
+  organizationId      String                @map("organization_id") @db.Uuid
+  sessionArtifactId   String                @map("session_artifact_id") @db.Uuid
+  repositoryFullName  String                @map("repository_full_name")
+  prNumber            Int                   @map("pr_number")
+  prUrl               String                @map("pr_url")
+  relationType        SessionPrRelationType @map("relation_type")
+  source              SessionPrLinkSource   @default(DETERMINISTIC)
+  confidence          Float?
+  pullRequestDetailId String?               @map("pull_request_detail_id") @db.Uuid
+  reviewStatus        String?               @map("review_status")
+  extractorVersion    Int?                  @map("extractor_version")
+  createdAt           DateTime              @default(now()) @map("created_at")
+  updatedAt           DateTime              @updatedAt @map("updated_at")
+
+  sessionArtifact     Artifact              @relation("SessionPrLinks", fields: [sessionArtifactId], references: [id], onDelete: Cascade)
+  pullRequestDetail   PullRequestDetail?    @relation(fields: [pullRequestDetailId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionArtifactId, repositoryFullName, prNumber, relationType])
+  @@index([organizationId, sessionArtifactId])
+  @@index([organizationId, repositoryFullName, prNumber])
+  @@map("session_pull_request_links")
+}
+
 model ArtifactEvaluation {
   id             String               @id @default(uuid(7)) @db.Uuid
   organizationId String               @map("organization_id") @db.Uuid
   artifactId     String               @map("artifact_id") @db.Uuid
-  actionRunId    String?              @map("action_run_id") @db.Uuid
   loopId         String?              @map("loop_id") @db.Uuid
   reportType     EvaluationReportType @map("report_type")
   reportId       String               @map("report_id")
-  reportData     Json?                @map("report_data")
   createdAt      DateTime             @default(now()) @map("created_at")
 
   artifact         Artifact          @relation(fields: [artifactId], references: [id], onDelete: Cascade)
@@ -898,20 +1170,6 @@ model JudgeHumanScore {
   @@map("judge_human_scores")
 }
 
-model GitHubActionRunPerformance {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  artifactId  String   @map("artifact_id") @db.Uuid
-  // Soft reference - no Prisma relation defined intentionally. Query GitHubActionRun separately if needed.
-  actionRunId String   @map("action_run_id") @db.Uuid
-  summaryData Json     @map("summary_data")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  documentDetail DocumentDetail @relation(fields: [artifactId], references: [artifactId], onDelete: Cascade)
-
-  @@unique([artifactId, actionRunId])
-  @@map("github_action_run_performances")
-}
-
 // Consolidated ratings for any artifact. Absorbs the prior DocumentRating
 // and PullRequestRating tables — both now live at @@map("artifact_ratings").
 // `artifactVersion` is nullable because PR/deployment ratings aren't
@@ -946,6 +1204,7 @@ model FileAttachment {
   filename    String
   mimeType    String   @map("mime_type")
   sizeBytes   Int      @map("size_bytes")
+  purpose     String   @default("context")
   createdAt   DateTime @default(now()) @map("created_at")
   createdById String   @map("created_by_id") @db.Uuid
 
@@ -953,6 +1212,7 @@ model FileAttachment {
   artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: Cascade)
 
   @@index([artifactId])
+  @@index([artifactId, purpose])
   @@map("file_attachments")
 }
 
@@ -973,29 +1233,6 @@ model SlugCounter {
 // =============================================================================
 // CONVERSATIONS
 // =============================================================================
-
-model Conversation {
-  id           String   @id @default(uuid(7)) @db.Uuid
-  workstreamId String   @map("workstream_id") @db.Uuid
-  agentType    String   @map("agent_type")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-
-  @@index([workstreamId, agentType])
-  @@map("conversations")
-}
-
-model Message {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  conversationId String   @map("conversation_id") @db.Uuid
-  role           String
-  content        String   @db.Text
-  tokenUsage     Json?    @map("token_usage")
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  @@index([conversationId, createdAt])
-  @@map("messages")
-}
 
 model ChatSession {
   id              String   @id @default(uuid(7)) @db.Uuid
@@ -1025,25 +1262,28 @@ model ChatSession {
 // =============================================================================
 
 model CommentThread {
-  id             String       @id @default(uuid(7)) @db.Uuid
-  organizationId String       @map("organization_id") @db.Uuid
-  source         ThreadSource @default(NATIVE)
-  externalId     String?      @map("external_id")
-  roomId         String?      @map("room_id")
-  artifactId     String?      @map("artifact_id") @db.Uuid
-  status         ThreadStatus @default(OPEN)
-  metadata       Json?
-  resolvedAt     DateTime?    @map("resolved_at")
-  resolvedById   String?      @map("resolved_by_id") @db.Uuid
-  createdById    String?      @map("created_by_id") @db.Uuid
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  id               String       @id @default(uuid(7)) @db.Uuid
+  organizationId   String       @map("organization_id") @db.Uuid
+  source           ThreadSource @default(NATIVE)
+  externalId       String?      @map("external_id")
+  roomId           String?      @map("room_id")
+  artifactId       String?      @map("artifact_id") @db.Uuid
+  status           ThreadStatus @default(OPEN)
+  metadata         Json?
+  createdAtVersion Int?         @map("created_at_version")
+  resolvedAt       DateTime?    @map("resolved_at")
+  resolvedById     String?      @map("resolved_by_id") @db.Uuid
+  createdById      String?      @map("created_by_id") @db.Uuid
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  comments     Comment[]
+  organization     Organization                   @relation(fields: [organizationId], references: [id])
+  artifact         Artifact?                      @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  comments         Comment[]
+  githubProjection GitHubCommentThreadProjection?
 
   @@unique([organizationId, externalId])
+  @@unique([id, artifactId], map: "comment_threads_id_artifact_id_key")
   @@index([organizationId, artifactId, status])
   @@index([organizationId, roomId])
   @@index([organizationId, status, updatedAt])
@@ -1051,26 +1291,117 @@ model CommentThread {
   @@map("comment_threads")
 }
 
-model Comment {
-  id         String    @id @default(uuid(7)) @db.Uuid
-  threadId   String    @map("thread_id") @db.Uuid
-  authorId   String    @map("author_id") @db.Uuid
-  body       Json
-  plainText  String?   @map("plain_text") @db.Text
-  externalId String?   @map("external_id")
-  editedAt   DateTime? @map("edited_at")
-  deletedAt  DateTime? @map("deleted_at")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
+// Provider-specific projection for GitHub review and issue-comment thread state.
+// Generic artifact comments stay in CommentThread so future sources do not inherit GitHub columns.
+model GitHubCommentThreadProjection {
+  threadId            String                    @id @map("thread_id") @db.Uuid
+  branchArtifactId    String                    @map("branch_artifact_id") @db.Uuid
+  pullRequestDetailId String                    @map("pull_request_detail_id") @db.Uuid
+  threadKind          GitHubCommentThreadKind   @map("thread_kind")
+  reviewThreadId      String?                   @map("review_thread_id")
+  rootCommentId       String?                   @map("root_comment_id")
+  reviewId            String?                   @map("review_id")
+  path                String?
+  line                Int?
+  side                GitHubDiffSide?
+  startLine           Int?                      @map("start_line")
+  startSide           GitHubDiffSide?           @map("start_side")
+  commitSha           String?                   @map("commit_sha")
+  htmlUrl             String?                   @map("html_url") @db.Text
+  resolvable          Boolean                   @default(false)
+  legacyState         GitHubLegacyCommentState? @map("legacy_state")
+  deletedAt           DateTime?                 @map("deleted_at")
+  lastSyncedAt        DateTime?                 @map("last_synced_at")
 
-  thread      CommentThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  reactions   CommentReaction[]
-  attachments CommentAttachment[]
+  thread             CommentThread             @relation(fields: [threadId, branchArtifactId], references: [id, artifactId], onDelete: Cascade)
+  branch             BranchDetail              @relation(fields: [branchArtifactId], references: [artifactId], onDelete: Cascade)
+  pullRequestDetail  PullRequestDetail         @relation(fields: [pullRequestDetailId, branchArtifactId], references: [id, branchArtifactId], onDelete: Cascade)
+  commentProjections GitHubCommentProjection[]
+
+  @@unique([threadId, branchArtifactId], map: "github_comment_thread_projections_thread_branch_key")
+  @@index([pullRequestDetailId, threadKind, rootCommentId], map: "github_comment_thread_projections_root_comment_idx")
+  @@index([pullRequestDetailId, threadKind, reviewThreadId], map: "github_comment_thread_projections_review_thread_idx")
+  @@index([pullRequestDetailId], map: "github_comment_thread_projections_pr_detail_idx")
+  @@index([lastSyncedAt], map: "github_comment_thread_projections_last_synced_at_idx")
+  @@map("github_comment_thread_projections")
+}
+
+model Comment {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  threadId        String    @map("thread_id") @db.Uuid
+  authorId        String    @map("author_id") @db.Uuid
+  body            Json
+  plainText       String?   @map("plain_text") @db.Text
+  externalId      String?   @map("external_id")
+  parentCommentId String?   @map("parent_comment_id") @db.Uuid
+  editedAt        DateTime? @map("edited_at")
+  deletedAt       DateTime? @map("deleted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  thread           CommentThread            @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  parent           Comment?                 @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies          Comment[]                @relation("CommentReplies")
+  reactions        CommentReaction[]
+  attachments      CommentAttachment[]
+  githubProjection GitHubCommentProjection?
 
   @@unique([externalId])
+  @@unique([id, threadId], map: "comments_id_thread_id_key")
   @@index([threadId, createdAt])
+  @@index([parentCommentId])
   @@index([authorId])
   @@map("comments")
+}
+
+// Provider-specific projection for GitHub comment identity and reply metadata.
+// Parent/child structure remains generic through Comment.parentCommentId.
+model GitHubCommentProjection {
+  commentId                String    @id @map("comment_id") @db.Uuid
+  threadId                 String    @map("thread_id") @db.Uuid
+  externalAuthorId         String?   @map("external_author_id") @db.Uuid
+  githubCommentId          String?   @map("github_comment_id")
+  githubInReplyToCommentId String?   @map("github_in_reply_to_comment_id")
+  githubHtmlUrl            String?   @map("github_html_url") @db.Text
+  githubUpdatedAt          DateTime? @map("github_updated_at")
+  githubDeletedAt          DateTime? @map("github_deleted_at")
+
+  comment          Comment                       @relation(fields: [commentId, threadId], references: [id, threadId], onDelete: Cascade)
+  threadProjection GitHubCommentThreadProjection @relation(fields: [threadId], references: [threadId], onDelete: Cascade)
+  externalAuthor   ExternalCommentAuthor?        @relation(fields: [externalAuthorId], references: [id], onDelete: SetNull)
+
+  @@unique([commentId, threadId], map: "github_comment_projections_comment_thread_key")
+  @@index([threadId, githubCommentId], map: "github_comment_projections_thread_github_comment_idx")
+  @@index([githubInReplyToCommentId], map: "github_comment_projections_in_reply_to_idx")
+  @@index([externalAuthorId], map: "github_comment_projections_external_author_id_idx")
+  @@map("github_comment_projections")
+}
+
+model ExternalCommentAuthor {
+  id                      String                  @id @default(uuid(7)) @db.Uuid
+  organizationId          String                  @map("organization_id") @db.Uuid
+  provider                ExternalCommentProvider
+  providerUserId          String                  @map("provider_user_id")
+  providerNodeId          String?                 @map("provider_node_id")
+  providerLogin           String                  @map("provider_login")
+  normalizedProviderLogin String                  @map("normalized_provider_login")
+  displayName             String?                 @map("display_name")
+  avatarUrl               String?                 @map("avatar_url")
+  profileUrl              String?                 @map("profile_url")
+  userId                  String                  @map("user_id") @db.Uuid
+  firstSeenAt             DateTime                @default(now()) @map("first_seen_at")
+  lastSeenAt              DateTime                @default(now()) @map("last_seen_at")
+  createdAt               DateTime                @default(now()) @map("created_at")
+  updatedAt               DateTime                @updatedAt @map("updated_at")
+
+  organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  githubCommentProjections GitHubCommentProjection[]
+
+  @@unique([organizationId, provider, providerUserId])
+  @@index([organizationId, provider, normalizedProviderLogin])
+  @@index([userId])
+  @@map("external_comment_authors")
 }
 
 model CommentAttachment {
@@ -1116,7 +1447,6 @@ model Loop {
 
   // Optional relationships
   artifactId   String? @map("artifact_id") @db.Uuid
-  workstreamId String? @map("workstream_id") @db.Uuid
   parentLoopId String? @map("parent_loop_id") @db.Uuid
 
   // Execution context
@@ -1124,6 +1454,9 @@ model Loop {
   repo            Json? // { fullName: string, branch: string }
   additionalRepos Json?   @map("additional_repos") // Array<{ fullName: string, branch: string }>
   contextRefs     Json?   @map("context_refs") // Array<{ sourceId, sourceType, include }>
+
+  // Harness selection — which AI harness to use for this loop
+  harness String @default("claude")
 
   // Compute target (local machine) — null for cloud/legacy runs
   computeTargetId String? @map("compute_target_id") @db.Uuid
@@ -1138,6 +1471,10 @@ model Loop {
   branchName String? @map("branch_name")
   sessionId  String? @map("session_id")
 
+  // The SESSION-typed Artifact that materializes this loop in the unified
+  // Sessions list (FEA-1718). Unique → at most one Session per loop.
+  sessionArtifactId String? @unique @map("session_artifact_id") @db.Uuid
+
   // Cost tracking
   tokensInput   Int      @default(0) @map("tokens_input")
   tokensOutput  Int      @default(0) @map("tokens_output")
@@ -1147,6 +1484,10 @@ model Loop {
   // Timing
   startedAt   DateTime? @map("started_at")
   completedAt DateTime? @map("completed_at")
+
+  // Revival tracking
+  revivalCount  Int       @default(0) @map("revival_count")
+  lastRevivalAt DateTime? @map("last_revival_at")
 
   // Error info
   error Json? // { code: string, message: string }
@@ -1159,19 +1500,28 @@ model Loop {
   metadata          Json  @default("{}") @map("metadata")
   uploadedArtifacts Json? @map("uploaded_artifacts")
 
+  // Runner token lifecycle — JTI pin-or-compare enforcement
+  activeTokenJti        String?   @map("active_token_jti")
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+  lastRunnerHeartbeatAt DateTime? @map("last_runner_heartbeat_at")
+  runnerCapabilities    Json?     @map("runner_capabilities")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  organization  Organization         @relation(fields: [organizationId], references: [id])
-  user          User                 @relation(fields: [userId], references: [id])
-  artifact      Artifact?            @relation(fields: [artifactId], references: [id], onDelete: SetNull)
-  workstream    Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  computeTarget ComputeTarget?       @relation(fields: [computeTargetId], references: [id])
-  parentLoop    Loop?                @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  childLoops    Loop[]               @relation("LoopParent")
-  evaluations   ArtifactEvaluation[]
-  events        LoopEvent[]
+  organization                    Organization                         @relation(fields: [organizationId], references: [id])
+  user                            User                                 @relation(fields: [userId], references: [id])
+  artifact                        Artifact?                            @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  sessionArtifact                 Artifact?                            @relation("LoopSessionArtifact", fields: [sessionArtifactId], references: [id], onDelete: SetNull)
+  computeTarget                   ComputeTarget?                       @relation(fields: [computeTargetId], references: [id])
+  parentLoop                      Loop?                                @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  childLoops                      Loop[]                               @relation("LoopParent")
+  evaluations                     ArtifactEvaluation[]
+  events                          LoopEvent[]
+  tokenRefreshes                  LoopTokenRefresh[]
+  executionCredentialConsumptions LoopExecutionCredentialConsumption[]
+  tagLoops                        TagLoop[]
 
   // NOTE: A partial unique index on (artifact_id, command, artifact_version)
   // WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING') is maintained via raw migrations.
@@ -1181,10 +1531,21 @@ model Loop {
   // treats NULL != NULL in unique indexes, so nullable rows never conflict).
   // Terminal loops (COMPLETED/FAILED/CANCELLED/TIMED_OUT) allow re-runs of the same
   // artifact+command+version without conflict.
+  //
+  // NOTE: A second partial unique index `loops_blocked_artifact_command_key` on
+  // (artifact_id, command) WHERE status = 'BLOCKED' is maintained via raw
+  // migration 20260624120000_add_partial_unique_blocked_loop_artifact_command.
+  // It enforces at most one deferred (BLOCKED) loop per artifact+command, closing
+  // a TOCTOU race in the dispatch idempotency guard. Prisma cannot express partial
+  // indexes — do NOT drop it.
   @@index([artifactId, command, artifactVersion])
   @@index([organizationId, status])
+  // Covers the (organizationId, artifactId, command) dispatch/idempotency lookups
+  // (and the (organizationId, artifactId) prefix lookups). The leading column is
+  // organizationId so the index is usable for org-scoped queries, unlike the
+  // artifactId-leading index above.
+  @@index([organizationId, artifactId, command])
   @@index([organizationId, userId, createdAt])
-  @@index([workstreamId])
   @@index([parentLoopId])
   @@index([computeTargetId])
   @@map("loops")
@@ -1193,7 +1554,7 @@ model Loop {
 model LoopEvent {
   id             String   @id @default(uuid(7)) @db.Uuid
   loopId         String   @map("loop_id") @db.Uuid
-  type           String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error"
+  type           String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error" | "tokens_cleared"
   data           Json     @default("{}")
   eventSource    String   @default("system") @map("event_source")
   eventId        String   @map("event_id")
@@ -1207,6 +1568,21 @@ model LoopEvent {
   @@index([loopId, createdAt])
   @@index([loopId, type])
   @@map("loop_events")
+}
+
+/// Audit log of loop runner JWT token refreshes. Each row records a successful
+/// token rotation so that stale or stolen tokens can be detected.
+model LoopTokenRefresh {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  loopId      String   @map("loop_id") @db.Uuid
+  jti         String   @unique
+  refreshedAt DateTime @map("refreshed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  loop Loop @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@index([loopId])
+  @@map("loop_token_refresh")
 }
 
 // =============================================================================
@@ -1257,38 +1633,24 @@ model LinearIntegration {
   @@map("linear_integrations")
 }
 
-model LinearIssue {
-  id           String           @id @default(uuid(7)) @db.Uuid
-  workstreamId String           @unique @map("workstream_id") @db.Uuid
-  linearId     String           @unique @map("linear_id")
-  linearKey    String           @map("linear_key")
-  linearUrl    String           @map("linear_url")
-  teamId       String           @map("team_id")
-  teamKey      String           @map("team_key")
-  syncStatus   LinearSyncStatus @default(SYNCED) @map("sync_status")
-  lastSyncedAt DateTime         @default(now()) @map("last_synced_at")
-  syncError    String?          @map("sync_error")
-  createdAt    DateTime         @default(now()) @map("created_at")
-  updatedAt    DateTime         @updatedAt @map("updated_at")
-
-  @@index([linearKey])
-  @@index([syncStatus])
-  @@map("linear_issues")
-}
-
 model LinearSubtask {
-  id           String   @id @default(uuid(7)) @db.Uuid
-  workstreamId String   @map("workstream_id") @db.Uuid
-  linearId     String   @unique @map("linear_id")
-  linearKey    String   @map("linear_key")
-  linearUrl    String   @map("linear_url")
-  title        String
-  description  String?
-  isCompleted  Boolean  @default(false) @map("is_completed")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  documentId     String   @map("document_id") @db.Uuid
+  linearId       String   @unique @map("linear_id")
+  linearKey      String   @map("linear_key")
+  linearUrl      String   @map("linear_url")
+  title          String
+  description    String?
+  isCompleted    Boolean  @default(false) @map("is_completed")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  @@index([workstreamId, isCompleted])
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Artifact     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([documentId, isCompleted])
   @@map("linear_subtasks")
 }
 
@@ -1297,24 +1659,29 @@ model LinearSubtask {
 // =============================================================================
 
 model GitHubInstallation {
-  id                  String                   @id @default(uuid(7)) @db.Uuid
-  organizationId      String?                  @unique @map("organization_id") @db.Uuid
-  installationId      String                   @unique @map("installation_id")
-  accountId           String                   @map("account_id")
-  accountLogin        String                   @map("account_login")
-  accountType         String                   @map("account_type")
-  senderLogin         String                   @map("sender_login")
-  senderId            String                   @map("sender_id")
-  status              GitHubInstallationStatus @default(PENDING_CLAIM)
-  permissions         Json?
-  events              Json?
-  repositorySelection String?                  @map("repository_selection")
-  suspendedAt         DateTime?                @map("suspended_at")
-  suspendedBy         String?                  @map("suspended_by")
-  claimedAt           DateTime?                @map("claimed_at")
-  claimedByUserId     String?                  @map("claimed_by_user_id") @db.Uuid
-  createdAt           DateTime                 @default(now()) @map("created_at")
-  updatedAt           DateTime                 @updatedAt @map("updated_at")
+  id                       String                   @id @default(uuid(7)) @db.Uuid
+  organizationId           String?                  @unique @map("organization_id") @db.Uuid
+  installationId           String                   @unique @map("installation_id")
+  accountId                String                   @map("account_id")
+  accountLogin             String                   @map("account_login")
+  accountType              String                   @map("account_type")
+  senderLogin              String                   @map("sender_login")
+  senderId                 String                   @map("sender_id")
+  status                   GitHubInstallationStatus @default(PENDING_CLAIM)
+  permissions              Json?
+  events                   Json?
+  repositorySelection      String?                  @map("repository_selection")
+  suspendedAt              DateTime?                @map("suspended_at")
+  suspendedBy              String?                  @map("suspended_by")
+  claimedAt                DateTime?                @map("claimed_at")
+  claimedByUserId          String?                  @map("claimed_by_user_id") @db.Uuid
+  createdAt                DateTime                 @default(now()) @map("created_at")
+  updatedAt                DateTime                 @updatedAt @map("updated_at")
+  // PLN-634: set on the prior UNINSTALLED row when an OAuth callback detects
+  // a different-account reconnect. The confirm-reset endpoint reads this
+  // value to determine which new installation to claim, so a user-controlled
+  // body cannot redirect the claim to an attacker's installation.
+  pendingNewInstallationId String?                  @map("pending_new_installation_id")
 
   // Relations
   organization Organization?                  @relation(fields: [organizationId], references: [id])
@@ -1336,9 +1703,16 @@ model GitHubInstallationRepository {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
   lastPushedAt   DateTime? @map("last_pushed_at")
+  // Soft-tombstone marker set when a repo disappears from the installation
+  // during a disconnect/reinstall window (PLN-634). Tombstoned rows are
+  // filtered from active-pool reads (getRepositories, etc.) but remain
+  // resolvable by FK so historical BranchDetail / PullRequestDetail records
+  // can still render. Cleared if the same githubRepoId reappears on reconnect.
+  removedAt      DateTime? @map("removed_at")
 
   // Relations
   installation       GitHubInstallation  @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  branchDetails      BranchDetail[]
   pullRequestDetails PullRequestDetail[]
   teamRepositories   TeamRepository[]
 
@@ -1346,27 +1720,56 @@ model GitHubInstallationRepository {
   @@map("github_installation_repositories")
 }
 
-model GitHubPRReviewComment {
-  id              String               @id @default(uuid(7)) @db.Uuid
-  pullRequestId   String               @map("pull_request_id") @db.Uuid
-  githubCommentId String               @unique @map("github_comment_id")
-  inReplyToId     String?              @map("in_reply_to_id")
-  reviewId        String?              @map("review_id")
-  body            String               @db.Text
-  path            String?
-  line            Int?
-  authorLogin     String               @map("author_login")
-  authorAvatarUrl String?              @map("author_avatar_url")
-  state           PRReviewCommentState @default(PENDING)
-  htmlUrl         String               @map("html_url")
-  createdAt       DateTime             @default(now()) @map("created_at")
-  updatedAt       DateTime             @updatedAt @map("updated_at")
+// Symphony's GitHub OAuth callback persists these per organization/user rows.
+// The connection is not inferred from Clerk's social account metadata, and it
+// intentionally does not fan out to every User row with the same clerkId: a
+// write-capable GitHub token is scoped to the org where the user connected it.
+model GitHubUserConnection {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  organizationId        String    @map("organization_id") @db.Uuid
+  userId                String    @map("user_id") @db.Uuid
+  githubUserId          String    @map("github_user_id")
+  githubNodeId          String?   @map("github_node_id")
+  login                 String
+  normalizedLogin       String    @map("normalized_login")
+  avatarUrl             String?   @map("avatar_url")
+  profileUrl            String?   @map("profile_url")
+  accessTokenEncrypted  String    @map("access_token_encrypted") @db.Text
+  refreshTokenEncrypted String?   @map("refresh_token_encrypted") @db.Text
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  scopes                String[]  @default([])
+  revokedAt             DateTime? @map("revoked_at")
+  lastUsedAt            DateTime? @map("last_used_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@unique([organizationId, githubUserId])
+  @@index([organizationId, normalizedLogin])
+  @@index([revokedAt])
+  @@map("github_user_connections")
+}
+
+model PublicRepository {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  githubRepoId   String   @map("github_repo_id")
+  fullName       String   @map("full_name")
+  owner          String
+  name           String
+  htmlUrl        String   @map("html_url")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   // Relations
-  pullRequestDetail PullRequestDetail @relation(fields: [pullRequestId], references: [artifactId], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@index([pullRequestId, state])
-  @@map("github_pr_review_comments")
+  @@unique([organizationId, githubRepoId])
+  @@map("public_repositories")
 }
 
 model GitHubPRReview {
@@ -1383,34 +1786,10 @@ model GitHubPRReview {
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
   // Relations
-  pullRequestDetail PullRequestDetail @relation(fields: [pullRequestId], references: [artifactId], onDelete: Cascade)
+  pullRequestDetail PullRequestDetail @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
 
   @@unique([pullRequestId, authorLogin])
   @@map("github_pr_reviews")
-}
-
-model GitHubActionRun {
-  id           String             @id @default(uuid(7)) @db.Uuid
-  workstreamId String             @map("workstream_id") @db.Uuid
-  repositoryId String             @map("repository_id") @db.Uuid
-  runId        String?            @map("run_id")
-  workflowName String             @map("workflow_name")
-  status       GitHubActionStatus @default(PENDING)
-  conclusion   String?
-  htmlUrl      String             @map("html_url")
-  triggerEvent String             @map("trigger_event")
-  triggerData  Json?              @map("trigger_data")
-  sessionId    String?            @map("session_id")
-  jobType      String?            @map("job_type")
-  startedAt    DateTime?          @map("started_at")
-  completedAt  DateTime?          @map("completed_at")
-  createdAt    DateTime           @default(now()) @map("created_at")
-  updatedAt    DateTime           @updatedAt @map("updated_at")
-
-  @@unique([repositoryId, runId])
-  @@index([workstreamId, status])
-  @@index([workstreamId, workflowName])
-  @@map("github_action_runs")
 }
 
 // =============================================================================
@@ -1723,7 +2102,7 @@ model Agent {
   description    String?
   prompt         String   @db.Text
   enabled        Boolean  @default(true)
-  sourceRepo     String?  @map("source_repo")
+  sourceRepo     String   @default("") @map("source_repo")
   bootstrapRunId String?  @map("bootstrap_run_id")
   currentVersion Int      @default(1) @map("current_version")
   createdById    String   @map("created_by_id") @db.Uuid
@@ -1736,7 +2115,7 @@ model Agent {
   versions     AgentVersion[]
 
   @@unique([organizationId, slug])
-  @@unique([organizationId, role])
+  @@unique([organizationId, sourceRepo, role])
   @@index([organizationId])
   @@index([organizationId, enabled])
   @@map("agents")
@@ -1776,4 +2155,68 @@ model RepoBootstrapConfig {
   @@unique([organizationId, repoFullName])
   @@index([organizationId])
   @@map("repo_bootstrap_configs")
+}
+
+// ---- Tags ----
+
+model Tag {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  color          String
+  createdById    String   @map("created_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  createdBy    User          @relation("TagCreatedBy", fields: [createdById], references: [id])
+  tagProjects  TagProject[]
+  tagArtifacts TagArtifact[]
+  tagLoops     TagLoop[]
+
+  @@index([organizationId])
+  @@index([organizationId, name])
+  @@map("tags")
+}
+
+model TagProject {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tagId     String   @map("tag_id") @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([tagId, projectId])
+  @@index([projectId])
+  @@map("tag_projects")
+}
+
+model TagArtifact {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tagId      String   @map("tag_id") @db.Uuid
+  artifactId String   @map("artifact_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([tagId, artifactId])
+  @@index([artifactId])
+  @@map("tag_artifacts")
+}
+
+model TagLoop {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tagId     String   @map("tag_id") @db.Uuid
+  loopId    String   @map("loop_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  loop Loop @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@unique([tagId, loopId])
+  @@index([loopId])
+  @@map("tag_loops")
 }

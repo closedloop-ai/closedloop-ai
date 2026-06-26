@@ -8,8 +8,8 @@ import { Bold, Italic, Underline } from "lucide-react";
 /**
  * A set of two-state buttons that can be toggled on or off.
  */
-const meta = {
-  title: "ui/ToggleGroup",
+const meta: Meta<typeof ToggleGroup> = {
+  title: "Design System/Primitives/Toggle Group",
   component: ToggleGroup,
   tags: ["autodocs"],
   argTypes: {
@@ -40,11 +40,11 @@ const meta = {
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof ToggleGroup>;
+};
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<typeof ToggleGroup>;
 
 /**
  * The default form of the toggle group.

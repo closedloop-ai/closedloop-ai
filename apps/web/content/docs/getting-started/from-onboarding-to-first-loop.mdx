@@ -9,9 +9,9 @@ This is the onboarding guide for teams that want to move from setup into real ex
 
 By the end of this guide you should have:
 
-- a connected repository to ClosedLoop
-- ClosedLoop's Desktop app downloaded, running, and connected to ClosedLoop web
-- a usable compute target for executing jobs or "Loops" within ClosedLoop
+- a connected repository to Closedloop
+- Closedloop's Desktop app downloaded, running, and connected to Closedloop web
+- a usable compute target for executing jobs or "Loops" within Closedloop
 - one scoped artifact (e.g. PRD) to execute against
 - a first Loop run that produces a reviewable artifact
 
@@ -19,13 +19,13 @@ By the end of this guide you should have:
 
 - Create an account or sign in.
 - Create your Organization.
-- Download the ClosedLoop Desktop app.
-- Confirm the ClosedLoop Desktop app is connected to the ClosedLoop web app by returning to the onboarding flow and seeing "Running" as the status.
+- Download the Closedloop Desktop app.
+- Confirm the Closedloop Desktop app is connected to the Closedloop web app by returning to the onboarding flow and seeing "Running" as the status.
 - Create a team name - this may be a subset of your team that typically works together or it may be your full team.
 - Create a project.
 - Connect your GitHub account that has access to the repo you want to work in.
-- Install & Authorize [ClosedLoop.ai](http://ClosedLoop.ai).
-- Land on 'My Tasks' in ClosedLoop to either complete your setup, invite your teammates, or get started with creating your first artifact!
+- Install & Authorize [Closedloop.ai](http://Closedloop.ai).
+- Land on 'My Tasks' in Closedloop to either complete your setup, invite your teammates, or get started with creating your first artifact!
 
 ## Step 2: Confirm all apps are connected & updated
 
@@ -67,12 +67,12 @@ Avoid broad feature work on the first run. The point is to prove the end-to-end 
   - Enter a title and select an Approver if you've already invited other teammates to your organization and project.
   - Confirm the repository. Once you've selected a repo, the list of available target branches will auto-populate.
   - The status will stay in 'Draft'.
-  - Give ClosedLoop AI an idea of what it will be building. You can do this by:
+  - Give Closedloop AI an idea of what it will be building. You can do this by:
     - entering a description of the task in the 'Content' text area,
     - pasting the PRD or description into the Content text area, or
     - upload an .md file of an existing PRD or description of the task you want to execute.
-  - ClosedLoop AI will already be looking at a summary of the selected repo's codebase to produce a brownfield, relevant PRD. However, if there is additional information you would like it to consider, for example, a website that pulls from more repos than the one you've selected, or a linkable vision document, you can paste that URL in the 'Source URL' field.
-- Select 'Save' if you are uploading or pasting in an already existing PRD, or 'Generate PRD' if you want ClosedLoop AI to produce a PRD artifact based on the Content you've entered.
+  - Closedloop AI will already be looking at a summary of the selected repo's codebase to produce a brownfield, relevant PRD. However, if there is additional information you would like it to consider, for example, a website that pulls from more repos than the one you've selected, or a linkable vision document, you can paste that URL in the 'Source URL' field.
+- Select 'Save' if you are uploading or pasting in an already existing PRD, or 'Generate PRD' if you want Closedloop AI to produce a PRD artifact based on the Content you've entered.
 - If you selected to 'Generate PRD', congratulations! You've kicked off your first Loop!
 
 Behind the scenes, the web app sends a `desktop.command` envelope over the relay. The desktop client dispatches it into the localhost gateway, which may require your approval.

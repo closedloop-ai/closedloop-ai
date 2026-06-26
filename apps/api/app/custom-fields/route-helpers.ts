@@ -47,7 +47,7 @@ export async function mergeCustomFieldsIntoResponse<T extends { id: string }>(
  * @param organizationId - The organization ID for scoping.
  */
 export async function applyCustomFieldsFromBody(
-  customFieldsInput: Record<string, unknown>,
+  customFieldsInput: Record<string, string | number | string[] | null>,
   entityId: string,
   entityType: (typeof CustomFieldEntityType)[keyof typeof CustomFieldEntityType],
   organizationId: string
@@ -66,7 +66,7 @@ export async function applyCustomFieldsFromBody(
         entityType,
         entityId,
         organizationId,
-        rawValue as string | number | string[]
+        rawValue
       );
     }
   }

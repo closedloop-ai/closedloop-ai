@@ -30,7 +30,7 @@ export const TokenMaxingSection = () => {
           You&apos;re paying for unused capacity
         </h2>
         <p className="text-lg text-muted-foreground">
-          Most teams underutilize their AI subscriptions. ClosedLoop.ai keeps
+          Most teams underutilize their AI subscriptions. Closedloop.ai keeps
           agents running on real work with the right context, so you
           consistently hit usage limits on productive tasks instead of wasting
           capacity on isolated sessions.

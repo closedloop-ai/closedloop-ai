@@ -45,6 +45,17 @@ export const organizationsService = {
   },
 
   /**
+   * Find an organization by slug
+   */
+  findBySlug(slug: string): Promise<Organization | null> {
+    return withDb((db) =>
+      db.organization.findUnique({
+        where: { slug },
+      })
+    ).then(this.toOrganization);
+  },
+
+  /**
    * Create a new organization
    */
   create(input: CreateOrganizationInput): Promise<Organization> {

@@ -11,13 +11,13 @@
  */
 
 import type { GenerationStatus } from "@repo/api/src/types/document";
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -78,8 +78,7 @@ describe("documentGenerationStatusService.getGenerationStatus", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: "art-1",
-          type: "PULL_REQUEST",
-          workstreamId: null,
+          type: "BRANCH",
         }),
       },
     });
@@ -97,7 +96,6 @@ describe("documentGenerationStatusService.getGenerationStatus", () => {
         findUnique: vi.fn().mockResolvedValue({
           id: "doc-1",
           type: "DOCUMENT",
-          workstreamId: "ws-1",
         }),
       },
     });
@@ -110,7 +108,7 @@ describe("documentGenerationStatusService.getGenerationStatus", () => {
       "org-1"
     );
 
-    expect(mockFetchBest).toHaveBeenCalledWith("doc-1", "ws-1");
+    expect(mockFetchBest).toHaveBeenCalledWith("doc-1");
     expect(mockGetDismissed).toHaveBeenCalledWith("doc-1");
     expect(mockSuppress).toHaveBeenCalledWith(FAILURE_STATUS, "run-abc");
     expect(result?.status).toBe("NONE");

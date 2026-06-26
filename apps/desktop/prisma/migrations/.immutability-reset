@@ -1,0 +1,25 @@
+Desktop migration-history reset — approved, one-time.
+
+Why this exists
+---------------
+The desktop local database engine moved from PGlite (Postgres dialect, the
+`agent-dashboard.pgdata` directory) to libSQL/SQLite (a single
+`agent-dashboard.sqlite` file). This is a different storage engine on a new
+on-disk file, so the legacy Postgres incremental migration history cannot be
+"continued" in SQLite dialect. The 14 Postgres `migration.sql` files were
+removed and replaced by a single genesis SQLite migration, `0001_init`.
+
+No SQLite desktop migration has ever shipped, so there is no immutable SQLite
+checksum history in the wild to preserve — the reset is safe and intentional.
+
+Effect on the immutability guard
+--------------------------------
+The `migration-immutability` job (.github/workflows/pr-test.yml) treats any
+modified/deleted/renamed `migration.sql` as a violation. The presence of THIS
+marker file (added in the same PR) approves the desktop deletions for the
+PGlite→SQLite cutover ONLY. The cloud `packages/database` migrations remain
+strictly immutable, and future desktop migrations remain immutable too: a later
+edit/delete/rename does not add this marker, so it is still rejected.
+
+Do not edit or re-add this marker to excuse a future migration change — add a
+new forward migration instead (see apps/desktop/AGENTS.md).

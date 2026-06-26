@@ -1,5 +1,7 @@
 import type { DesktopCommandEvent } from "@repo/api/src/types/compute-target";
+import { NextResponse } from "next/server";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
+import { authorizeBranchViewLocalEventRead } from "@/lib/branch-view-local-authorization";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import {
@@ -22,6 +24,103 @@ function isTerminalEvent(event: DesktopCommandEvent): boolean {
   );
 }
 
+type LocalEventReadAuthorization = {
+  commandId: string;
+  computeTargetId: string;
+  userId: string;
+  organizationId: string;
+};
+
+async function authorizeLocalEventRead(
+  input: LocalEventReadAuthorization
+): Promise<Response | null> {
+  const access = await authorizeBranchViewLocalEventRead(input);
+  if (access.ok) {
+    return null;
+  }
+  return NextResponse.json(
+    { success: false, error: access.error, code: access.error },
+    { status: access.status }
+  );
+}
+
+async function readLocalEventDeniedError(response: Response): Promise<string> {
+  const body = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "error" in body &&
+    typeof body.error === "string"
+  ) {
+    return body.error;
+  }
+  return response.text();
+}
+
+async function sendLocalEventReadDenied(input: {
+  send: (event: Uint8Array) => void;
+  close: () => void;
+  commandId: string;
+  response: Response;
+}): Promise<void> {
+  input.send(
+    encodeSseData({
+      commandId: input.commandId,
+      eventType: "error",
+      data: {
+        error: await readLocalEventDeniedError(input.response),
+        terminal: true,
+      },
+    })
+  );
+  input.close();
+}
+
+async function pollPersistedLocalEvents(input: {
+  commandId: string;
+  targetId: string;
+  localAuthInput: LocalEventReadAuthorization;
+  lastSequence: { current: number };
+  send: (event: Uint8Array) => void;
+  close: () => void;
+}): Promise<void> {
+  const pollAuthError = await authorizeLocalEventRead(input.localAuthInput);
+  if (pollAuthError) {
+    await sendLocalEventReadDenied({
+      send: input.send,
+      close: input.close,
+      commandId: input.commandId,
+      response: pollAuthError,
+    });
+    return;
+  }
+
+  const events = await desktopCommandStore.getCommandEvents(
+    input.targetId,
+    input.commandId,
+    { afterSequence: input.lastSequence.current }
+  );
+  if (!events) {
+    return;
+  }
+
+  for (const event of events) {
+    if (
+      typeof event.sequence === "number" &&
+      event.sequence > input.lastSequence.current
+    ) {
+      input.lastSequence.current = event.sequence;
+      input.send(encodeSseData(event));
+      if (isTerminalEvent(event)) {
+        input.close();
+      }
+    }
+  }
+}
+
 /**
  * GET /compute-targets/:id/commands/:commandId/events
  *
@@ -39,7 +138,7 @@ export async function GET(
     }
 
     const { id: targetId, commandId } = await params;
-    const target = await computeTargetsService.findOwnedById(
+    const target = await computeTargetsService.findAccessibleById(
       targetId,
       authContext.organizationId,
       authContext.userId
@@ -51,6 +150,17 @@ export async function GET(
     const command = await desktopCommandStore.getCommand(target.id, commandId);
     if (!command) {
       return new Response("Not Found", { status: 404 });
+    }
+
+    const localAuthInput = {
+      commandId,
+      computeTargetId: target.id,
+      userId: authContext.userId,
+      organizationId: authContext.organizationId,
+    } satisfies LocalEventReadAuthorization;
+    const initialLocalAuthError = await authorizeLocalEventRead(localAuthInput);
+    if (initialLocalAuthError) {
+      return initialLocalAuthError;
     }
 
     const url = new URL(request.url);
@@ -67,6 +177,10 @@ export async function GET(
         : undefined;
 
     if (!streamRequested) {
+      const replayAuthError = await authorizeLocalEventRead(localAuthInput);
+      if (replayAuthError) {
+        return replayAuthError;
+      }
       const events = await desktopCommandStore.getCommandEvents(
         target.id,
         commandId,
@@ -77,14 +191,28 @@ export async function GET(
 
     const stream = createSseStream(
       async ({ send, close }) => {
-        let lastSequence = afterSequence ?? 0;
+        const lastSequence = { current: afterSequence ?? 0 };
+
+        const replayAuthError = await authorizeLocalEventRead(localAuthInput);
+        if (replayAuthError) {
+          await sendLocalEventReadDenied({
+            send,
+            close,
+            commandId,
+            response: replayAuthError,
+          });
+          return null;
+        }
 
         const unsubscribe = await desktopCommandStore.subscribeCommandEvents(
           target.id,
           commandId,
           (event) => {
             if (typeof event.sequence === "number") {
-              lastSequence = Math.max(lastSequence, event.sequence);
+              lastSequence.current = Math.max(
+                lastSequence.current,
+                event.sequence
+              );
             }
             send(encodeSseData(event));
             if (isTerminalEvent(event)) {
@@ -99,26 +227,14 @@ export async function GET(
         // cross-process events require periodic DB checks.
         const pollInterval = setInterval(async () => {
           try {
-            const events = await desktopCommandStore.getCommandEvents(
-              target.id,
+            await pollPersistedLocalEvents({
               commandId,
-              { afterSequence: lastSequence }
-            );
-            if (!events) {
-              return;
-            }
-            for (const event of events) {
-              if (
-                typeof event.sequence === "number" &&
-                event.sequence > lastSequence
-              ) {
-                lastSequence = event.sequence;
-                send(encodeSseData(event));
-                if (isTerminalEvent(event)) {
-                  close();
-                }
-              }
-            }
+              targetId: target.id,
+              localAuthInput,
+              lastSequence,
+              send,
+              close,
+            });
           } catch {
             // Polling failure is non-fatal — next interval retries
           }

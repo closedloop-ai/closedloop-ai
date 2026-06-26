@@ -53,8 +53,15 @@ export function createEvaluationHandler(
 
     async downloadArtifacts(stateKeyPrefix: string) {
       const buf = await downloadArtifactFile(stateKeyPrefix, fileName);
-      const report = parseJsonArtifact<JudgesReport>(buf, fileName, (r) =>
-        judgesReportSchema.parse(r)
+      // NOTE: judgesReportSchema (a local Zod schema) infers a wider shape than
+      // the canonical JudgesReport type — its `stats[].final_status` is
+      // `string | number` rather than the narrower `EvalStatus`. The cast below
+      // bridges that lax-schema/strict-type gap (pre-existing behavior). This is
+      // a real schema/type drift worth reconciling separately, not masked here.
+      const report = parseJsonArtifact<JudgesReport, unknown>(
+        buf,
+        fileName,
+        (r) => judgesReportSchema.parse(r)
       ) as JudgesReport | null;
       return { report };
     },

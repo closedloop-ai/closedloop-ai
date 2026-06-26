@@ -18,7 +18,3 @@ export function getEdition(): Edition {
   }
   return Edition.Community;
 }
-
-export function isEnterprise(): boolean {
-  return getEdition() === Edition.Enterprise;
-}

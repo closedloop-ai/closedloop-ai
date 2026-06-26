@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  asRecord,
+  buildDocumentUrlFromRecord,
   describeIdOrSlug,
   encodePathSegment,
   withErrorHandling,
@@ -31,11 +33,13 @@ export function registerCreateDocumentVersion(
           `/documents/${encodePathSegment(documentId)}/versions`,
           { content }
         );
+        const row = asRecord(result);
+        const webUrl = buildDocumentUrlFromRecord(row);
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify({ ...row, webUrl }, null, 2),
             },
           ],
         };

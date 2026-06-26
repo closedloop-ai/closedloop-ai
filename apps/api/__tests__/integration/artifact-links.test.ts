@@ -10,6 +10,7 @@ import {
   withDb,
 } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { describe, expect, it } from "vitest";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentService } from "@/app/documents/document-service";
 import {
@@ -89,35 +90,51 @@ async function seedGithubRepoForOrg(
  * Creates a PR-typed artifact directly via Prisma against a real
  * (test-seeded) GitHubInstallationRepository row.
  */
-function createPullRequestArtifact(
+function createBranchArtifact(
   orgId: string,
   projectId: string,
   repositoryId: string,
   overrides: { title: string; number: number; githubId: string; url: string }
 ): Promise<{ id: string }> {
-  return withDb((db) =>
-    db.artifact.create({
+  return withDb(async (db) => {
+    const artifact = await db.artifact.create({
       data: {
         organizationId: orgId,
         projectId,
-        type: PrismaArtifactType.PULL_REQUEST,
-        name: overrides.title,
+        type: PrismaArtifactType.BRANCH,
+        name: "feat/test",
         status: GitHubPRState.OPEN,
         externalUrl: overrides.url,
-        pullRequest: {
+        branch: {
+          create: {
+            repositoryId,
+            branchName: "feat/test",
+            baseBranch: "main",
+          },
+        },
+        pullRequestDetails: {
           create: {
             repositoryId,
             githubId: overrides.githubId,
             number: overrides.number,
-            headBranch: "feat/test",
-            baseBranch: "main",
+            title: overrides.title,
+            htmlUrl: overrides.url,
             prState: GitHubPRState.OPEN,
+            isCurrent: true,
           },
         },
       },
-      select: { id: true },
-    })
-  );
+      select: { id: true, pullRequestDetails: { select: { id: true } } },
+    });
+    const currentDetailId = artifact.pullRequestDetails[0]?.id ?? null;
+    if (currentDetailId) {
+      await db.branchDetail.update({
+        where: { artifactId: artifact.id },
+        data: { currentPullRequestDetailId: currentDetailId },
+      });
+    }
+    return { id: artifact.id };
+  });
 }
 
 describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
@@ -230,7 +247,7 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
         { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
 
-      const prArtifact = await createPullRequestArtifact(
+      const prArtifact = await createBranchArtifact(
         testOrgId,
         testProjectId,
         repositoryId,
@@ -444,7 +461,7 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
           testProjectId,
           { type: DocumentType.Prd, title: "PRD" }
         );
-        const prArtifact = await createPullRequestArtifact(
+        const prArtifact = await createBranchArtifact(
           testOrgId,
           testProjectId,
           repositoryId,

@@ -1,5 +1,5 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", async () => {
   const { createLogMockModule } = await import("../fixtures/mock-modules");
@@ -39,7 +39,7 @@ describe("executeHandler upload ingestion", () => {
         has_changes: true,
         pr_url: "https://github.com/org/repo/pull/42",
         pr_number: "42",
-        pr_title: "ClosedLoop: feature",
+        pr_title: "Closedloop: feature",
         branch_name: "symphony/feature",
         base_branch: "develop",
         commit_sha: "abc123",
@@ -52,7 +52,6 @@ describe("executeHandler upload ingestion", () => {
     expect(mockIngestRepoExecutionResults).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: "org-1",
-        workstreamId: loop.workstreamId,
         documentId: loop.documentId,
         loopId: loop.id,
       }),

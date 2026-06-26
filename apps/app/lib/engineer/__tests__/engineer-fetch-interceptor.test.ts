@@ -1,10 +1,19 @@
+import {
+  COMMAND_SIGNING_CAPABILITY_KEY,
+  type ComputeTarget,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  COMMAND_ID_HEADER,
+  COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER,
+  COMMAND_SIGNATURE_HEADER,
+  COMMAND_SIGNATURE_PAYLOAD_HEADER,
   COMPUTE_TARGET_HEADER,
-  GATEWAY_RELAY_PATH_PREFIX,
-} from "@/lib/engineer/constants";
+} from "@/lib/desktop-command-signing/constants";
+import { GATEWAY_RELAY_PATH_PREFIX } from "@/lib/engineer/constants";
 
 const mockEnsureElectronDetection = vi.fn();
 const mockGetElectronDetectionSnapshot = vi.fn();
@@ -12,6 +21,29 @@ const mockGetEngineerRoutingSelection = vi.fn();
 const mockEnsureLocalGatewaySession = vi.fn();
 const mockGetLastExchangeError = vi.fn();
 const mockEnsureLocalGatewayApiNamespace = vi.fn();
+
+function makeCloudTarget(
+  id: string,
+  overrides: Partial<ComputeTarget> = {}
+): ComputeTarget {
+  return {
+    id,
+    organizationId: "org-1",
+    userId: "user-1",
+    machineName: `target-${id}`,
+    platform: "darwin",
+    capabilities: { [COMMAND_SIGNING_CAPABILITY_KEY]: true },
+    supportedOperations: [],
+    lastSeenAt: new Date("2026-05-10T12:00:00.000Z"),
+    isOnline: true,
+    isSharedWithOrg: false,
+    serverCapabilities: { computeTargetSigning: true },
+    selectedHarness: HarnessType.Claude,
+    createdAt: new Date("2026-05-10T12:00:00.000Z"),
+    updatedAt: new Date("2026-05-10T12:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 vi.mock("@/lib/engineer/electron-detection", () => ({
   ensureElectronDetection: (...args: unknown[]) =>
@@ -75,6 +107,35 @@ describe("engineer-fetch-interceptor", () => {
     vi.restoreAllMocks();
   });
 
+  it("publishes window.__engineerOriginalFetch so getRawFetch bypasses the shim (regression: namespace-probe deadlock)", () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+
+    const uninstall = installEngineerFetchInterceptor();
+
+    // Populated with the pre-interception fetch (NOT the installed shim
+    // wrapper), which getRawFetch() (local-gateway-api-namespace.ts) reads to
+    // run the /api/gateway/version probe WITHOUT re-entering the interceptor.
+    const captured = (
+      window as unknown as { __engineerOriginalFetch?: typeof globalThis.fetch }
+    ).__engineerOriginalFetch;
+    expect(captured).toBeDefined();
+    expect(globalThis.fetch).not.toBe(captured);
+
+    uninstall();
+    expect(
+      (
+        window as unknown as {
+          __engineerOriginalFetch?: typeof globalThis.fetch;
+        }
+      ).__engineerOriginalFetch
+    ).toBeUndefined();
+  });
+
   it("rewrites gateway routes to localhost when electron is detected", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {
@@ -119,7 +180,7 @@ describe("engineer-fetch-interceptor", () => {
     uninstall();
   });
 
-  it("rewrites gateway routes to the legacy engineer namespace when required", async () => {
+  it("rewrites gateway routes to localhost unchanged when namespace is legacy 'engineer'", async () => {
     const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
@@ -153,8 +214,10 @@ describe("engineer-fetch-interceptor", () => {
 
     expect(originalFetch).toHaveBeenCalledTimes(1);
     const outboundRequest = originalFetch.mock.calls[0][0] as Request;
+    // rewriteDesktopApiPath is now an identity function — the /api/gateway/ prefix
+    // is preserved regardless of the resolved namespace value.
     expect(outboundRequest.url).toBe(
-      "http://localhost:19432/api/engineer/terminal-chat"
+      "http://localhost:19432/api/gateway/terminal-chat"
     );
 
     uninstall();
@@ -394,11 +457,19 @@ describe("engineer-fetch-interceptor", () => {
 describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
   let installInterceptor: typeof installEngineerFetchInterceptor;
   let resetInterceptor: typeof resetEngineerFetchInterceptorForTests;
+  let cacheComputeTargetsForSigning: (targets: ComputeTarget[]) => void;
+  let mockCloudSignDesktopCommand: Mock;
   let mockRoutingSelection: Mock;
 
   beforeEach(async () => {
     vi.resetModules();
 
+    mockCloudSignDesktopCommand = vi.fn(async () => ({
+      commandId: "signed-command-1",
+      signature: "signature",
+      signaturePayload: "payload",
+      publicKeyFingerprint: "fingerprint",
+    }));
     mockRoutingSelection = vi.fn();
 
     vi.doMock("@/lib/engineer/constants", async (importOriginal) => {
@@ -429,6 +500,26 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
       getLastExchangeError: vi.fn().mockReturnValue(null),
     }));
 
+    vi.doMock(
+      "@/lib/desktop-command-signing/command-signer",
+      async (importOriginal) => {
+        const actual =
+          await importOriginal<
+            typeof import("@/lib/desktop-command-signing/command-signer")
+          >();
+        return {
+          ...actual,
+          signDesktopCommand: (...args: unknown[]) =>
+            mockCloudSignDesktopCommand(...args),
+        };
+      }
+    );
+
+    const cacheModule = await import(
+      "@/lib/desktop-command-signing/compute-target-signing-cache"
+    );
+    cacheComputeTargetsForSigning = cacheModule.cacheComputeTargetsForSigning;
+    cacheComputeTargetsForSigning([]);
     const mod = await import("@/lib/engineer/engineer-fetch-interceptor");
     installInterceptor = mod.installEngineerFetchInterceptor;
     resetInterceptor = mod.resetEngineerFetchInterceptorForTests;
@@ -496,6 +587,76 @@ describe("engineer-fetch-interceptor (CLOUD_RELAY_ENABLED=true)", () => {
     expect(outboundUrl.searchParams.get("provider")).toBe("codex");
     expect(outboundUrl.searchParams.get("repo")).toBe("/tmp/repo");
     expect(outboundRequest.headers.get(COMPUTE_TARGET_HEADER)).toBe("target-2");
+
+    uninstall();
+  });
+
+  it("uses the refreshed cache to attach or omit generic relay signing headers", async () => {
+    const originalFetch = vi.fn().mockResolvedValue(new Response("ok"));
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    mockRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-3",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    const uninstall = installInterceptor();
+
+    cacheComputeTargetsForSigning([makeCloudTarget("target-3")]);
+    await fetch("/api/gateway/git", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "status" }),
+    });
+
+    expect(mockCloudSignDesktopCommand).toHaveBeenCalledWith(
+      {
+        method: "POST",
+        pathWithQuery: "/api/gateway/git",
+        body: { action: "status" },
+      },
+      expect.objectContaining({ id: "target-3" })
+    );
+    const signedRequest = originalFetch.mock.calls[0][0] as Request;
+    expect(signedRequest.headers.get(COMPUTE_TARGET_HEADER)).toBe("target-3");
+    expect(signedRequest.headers.get(COMMAND_ID_HEADER)).toBe(
+      "signed-command-1"
+    );
+    expect(signedRequest.headers.get(COMMAND_SIGNATURE_HEADER)).toBe(
+      "signature"
+    );
+    expect(signedRequest.headers.get(COMMAND_SIGNATURE_PAYLOAD_HEADER)).toBe(
+      "payload"
+    );
+    expect(
+      signedRequest.headers.get(COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER)
+    ).toBe("fingerprint");
+
+    cacheComputeTargetsForSigning([
+      makeCloudTarget("target-3", { serverCapabilities: {} }),
+    ]);
+    await fetch("/api/gateway/git", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "status" }),
+    });
+
+    expect(mockCloudSignDesktopCommand).toHaveBeenCalledTimes(1);
+    const unsignedRequest = originalFetch.mock.calls[1][0] as Request;
+    expect(unsignedRequest.headers.get(COMPUTE_TARGET_HEADER)).toBe("target-3");
+    expect(unsignedRequest.headers.get(COMMAND_ID_HEADER)).toBeNull();
+    expect(unsignedRequest.headers.get(COMMAND_SIGNATURE_HEADER)).toBeNull();
+    expect(
+      unsignedRequest.headers.get(COMMAND_SIGNATURE_PAYLOAD_HEADER)
+    ).toBeNull();
+    expect(
+      unsignedRequest.headers.get(COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER)
+    ).toBeNull();
 
     uninstall();
   });

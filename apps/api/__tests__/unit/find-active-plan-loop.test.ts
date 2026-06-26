@@ -14,7 +14,7 @@
  * indirectly via `loops-service-concurrent-limit.test.ts > P2002 backstop`.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   databaseModuleMock,
   dbUtilsModuleMock,
@@ -30,8 +30,11 @@ const handles = vi.hoisted<LoopsServiceHandles>(() => ({
   loopCreate: vi.fn(),
   loopCount: vi.fn(),
   loopFindFirst: vi.fn(),
+  loopFindMany: vi.fn(),
   loopFindUnique: vi.fn(),
   loopUpdateMany: vi.fn(),
+  loopEventCreate: vi.fn(),
+  loopEventFindUnique: vi.fn(),
   orgFindUnique: vi.fn(),
   repoFindMany: vi.fn(),
 }));
@@ -49,7 +52,6 @@ vi.mock("@/lib/loops/uploaded-plan-artifacts", () =>
 
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import type { Loop as PrismaLoop } from "@repo/database";
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { buildPrismaLoop } from "../fixtures/loop";
 

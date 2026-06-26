@@ -23,19 +23,21 @@ vi.mock("@/lib/identifier-utils", () => ({
 vi.mock("@/app/documents/document-service", () => ({
   documentService: {
     findById: vi.fn(),
+    findByIdSimple: vi.fn(),
   },
 }));
 
 vi.mock("@/app/comments/service", () => ({
   commentsService: {
     createDocumentThread: vi.fn(),
+    findThreadsByDocument: vi.fn(),
   },
 }));
 
 // --- Imports (after mocks) ---
 
 import { commentsService } from "@/app/comments/service";
-import { POST } from "@/app/documents/[id]/threads/route";
+import { GET, POST } from "@/app/documents/[id]/threads/route";
 import { documentService } from "@/app/documents/document-service";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
@@ -202,7 +204,164 @@ describe("POST /artifacts/:id/threads", () => {
       makeRequest({ body: "Hello", anchorText: "nonexistent" }),
       makeParams()
     );
+    const json = await response.json();
 
     expect(response.status).toBe(400);
+    // The structured anchor reason is surfaced (not the opaque generic message).
+    expect(json.error).toBe("Anchor text not found in document");
+  });
+
+  it("keeps 5xx provider failures on the generic message (no upstream leak)", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
+    vi.mocked(documentService.findById).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(commentsService.createDocumentThread).mockRejectedValue({
+      message: "Liveblocks upstream exploded: secret-ish detail",
+      status: 503,
+    });
+
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "Summary" }),
+      makeParams()
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.error).toBe("Failed to create thread");
+  });
+});
+
+describe("GET /artifacts/:id/threads", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns document threads without GitHub-only projection fields", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
+    vi.mocked(documentService.findByIdSimple).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(commentsService.findThreadsByDocument).mockResolvedValue([
+      {
+        id: "thread-1",
+        organizationId: "org-1",
+        source: "LIVEBLOCKS",
+        externalId: "external-thread-1",
+        roomId: "room-1",
+        artifactId: "artifact-uuid",
+        status: "OPEN",
+        metadata: null,
+        createdAtVersion: null,
+        resolvedAt: null,
+        resolvedById: null,
+        createdById: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        resolvedBy: null,
+        createdBy: null,
+        comments: [
+          {
+            id: "comment-1",
+            threadId: "thread-1",
+            authorId: "user-1",
+            body: {},
+            plainText: "hello",
+            externalId: null,
+            editedAt: null,
+            deletedAt: null,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+            reactions: [],
+            attachments: [],
+          },
+        ],
+      },
+    ]);
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/artifacts/PRD-7/threads",
+        method: "GET",
+      }),
+      makeParams()
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual([
+      {
+        id: "thread-1",
+        organizationId: "org-1",
+        source: "LIVEBLOCKS",
+        externalId: "external-thread-1",
+        roomId: "room-1",
+        artifactId: "artifact-uuid",
+        status: "OPEN",
+        metadata: null,
+        createdAtVersion: null,
+        resolvedAt: null,
+        resolvedById: null,
+        createdById: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        resolvedBy: null,
+        createdBy: null,
+        comments: [
+          {
+            id: "comment-1",
+            threadId: "thread-1",
+            authorId: "user-1",
+            body: {},
+            plainText: "hello",
+            externalId: null,
+            editedAt: null,
+            deletedAt: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            reactions: [],
+            attachments: [],
+          },
+        ],
+      },
+    ]);
+    const serializedData = JSON.stringify(json.data);
+    expect(serializedData).not.toContain("githubProjection");
+    expect(serializedData).not.toContain("pullRequestDetailId");
+    expect(serializedData).not.toContain("threadKind");
+    expect(serializedData).not.toContain("rootCommentId");
+    expect(serializedData).not.toContain("reviewThreadId");
+    expect(serializedData).not.toContain("githubCommentId");
+    expect(serializedData).not.toContain("githubInReplyToCommentId");
+    expect(serializedData).not.toContain("githubDeletedAt");
+    expect(serializedData).not.toContain("lastSyncedAt");
+    expect(commentsService.findThreadsByDocument).toHaveBeenCalledWith(
+      "org-1",
+      "artifact-uuid",
+      { status: undefined }
+    );
+  });
+
+  it("returns 404 for non-document UUIDs before reading comment threads", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue("branch-artifact-uuid");
+    vi.mocked(documentService.findByIdSimple).mockResolvedValue(null);
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/artifacts/branch-artifact-uuid/threads",
+        method: "GET",
+      }),
+      makeParams("branch-artifact-uuid")
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(404);
+    expect(json.success).toBe(false);
+    expect(documentService.findByIdSimple).toHaveBeenCalledWith(
+      "branch-artifact-uuid",
+      "org-1"
+    );
+    expect(commentsService.findThreadsByDocument).not.toHaveBeenCalled();
   });
 });

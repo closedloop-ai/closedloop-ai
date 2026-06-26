@@ -47,11 +47,18 @@ export const POST = withAuth<
     user.id
   );
 
-  if (!result.success) {
-    return errorResponse(result.error, null, 400);
+  switch (result.status) {
+    case "connected":
+      return successResponse({ connected: true });
+    case "requires_confirmation":
+      return successResponse({
+        connected: false,
+        status: "requires_confirmation",
+        priorAccount: result.priorAccount,
+        newAccount: result.newAccount,
+        newInstallationId: result.newInstallationId,
+      });
+    default:
+      return errorResponse(result.error, null, 400);
   }
-
-  return successResponse({
-    connected: true,
-  });
 });

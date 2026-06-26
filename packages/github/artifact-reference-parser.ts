@@ -91,7 +91,7 @@ function buildUrlPattern(baseUrl: string, config: PrefixConfig): RegExp {
   const escapedBase = escapeForRegex(baseUrl);
   const escapedRoute = escapeForRegex(config.routePath);
   return new RegExp(
-    String.raw`${escapedBase}/${escapedRoute}/${escapeForRegex(
+    String.raw`${escapedBase}/(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/)?${escapedRoute}/${escapeForRegex(
       config.prefix
     )}-(\d+)\b`,
     "gi"

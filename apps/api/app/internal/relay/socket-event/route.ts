@@ -26,10 +26,16 @@ export async function POST(request: Request): Promise<Response> {
   const event = body.event;
   const payload = body.payload;
   const auth = isRecord(body.auth)
-    ? (body.auth as { organizationId: string; userId: string })
+    ? (body.auth as {
+        organizationId: string;
+        userId: string;
+        clerkUserId?: string | null;
+      })
     : null;
   const targetId =
     typeof body.targetId === "string" ? body.targetId : undefined;
+  const relaySocketId =
+    typeof body.relaySocketId === "string" ? body.relaySocketId : undefined;
   // Extract correlation context forwarded by the relay worker (T-2.6)
   const correlation = extractCorrelationContext(body);
   // pluginVersion is inside the payload object (relay enriches the event payload, not the top-level body)
@@ -46,6 +52,7 @@ export async function POST(request: Request): Promise<Response> {
       targetId,
       correlation,
       pluginVersion,
+      relaySocketId,
       requestArrivedAt,
     });
     if (!result.ok) {

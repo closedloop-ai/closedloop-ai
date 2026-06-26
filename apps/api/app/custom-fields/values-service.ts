@@ -316,13 +316,6 @@ async function verifyEntityExists(
         });
         return record !== null;
       }
-      case CustomFieldEntityType.Workstream: {
-        const record = await db.workstream.findFirst({
-          where: { id: entityId, organizationId },
-          select: { id: true },
-        });
-        return record !== null;
-      }
       case CustomFieldEntityType.Document: {
         const record = await db.artifact.findFirst({
           where: {
@@ -489,9 +482,7 @@ async function validateMultiEnumOptions(
   fieldId: string,
   rawValue: string | number | string[]
 ): Promise<string[]> {
-  const optionIds = Array.isArray(rawValue)
-    ? (rawValue as string[])
-    : [String(rawValue)];
+  const optionIds = Array.isArray(rawValue) ? rawValue : [String(rawValue)];
 
   const options = await withDb((db) =>
     db.customFieldEnumOption.findMany({
@@ -525,9 +516,7 @@ async function validatePeopleIds(
   organizationId: string,
   rawValue: string | number | string[]
 ): Promise<string[]> {
-  const userIds = Array.isArray(rawValue)
-    ? (rawValue as string[])
-    : [String(rawValue)];
+  const userIds = Array.isArray(rawValue) ? rawValue : [String(rawValue)];
   const users = await withDb((db) =>
     db.user.findMany({
       where: { id: { in: userIds }, organizationId },
@@ -748,21 +737,15 @@ async function cascadeProjectFieldToChildren(
 ): Promise<void> {
   // Features are feature-typed document artifacts — cascade only against
   // the artifact table.
-  const [childWorkstreams, childFeatureDocuments] = await Promise.all([
-    tx.workstream.findMany({
-      where: { projectId, organizationId },
-      select: { id: true },
-    }),
-    tx.artifact.findMany({
-      where: {
-        projectId,
-        organizationId,
-        type: ArtifactType.DOCUMENT,
-        subtype: ArtifactSubtype.FEATURE,
-      },
-      select: { id: true },
-    }),
-  ]);
+  const childFeatureDocuments = await tx.artifact.findMany({
+    where: {
+      projectId,
+      organizationId,
+      type: ArtifactType.DOCUMENT,
+      subtype: ArtifactSubtype.FEATURE,
+    },
+    select: { id: true },
+  });
 
   const defaults = {
     customFieldId: fieldId,
@@ -772,22 +755,12 @@ async function cascadeProjectFieldToChildren(
     sortOrder: input.sortOrder ?? 0,
   };
 
-  const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] = [
-    ...childWorkstreams.map(
-      (ws): Prisma.CustomFieldSettingCreateManyInput => ({
-        ...defaults,
-        entityType: CustomFieldEntityType.Workstream,
-        entityId: ws.id,
-      })
-    ),
-    ...childFeatureDocuments.map(
-      (doc): Prisma.CustomFieldSettingCreateManyInput => ({
-        ...defaults,
-        entityType: CustomFieldEntityType.Document,
-        entityId: doc.id,
-      })
-    ),
-  ];
+  const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] =
+    childFeatureDocuments.map((doc) => ({
+      ...defaults,
+      entityType: CustomFieldEntityType.Document,
+      entityId: doc.id,
+    }));
 
   if (childSettingsData.length > 0) {
     await tx.customFieldSetting.createMany({

@@ -55,7 +55,10 @@ export const PUT = withAnyAuth<
       user.organizationId,
       user.id,
       id,
-      body as UpsertComputeTargetHealthCheckSnapshotInput
+      // `satisfies` (not `as`) checks at compile time that the validator output
+      // matches the service contract, so any future drift between
+      // healthCheckSnapshotValidator and this input type fails the build.
+      body satisfies UpsertComputeTargetHealthCheckSnapshotInput
     );
     if (!snapshot) {
       return notFoundResponse("Compute target");

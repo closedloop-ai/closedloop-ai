@@ -10,7 +10,7 @@ import { AlertCircle } from "lucide-react";
  * Displays a callout for user attention.
  */
 const meta = {
-  title: "ui/Alert",
+  title: "Design System/Primitives/Alert",
   component: Alert,
   tags: ["autodocs"],
   argTypes: {

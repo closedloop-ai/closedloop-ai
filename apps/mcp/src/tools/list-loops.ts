@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
+  buildLoopUrl,
   buildPaginatedPayload,
   describeIdOrSlug,
   MAX_PAGE_LIMIT,
@@ -59,15 +60,16 @@ export function registerListLoops(
           offset,
           mapItem: (value) => {
             const row = asRecord(value);
+            const id = readString(row.id);
             return {
-              id: readString(row.id),
+              id,
               status: readString(row.status),
               command: readString(row.command),
               documentId: readString(row.documentId),
-              workstreamId: readString(row.workstreamId),
               createdAt: readString(row.createdAt),
               startedAt: readString(row.startedAt),
               completedAt: readString(row.completedAt),
+              webUrl: id ? buildLoopUrl(id) : null,
             };
           },
         });

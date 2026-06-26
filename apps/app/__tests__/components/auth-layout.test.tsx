@@ -1,12 +1,12 @@
 /**
  * Unit tests for the unauthenticated AuthLayout component.
- * Verifies ClosedLoop branding, logo rendering, and child rendering.
+ * Verifies Closedloop branding, logo rendering, and child rendering.
  */
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import AuthLayout from "@/app/(unauthenticated)/layout";
 
-describe("AuthLayout — ClosedLoop branding", () => {
+describe("AuthLayout — Closedloop branding", () => {
   it("renders the logo images with correct alt text", () => {
     render(
       <AuthLayout>
@@ -14,7 +14,7 @@ describe("AuthLayout — ClosedLoop branding", () => {
       </AuthLayout>
     );
 
-    const logos = screen.getAllByRole("img", { name: "ClosedLoop logo" });
+    const logos = screen.getAllByRole("img", { name: "Closedloop logo" });
     expect(logos.length).toBe(2);
   });
 
@@ -26,7 +26,7 @@ describe("AuthLayout — ClosedLoop branding", () => {
     );
 
     expect(
-      screen.getByRole("img", { name: "ClosedLoop product screenshot" })
+      screen.getByRole("img", { name: "Closedloop product screenshot" })
     ).toBeInTheDocument();
   });
 

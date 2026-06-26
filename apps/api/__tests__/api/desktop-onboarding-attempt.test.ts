@@ -5,7 +5,7 @@
  * and persistence failures required by PLN-319 v8.
  */
 import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/desktop/onboarding-attempt/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
 import { resolveSessionUser } from "@/lib/auth/session-user";

@@ -262,15 +262,15 @@ export async function getCodeHumanCountsByType(
   );
   const artifactIds = Array.from(idToType.keys());
 
-  // PR artifacts that were produced by these document artifacts are linked via
-  // ArtifactLink (source = plan, target = PR, linkType = PRODUCES).
+  // Branch artifacts that were produced by these document artifacts are linked
+  // via ArtifactLink (source = plan, target = branch, linkType = PRODUCES).
   const prLinks = await withDb((db) =>
     db.artifactLink.findMany({
       where: {
         organizationId,
         sourceId: { in: artifactIds },
         linkType: LinkType.Produces,
-        target: { type: ArtifactType.PULL_REQUEST },
+        target: { type: ArtifactType.BRANCH },
       },
       select: { sourceId: true, targetId: true },
     })
@@ -316,7 +316,7 @@ export async function getCodeHumanCountsByType(
 
 /**
  * Fetches CODE human ratings and returns normalized scores (0-1) per artifact.
- * Uses pull request ratings linked to the artifact via GitHubPullRequest.documentId.
+ * Uses branch artifact ratings linked to the source document artifact.
  *
  * @internal Exported for unit testing.
  */
@@ -336,7 +336,7 @@ export async function getCodeHumanRatingsByArtifact(
         organizationId,
         sourceId: { in: artifactIds },
         linkType: LinkType.Produces,
-        target: { type: ArtifactType.PULL_REQUEST },
+        target: { type: ArtifactType.BRANCH },
       },
       select: { sourceId: true, targetId: true },
     })

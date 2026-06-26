@@ -1,3 +1,5 @@
+import type { JsonObject } from "@repo/api/src/types/common.js";
+import { McpApiError } from "./api-error.js";
 import type { VerifiedApiKeyContext } from "./api-key-contract.js";
 import { asRecord } from "./tools/tool-utils.js";
 
@@ -17,10 +19,21 @@ const VERIFY_API_KEY_TIMEOUT_MS = (() => {
   return Number.isFinite(v) && v > 0 ? v : 10_000;
 })();
 
-async function getResponseErrorMessage(response: Response): Promise<string> {
+async function getResponseError(response: Response): Promise<McpApiError> {
   const body = await response.text().catch(() => "");
-  const bodySuffix = body ? ` — ${body}` : "";
-  return `API request failed: ${response.status} ${response.statusText}${bodySuffix}`;
+  const parsedBody = parseJson(body);
+  const parsed = readApiErrorFields(parsedBody);
+  const bodySuffix = body && !parsed.message ? ` — ${body}` : "";
+  return new McpApiError(
+    parsed.message ??
+      `API request failed: ${response.status} ${response.statusText}${bodySuffix}`,
+    {
+      code: parsed.code,
+      details: parsed.details,
+      status: response.status,
+      timestamp: parsed.timestamp,
+    }
+  );
 }
 
 /**
@@ -40,13 +53,22 @@ function unwrapApiResult<T>(body: unknown): T {
     return record.data as T;
   }
   const error = record.error;
+  const parsed = readApiErrorFields(body);
   if (typeof error === "string") {
-    throw new Error(error);
+    throw new McpApiError(error, {
+      code: parsed.code,
+      details: parsed.details,
+      timestamp: parsed.timestamp,
+    });
   }
   const errorRecord = asRecord(error);
   const message = errorRecord.message;
   if (typeof message === "string" && message.length > 0) {
-    throw new Error(message);
+    throw new McpApiError(message, {
+      code: parsed.code,
+      details: parsed.details,
+      timestamp: parsed.timestamp,
+    });
   }
   let msg = "API request failed";
   if (typeof error !== "undefined") {
@@ -56,7 +78,11 @@ function unwrapApiResult<T>(body: unknown): T {
       /* keep default */
     }
   }
-  throw new Error(msg);
+  throw new McpApiError(msg, {
+    code: parsed.code,
+    details: parsed.details,
+    timestamp: parsed.timestamp,
+  });
 }
 
 export class ApiClient {
@@ -80,11 +106,20 @@ export class ApiClient {
     };
   }
 
-  async get<T>(path: string, query?: Record<string, string>): Promise<T> {
+  async get<T>(
+    path: string,
+    query?: Record<string, string | readonly string[]>
+  ): Promise<T> {
     const url = new URL(path, this.baseUrl);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
-        url.searchParams.set(key, value);
+        if (typeof value === "string") {
+          url.searchParams.set(key, value);
+        } else {
+          for (const item of value) {
+            url.searchParams.append(key, item);
+          }
+        }
       }
     }
     const response = await fetch(url.toString(), {
@@ -92,7 +127,7 @@ export class ApiClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
+      throw await getResponseError(response);
     }
     const body = (await response.json()) as unknown;
     return unwrapApiResult<T>(body);
@@ -106,7 +141,7 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
+      throw await getResponseError(response);
     }
     const responseBody = (await response.json()) as unknown;
     return unwrapApiResult<T>(responseBody);
@@ -120,7 +155,7 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
+      throw await getResponseError(response);
     }
     const responseBody = (await response.json()) as unknown;
     return unwrapApiResult<T>(responseBody);
@@ -134,7 +169,7 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
+      throw await getResponseError(response);
     }
     const responseBody = (await response.json()) as unknown;
     return unwrapApiResult<T>(responseBody);
@@ -147,7 +182,7 @@ export class ApiClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
+      throw await getResponseError(response);
     }
     const body = (await response.json()) as unknown;
     return unwrapApiResult<T>(body);
@@ -181,7 +216,7 @@ export async function verifyApiKey(
   if (!response.ok) {
     // 401 means the key is invalid; 5xx means the server is broken
     if (response.status >= 500) {
-      throw new Error(await getResponseErrorMessage(response));
+      throw await getResponseError(response);
     }
     return null;
   }
@@ -190,6 +225,54 @@ export async function verifyApiKey(
     data: VerifiedApiKeyContext;
   };
   return body.data;
+}
+
+function readApiErrorFields(body: unknown): {
+  code?: string;
+  details?: JsonObject;
+  message?: string;
+  timestamp?: string;
+} {
+  const record = asRecord(body);
+  const errorRecord = asRecord(record.error);
+  const message =
+    readString(record.error) ?? readString(errorRecord.message) ?? undefined;
+  const code =
+    readString(record.code) ?? readString(errorRecord.code) ?? undefined;
+  const details =
+    readJsonObject(record.details) ?? readJsonObject(errorRecord.details);
+  const timestamp =
+    readString(record.timestamp) ??
+    readString(errorRecord.timestamp) ??
+    undefined;
+  return {
+    ...(code ? { code } : {}),
+    ...(details ? { details } : {}),
+    ...(message ? { message } : {}),
+    ...(timestamp ? { timestamp } : {}),
+  };
+}
+
+function parseJson(value: string): unknown {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readJsonObject(value: unknown): JsonObject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as JsonObject;
 }
 
 /**

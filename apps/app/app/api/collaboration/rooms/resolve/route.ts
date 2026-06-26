@@ -1,7 +1,11 @@
-import { BATCH_META_MAX_SLUGS } from "@repo/api/src/types/document";
+import {
+  BATCH_META_MAX_SLUGS,
+  buildScopedDocumentPath,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/document";
 import { auth } from "@repo/auth/server";
-import { resolveRoomMetadata } from "@repo/collaboration/room-metadata";
-import { parseDocumentRoomId } from "@repo/collaboration/room-utils";
+import { resolveRoomMetadata } from "@repo/collaboration/server/room-metadata";
+import { parseDocumentRoomId } from "@repo/collaboration/shared/room-utils";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -19,7 +23,7 @@ import { fetchUser } from "../../fetch-user";
  */
 export async function GET(request: Request): Promise<Response> {
   try {
-    const { userId, getToken } = await auth();
+    const { userId, getToken, orgSlug } = await auth();
     if (!userId) {
       return new Response("Unauthorized", { status: 401 });
     }
@@ -65,16 +69,30 @@ export async function GET(request: Request): Promise<Response> {
 
     // Parallelize: room metadata resolution and title fetching are independent
     const [results, titleMap] = await Promise.all([
-      resolveRoomMetadata(cappedRoomIds),
+      resolveRoomMetadata(cappedRoomIds, orgSlug ?? undefined),
       fetchBatchMeta(slugs, getToken),
     ]);
 
-    // Enrich room names with human-readable artifact titles from the BFF API
+    // Enrich room names with human-readable artifact titles from the BFF API.
+    // Also use the document type from batch-meta to build type-specific URLs
+    // for rooms where resolveRoomMetadata returned url: null (e.g. when
+    // Liveblocks metadata is missing or the room was created without a type).
     try {
       const enrichedResults = results.map((room) => {
         try {
           const { slug } = parseDocumentRoomId(room.roomId);
-          return { ...room, name: titleMap[slug] ?? room.name };
+          const meta = titleMap[slug];
+          const name = meta?.title ?? room.name;
+
+          if (room.url === null && meta?.type) {
+            const prefix = getRoutePrefixForType(meta.type);
+            const url = prefix
+              ? buildScopedDocumentPath(prefix, slug, orgSlug)
+              : null;
+            return { ...room, name, url };
+          }
+
+          return { ...room, name };
         } catch {
           return room;
         }

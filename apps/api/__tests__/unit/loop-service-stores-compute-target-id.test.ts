@@ -6,7 +6,7 @@
  * anchor that prevents in-flight loops from being affected by later preference changes.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -54,7 +54,6 @@ vi.mock("@repo/database", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 
 beforeEach(() => {

@@ -1,5 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { DocumentType, PlanJson } from "@repo/api/src/types/document";
+import { DocumentStatus } from "@repo/api/src/types/document";
 
 import {
   EvaluationReportType,
@@ -58,19 +59,19 @@ export async function downloadPlanArtifacts(
       downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
     ]);
 
-  const planContent = parseJsonArtifact<PlanJson>(
+  const planContent = parseJsonArtifact<PlanJson, string>(
     planJsonBuf,
     "plan.json",
     (p) => p.content
-  ) as string | null;
+  );
 
   const questionsContent = questionsBuf ? questionsBuf.toString("utf-8") : null;
 
-  const judgesReport = parseJsonArtifact<JudgesReport>(
+  const judgesReport = parseJsonArtifact<JudgesReport, JudgesReport>(
     judgesReportBuf,
     "judges.json",
     (p) => p
-  ) as JudgesReport | null;
+  );
 
   const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
@@ -123,7 +124,7 @@ export async function ingestPlanArtifacts(
   const updatedArtifact = await withDb((db) =>
     db.artifact.update({
       where: documentWhere({ id: documentId, organizationId }),
-      data: { status: "DRAFT" },
+      data: { status: DocumentStatus.Draft },
       select: {
         id: true,
         organizationId: true,
@@ -166,34 +167,6 @@ export async function ingestPlanArtifacts(
     log.info("[loop-document-ingestion] Persisted judges report", {
       documentId,
       reportId: artifacts.judgesReport.report_id,
-    });
-  }
-
-  // Create workstream completion event (idempotent — skip if already exists)
-  if (loop.workstreamId) {
-    await withDb(async (db) => {
-      const existing = await db.workstreamEvent.findFirst({
-        where: {
-          workstreamId: loop.workstreamId!,
-          type: "LOOP_COMPLETED",
-          data: { path: ["loopId"], equals: loop.id },
-        },
-      });
-      if (!existing) {
-        await db.workstreamEvent.create({
-          data: {
-            workstreamId: loop.workstreamId!,
-            type: "LOOP_COMPLETED",
-            actorType: "system",
-            data: {
-              loopId: loop.id,
-              documentId,
-              command: loop.command,
-              conclusion: "success",
-            },
-          },
-        });
-      }
     });
   }
 

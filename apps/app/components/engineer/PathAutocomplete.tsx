@@ -204,6 +204,7 @@ export function PathAutocomplete({
   return (
     <div className={cn("relative", className)}>
       <Input
+        aria-label={placeholder}
         autoFocus={autoFocus}
         className="font-mono text-sm"
         onChange={(e) => {

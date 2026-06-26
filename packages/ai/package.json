@@ -10,8 +10,8 @@
     "@ai-sdk/anthropic": "^3.0.75",
     "@ai-sdk/openai": "^3.0.62",
     "@ai-sdk/provider": "^3.0.10",
-    "@ai-sdk/react": "^3.0.179",
-    "@t3-oss/env-nextjs": "^0.13.10",
+    "@ai-sdk/react": "^3.0.177",
+    "@t3-oss/env-nextjs": "^0.13.11",
     "ai": "^6.0.175",
     "react": "19.2.5",
     "streamdown": "^2.3.0",
@@ -20,8 +20,9 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "^25.3.5",
+    "@types/node": "^25.9.1",
     "@types/react": "^19.2.14",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "typescript": "^5.9.3"
   }
 }

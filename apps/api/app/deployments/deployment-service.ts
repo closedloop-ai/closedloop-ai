@@ -1,3 +1,4 @@
+import { LinkType } from "@repo/api/src/types/artifact";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type Artifact,
@@ -7,6 +8,7 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { deploymentWhere } from "@/lib/artifact-adapters";
 
 /**
  * Deployment artifact service. Owns CRUD on DEPLOYMENT artifacts and their
@@ -24,8 +26,7 @@ export type ArtifactWithDeploymentDetail = Artifact & {
 
 export type RecordDeploymentInput = {
   organizationId: string;
-  projectId: string;
-  workstreamId?: string | null;
+  projectId: string | null;
   environment?: string | null;
   ref?: string | null;
   sha?: string | null;
@@ -35,14 +36,13 @@ export type RecordDeploymentInput = {
   githubDeploymentUrl?: string | null;
   transient?: boolean | null;
   production?: boolean | null;
-  pullRequestArtifactId?: string | null;
+  branchArtifactId?: string | null;
   title: string;
 };
 
 export type ListDeploymentsInput = {
   organizationId: string;
   projectId?: string;
-  workstreamId?: string;
   state?: string;
 };
 
@@ -59,10 +59,10 @@ function buildDeploymentDetailCreate(
     githubDeploymentUrl: input.githubDeploymentUrl ?? null,
     transient: input.transient ?? null,
     production: input.production ?? null,
-    ...(input.pullRequestArtifactId
+    ...(input.branchArtifactId
       ? {
-          pullRequestArtifact: {
-            connect: { id: input.pullRequestArtifactId },
+          branchArtifact: {
+            connect: { id: input.branchArtifactId },
           },
         }
       : {}),
@@ -81,9 +81,9 @@ function buildDeploymentDetailUpdate(
     transient: input.transient ?? null,
     production: input.production ?? null,
   };
-  if (input.pullRequestArtifactId !== undefined) {
-    base.pullRequestArtifact = input.pullRequestArtifactId
-      ? { connect: { id: input.pullRequestArtifactId } }
+  if (input.branchArtifactId !== undefined) {
+    base.branchArtifact = input.branchArtifactId
+      ? { connect: { id: input.branchArtifactId } }
       : { disconnect: true };
   }
   return base;
@@ -99,11 +99,6 @@ async function updateExistingDeployment(
     status: input.state,
     deployment: { update: buildDeploymentDetailUpdate(input) },
   };
-  if (input.workstreamId !== undefined) {
-    data.workstream = input.workstreamId
-      ? { connect: { id: input.workstreamId } }
-      : { disconnect: true };
-  }
   if (input.projectId) {
     data.project = { connect: { id: input.projectId } };
   }
@@ -124,7 +119,6 @@ async function createDeployment(
       type: ArtifactType.DEPLOYMENT,
       organizationId: input.organizationId,
       projectId: input.projectId,
-      workstreamId: input.workstreamId ?? null,
       name: input.title,
       status: input.state,
       externalUrl: input.externalUrl,
@@ -146,7 +140,14 @@ async function createDeployment(
  */
 function recordDeployment(
   input: RecordDeploymentInput
-): Promise<ArtifactWithDeploymentDetail> {
+): Promise<Result<ArtifactWithDeploymentDetail, StatusCode>> {
+  // Artifact.projectId is nullable at the schema level solely for SESSION
+  // artifacts (FEA-1699). Deployment artifacts must stay project-parented, so
+  // fail closed rather than record a projectless deployment when an upstream
+  // resolution unexpectedly yields null.
+  if (input.projectId === null) {
+    return Promise.resolve(Result.err(Status.BadRequest));
+  }
   return withDb.tx(async (db) => {
     const existing = await db.artifact.findFirst({
       where: {
@@ -157,9 +158,9 @@ function recordDeployment(
       select: { id: true },
     });
     if (existing) {
-      return updateExistingDeployment(db, existing.id, input);
+      return Result.ok(await updateExistingDeployment(db, existing.id, input));
     }
-    return createDeployment(db, input);
+    return Result.ok(await createDeployment(db, input));
   });
 }
 
@@ -182,19 +183,18 @@ async function findById(
 
 /**
  * List deployment artifacts within an organization, optionally scoped by
- * project, workstream, or state.
+ * project or state.
  */
 async function list(
   options: ListDeploymentsInput
 ): Promise<ArtifactWithDeploymentDetail[]> {
-  const { organizationId, projectId, workstreamId, state } = options;
+  const { organizationId, projectId, state } = options;
   const artifacts = await withDb((db) =>
     db.artifact.findMany({
       where: {
         organizationId,
         type: ArtifactType.DEPLOYMENT,
         ...(projectId ? { projectId } : {}),
-        ...(workstreamId ? { workstreamId } : {}),
         ...(state ? { status: state } : {}),
       },
       include: deploymentInclude,
@@ -248,10 +248,61 @@ async function findByExternalUrl(
   return artifact;
 }
 
+/**
+ * Find the most recent preview-deployment artifact linked (via artifact_links
+ * PRODUCES) to any branch artifact descended from `documentId`. PLN-787 dropped
+ * the workstream FK from artifacts, so lineage now travels through PRODUCES
+ * edges: document → branches → deployments.
+ *
+ * Migration-window caveat: branches created before the PRODUCES-link backfill
+ * may not have document→branch (or branch→deployment) links wired up. Such
+ * documents will return `null` here even when a real preview deployment exists
+ * on the `DeploymentDetail.branchArtifactId` row. A backfill that materializes
+ * the missing PRODUCES edges is tracked separately.
+ */
+async function findLatestPreviewForDocument(
+  documentId: string,
+  organizationId: string
+): Promise<ArtifactWithDeploymentDetail | null> {
+  const branchLinks = await withDb((db) =>
+    db.artifactLink.findMany({
+      where: {
+        organizationId,
+        sourceId: documentId,
+        linkType: LinkType.Produces,
+        target: { type: ArtifactType.BRANCH },
+      },
+      select: { targetId: true },
+    })
+  );
+  const branchIds = branchLinks.map((link) => link.targetId);
+  if (branchIds.length === 0) {
+    return null;
+  }
+
+  return await withDb((db) =>
+    db.artifact.findFirst({
+      where: deploymentWhere({
+        organizationId,
+        targetLinks: {
+          some: {
+            organizationId,
+            sourceId: { in: branchIds },
+            linkType: LinkType.Produces,
+          },
+        },
+      }),
+      include: deploymentInclude,
+      orderBy: { createdAt: "desc" },
+    })
+  );
+}
+
 export const deploymentService = {
   recordDeployment,
   findById,
   list,
   delete: deleteDeployment,
   findByExternalUrl,
+  findLatestPreviewForDocument,
 };

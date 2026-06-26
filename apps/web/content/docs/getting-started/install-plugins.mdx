@@ -1,9 +1,9 @@
 ---
 title: Install the Claude Code plugins
-description: Install the six ClosedLoop.ai Claude Code plugins and keep them auto-updated.
+description: Install the six Closedloop.ai Claude Code plugins and keep them auto-updated.
 ---
 
-The ClosedLoop plugins are the agent and orchestration layer that runs inside Claude Code. They are installed globally per-user and cached under `~/.claude/plugins/cache/closedloop-ai/`.
+The Closedloop plugins are the agent and orchestration layer that runs inside Claude Code. They are installed globally per-user and cached under `~/.claude/plugins/cache/closedloop-ai/`.
 
 ## Prerequisites
 
@@ -12,9 +12,27 @@ The ClosedLoop plugins are the agent and orchestration layer that runs inside Cl
 - **`jq`** on your PATH.
 - **Bash 3.2+**.
 
-## Interactive install (recommended)
+## One-line install
 
-Install from within Claude Code:
+The recommended install is a single command that installs every plugin at user scope and enables auto-update.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/closedloop-ai/claude-plugins/main/install.sh | bash
+```
+
+The installer will:
+
+1. Preflight the Claude CLI, Python 3.11+, and `jq`.
+2. Add the marketplace: `claude plugin marketplace add closedloop-ai/claude-plugins`.
+3. Install every plugin at user scope: `claude plugin install <plugin>@closedloop-ai --scope user`.
+4. Re-enable disabled user-scoped Closedloop plugins when needed: `claude plugin enable <plugin>@closedloop-ai --scope user`.
+5. Verify `installed_plugins.json` and `claude plugin list --json` show user-scoped, enabled entries.
+6. Report `installed / updated / up-to-date / failed` counts for each plugin.
+7. Enable auto-update by default so the plugins stay current.
+
+## Interactive install
+
+You can also install from within Claude Code:
 
 ```bash
 claude /plugin marketplace install closedloop
@@ -27,7 +45,7 @@ This gives you per-plugin prompts instead of installing all six at once.
 | Plugin | Purpose |
 |---|---|
 | `bootstrap` | Meta-orchestrator that analyzes a codebase and generates a project-specific suite of expert agents and a `critic-gates.json` config. |
-| `code` | The hub plugin. Implements the full ClosedLoop autonomous SDLC: PRD → plan → critics → implementation → tests → visual QA → validation. |
+| `code` | The hub plugin. Implements the full Closedloop autonomous SDLC: PRD → plan → critics → implementation → tests → visual QA → validation. |
 | `code-review` | Multi-agent partitioned code review with deterministic hygiene checks, risk-based routing, caching, and GitHub PR inline comments. |
 | `judges` | LLM-as-judge framework — 21 judge agents that grade plans, code, and PRDs with structured `CaseScore` reports. |
 | `platform` | Claude Code expert guide, prompt engineering, mermaid diagrams, artifact upload, and skill scaffolding. |
@@ -60,10 +78,10 @@ The `core.hooksPath` line enables the repo's pre-push hook, which enforces `CHAN
 ## Verify the install
 
 ```bash
-claude plugin list
+claude plugin list --json
 ```
 
-You should see all six ClosedLoop plugins listed with their versions.
+You should see all six Closedloop plugins listed with `scope: "user"` and `enabled` not set to `false`: `bootstrap`, `code`, `code-review`, `judges`, `platform`, and `self-learning`.
 
 ## What the plugins add to your tooling
 

@@ -56,15 +56,25 @@ export const POST = withAnyAuth<
 
     return NextResponse.json(success(result));
   } catch (error) {
+    const isStructured =
+      error != null && typeof error === "object" && "status" in error;
     const status =
-      error != null &&
-      typeof error === "object" &&
-      "status" in error &&
-      typeof error.status === "number"
-        ? error.status
-        : 500;
+      isStructured && typeof error.status === "number" ? error.status : 500;
+    // Surface the structured reason (e.g. "Anchor text not found in document")
+    // ONLY for the known anchor-validation 400s, so callers can diagnose them.
+    // Everything else — 403/404/5xx provider failures (Liveblocks outages, auth) —
+    // stays on the generic contract so upstream messages don't leak.
+    const isAnchorValidationError = status === 400;
+    const message =
+      isAnchorValidationError &&
+      isStructured &&
+      "message" in error &&
+      typeof error.message === "string" &&
+      error.message.length > 0
+        ? error.message
+        : "Failed to create thread";
 
-    return errorResponse("Failed to create thread", error, status);
+    return errorResponse(message, error, status);
   }
 });
 
@@ -76,6 +86,14 @@ export const GET = withAnyAuth<
 
   const resolvedId = await resolveDocumentId(id, user.organizationId);
   if (!resolvedId) {
+    return notFoundResponse("Artifact");
+  }
+
+  const artifact = await documentService.findByIdSimple(
+    resolvedId,
+    user.organizationId
+  );
+  if (!artifact) {
     return notFoundResponse("Artifact");
   }
 

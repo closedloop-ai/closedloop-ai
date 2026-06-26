@@ -48,15 +48,6 @@ describe("getNotificationEntityPath", () => {
     });
   });
 
-  it("routes workstreams to /workstreams/<id>", () => {
-    expect(
-      getNotificationEntityPath({
-        kind: NotificationEntityKind.Workstream,
-        workstreamId: "ws-123",
-      })
-    ).toBe("/workstreams/ws-123");
-  });
-
   it("routes projects to /teams/<teamId>/projects/<projectId>", () => {
     expect(
       getNotificationEntityPath({

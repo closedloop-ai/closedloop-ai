@@ -4,7 +4,6 @@ import {
   EvalStatus,
   type EvaluationReportType,
   EvaluationReportType as EvaluationReportTypeValue,
-  type JudgesReport,
   type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
@@ -65,18 +64,10 @@ export function createMockEvaluationRow(overrides?: {
   entityType?: ArtifactType;
   organizationId?: string;
   documentId?: string | null;
-  actionRunId?: string;
   reportType?: EvaluationReportType;
   reportId?: string;
-  reportData?: JudgesReport;
   createdAt?: Date;
 }) {
-  const defaultReport: JudgesReport = {
-    report_id: "test-report",
-    timestamp: new Date().toISOString(),
-    stats: [],
-  };
-
   const entityId = overrides?.entityId ?? "artifact-123";
 
   return {
@@ -85,10 +76,8 @@ export function createMockEvaluationRow(overrides?: {
     entityType: ArtifactType.Document,
     organizationId: "org-123",
     documentId: entityId,
-    actionRunId: "action-run-123",
     reportType: EvaluationReportTypeValue.Plan,
     reportId: "test-report",
-    reportData: defaultReport,
     createdAt: new Date(),
     ...overrides,
   };

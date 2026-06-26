@@ -1,7 +1,8 @@
-import type { ApiResult } from "@repo/api/src/types/common";
+import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { emitRequestCompletedSpan } from "@repo/observability/telemetry/request-completed";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import type { z } from "zod";
@@ -79,9 +80,11 @@ export function parseQueryParams<T extends z.ZodType>(
   request: { nextUrl: { searchParams: URLSearchParams } },
   validator: T
 ): ParseParamsResult<z.infer<T>> {
-  const queryParams = Object.fromEntries(
-    request.nextUrl.searchParams.entries()
-  );
+  const queryParams: Record<string, string | string[]> = {};
+  for (const key of new Set(request.nextUrl.searchParams.keys())) {
+    const values = request.nextUrl.searchParams.getAll(key);
+    queryParams[key] = values.length === 1 ? values[0] : values;
+  }
   const parseResult = validator.safeParse(queryParams);
 
   if (!parseResult.success) {
@@ -103,21 +106,23 @@ export function parseQueryParams<T extends z.ZodType>(
 export function errorResponse(
   message: string,
   error: unknown,
-  status = 500
+  status = 500,
+  metadata?: ErrorResponseMetadata
 ): NextResponse<ApiResult<never>> {
   const errorMessage = parseError(error);
   log.error(message, { error: errorMessage });
   scheduleLogFlush();
-  return NextResponse.json(failure(message), { status });
+  return NextResponse.json(failure(message, metadata), { status });
 }
 
 /**
  * Create a bad request response.
  */
 export function badRequestResponse(
-  message: string
+  message: string,
+  metadata?: ErrorResponseMetadata
 ): NextResponse<ApiResult<never>> {
-  return NextResponse.json(failure(message), { status: 400 });
+  return NextResponse.json(failure(message, metadata), { status: 400 });
 }
 
 /**
@@ -131,23 +136,30 @@ export function successResponse<T>(data: T): NextResponse<ApiResult<T>> {
  * Create a not found response.
  */
 export function notFoundResponse(
-  entity: string
+  entity: string,
+  metadata?: ErrorResponseMetadata
 ): NextResponse<ApiResult<never>> {
-  return NextResponse.json(failure(`${entity} not found`), { status: 404 });
+  return NextResponse.json(failure(`${entity} not found`, metadata), {
+    status: 404,
+  });
 }
 
 /**
  * Create an unauthorized response.
  */
-export function unauthorizedResponse(): NextResponse<ApiResult<never>> {
-  return NextResponse.json(failure("Unauthorized"), { status: 401 });
+export function unauthorizedResponse(
+  metadata?: ErrorResponseMetadata
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure("Unauthorized", metadata), { status: 401 });
 }
 
 /**
  * Create a forbidden response.
  */
-export function forbiddenResponse(): NextResponse<ApiResult<never>> {
-  return NextResponse.json(failure("Forbidden"), { status: 403 });
+export function forbiddenResponse(
+  metadata?: ErrorResponseMetadata
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure("Forbidden", metadata), { status: 403 });
 }
 
 /**
@@ -162,9 +174,21 @@ export function deleteResponse(): NextResponse<ApiResult<{ deleted: true }>> {
  * Use when a request conflicts with the current state of a resource.
  */
 export function conflictResponse(
-  message: string
+  message: string,
+  metadata?: ErrorResponseMetadata
 ): NextResponse<ApiResult<never>> {
-  return NextResponse.json(failure(message), { status: 409 });
+  return NextResponse.json(failure(message, metadata), { status: 409 });
+}
+
+/**
+ * Create a gone response (HTTP 410).
+ * Use when a resource existed but is no longer available and will not return.
+ */
+export function goneResponse(
+  message: string,
+  metadata?: ErrorResponseMetadata
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure(message, metadata), { status: 410 });
 }
 
 /**
@@ -210,5 +234,17 @@ export function logRequestCompleted(
     status_code: statusCode,
     duration_ms: durationMs,
   });
+  emitRequestCompletedSpan({
+    requestUrl: request.url,
+    method: request.method,
+    statusCode,
+    durationMs,
+  });
   scheduleLogFlush();
 }
+
+type ErrorResponseMetadata = {
+  code?: string;
+  details?: JsonObject;
+  timestamp?: string;
+};

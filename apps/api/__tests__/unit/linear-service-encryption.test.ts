@@ -5,7 +5,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {
@@ -529,7 +529,6 @@ describe("Linear service encryption paths", () => {
         type: ArtifactType.DOCUMENT,
         subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
         status: DocumentStatus.Approved,
-        workstreamId: null,
         ...overrides,
       };
     }
@@ -589,6 +588,9 @@ describe("Linear service encryption paths", () => {
         linearIntegration: {
           findUnique: vi.fn().mockResolvedValue(integration),
         },
+        linearSubtask: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
       };
       mockWithDbCall(mockDb);
 
@@ -611,6 +613,14 @@ describe("Linear service encryption paths", () => {
       expect(mockCreateLinearClient).toHaveBeenCalledWith(
         "decrypted-access-token"
       );
+
+      // PLN-787: linear_subtasks rows must be anchored to the document +
+      // organization, not the (deleted) workstream. Regression guard.
+      const createManyArgs = mockDb.linearSubtask.createMany.mock.calls[0][0];
+      expect(createManyArgs.data[0]).toMatchObject({
+        documentId: DOCUMENT_ID,
+        organizationId: ORG_ID,
+      });
     });
 
     it("falls back to plaintext accessToken when accessTokenEncrypted is null for export", async () => {
@@ -652,6 +662,9 @@ describe("Linear service encryption paths", () => {
         },
         linearIntegration: {
           findUnique: vi.fn().mockResolvedValue(integration),
+        },
+        linearSubtask: {
+          createMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
       };
       mockWithDbCall(mockDb);

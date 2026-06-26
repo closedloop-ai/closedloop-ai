@@ -4,6 +4,7 @@ import * as React from "react"
 import { Slot as SlotPrimitive } from "radix-ui"
 import { cva, type VariantProps } from "class-variance-authority"
 import { PanelLeftIcon } from "lucide-react"
+import { Link } from "@repo/navigation/link"
 
 import { useIsMobile } from "@repo/design-system/hooks/use-mobile"
 import { cn } from "@repo/design-system/lib/utils"
@@ -414,6 +415,77 @@ function SidebarGroupLabel({
   )
 }
 
+function SidebarSectionHeader({
+  title,
+  action,
+  className,
+}: {
+  title: React.ReactNode
+  action?: React.ReactNode
+  className?: string
+}) {
+  return (
+    <SidebarGroupLabel
+      className={cn("flex items-center justify-between gap-2", className)}
+    >
+      <span className="truncate">{title}</span>
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </SidebarGroupLabel>
+  )
+}
+
+function SidebarNavLinkItem({
+  title,
+  href,
+  icon,
+  disabled = false,
+  isActive = false,
+  tooltip,
+  trailing,
+  className,
+  itemClassName,
+}: {
+  title: React.ReactNode
+  href?: string
+  icon?: React.ReactNode
+  disabled?: boolean
+  isActive?: boolean
+  tooltip?: string
+  trailing?: React.ReactNode
+  className?: string
+  itemClassName?: string
+}) {
+  const content = (
+    <>
+      {icon}
+      <span>{title}</span>
+      {trailing}
+    </>
+  )
+
+  return (
+    <SidebarMenuItem className={itemClassName}>
+      <SidebarMenuButton
+        asChild={!disabled && href !== undefined}
+        className={cn(
+          disabled ? "pointer-events-none cursor-not-allowed opacity-50" : "",
+          className
+        )}
+        isActive={!disabled && isActive}
+        tooltip={tooltip}
+      >
+        {disabled || href === undefined ? (
+          <span className="flex items-center gap-2 [&>svg]:size-4 [&>svg]:shrink-0">
+            {content}
+          </span>
+        ) : (
+          <Link href={href}>{content}</Link>
+        )}
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  )
+}
+
 function SidebarGroupAction({
   className,
   asChild = false,
@@ -704,6 +776,8 @@ export {
   SidebarGroupAction,
   SidebarGroupContent,
   SidebarGroupLabel,
+  SidebarNavLinkItem,
+  SidebarSectionHeader,
   SidebarHeader,
   SidebarInput,
   SidebarInset,

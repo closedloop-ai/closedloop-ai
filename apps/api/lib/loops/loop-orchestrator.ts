@@ -1,7 +1,7 @@
 import {
-  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
-  isDesktopApiNamespace,
-} from "@repo/api/src/desktop-api-namespace";
+  DEFAULT_PRICING,
+  getModelPricing,
+} from "@closedloop-ai/loops-api/tokens";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   AdditionalRepoRef,
@@ -13,38 +13,66 @@ import type {
   TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
+  BootstrapLoopResultSchema,
   LoopCommand,
   LoopErrorCode,
   LoopStatus,
   MAX_ADDITIONAL_REPOS,
-  MODEL_PRICING,
 } from "@repo/api/src/types/loop";
-import { issueLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
+import type { LoopBranchMaterializationEnvelope } from "@repo/api/src/types/loop-body";
+import {
+  issueLoopRunnerToken,
+  type LoopRunnerTokenIssueOverrides,
+} from "@repo/auth/loop-runner-jwt";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
+import { agentsService } from "@/app/agents/service";
 import { getCommitterInfo } from "@/app/documents/document-service";
 import { githubService } from "@/app/integrations/github/service";
 import { isInvalidStatusTransitionError } from "@/app/loops/loop-errors";
 import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { documentWhere } from "@/lib/artifact-adapters";
+import { parseJsonObject } from "@/lib/json-schema";
 import type {
+  DesktopUserIntentSignature,
   LaunchContext,
   LaunchResult,
   PreparedContext,
   TokenMetadata,
 } from "./compute-provider";
 import { resolveProvider } from "./compute-provider-registry";
+import { buildLoopBranchMaterialization } from "./loop-branch-materialization";
 import { getCommandHandler } from "./loop-commands";
 import { buildContextPackInMemory } from "./loop-context-pack";
-import { scrubContextPackSecrets } from "./loop-state";
+import { buildDesktopLoopExecutionBody } from "./loop-desktop";
+import { getStateKeyPrefix, scrubContextPackSecrets } from "./loop-state";
 
 type RunnerReplayContext = {
   tokenJti: string;
   nonce: string;
 };
+
+/**
+ * Build the `runner` argument for `loopsService.addEvent` when the
+ * orchestrator is handling a runner event. Returns undefined
+ * when ctx is absent so callers can pass the result directly to addEvent
+ * without a ternary at every call site (avoids cognitive complexity points in
+ * the switch-heavy handleLoopEvent).
+ *
+ * Callers that do NOT have a replayContext (system events, failLoopWithError)
+ * call addEvent without a runner arg, preserving existing behaviour.
+ */
+function replayRunner(
+  ctx: RunnerReplayContext | undefined
+): { tokenJti: string; nonce: string } | undefined {
+  if (!ctx) {
+    return undefined;
+  }
+  return { tokenJti: ctx.tokenJti, nonce: ctx.nonce };
+}
 
 // ---------------------------------------------------------------------------
 // Key resolution helpers
@@ -140,7 +168,7 @@ async function resolveParentLoopInfo(
 
 /**
  * Calculate estimated cost from per-model token breakdown.
- * Falls back to default (Opus) pricing if no model breakdown is available.
+ * Falls back to default pricing if no model breakdown is available.
  * Optional cacheCreation/cacheRead apply only in the fallback (no-tokensByModel) path.
  */
 function calculateCost(
@@ -151,40 +179,24 @@ function calculateCost(
   cacheRead = 0
 ): number {
   if (!tokensByModel || Object.keys(tokensByModel).length === 0) {
-    const fallback = MODEL_PRICING.default;
+    const fallback = DEFAULT_PRICING;
     return (
       (tokensInput / 1_000_000) * fallback.input +
       (tokensOutput / 1_000_000) * fallback.output +
-      (cacheCreation / 1_000_000) * fallback.input +
-      (cacheRead / 1_000_000) * fallback.input * 0.1
+      (cacheCreation / 1_000_000) * fallback.cacheWrite +
+      (cacheRead / 1_000_000) * fallback.cacheRead
     );
   }
 
   let totalCost = 0;
   for (const [model, usage] of Object.entries(tokensByModel)) {
-    // Match model name to pricing — try exact match, then prefix match, then default.
-    // Use startsWith (not includes) to avoid false matches like "opus-4" matching "opus-4-5".
-    // Exclude "default" from prefix matching to prevent it from matching model names.
-    const pricing =
-      MODEL_PRICING[model] ??
-      Object.entries(MODEL_PRICING)
-        .filter(([key]) => key !== "default")
-        .find(([key]) => model.startsWith(key))?.[1] ??
-      MODEL_PRICING.default;
-
-    // Include cache tokens in cost calculation:
-    // - cacheCreation tokens are billed at the input rate
-    // - cacheRead tokens are billed at ~10% of input rate
-    const cacheCreationCost =
-      ((usage.cacheCreation ?? 0) / 1_000_000) * pricing.input;
-    const cacheReadCost =
-      ((usage.cacheRead ?? 0) / 1_000_000) * pricing.input * 0.1;
+    const pricing = getModelPricing(model);
 
     totalCost +=
       (usage.input / 1_000_000) * pricing.input +
       (usage.output / 1_000_000) * pricing.output +
-      cacheCreationCost +
-      cacheReadCost;
+      ((usage.cacheCreation ?? 0) / 1_000_000) * pricing.cacheWrite +
+      ((usage.cacheRead ?? 0) / 1_000_000) * pricing.cacheRead;
   }
   return totalCost;
 }
@@ -392,7 +404,8 @@ async function recordScrubFailureWarning(
 async function resolveLoopLaunchContext(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string,
-  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>
+  parentInfo: Awaited<ReturnType<typeof resolveParentLoopInfo>>,
+  options?: LaunchLoopOptions
 ): Promise<LaunchContext> {
   const isDesktop = !!loop.computeTargetId;
 
@@ -415,10 +428,15 @@ async function resolveLoopLaunchContext(
       }
     : undefined;
 
-  const closedLoopAuthToken = await issueLoopRunnerToken({
-    loopId: loop.id,
-    organizationId,
-  });
+  const {
+    token: closedLoopAuthToken,
+    tokenId,
+    expiresAt,
+  } = await issueLoopRunnerToken(
+    { loopId: loop.id, organizationId },
+    undefined,
+    options?.tokenOverrides
+  );
 
   const apiBaseUrl = process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
   if (!apiBaseUrl) {
@@ -459,18 +477,33 @@ async function resolveLoopLaunchContext(
     typeof loop.metadata?.localRepoPath === "string"
       ? loop.metadata.localRepoPath
       : undefined;
-  const desktopApiNamespace = isDesktopApiNamespace(
-    loop.metadata?.[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
-  )
-    ? loop.metadata[DESKTOP_API_NAMESPACE_CAPABILITY_KEY]
-    : undefined;
+
+  const branchMaterialization = await persistBranchMaterializationForDesktop({
+    isDesktop,
+    loopId: loop.id,
+    organizationId,
+    command: loop.command,
+    metadata: loop.metadata,
+    documentSlug,
+    primaryRepo: loop.repo,
+    additionalRepos: resolvedAdditionalRepos,
+  });
+
+  // Snapshot ComputeTarget capabilities for desktop loops; ECS loops have no
+  // compute target so default to an empty object.
+  const runnerCapabilities = await resolveRunnerCapabilities(
+    loop.computeTargetId
+  );
 
   return {
     loopId: loop.id,
     organizationId,
+    userId: loop.userId,
     command: loop.command,
     contextPack,
     closedLoopAuthToken,
+    tokenId,
+    expiresAt,
     apiBaseUrl,
     anthropicApiKey,
     githubToken,
@@ -493,9 +526,57 @@ async function resolveLoopLaunchContext(
         : null,
     localRepoPath,
     computeTargetId: loop.computeTargetId,
+    runnerCapabilities,
     additionalRepos: resolvedAdditionalRepos,
-    desktopApiNamespace,
+    branchMaterialization,
+    harness: loop.harness,
+    desktopUserIntentSignature: options?.desktopUserIntentSignature,
   };
+}
+
+async function persistBranchMaterializationForDesktop(input: {
+  isDesktop: boolean;
+  loopId: string;
+  organizationId: string;
+  command: LoopCommand;
+  metadata: JsonObject;
+  documentSlug?: string | null;
+  primaryRepo: { fullName: string; branch: string } | null;
+  additionalRepos?: AdditionalRepoRefWithToken[];
+}): Promise<LoopBranchMaterializationEnvelope | undefined> {
+  if (!(input.isDesktop && input.primaryRepo)) {
+    return undefined;
+  }
+
+  const branchMaterialization = buildLoopBranchMaterialization({
+    command: input.command,
+    loopId: input.loopId,
+    documentSlug: input.documentSlug,
+    primaryRepo: input.primaryRepo,
+    additionalRepos: input.additionalRepos,
+  });
+  if (branchMaterialization === null) {
+    // Clear any stale envelope left by a prior write-mode run of the same loop.
+    const { branchMaterialization: _stale, ...clearedMetadata } =
+      input.metadata;
+    await loopsService.updateMetadata(
+      input.loopId,
+      input.organizationId,
+      clearedMetadata
+    );
+    return undefined;
+  }
+  const updated = await loopsService.updateMetadata(
+    input.loopId,
+    input.organizationId,
+    { ...input.metadata, branchMaterialization }
+  );
+  if (updated === 0) {
+    throw new Error(
+      "Cannot launch loop: branch materialization metadata was not persisted"
+    );
+  }
+  return branchMaterialization;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,9 +589,15 @@ async function resolveLoopLaunchContext(
  *
  * @returns The ECS task ARN or desktop command ID
  */
+export type LaunchLoopOptions = {
+  desktopUserIntentSignature?: DesktopUserIntentSignature;
+  tokenOverrides?: LoopRunnerTokenIssueOverrides;
+};
+
 export async function launchLoop(
   loopId: string,
-  organizationId: string
+  organizationId: string,
+  options?: LaunchLoopOptions
 ): Promise<string> {
   const loop = await getPendingLoopOrThrow(loopId, organizationId);
 
@@ -557,7 +644,21 @@ export async function launchLoop(
     const launchCtx = await resolveLoopLaunchContext(
       loop,
       organizationId,
-      parentInfo
+      parentInfo,
+      options
+    );
+    // Pin the JTI atomically before dispatch so the token is visible from
+    // second zero. This is the only non-CAS writer of active_token_jti; all
+    // subsequent writers use the CAS-guarded enforceJtiOrPin path.
+    await withDb((db) =>
+      db.loop.updateMany({
+        where: { id: loopId, organizationId },
+        data: {
+          activeTokenJti: launchCtx.tokenId,
+          tokenExpiresAt: launchCtx.expiresAt,
+          runnerCapabilities: launchCtx.runnerCapabilities,
+        },
+      })
     );
     prepared = await provider.prepareContext(launchCtx);
     result = await provider.dispatch(launchCtx, prepared);
@@ -594,6 +695,77 @@ export async function launchLoop(
   }
 }
 
+/**
+ * Builds the one-shot Desktop execution body after a signed browser intent has
+ * reached Desktop. Desktop must fetch this with its API key and existing PoP;
+ * the browser never receives the loop runner JWT or inline context payload.
+ */
+export async function buildDesktopLoopExecutionCredentials(input: {
+  loopId: string;
+  organizationId: string;
+  action?: "loop.launch" | "loop.kill";
+}): Promise<JsonObject> {
+  const loop = await loopsService.findById(input.loopId, input.organizationId);
+  if (!loop) {
+    throw new Error(`Loop not found: ${input.loopId}`);
+  }
+  if (!loop.computeTargetId) {
+    throw new Error("Loop is not assigned to a Desktop compute target");
+  }
+  if (input.action === "loop.kill") {
+    return { loopId: input.loopId };
+  }
+  const parentInfo = await resolveParentLoopInfo(
+    loop.parentLoopId,
+    input.organizationId
+  );
+  const pinnedToken = await withDb((db) =>
+    db.loop.findUnique({
+      where: { id: input.loopId, organizationId: input.organizationId },
+      select: { activeTokenJti: true, tokenExpiresAt: true },
+    })
+  );
+  const tokenOverrides: LoopRunnerTokenIssueOverrides | undefined =
+    pinnedToken?.activeTokenJti
+      ? {
+          tokenJti: pinnedToken.activeTokenJti,
+          expiresAt: pinnedToken.tokenExpiresAt
+            ? Math.floor(pinnedToken.tokenExpiresAt.getTime() / 1000)
+            : undefined,
+        }
+      : undefined;
+  const launchCtx = await resolveLoopLaunchContext(
+    loop,
+    input.organizationId,
+    parentInfo,
+    { tokenOverrides }
+  );
+  const body = buildDesktopLoopExecutionBody({
+    loopId: launchCtx.loopId,
+    organizationId: launchCtx.organizationId,
+    userId: launchCtx.userId,
+    command: launchCtx.command,
+    computeTargetId: loop.computeTargetId,
+    closedLoopAuthToken: launchCtx.closedLoopAuthToken,
+    apiBaseUrl: launchCtx.apiBaseUrl,
+    contextPack: launchCtx.contextPack,
+    documentSlug: launchCtx.documentSlug,
+    parentLoopId: launchCtx.parentLoopId ?? undefined,
+    parentBranchName: launchCtx.parentBranchName ?? undefined,
+    parentSessionId: launchCtx.parentSessionId ?? undefined,
+    localRepoPath: launchCtx.localRepoPath,
+    additionalRepos: launchCtx.additionalRepos,
+    branchMaterialization: launchCtx.branchMaterialization,
+    documentId: launchCtx.documentId ?? undefined,
+    s3StateKey: getStateKeyPrefix(launchCtx.organizationId, launchCtx.loopId),
+    harness: launchCtx.harness,
+  });
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error("Invalid Desktop loop execution body");
+  }
+  return body as JsonObject;
+}
+
 // ---------------------------------------------------------------------------
 // Event handling (called by harness callback endpoint)
 // ---------------------------------------------------------------------------
@@ -617,6 +789,10 @@ export async function handleLoopEvent(
     loopId,
     eventType: event.type,
   });
+
+  // Pre-resolve the runner arg once. When replayContext is present, addEvent
+  // uses the runner event unique key as the authoritative replay gate.
+  const runner = replayRunner(replayContext);
 
   switch (event.type) {
     case "started": {
@@ -643,7 +819,7 @@ export async function handleLoopEvent(
           type: event.type,
           data: { loopId: event.loopId, timestamp: event.timestamp },
         },
-        replayContext
+        runner
       );
       // Delegate post-start hook to provider (ECS: scrub secrets, Desktop: no-op).
       const loop = await loopsService.findById(loopId, organizationId);
@@ -676,7 +852,7 @@ export async function handleLoopEvent(
           type: event.type,
           data: { chunk: event.chunk, timestamp: event.timestamp },
         },
-        replayContext
+        runner
       );
       if (persisted && hasNonZeroTokenUsage(event.tokenUsage)) {
         const tu = event.tokenUsage!;
@@ -704,7 +880,7 @@ export async function handleLoopEvent(
             timestamp: event.timestamp,
           },
         },
-        replayContext
+        runner
       );
       return [event];
     }
@@ -721,9 +897,9 @@ export async function handleLoopEvent(
             input: event.input,
             output: event.output,
             timestamp: event.timestamp,
-          } as Record<string, unknown>,
+          },
         },
-        replayContext
+        runner
       );
       return [event];
     }
@@ -740,17 +916,17 @@ export async function handleLoopEvent(
             timestamp: event.timestamp,
           },
         },
-        replayContext
+        runner
       );
       return [event];
     }
 
     case "completed": {
-      return handleLoopCompleted(loopId, organizationId, event, replayContext);
+      return handleLoopCompleted(loopId, organizationId, event, runner);
     }
 
     case "error": {
-      return handleLoopError(loopId, organizationId, event, replayContext);
+      return handleLoopError(loopId, organizationId, event, runner);
     }
 
     default: {
@@ -759,10 +935,10 @@ export async function handleLoopEvent(
         loopId,
         organizationId,
         {
-          type: (event as LoopEvent).type,
+          type: event.type,
           data: event as unknown as Record<string, unknown>,
         },
-        replayContext
+        runner
       );
       return [event];
     }
@@ -777,6 +953,10 @@ async function ingestLoopArtifacts(
   loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
   organizationId: string
 ): Promise<void> {
+  if (loop.command === LoopCommand.Bootstrap) {
+    await ingestBootstrapAgents(loop, organizationId);
+    return;
+  }
   if (!loop.documentId) {
     return;
   }
@@ -795,6 +975,62 @@ async function ingestLoopArtifacts(
 
   const provider = resolveProvider(loop);
   await provider.ingestArtifacts(loop, organizationId, handler);
+}
+
+async function ingestBootstrapAgents(
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>,
+  organizationId: string
+): Promise<void> {
+  const raw = loop.uploadedArtifacts as Record<string, unknown> | null;
+  const bootstrapResult = raw?.bootstrapResult;
+  const parsed = BootstrapLoopResultSchema.safeParse(bootstrapResult);
+  if (!parsed.success) {
+    log.warn("[loop-orchestrator] Bootstrap artifacts missing or malformed", {
+      loopId: loop.id,
+      parseErrors: parsed.error.issues.map((i) => i.message),
+    });
+    return;
+  }
+
+  let totalCreated = 0;
+  let totalUpdated = 0;
+  for (const repo of parsed.data.repos) {
+    if (!repo.success || repo.agents.length === 0) {
+      continue;
+    }
+    try {
+      const result = await agentsService.bulkIngest(
+        organizationId,
+        loop.userId,
+        {
+          agents: repo.agents.map((a) => ({
+            name: a.name,
+            role: a.role,
+            description: a.description,
+            prompt: a.prompt,
+          })),
+          bootstrapRunId: loop.id,
+          sourceRepo: repo.fullName,
+          criticGates: repo.criticGates ?? undefined,
+        }
+      );
+      totalCreated += result.created;
+      totalUpdated += result.updated;
+    } catch (err) {
+      log.error("[loop-orchestrator] Bootstrap agent ingestion failed", {
+        loopId: loop.id,
+        repo: repo.fullName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  log.info("[loop-orchestrator] Bootstrap agents ingested", {
+    loopId: loop.id,
+    totalCreated,
+    totalUpdated,
+    repoCount: parsed.data.repos.filter((r) => r.success).length,
+  });
 }
 
 /**
@@ -971,12 +1207,14 @@ function resolveTokenMetadata(
 /**
  * Handle loop completion: download metadata from S3, update token counts.
  * Returns the canonical event(s) to publish via SSE.
+ *
+ * @param runner - Pre-resolved runner arg (with skipDuplicates when replaying).
  */
 async function handleLoopCompleted(
   loopId: string,
   organizationId: string,
   event: LoopEventCompleted,
-  replayContext?: RunnerReplayContext
+  runner: ReturnType<typeof replayRunner> | undefined
 ): Promise<LoopEvent[]> {
   // Retrieve token metadata via provider (ECS: S3 download, Desktop: null)
   const loop = await loopsService.findById(loopId, organizationId);
@@ -1033,13 +1271,7 @@ async function handleLoopCompleted(
     cacheCreation === 0 &&
     cacheRead === 0
   ) {
-    return handleZeroTokenExecute(
-      loopId,
-      organizationId,
-      loop,
-      event,
-      replayContext
-    );
+    return handleZeroTokenExecute(loopId, organizationId, loop, event);
   }
 
   // Extract PR info + session ID from event.result
@@ -1115,9 +1347,9 @@ async function handleLoopCompleted(
         tokensUsed: event.tokensUsed ?? null,
         timestamp: event.timestamp,
         ...(event.results ? { results: event.results } : {}),
-      } as Record<string, unknown>,
+      },
     },
-    replayContext
+    runner
   );
 
   log.info("[loop-orchestrator] Loop completed", {
@@ -1185,11 +1417,11 @@ async function handleLoopError(
   loopId: string,
   organizationId: string,
   event: LoopEventError,
-  replayContext?: RunnerReplayContext
+  runner: ReturnType<typeof replayRunner> | undefined
 ): Promise<LoopEvent[]> {
-  if (event.code === "CANCELLED") {
-    const canonicalEvent = {
-      type: "cancelled" as const,
+  if (event.code === LoopErrorCode.Cancelled) {
+    const canonicalEvent: LoopEvent = {
+      type: "cancelled",
       reason: event.message,
       timestamp: event.timestamp,
     };
@@ -1204,7 +1436,7 @@ async function handleLoopError(
           timestamp: event.timestamp,
         },
       },
-      replayContext
+      runner
     );
 
     const loop = await loopsService.findById(loopId, organizationId);
@@ -1228,10 +1460,10 @@ async function handleLoopError(
       loopId,
       reason: event.message,
     });
-    return [canonicalEvent as unknown as LoopEvent];
+    return [canonicalEvent];
   }
 
-  if (event.code === "TIMED_OUT") {
+  if (event.code === LoopErrorCode.TimedOut) {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
     const canonical = buildCanonicalErrorData(event);
 
@@ -1255,7 +1487,7 @@ async function handleLoopError(
         type: event.type,
         data: canonical,
       },
-      replayContext
+      runner
     );
 
     log.info("[loop-orchestrator] Loop timed out", {
@@ -1308,7 +1540,7 @@ async function handleLoopError(
       type: event.type,
       data: canonical,
     },
-    replayContext
+    runner
   );
 
   // Skip generic log for codes that already logged above
@@ -1370,8 +1602,7 @@ async function handleZeroTokenExecute(
     | NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
     | null
     | undefined,
-  event: LoopEventCompleted,
-  _replayContext?: RunnerReplayContext
+  event: LoopEventCompleted
 ): Promise<LoopEvent[]> {
   const noWorkMessage =
     "EXECUTE loop completed with 0 tokens -- no work was done";
@@ -1481,18 +1712,44 @@ async function resolveAdditionalRepos(
     }));
   }
 
-  // Cloud/ECS: resolve a GitHub installation token per repo.
-  // Fail-fast: if any token cannot be resolved, throw immediately so the loop
-  // fails before ECS dispatch rather than failing inside the container with a
-  // cryptic auth error.
-  const resolved: AdditionalRepoRefWithToken[] = [];
-  for (const repoRef of cappedAdditionalRepos) {
-    const token = await resolveGitHubToken(organizationId, repoRef.fullName);
-    resolved.push({
+  // Cloud/ECS: resolve a GitHub installation token per repo. Each resolution is
+  // two sequential network round-trips (a DB installation lookup + a GitHub
+  // installation-token API call), so resolve all repos concurrently rather than
+  // serially — N is bounded by MAX_ADDITIONAL_REPOS but the serial latency would
+  // otherwise be N×(DB+API). Promise.all preserves both input order (via map)
+  // and fail-fast: if any token cannot be resolved it rejects immediately so the
+  // loop fails before ECS dispatch rather than failing inside the container with
+  // a cryptic auth error.
+  return await Promise.all(
+    cappedAdditionalRepos.map(async (repoRef) => ({
       fullName: repoRef.fullName,
       branch: repoRef.branch,
-      githubToken: token,
-    });
+      githubToken: await resolveGitHubToken(organizationId, repoRef.fullName),
+    }))
+  );
+}
+
+/**
+ * Read ComputeTarget capabilities for desktop loops.
+ * ECS loops have no compute target — returns an empty object as default.
+ */
+async function resolveRunnerCapabilities(
+  computeTargetId: string | null
+): Promise<JsonObject> {
+  if (!computeTargetId) {
+    return {};
   }
-  return resolved;
+  const computeTarget = await withDb((db) =>
+    db.computeTarget.findUnique({
+      where: { id: computeTargetId },
+      select: { capabilities: true },
+    })
+  );
+  if (
+    computeTarget?.capabilities === null ||
+    computeTarget?.capabilities === undefined
+  ) {
+    return {};
+  }
+  return parseJsonObject(computeTarget.capabilities) ?? {};
 }

@@ -1,12 +1,14 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { conflictBody } from "@repo/api/src/types/common";
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
+import { LoopErrorCode } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import {
   fetchUserComputePreferences,
   type ResolveComputeTargetResult,
   resolveComputeTarget,
+  type UserComputePreferences,
 } from "@/lib/loops/compute-target-resolver";
 import {
   badRequestResponse,
@@ -29,13 +31,15 @@ export type ComputeTargetRouteResult =
 export async function resolveComputeTargetForRoute(
   organizationId: string,
   userId: string,
-  computeTargetIdHint?: string
+  computeTargetIdHint?: string,
+  userComputePreferences?: UserComputePreferences
 ): Promise<ComputeTargetRouteResult> {
   let preferredComputeMode: string | undefined;
   let preferredComputeTargetId: string | undefined;
 
   if (!computeTargetIdHint) {
-    const prefs = await fetchUserComputePreferences(userId);
+    const prefs =
+      userComputePreferences ?? (await fetchUserComputePreferences(userId));
     preferredComputeMode = prefs.preferredComputeMode;
     preferredComputeTargetId = prefs.preferredComputeTargetId;
   }
@@ -75,13 +79,25 @@ function mapComputeTargetResult(
     case "hint_offline":
       return {
         errorResponse: badRequestResponse(
-          "Compute target is offline. Ensure the desktop app is running."
+          "Compute target is offline. Ensure the desktop app is running.",
+          {
+            code: LoopErrorCode.PreRunValidationFailed,
+            details: {
+              category: "compute_target_offline",
+              computeTargetId: ctResult.target.id,
+              machineName: ctResult.target.machineName,
+            },
+          }
         ),
       };
     case "no_online_targets":
       return {
         errorResponse: badRequestResponse(
-          "No compute targets are online. Ensure the desktop app is running."
+          "No compute targets are online. Ensure the desktop app is running.",
+          {
+            code: LoopErrorCode.PreRunValidationFailed,
+            details: { category: "compute_target_unavailable" },
+          }
         ),
       };
     case "multiple_targets": {

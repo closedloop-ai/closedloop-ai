@@ -7,7 +7,7 @@ vi.mock("@repo/database", () => ({
   Prisma: { DbNull: "DbNull" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -17,7 +17,6 @@ import {
   resolveArtifactIdentifier,
   resolveDocumentId,
   resolveProjectId,
-  resolveWorkstreamId,
   uuidOrSlug,
 } from "../../lib/identifier-utils";
 
@@ -168,30 +167,6 @@ describe("resolveProjectId", () => {
 
     const result = await resolveProjectId("PROJ-1", "org-1");
     expect(result).toBe("proj-uuid");
-  });
-});
-
-describe("resolveWorkstreamId", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns UUID directly when input is a UUID", async () => {
-    const uuid = "550e8400-e29b-41d4-a716-446655440000";
-    const result = await resolveWorkstreamId(uuid, "org-1");
-    expect(result).toBe(uuid);
-  });
-
-  it("queries by slug when input is not a UUID", async () => {
-    const mockDb = {
-      workstream: {
-        findUnique: vi.fn().mockResolvedValue({ id: "ws-uuid" }),
-      },
-    };
-    mockWithDbCall(mockDb);
-
-    const result = await resolveWorkstreamId("WORK-5", "org-1");
-    expect(result).toBe("ws-uuid");
   });
 });
 

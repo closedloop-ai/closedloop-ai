@@ -9,6 +9,7 @@ import {
   INTERNAL_SECRET,
   makeEnvelope,
   makeSocketEventRequest,
+  mockGatewayOwnerAuthContext,
   mockTarget,
 } from "./utils/test-fixtures";
 
@@ -71,13 +72,17 @@ beforeEach(() => {
 
 describe("POST /internal/relay/socket-event — desktop.hello", () => {
   it("returns desktop.hello.ack with envelope for a new target registration", async () => {
-    const request = makeSocketEventRequest("desktop.hello", {
-      machineName: mockTarget.machineName,
-      platform: mockTarget.platform,
-      pluginVersion: "1.0.0",
-      supportedOperations: mockTarget.supportedOperations,
-      maxInFlightCommands: 4,
-    });
+    const request = makeSocketEventRequest(
+      "desktop.hello",
+      {
+        machineName: mockTarget.machineName,
+        platform: mockTarget.platform,
+        pluginVersion: "1.0.0",
+        supportedOperations: mockTarget.supportedOperations,
+        maxInFlightCommands: 4,
+      },
+      { auth: mockGatewayOwnerAuthContext }
+    );
 
     const response = await POST(request);
     expect(response.status).toBe(200);
@@ -92,6 +97,31 @@ describe("POST /internal/relay/socket-event — desktop.hello", () => {
         serverTime: expect.any(String),
       })
     );
+    expect(body.emit[0].payload.clerkUserId).toBeUndefined();
+    expect(body.emit[0].payload.organizationId).toBeUndefined();
+    expect(body.emit[0].payload.userId).toBeUndefined();
+  });
+
+  it("omits gateway-owner identity when relay auth has no Clerk id", async () => {
+    const request = makeSocketEventRequest(
+      "desktop.hello",
+      {
+        machineName: mockTarget.machineName,
+        platform: mockTarget.platform,
+        pluginVersion: "1.0.0",
+        supportedOperations: mockTarget.supportedOperations,
+        maxInFlightCommands: 4,
+      },
+      { auth: { organizationId: "org-1", userId: "user_db_1" } }
+    );
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.emit[0].payload.clerkUserId).toBeUndefined();
+    expect(body.emit[0].payload.organizationId).toBeUndefined();
+    expect(body.emit[0].payload.userId).toBeUndefined();
   });
 });
 

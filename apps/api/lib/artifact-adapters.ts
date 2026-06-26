@@ -1,18 +1,17 @@
 /**
  * Shared adapters that convert Prisma Artifact rows (with the appropriate
- * detail include) into the API-layer `PullRequestInfo` wire shape. Remaining
- * adapter utilities after the artifact cutover. Where-clause helpers for the
- * three artifact types are co-located here.
+ * detail include) into API-layer wire shapes after the branch artifact cutover.
+ * Where-clause helpers for durable artifact types are co-located here.
  */
 
 import type {
   Artifact as ApiArtifact,
   DeploymentDetail as ApiDeploymentDetail,
-  PullRequestDetail as ApiPullRequestDetail,
   DeploymentArtifact,
 } from "@repo/api/src/types/artifact";
 import { ArtifactType as ApiArtifactType } from "@repo/api/src/types/artifact";
 import type {
+  BranchInfo,
   PullRequestInfo,
   PullRequestState,
 } from "@repo/api/src/types/document";
@@ -22,26 +21,51 @@ import type {
 } from "@repo/api/src/types/github";
 import { ArtifactType as DatabaseArtifactType } from "@repo/database";
 
-type PullRequestArtifactScalars = Pick<
+type ArtifactScalarsForPrInfo = Pick<
   ApiArtifact,
   "id" | "name" | "externalUrl" | "createdAt"
 >;
 
-type PullRequestDetailForInfo = Omit<
-  ApiPullRequestDetail,
-  "checksStatus" | "reviewDecision"
-> & {
+type PullRequestDetailForInfo = {
+  id?: string | null;
+  branchArtifactId?: string | null;
+  repositoryId: string;
+  githubId: string;
+  number: number;
+  title?: string | null;
+  htmlUrl?: string | null;
+  body: string | null;
   prState: GitHubPRState;
-  checksStatus: PullRequestInfo["checksStatus"];
+  isDraft: boolean;
   reviewDecision: PullRequestInfo["reviewDecision"];
+  closedAt: Date | null;
+  mergedAt: Date | null;
+  mergeCommitSha: string | null;
+  lastVerifiedAt: Date | null;
+  lastRefreshAttemptAt: Date | null;
+  isCurrent?: boolean;
 };
 
 type PullRequestDetailWithRepository = PullRequestDetailForInfo & {
   repository?: Pick<GitHubRepository, "fullName"> | null;
 };
 
-type ArtifactWithPullRequestDetail = PullRequestArtifactScalars & {
-  pullRequest: PullRequestDetailWithRepository | null;
+type BranchArtifactScalars = Pick<
+  ApiArtifact,
+  "id" | "name" | "externalUrl" | "createdAt"
+>;
+
+type BranchDetailWithCurrentPr = {
+  branchName: string;
+  baseBranch: string | null;
+  headSha: string | null;
+  checksStatus: PullRequestInfo["checksStatus"];
+  repository?: Pick<GitHubRepository, "fullName"> | null;
+  currentPullRequestDetail?: PullRequestDetailWithRepository | null;
+};
+
+type ArtifactWithBranchDetail = BranchArtifactScalars & {
+  branch: BranchDetailWithCurrentPr | null;
 };
 
 type DeploymentArtifactScalars = Pick<
@@ -49,7 +73,6 @@ type DeploymentArtifactScalars = Pick<
   | "id"
   | "organizationId"
   | "projectId"
-  | "workstreamId"
   | "name"
   | "slug"
   | "status"
@@ -79,26 +102,58 @@ export type PullRequestInfoOptions = {
    * fetched without the repository relation. When `pullRequest.repository`
    * is present it takes precedence over this value. */
   repoFullName?: string | null;
+  branchName?: string | null;
+  baseBranch?: string | null;
+  checksStatus?: PullRequestInfo["checksStatus"];
 };
 
-export function pullRequestArtifactToInfo(
-  artifact: ArtifactWithPullRequestDetail,
+export function branchArtifactToInfo(
+  artifact: ArtifactWithBranchDetail,
   options: PullRequestInfoOptions = {}
-): PullRequestInfo | null {
-  const detail = artifact.pullRequest;
+): BranchInfo | null {
+  const detail = artifact.branch;
   if (!detail) {
     return null;
   }
+  const currentPullRequest = detail.currentPullRequestDetail
+    ? pullRequestDetailToInfo(detail.currentPullRequestDetail, artifact, {
+        externalLinkId: artifact.id,
+        repoFullName: detail.repository?.fullName ?? options.repoFullName,
+        branchName: detail.branchName,
+        baseBranch: detail.baseBranch,
+        checksStatus: detail.checksStatus,
+      })
+    : null;
   return {
     id: artifact.id,
-    number: detail.number,
-    title: artifact.name,
-    htmlUrl: artifact.externalUrl ?? "",
-    state: prStateToApi(detail.prState),
-    headBranch: detail.headBranch,
+    name: artifact.name,
+    htmlUrl: artifact.externalUrl,
+    branchName: detail.branchName,
     baseBranch: detail.baseBranch,
-    createdAt: artifact.createdAt,
+    headSha: detail.headSha,
     checksStatus: detail.checksStatus,
+    externalLinkId: options.externalLinkId ?? artifact.id,
+    repoFullName: detail.repository?.fullName ?? options.repoFullName ?? null,
+    currentPullRequest,
+  };
+}
+
+function pullRequestDetailToInfo(
+  detail: PullRequestDetailWithRepository,
+  artifact: ArtifactScalarsForPrInfo,
+  options: PullRequestInfoOptions = {}
+): PullRequestInfo {
+  return {
+    id: detail.branchArtifactId ?? detail.id ?? artifact.id,
+    number: detail.number,
+    title: detail.title ?? artifact.name,
+    htmlUrl: detail.htmlUrl ?? artifact.externalUrl ?? "",
+    state: prStateToApi(detail.prState),
+    isDraft: detail.isDraft,
+    headBranch: options.branchName ?? artifact.name,
+    baseBranch: options.baseBranch ?? "",
+    createdAt: artifact.createdAt,
+    checksStatus: options.checksStatus ?? null,
     reviewDecision: detail.reviewDecision,
     externalLinkId: options.externalLinkId ?? null,
     repoFullName: detail.repository?.fullName ?? options.repoFullName ?? null,
@@ -114,11 +169,7 @@ function prStateToApi(state: GitHubPRState): PullRequestState {
 // DeploymentArtifact adapter
 // ---------------------------------------------------------------------------
 
-/**
- * Shape a PULL_REQUEST-typed Artifact (with DeploymentDetail included) into
- * the API-layer DeploymentArtifact wire type. Returns null if the detail row
- * is missing.
- */
+/** Shape a deployment artifact row into the API-layer wire type. */
 export function deploymentArtifactToInfo(
   artifact: ArtifactWithDeploymentDetail
 ): DeploymentArtifact | null {
@@ -130,7 +181,6 @@ export function deploymentArtifactToInfo(
     id: artifact.id,
     organizationId: artifact.organizationId,
     projectId: artifact.projectId,
-    workstreamId: artifact.workstreamId,
     name: artifact.name,
     slug: artifact.slug,
     status: artifact.status,
@@ -153,7 +203,7 @@ export function deploymentArtifactToInfo(
       githubDeploymentUrl: detail.githubDeploymentUrl,
       transient: detail.transient,
       production: detail.production,
-      pullRequestArtifactId: detail.pullRequestArtifactId,
+      branchArtifactId: detail.branchArtifactId,
     },
   };
 }
@@ -164,10 +214,6 @@ export function deploymentArtifactToInfo(
 
 export function documentWhere<T extends Record<string, unknown>>(where: T) {
   return { ...where, type: DatabaseArtifactType.DOCUMENT };
-}
-
-export function pullRequestWhere<T extends Record<string, unknown>>(where: T) {
-  return { ...where, type: DatabaseArtifactType.PULL_REQUEST };
 }
 
 export function deploymentWhere<T extends Record<string, unknown>>(where: T) {

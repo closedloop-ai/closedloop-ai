@@ -1,0 +1,41 @@
+[
+  {
+    "id": "fixture-pr-1",
+    "session_id": "fixture-sess-completed-1",
+    "pr_url": "https://github.com/example/fixture-repo-a/pull/42",
+    "pr_number": 42,
+    "repo_full_name": "example/fixture-repo-a",
+    "branch_name": "fix/auth-bug",
+    "head_sha": "abc1234",
+    "title": "Fix auth bug from fixture session 1",
+    "harness": "claude",
+    "observed_at": "2026-05-15T09:25:00.000Z",
+    "created_at": "2026-05-15T09:25:00.000Z"
+  },
+  {
+    "id": "fixture-pr-2",
+    "session_id": "fixture-sess-completed-1",
+    "pr_url": "https://github.com/example/fixture-repo-a/pull/43",
+    "pr_number": 43,
+    "repo_full_name": "example/fixture-repo-a",
+    "branch_name": "feat/landing-page",
+    "head_sha": "def5678",
+    "title": "Add landing page",
+    "harness": "claude",
+    "observed_at": "2026-05-15T09:28:00.000Z",
+    "created_at": "2026-05-15T09:28:00.000Z"
+  },
+  {
+    "id": "fixture-pr-3",
+    "session_id": "fixture-sess-completed-2",
+    "pr_url": "https://github.com/example/fixture-repo-c/pull/7",
+    "pr_number": 7,
+    "repo_full_name": "example/fixture-repo-c",
+    "branch_name": "chore/lint",
+    "head_sha": "ghi9012",
+    "title": "Lint cleanup from codex session",
+    "harness": "codex",
+    "observed_at": "2026-05-16T08:14:00.000Z",
+    "created_at": "2026-05-16T08:14:00.000Z"
+  }
+]

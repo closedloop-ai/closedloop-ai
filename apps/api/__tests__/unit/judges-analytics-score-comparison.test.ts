@@ -6,7 +6,7 @@
  */
 import { DocumentType } from "@repo/api/src/types/document";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
@@ -14,7 +14,7 @@ vi.mock("@repo/database", () => ({
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {

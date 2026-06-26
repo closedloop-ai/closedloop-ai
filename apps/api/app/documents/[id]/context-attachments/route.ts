@@ -58,7 +58,6 @@ async function handleDocumentUpload(
   document: {
     id: string;
     projectId: string | null;
-    workstreamId: string | null;
   },
   body: {
     filename: string;
@@ -68,11 +67,6 @@ async function handleDocumentUpload(
   }
 ) {
   const projectId = body.projectId ?? document.projectId;
-  if (!(projectId || document.workstreamId)) {
-    return badRequestResponse(
-      "Either projectId or workstreamId is required to attach context"
-    );
-  }
   if (!projectId) {
     return badRequestResponse("projectId is required to create context PRD");
   }

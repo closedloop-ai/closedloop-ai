@@ -1,6 +1,9 @@
-import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import {
+  type ComputeTarget,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { PreferredComputeMode } from "@repo/database";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { resolveComputeTarget } from "@/lib/loops/compute-target-resolver";
 
@@ -33,6 +36,7 @@ const makeTarget = (overrides: Partial<ComputeTarget> = {}): ComputeTarget => ({
   lastSeenAt: new Date(),
   isOnline: true,
   isSharedWithOrg: false,
+  selectedHarness: HarnessType.Claude,
   createdAt: new Date(),
   updatedAt: new Date(),
   ...overrides,

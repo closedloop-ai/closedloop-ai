@@ -114,4 +114,63 @@ describe("health-check freshness", () => {
       })
     ).toBe(false);
   });
+
+  it("expires entries when plugin auto-update mode changes", () => {
+    const entry = {
+      data: healthCheck([
+        {
+          id: "plugin-code",
+          label: "Symphony Plugin",
+          required: true,
+          passed: true,
+        },
+      ]),
+      checkedAt: now,
+      pluginAutoUpdateEnabled: false,
+    };
+
+    expect(
+      isHealthCheckCacheEntryFresh({
+        entry,
+        expectedMcpUrl: null,
+        pluginAutoUpdateEnabled: true,
+        now,
+      })
+    ).toBe(false);
+    expect(
+      isHealthCheckCacheEntryFresh({
+        entry: { ...entry, pluginAutoUpdateEnabled: true },
+        expectedMcpUrl: null,
+        pluginAutoUpdateEnabled: true,
+        now,
+      })
+    ).toBe(true);
+  });
+
+  it("expires empty entries when plugin auto-update mode changes", () => {
+    expect(
+      isHealthCheckCacheEntryFresh({
+        entry: {
+          data: healthCheck([]),
+          checkedAt: now,
+          pluginAutoUpdateEnabled: false,
+        },
+        expectedMcpUrl: null,
+        pluginAutoUpdateEnabled: true,
+        now,
+      })
+    ).toBe(false);
+    expect(
+      isHealthCheckCacheEntryFresh({
+        entry: {
+          data: healthCheck([]),
+          checkedAt: now,
+          pluginAutoUpdateEnabled: false,
+        },
+        expectedMcpUrl: null,
+        pluginAutoUpdateEnabled: false,
+        now,
+      })
+    ).toBe(true);
+  });
 });

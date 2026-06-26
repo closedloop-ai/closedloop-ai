@@ -1,6 +1,6 @@
+import { useSortParams } from "@repo/app/shared/hooks/use-sort-params";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { useSortParams } from "../use-sort-params";
 
 // Use vi.fn() so mockReturnValue works per-test (not closed-over variable).
 // Wrap in arrow function to avoid TDZ error when vi.mock factory is hoisted.
@@ -318,6 +318,79 @@ describe("useSortParams", () => {
 
       // Should fall back to default since the unprefixed params don't match the prefix
       expect(result.current.sortBy).toBe("updatedAt");
+    });
+  });
+
+  describe("localStorage persistence", () => {
+    test("mirrors sort state to localStorage on setSort", () => {
+      mockUseSearchParams.mockReturnValue(new URLSearchParams());
+
+      const { result } = renderHook(() =>
+        useSortParams<TestColumn>({
+          defaultColumn: "updatedAt",
+          defaultDirection: "desc",
+          validColumns: VALID_COLUMNS,
+          persistenceKey: "test:sort",
+        })
+      );
+
+      act(() => {
+        result.current.setSort("title", "asc");
+      });
+
+      const raw = localStorage.getItem("test:sort");
+      expect(raw).not.toBeNull();
+      const envelope = JSON.parse(raw!);
+      expect(envelope.data).toEqual({ column: "title", direction: "asc" });
+      expect(typeof envelope.savedAt).toBe("number");
+    });
+
+    test("restores sort from localStorage when URL params are absent", () => {
+      localStorage.setItem(
+        "test:sort",
+        JSON.stringify({
+          savedAt: Date.now(),
+          data: { column: "type", direction: "asc" },
+        })
+      );
+      mockUseSearchParams.mockReturnValue(new URLSearchParams());
+
+      const { result } = renderHook(() =>
+        useSortParams<TestColumn>({
+          defaultColumn: "updatedAt",
+          defaultDirection: "desc",
+          validColumns: VALID_COLUMNS,
+          persistenceKey: "test:sort",
+        })
+      );
+
+      expect(result.current.sortBy).toBe("type");
+      expect(result.current.sortDir).toBe("asc");
+    });
+
+    test("URL params take precedence over localStorage", () => {
+      localStorage.setItem(
+        "test:sort",
+        JSON.stringify({
+          savedAt: Date.now(),
+          data: { column: "type", direction: "asc" },
+        })
+      );
+      mockUseSearchParams.mockReturnValue(
+        new URLSearchParams("sortBy=title&sortDir=desc")
+      );
+
+      const { result } = renderHook(() =>
+        useSortParams<TestColumn>({
+          defaultColumn: "updatedAt",
+          defaultDirection: "asc",
+          validColumns: VALID_COLUMNS,
+          persistenceKey: "test:sort",
+        })
+      );
+
+      expect(result.current.sortBy).toBe("title");
+      expect(result.current.sortDir).toBe("desc");
     });
   });
 });

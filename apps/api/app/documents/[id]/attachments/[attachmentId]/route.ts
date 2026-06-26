@@ -1,7 +1,10 @@
 import type { AttachmentDownloadResponse } from "@repo/api/src/types/attachment";
-import { attachmentsService } from "@/app/documents/attachments-service";
+import {
+  attachmentsService,
+  type DeleteAttachmentError,
+  DeleteAttachmentErrorCode,
+} from "@/app/documents/attachments-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
   deleteResponse,
@@ -41,10 +44,10 @@ export const GET = withAnyAuth<
   }
 });
 
-export const DELETE = withAuth<
+export const DELETE = withAnyAuth<
   { deleted: true },
   "/documents/[id]/attachments/[attachmentId]"
->(async ({ user }, _, params) => {
+>(async ({ authMethod, user }, _, params) => {
   try {
     const { id, attachmentId } = await params;
     const resolvedId = await resolveDocumentId(id, user.organizationId);
@@ -52,22 +55,37 @@ export const DELETE = withAuth<
       return notFoundResponse("Document");
     }
 
-    await attachmentsService.deleteAttachment(
+    const result = await attachmentsService.deleteAttachment(
       resolvedId,
       user.organizationId,
-      attachmentId
+      user.id,
+      attachmentId,
+      { requireCreatorOwnership: authMethod === "api_key" }
     );
+
+    if (result.ok === false) {
+      return mapDeleteAttachmentFailure(result.error);
+    }
 
     return deleteResponse();
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.message === "Document not found") {
-        return notFoundResponse("Document");
-      }
-      if (error.message === "Attachment not found") {
-        return notFoundResponse("Attachment");
-      }
-    }
     return errorResponse("Failed to delete attachment", error);
   }
 });
+
+function mapDeleteAttachmentFailure(error: DeleteAttachmentError) {
+  if (error.code === DeleteAttachmentErrorCode.DocumentNotFound) {
+    return notFoundResponse("Document");
+  }
+  if (
+    error.code === DeleteAttachmentErrorCode.AttachmentNotFound ||
+    error.code === DeleteAttachmentErrorCode.NotOwned
+  ) {
+    return notFoundResponse("Attachment");
+  }
+  return notFoundResponse(getUnhandledDeleteAttachmentFallback(error.code));
+}
+
+function getUnhandledDeleteAttachmentFallback(_errorCode: never): "Attachment" {
+  return "Attachment";
+}

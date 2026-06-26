@@ -34,12 +34,12 @@ export async function generateMetadata({ params }: DocsPageProps) {
   const page = source.getPage(slug);
 
   if (!page) {
-    return createPageMetadata("Documentation", "ClosedLoop.ai documentation");
+    return createPageMetadata("Documentation", "Closedloop.ai documentation");
   }
 
   return createPageMetadata(
     page.data.title,
-    page.data.description ?? "ClosedLoop.ai documentation"
+    page.data.description ?? "Closedloop.ai documentation"
   );
 }
 

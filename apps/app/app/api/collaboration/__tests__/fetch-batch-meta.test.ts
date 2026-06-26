@@ -1,3 +1,4 @@
+import { DocumentType } from "@repo/api/src/types/document";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
@@ -40,7 +41,7 @@ describe("fetchBatchMeta", () => {
         ok: true,
         json: vi.fn().mockResolvedValueOnce({
           success: true,
-          data: { "prd-abc": "My PRD" },
+          data: { "prd-abc": { title: "My PRD", type: DocumentType.Prd } },
         }),
       });
 
@@ -74,9 +75,12 @@ describe("fetchBatchMeta", () => {
   });
 
   describe("success path", () => {
-    it("returns title map from successful API response", async () => {
+    it("returns meta map from successful API response", async () => {
       const getToken = vi.fn().mockResolvedValue("test-token");
-      const expectedMap = { "prd-abc": "My PRD", "plan-xyz": "My Plan" };
+      const expectedMap = {
+        "prd-abc": { title: "My PRD", type: DocumentType.Prd },
+        "plan-xyz": { title: "My Plan", type: DocumentType.ImplementationPlan },
+      };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: vi

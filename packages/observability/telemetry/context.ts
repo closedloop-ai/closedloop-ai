@@ -40,6 +40,8 @@ export function resolveServerVersion(): string {
 // Factory
 // ---------------------------------------------------------------------------
 
+export const ZERO_GATEWAY_SESSION_ID = "00000000-0000-0000-0000-000000000000";
+
 export function buildTelemetryTraceContext(
   overrides: Partial<TelemetryTraceContext>
 ): TelemetryTraceContext {
@@ -52,8 +54,7 @@ export function buildTelemetryTraceContext(
     commandId: overrides.commandId ?? "",
     operationId: overrides.operationId ?? "",
     computeTargetId: overrides.computeTargetId ?? "",
-    gatewaySessionId:
-      overrides.gatewaySessionId ?? "00000000-0000-0000-0000-000000000000",
+    gatewaySessionId: overrides.gatewaySessionId ?? ZERO_GATEWAY_SESSION_ID,
     schemaVersion: overrides.schemaVersion ?? "1",
     environment: overrides.environment ?? resolveEnvironment(),
     serverVersion,

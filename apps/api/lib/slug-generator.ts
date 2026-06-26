@@ -6,6 +6,9 @@ import {
 import { withDb } from "@repo/database";
 import { nanoid } from "nanoid";
 
+// withDb participates in any ambient withDb.tx transaction via
+// AsyncLocalStorage, so callers inside a transaction get atomic slug
+// allocation without threading a transaction client through this signature.
 export async function generateSlug(
   organizationId: string,
   typePrefix: SlugPrefix

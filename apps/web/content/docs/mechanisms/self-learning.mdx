@@ -33,7 +33,7 @@ After each iteration of the code loop, `run-loop.sh` runs an 11-step pipeline:
 8. `claude -p '/self-learning:process-learnings'` classifies pending learnings.
 9. `write_merged_patterns.py` atomically writes TOON with `.bak`, 50-pattern cap, sorted by confidence and flags.
 10. `compute_success_rates.py` recomputes success rates and assigns flags.
-11. `claude -p '/self-learning:export-closedloop-learnings'` merges ClosedLoop-specific learnings.
+11. `claude -p '/self-learning:export-closedloop-learnings'` merges Closedloop-specific learnings.
 
 ## Injection
 

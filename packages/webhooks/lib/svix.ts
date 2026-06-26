@@ -31,8 +31,11 @@ export const send = async (eventType: string, payload: object) => {
 };
 
 export const getAppPortal = async () => {
+  // When Svix isn't configured, return undefined so the page's existing
+  // `if (!response?.url) notFound()` guard renders a 404 instead of throwing
+  // up to the error boundary. Mirrors the `!orgId` early-return below.
   if (!svixToken) {
-    throw new Error("SVIX_TOKEN is not set");
+    return;
   }
 
   const svix = new Svix(svixToken);

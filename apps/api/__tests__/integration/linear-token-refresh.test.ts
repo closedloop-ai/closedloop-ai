@@ -1,7 +1,7 @@
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { getTeams, refreshAccessToken } from "@repo/linear";
-import { afterEach, type Mock, vi } from "vitest";
+import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
 import { linearService } from "@/app/integrations/linear/service";
 import {
   autoRollbackTransaction,

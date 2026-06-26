@@ -1,0 +1,139 @@
+/* Liveblocks comments styling overrides */
+
+/* Mention suggestion dropdown must appear above floating comments */
+.lb-composer-suggestions,
+.lb-composer-mention-suggestions,
+.lb-tiptap-suggestions,
+.lb-tiptap-mention-suggestions {
+  z-index: 70;
+}
+
+.lb-collab-floating-composer,
+.lb-collab-floating-threads,
+.lb-tiptap-floating-composer,
+.lb-tiptap-floating-threads {
+  width: 320px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+@media (max-width: 768px) {
+  .lb-collab-floating-composer,
+  .lb-collab-floating-threads,
+  .lb-tiptap-floating-composer,
+  .lb-tiptap-floating-threads {
+    width: calc(100vw - 32px);
+    max-width: calc(100vw - 32px);
+  }
+}
+
+/* Anchored comments (Google Docs style side panel) */
+.lb-collab-anchored-threads {
+  /* Liveblocks AnchoredThreads creates absolutely positioned elements */
+  /* We provide a fixed-width sidebar that scrolls with the page */
+  position: relative;
+  width: 320px;
+  flex-shrink: 0;
+  overflow: visible;
+  padding: 1.5rem 0;
+  background-color: transparent;
+  /* Retint the Liveblocks tokens so both the outer wrapper
+   * (`.lb-tiptap-anchored-threads-thread`) and the inner `.lb-thread`
+   * render on our popover surface instead of `--lb-background` (white). */
+  --lb-background: var(--popover);
+  --lb-dynamic-background: var(--popover);
+}
+
+/* Thread mark — the inline highlight painted onto commented text.
+ * Uses the design-system `--highlight` token (brand blue at 20% alpha),
+ * which reads consistently in both light and dark mode. */
+.lb-tiptap-thread-mark:not([data-orphan="true"], [data-hidden]) {
+  background: var(--highlight);
+}
+
+/* Transient scroll-to-anchor highlight (FEA-1122).
+ *
+ * Applied when `useScrollToAnchor()` sets `data-scroll-highlight="true"`
+ * on a thread mark after scrolling it into view. The cue pairs a brief
+ * background pulse with an outline ring so it is conveyed by both color
+ * AND shape — satisfies WCAG 2.1 AA "not by color alone".
+ *
+ * Reduced-motion users get a static outline (no animation, no flashing)
+ * — still a non-color cue, just immediate. */
+.lb-tiptap-thread-mark[data-scroll-highlight="true"] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes lb-tiptap-thread-scroll-highlight {
+    0% {
+      background: var(--highlight);
+      outline-color: transparent;
+    }
+    20% {
+      background: color-mix(in oklch, var(--ring) 35%, var(--highlight));
+      outline-color: var(--ring);
+    }
+    60% {
+      background: color-mix(in oklch, var(--ring) 35%, var(--highlight));
+      outline-color: var(--ring);
+    }
+    100% {
+      background: var(--highlight);
+      outline-color: transparent;
+    }
+  }
+
+  .lb-tiptap-thread-mark[data-scroll-highlight="true"] {
+    animation: lb-tiptap-thread-scroll-highlight 1.6s ease-out 1;
+  }
+}
+
+/* Transient permalink highlight on a Feed-tab comment card (FEA-1123).
+ *
+ * Applied when `useThreadPermalinkScroll()` sets
+ * `data-permalink-highlight="true"` on a card after scrolling it into
+ * view. Pairs a background tint with a ring so the cue is not
+ * color-alone. Reduced-motion users get the static ring only. */
+[data-permalink-highlight="true"] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes lb-comment-card-permalink-highlight {
+    0% {
+      background: var(--card);
+      outline-color: transparent;
+    }
+    20% {
+      background: color-mix(in oklch, var(--ring) 18%, var(--card));
+      outline-color: var(--ring);
+    }
+    60% {
+      background: color-mix(in oklch, var(--ring) 18%, var(--card));
+      outline-color: var(--ring);
+    }
+    100% {
+      background: var(--card);
+      outline-color: transparent;
+    }
+  }
+
+  [data-permalink-highlight="true"] {
+    animation: lb-comment-card-permalink-highlight 1.6s ease-out 1;
+  }
+}
+
+/*
+ * When using anchored mode on desktop (xl breakpoint):
+ * - Hide FloatingThreads (comment threads shown in sidebar instead)
+ */
+@media (min-width: 1280px) {
+  /* Hide any floating thread popups - all comments should be in the sidebar */
+  .lb-tiptap-floating-threads,
+  .lb-collab-floating-threads {
+    display: none !important;
+  }
+}

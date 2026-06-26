@@ -3,7 +3,7 @@ title: Worktree
 description: A separate working directory for a git branch, used to run parallel loops without lock contention.
 ---
 
-Worktrees are git's mechanism for having multiple working directories attached to the same repository. ClosedLoop.ai uses them heavily for parallel feature development: each feature gets its own worktree, and loops are serialized by lock key per worktree.
+Worktrees are git's mechanism for having multiple working directories attached to the same repository. Closedloop.ai uses them heavily for parallel feature development: each feature gets its own worktree, and loops are serialized by lock key per worktree.
 
 Override the worktree parent with `SYMPHONY_WORKTREE_PARENT_DIR`.
 

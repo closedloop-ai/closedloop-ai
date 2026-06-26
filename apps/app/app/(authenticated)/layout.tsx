@@ -10,6 +10,7 @@ import { EngineerTransportBootstrap } from "@/components/engineer/engineer-trans
 import { env } from "@/env";
 import { PreLoopSystemCheckProvider } from "@/lib/system-check/pre-loop-system-check-provider";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
+import { CommandPalette } from "./components/command-palette";
 import { OnboardingGuard } from "./components/onboarding-guard";
 import { GlobalSidebar } from "./components/sidebar";
 import { SystemCheckBootstrap } from "./components/system-check-bootstrap";
@@ -44,6 +45,7 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
         <GlobalSidebar envBadge={sidebarEnvBadge}>
           <OnboardingGuard>
             <UserIdentifier />
+            <CommandPalette />
             <EngineerTransportBootstrap />
             <PreLoopSystemCheckProvider>
               <SystemCheckBootstrap />

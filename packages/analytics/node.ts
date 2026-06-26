@@ -12,6 +12,7 @@ const createNodeAnalytics = () => {
   if (!NEXT_PUBLIC_POSTHOG_KEY) {
     return {
       capture: () => {},
+      groupIdentify: () => {},
       identify: () => {},
       shutdown: () => Promise.resolve(),
     } as unknown as PostHog;

@@ -58,6 +58,34 @@ const FLUSH_INTERVAL_MS = 5000;
 const MAX_BATCH_SIZE = 100;
 const MAX_RETRY_COUNT = 2;
 
+// ---------------------------------------------------------------------------
+// Structured-JSON console output for deployed runtimes.
+//
+// Locally, `log.info("msg", { … })` writes a human-readable console line. But
+// in deployed runtimes the platform log drain (Vercel → Datadog, container
+// stdout → Datadog) only sees that console line — and util.inspect collapses
+// the structured meta into the message text, so fields like `category` or
+// `diagnostics.*` never become Datadog facets (they're buried in the message
+// blob). Emitting a single JSON line instead lets the drain parse the meta into
+// first-class attributes/facets, with no dependency on the agentless intake
+// path (DD_API_KEY) being configured.
+//
+// Auto-on under Vercel (`process.env.VERCEL` is set on every Vercel
+// deployment); force on/off with `DD_LOGS_JSON=1|0`. Off by default locally so
+// dev logs stay readable.
+function resolveStructuredConsole(): boolean {
+  const flag = process.env.DD_LOGS_JSON;
+  if (flag === "1" || flag === "true") {
+    return true;
+  }
+  if (flag === "0" || flag === "false") {
+    return false;
+  }
+  return Boolean(process.env.VERCEL);
+}
+
+const STRUCTURED_CONSOLE = resolveStructuredConsole();
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 type DatadogLogEntry = {
@@ -116,10 +144,24 @@ function flushToDatadog(): Promise<void> {
       "Content-Type": "application/json",
       "DD-API-KEY": DD.apiKey,
     },
-    body: JSON.stringify(batch),
+    body: JSON.stringify(batch, jsonReplacer),
     signal: AbortSignal.timeout(10_000),
   })
-    .then(() => {
+    .then((response) => {
+      if (!response.ok) {
+        if (
+          response.status === 429 ||
+          response.status === 408 ||
+          response.status >= 500
+        ) {
+          throw new Error(`Datadog responded with ${response.status}`);
+        }
+        console.error(
+          `[observability] Dropping ${batch.length} log entries — Datadog returned ${response.status}`
+        );
+        retryCount = 0;
+        return;
+      }
       retryCount = 0;
     })
     .catch((error) => {
@@ -128,12 +170,17 @@ function flushToDatadog(): Promise<void> {
       if (retryCount < MAX_RETRY_COUNT) {
         retryCount++;
         buffer.unshift(...batch);
-      } else {
-        console.error(
-          `[observability] Dropping ${batch.length} log entries after ${MAX_RETRY_COUNT} retries`
-        );
-        retryCount = 0;
+        // Backoff: wait 2^retryCount * 100ms before the next retry so
+        // transient failures (especially 429 rate-limiting) don't hammer
+        // the intake at full speed. This delays the chain re-call in the
+        // `.finally` → `.then()` drain check below.
+        const delayMs = Math.min(100 * 2 ** retryCount, 10_000);
+        return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
       }
+      console.error(
+        `[observability] Dropping ${batch.length} log entries after ${MAX_RETRY_COUNT} retries`
+      );
+      retryCount = 0;
     })
     .finally(() => {
       flushInProgress = null;
@@ -142,7 +189,7 @@ function flushToDatadog(): Promise<void> {
   // Chain the drain into the returned promise so it resolves only after the
   // buffer is empty. Without this, callers awaiting log.flush() would resolve
   // after the first batch completes and miss entries enqueued during the flush.
-  return flushInProgress.then(() => {
+  return flushInProgress!.then(() => {
     if (buffer.length > 0) {
       return flushToDatadog();
     }
@@ -185,34 +232,73 @@ function buildEntry(
   };
 }
 
+// JSON.stringify replacer that preserves Error instances. Without it, Errors
+// in meta (e.g. `log.error("failed", { error })`) serialize to `{}` and the
+// name/message/stack are lost from both the structured console line and the
+// Datadog intake payload.
+function jsonReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  return value;
+}
+
+// If the second arg is a plain object, use it as structured meta.
+// Otherwise, pack extra args into a generic "args" field.
+function extractMeta(args: unknown[]): Record<string, unknown> | undefined {
+  const firstArg = args[0];
+  if (
+    args.length === 1 &&
+    typeof firstArg === "object" &&
+    firstArg !== null &&
+    !Array.isArray(firstArg)
+  ) {
+    return firstArg as Record<string, unknown>;
+  }
+  if (args.length > 0) {
+    return { args };
+  }
+  return undefined;
+}
+
+// Write the console sink. In deployed runtimes emit a single JSON line so the
+// platform log drain parses meta into facets; locally keep the readable form.
+// JSON.stringify can throw on circular/BigInt meta — fall back to the readable
+// form so a logging call never throws.
+function writeConsole(
+  consoleFn: (...args: unknown[]) => void,
+  level: LogLevel,
+  message: string,
+  args: unknown[],
+  meta: Record<string, unknown> | undefined
+): void {
+  if (STRUCTURED_CONSOLE) {
+    try {
+      consoleFn(JSON.stringify({ ...meta, message, level }, jsonReplacer));
+      return;
+    } catch {
+      // fall through to the human-readable form below
+    }
+  }
+  if (args.length > 0) {
+    consoleFn(message, ...args);
+  } else {
+    consoleFn(message);
+  }
+}
+
 function makeLogFn(
   level: LogLevel,
   consoleFn: (...args: unknown[]) => void
 ): (message: string, ...args: unknown[]) => void {
   return (message: string, ...args: unknown[]) => {
-    // Always write to console (local dev + container stdout)
-    if (args.length > 0) {
-      consoleFn(message, ...args);
-    } else {
-      consoleFn(message);
-    }
+    const meta = extractMeta(args);
 
-    // Ship to Datadog when configured
+    // Always write to console (local dev + container/platform stdout drain).
+    writeConsole(consoleFn, level, message, args, meta);
+
+    // Ship to Datadog directly when configured (agentless HTTP intake).
     if (DD.apiKey) {
-      // If the second arg is a plain object, use it as structured meta.
-      // Otherwise, pack extra args into a generic "args" field.
-      const firstArg = args[0];
-      let meta: Record<string, unknown> | undefined;
-      if (
-        args.length === 1 &&
-        typeof firstArg === "object" &&
-        firstArg !== null &&
-        !Array.isArray(firstArg)
-      ) {
-        meta = firstArg as Record<string, unknown>;
-      } else if (args.length > 0) {
-        meta = { args };
-      }
       enqueue(buildEntry(level, message, meta));
     }
   };

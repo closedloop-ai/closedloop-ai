@@ -35,6 +35,10 @@ vi.mock("../github-utils", () => ({
     OAUTH_FAILED: "oauth_failed",
   },
   GITHUB_OAUTH_STATE_COOKIE: "github_oauth_state",
+  GITHUB_OAUTH_RETURN_TO_COOKIE: "github_oauth_return_to",
+  GITHUB_OAUTH_RETURN_TO_COOKIE_PATH: "/api/integrations/github",
+  createGitHubOAuthReturnToCookie: () => "signed-return-to-cookie",
+  getCanonicalBranchViewReturnPath: (returnTo: string | null) => returnTo,
   getErrorRedirectUrl: (code: string) =>
     `http://localhost:3000/settings?github=error&code=${code}`,
   getGitHubCallbackUrl: () =>

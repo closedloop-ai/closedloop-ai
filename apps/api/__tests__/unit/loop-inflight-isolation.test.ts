@@ -14,7 +14,7 @@
  *   (demonstrating the dispatch is driven by the DB record, not a preference)
  */
 
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -37,14 +37,19 @@ vi.mock("@repo/database", () => ({
     vi.fn((fn: (db: unknown) => unknown) =>
       fn({
         artifact: { findUnique: vi.fn().mockResolvedValue(null) },
-        loop: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        loop: {
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          update: vi.fn().mockResolvedValue({}),
+          findUnique: vi.fn().mockResolvedValue(null),
+        },
+        computeTarget: { findUnique: vi.fn().mockResolvedValue(null) },
       })
     ),
     { tx: vi.fn() }
   ),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
@@ -80,9 +85,12 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn().mockResolvedValue("sk-test-key") },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  issueLoopRunnerToken: vi.fn().mockResolvedValue("mock-token"),
-}));
+vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
+  const { createLoopRunnerJwtMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopRunnerJwtMockModule(importOriginal, { token: "mock-token" });
+});
 
 vi.mock("@/lib/aws-credentials", () => ({
   getAwsCredentials: vi.fn(),
@@ -127,7 +135,6 @@ vi.mock("@/lib/desktop-command-store", () => ({
 
 // --- Imports (after mocks) ---
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";

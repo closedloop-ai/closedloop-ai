@@ -1,3 +1,4 @@
+import type { ConnectGitHubResponse } from "@repo/api/src/types/github";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
@@ -5,12 +6,18 @@ import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
 import {
   GITHUB_ERROR_CODES,
+  GITHUB_OAUTH_RETURN_TO_COOKIE,
+  GITHUB_OAUTH_RETURN_TO_COOKIE_PATH,
   GITHUB_OAUTH_STATE_COOKIE,
   type GitHubErrorCode,
   getErrorRedirectUrl,
+  getRequiresConfirmationRedirectUrl,
   getSuccessRedirectUrl,
   timingSafeCompare,
+  verifyGitHubOAuthReturnToCookie,
 } from "../github-utils";
+
+type ConnectGitHubResponseBody = { data?: ConnectGitHubResponse };
 
 /**
  * GET /api/integrations/github/callback
@@ -26,29 +33,26 @@ import {
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
+    // Read cookies before any branch can return so every callback clears stale
+    // OAuth state, Branch View return, and onboarding cookies consistently.
+    const cookieStore = await cookies();
+    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
+    const onboardingReturnTo = onboardingReturn ? "/onboarding" : undefined;
+
+    const makeErrorRedirect = (code: GitHubErrorCode): NextResponse => {
+      const response = NextResponse.redirect(
+        getErrorRedirectUrl(code, onboardingReturnTo)
+      );
+      clearGithubOAuthCookies(response);
+      return response;
+    };
+
     const { userId, orgId, getToken } = await auth();
 
     if (!(userId && orgId)) {
       log.warn("[github/callback] Not authenticated");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_AUTHENTICATED)
-      );
+      return makeErrorRedirect(GITHUB_ERROR_CODES.NOT_AUTHENTICATED);
     }
-
-    // Read cookies early so onboarding return is available for all error redirects
-    const cookieStore = await cookies();
-    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
-    const returnTo = onboardingReturn ? "/onboarding" : undefined;
-
-    const makeErrorRedirect = (code: GitHubErrorCode): NextResponse => {
-      const response = NextResponse.redirect(
-        getErrorRedirectUrl(code, returnTo)
-      );
-      if (onboardingReturn) {
-        response.cookies.delete("onboarding_return");
-      }
-      return response;
-    };
 
     const { searchParams } = new URL(request.url);
 
@@ -101,6 +105,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       return makeErrorRedirect(GITHUB_ERROR_CODES.INVALID_STATE);
     }
 
+    const returnTo =
+      verifyGitHubOAuthReturnToCookie({
+        cookieValue: cookieStore.get(GITHUB_OAUTH_RETURN_TO_COOKIE)?.value,
+        now: Date.now(),
+        state,
+      }) ?? onboardingReturnTo;
+
     // Send code + installationId to API for token exchange
     // Token exchange happens in API to keep client_secret there
     const clerkToken = await getToken();
@@ -127,13 +138,37 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         error:
           apiResponse.status >= 500
             ? "Internal server error"
-            : errorBody.substring(0, 200),
+            : errorBody.slice(0, 200),
       });
-      const errorResponse = makeErrorRedirect(
-        GITHUB_ERROR_CODES.CONNECTION_FAILED
+      const errorResponse = NextResponse.redirect(
+        getErrorRedirectUrl(GITHUB_ERROR_CODES.CONNECTION_FAILED, returnTo)
       );
-      errorResponse.cookies.delete(GITHUB_OAUTH_STATE_COOKIE);
+      clearGithubOAuthCookies(errorResponse);
       return errorResponse;
+    }
+
+    // PLN-634: detect the different-account reconnect path so we can redirect
+    // to the settings page with a confirmation prompt rather than silently
+    // wiping repository configuration.
+    const body = (await apiResponse.json()) as ConnectGitHubResponseBody;
+    if (body.data && "status" in body.data) {
+      log.info("[github/callback] Different-account reconnect detected", {
+        userId,
+        orgId,
+        priorAccountId: body.data.priorAccount.accountId,
+        newAccountId: body.data.newAccount.accountId,
+      });
+      const response = NextResponse.redirect(
+        getRequiresConfirmationRedirectUrl({
+          priorAccountId: body.data.priorAccount.accountId,
+          priorAccountLogin: body.data.priorAccount.accountLogin,
+          newAccountId: body.data.newAccount.accountId,
+          newAccountLogin: body.data.newAccount.accountLogin,
+          newInstallationId: body.data.newInstallationId,
+        })
+      );
+      clearGithubOAuthCookies(response);
+      return response;
     }
 
     log.info("[github/callback] GitHub connected successfully", {
@@ -143,15 +178,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
     const response = NextResponse.redirect(getSuccessRedirectUrl(returnTo));
-    response.cookies.delete(GITHUB_OAUTH_STATE_COOKIE);
-    if (onboardingReturn) {
-      response.cookies.delete("onboarding_return");
-    }
+    clearGithubOAuthCookies(response);
     return response;
   } catch (error) {
     log.error("[github/callback] Failed to complete OAuth", { error });
-    return NextResponse.redirect(
+    const response = NextResponse.redirect(
       getErrorRedirectUrl(GITHUB_ERROR_CODES.OAUTH_FAILED)
     );
+    clearGithubOAuthCookies(response);
+    return response;
   }
+}
+
+function clearGithubOAuthCookies(response: NextResponse): void {
+  response.cookies.set(GITHUB_OAUTH_STATE_COOKIE, "", { maxAge: 0, path: "/" });
+  response.cookies.set("onboarding_return", "", { maxAge: 0, path: "/" });
+  response.cookies.set(GITHUB_OAUTH_RETURN_TO_COOKIE, "", {
+    maxAge: 0,
+    path: GITHUB_OAUTH_RETURN_TO_COOKIE_PATH,
+  });
 }

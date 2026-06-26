@@ -171,6 +171,20 @@ describe("agentsService", () => {
 
       expect(result).toEqual({ agents: [], total: 0 });
     });
+
+    it("filters by sourceRepo when provided", async () => {
+      const findMany = vi.fn().mockResolvedValue([]);
+      const count = vi.fn().mockResolvedValue(0);
+      installDb({ agent: { findMany, count } });
+
+      await agentsService.findAll(ORG_ID, { sourceRepo: "org/repo-a" });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ sourceRepo: "org/repo-a" }),
+        })
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -292,8 +306,11 @@ describe("agentsService", () => {
           }),
         })
       );
-      expect(result.slug).toBe("frontend-architect");
-      expect(result.createdBy).toEqual(TEST_USER_SUMMARY);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.slug).toBe("frontend-architect");
+        expect(result.value.createdBy).toEqual(TEST_USER_SUMMARY);
+      }
     });
 
     it("generates a unique slug with suffix when base slug is taken", async () => {
@@ -326,7 +343,10 @@ describe("agentsService", () => {
           data: expect.objectContaining({ slug: "frontend-architect-2" }),
         })
       );
-      expect(result.slug).toBe("frontend-architect-2");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.slug).toBe("frontend-architect-2");
+      }
     });
 
     it("slugifies special characters in role to hyphens and trims leading/trailing hyphens", async () => {
@@ -453,7 +473,7 @@ describe("agentsService", () => {
       expect(agentUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            currentVersion: 2,
+            currentVersion: { increment: 1 },
             prompt: "Updated prompt",
           }),
         })
@@ -531,7 +551,7 @@ describe("agentsService", () => {
       expect(agentUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            currentVersion: 2,
+            currentVersion: { increment: 1 },
             name: "Renamed Architect",
           }),
         })
@@ -834,7 +854,7 @@ describe("agentsService", () => {
       expect(agentUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: AGENT_ID },
-          data: expect.objectContaining({ currentVersion: 2 }),
+          data: expect.objectContaining({ currentVersion: { increment: 1 } }),
         })
       );
       expect(versionCreate).toHaveBeenCalledWith(
@@ -988,6 +1008,38 @@ describe("agentsService", () => {
         })
       );
     });
+
+    it("scopes existing agent lookup by sourceRepo", async () => {
+      const agentFindMany = vi.fn().mockResolvedValue([]);
+      const agentFindUnique = vi.fn().mockResolvedValue(null);
+      const agentCreate = vi.fn().mockResolvedValue(buildAgent());
+      const versionCreate = vi.fn().mockResolvedValue({});
+
+      installDbTx({
+        agent: {
+          findMany: agentFindMany,
+          findUnique: agentFindUnique,
+          create: agentCreate,
+        },
+        agentVersion: { create: versionCreate },
+      });
+
+      await agentsService.bulkIngest(ORG_ID, USER_ID, {
+        agents: [INGEST_AGENT_INPUT],
+        bootstrapRunId: INGEST_BOOTSTRAP_RUN_ID,
+        sourceRepo: "org/repo-b",
+      });
+
+      expect(agentFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            organizationId: ORG_ID,
+            sourceRepo: "org/repo-b",
+            role: { in: ["frontend-architect"] },
+          }),
+        })
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -1055,6 +1107,57 @@ describe("agentsService", () => {
 
       expect(result.agents).toHaveLength(0);
       expect(result.repoConfigs).toHaveLength(0);
+    });
+
+    it("filters agents by repoFullNames including org-wide agents", async () => {
+      const agentFindMany = vi.fn().mockResolvedValue([]);
+      const configFindMany = vi.fn().mockResolvedValue([]);
+      installDb({
+        agent: { findMany: agentFindMany },
+        repoBootstrapConfig: { findMany: configFindMany },
+      });
+
+      await agentsService.getContextPackData(ORG_ID, [
+        "org/repo-a",
+        "org/repo-b",
+      ]);
+
+      expect(agentFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            organizationId: ORG_ID,
+            enabled: true,
+            sourceRepo: { in: ["", "org/repo-a", "org/repo-b"] },
+          }),
+        })
+      );
+      expect(configFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            organizationId: ORG_ID,
+            repoFullName: { in: ["org/repo-a", "org/repo-b"] },
+          }),
+        })
+      );
+    });
+
+    it("does not filter by sourceRepo when repoFullNames is undefined", async () => {
+      const agentFindMany = vi.fn().mockResolvedValue([]);
+      const configFindMany = vi.fn().mockResolvedValue([]);
+      installDb({
+        agent: { findMany: agentFindMany },
+        repoBootstrapConfig: { findMany: configFindMany },
+      });
+
+      await agentsService.getContextPackData(ORG_ID);
+
+      expect(agentFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.not.objectContaining({
+            sourceRepo: expect.anything(),
+          }),
+        })
+      );
     });
   });
 });

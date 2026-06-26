@@ -1,0 +1,55 @@
+appId: ai.closedloop.desktop
+productName: Closedloop
+
+files:
+  - app/**/*
+  - package.json
+
+beforeBuild: ./scripts/use-staged-node-modules.mjs
+
+extraResources:
+  - from: resources/icon-1024.png
+    to: icon-1024.png
+  - from: resources/trayIconTemplate.png
+    to: trayIconTemplate.png
+  - from: resources/trayIconTemplate@2x.png
+    to: trayIconTemplate@2x.png
+  # First-party agent-monitor hook handlers (FEA-1503), shipped unpacked outside
+  # the asar so they resolve as real files. agent-monitor-hooks.ts copies them
+  # into userData at install time; the installed hook command runs them via the
+  # Electron binary as Node (ELECTRON_RUN_AS_NODE) against that userData copy.
+  - from: resources/hooks
+    to: hooks
+    filter:
+      - "*.js"
+  - from: resources/command-packs
+    to: command-packs
+    filter:
+      - "**/*"
+
+mac:
+  icon: resources/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Default off so anyone can produce a local (ad-hoc-signed) build without Apple
+  # credentials. Official signed releases enable notarization and provide the
+  # Apple signing env vars (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID,
+  # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID); see scripts/run-electron-builder.mjs.
+  notarize: false
+
+publish:
+  provider: generic
+  # Packaged clients read the public API updater feed. Override for a
+  # self-hosted/alternative update server.
+  url: https://api.closedloop.ai/desktop/updates
+
+directories:
+  output: dist-dmg

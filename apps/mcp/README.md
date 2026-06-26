@@ -8,14 +8,14 @@
 
 ## Claude Code CLI Setup
 
-Use these steps to connect Claude Code CLI to ClosedLoop MCP:
+Use these steps to connect Claude Code CLI to Closedloop MCP:
 
 1. Run `/mcp` in Claude Code CLI.
 2. Add a server with:
    - Name: `closedloop`
    - URL: `https://mcp.closedloop.ai/mcp`
 3. Choose `Authenticate` (or `Re-authenticate`).
-4. Complete browser auth and enter your ClosedLoop API key (`sk_live_...`).
+4. Complete browser auth and enter your Closedloop API key (`sk_live_...`).
 5. Confirm `/mcp` shows:
    - `Status: connected`
    - `Auth: authenticated`

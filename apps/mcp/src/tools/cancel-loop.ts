@@ -1,7 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  asRecord,
+  buildLoopUrl,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 /**
  * Register the cancel-loop tool on the given MCP server.
@@ -27,11 +32,13 @@ export function registerCancelLoop(
           `/loops/${encodePathSegment(loopId)}/cancel`,
           {}
         );
+        const record = asRecord(result);
+        const webUrl = buildLoopUrl(loopId);
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify({ ...record, webUrl }, null, 2),
             },
           ],
         };

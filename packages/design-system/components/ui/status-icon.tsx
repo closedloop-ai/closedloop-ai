@@ -12,7 +12,7 @@ import {
   INNER_STROKE_WIDTH,
   RADIUS,
   STROKE_WIDTH,
-} from "./status-icon-shared";
+} from "./internal/status-icon-shared";
 
 type StatusIconStatus =
   | "backlog"

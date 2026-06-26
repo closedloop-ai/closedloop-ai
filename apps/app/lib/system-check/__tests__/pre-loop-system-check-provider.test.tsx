@@ -1,4 +1,9 @@
-import { ComputePreference } from "@repo/api/src/types/compute-target";
+import {
+  ComputePreference,
+  ComputePreferenceRequiredMessage,
+  type ComputePreferenceResponse,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+} from "@repo/api/src/types/compute-target";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -8,8 +13,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { computeTargetKeys } from "@/hooks/queries/use-compute-targets";
+import { computeTargetKeys } from "@/hooks/queries/compute-target-query-keys";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
+import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "../plugin-auto-update";
 import { getPreLoopTargetKey, PreLoopCommand } from "../pre-loop-health-check";
 import {
   PreLoopSystemCheckProvider,
@@ -17,7 +23,9 @@ import {
 } from "../pre-loop-system-check-provider";
 
 const mockCapture = vi.hoisted(() => vi.fn());
+const mockError = vi.hoisted(() => vi.fn());
 const mockWarning = vi.hoisted(() => vi.fn());
+const mockUseFeatureFlag = vi.hoisted(() => vi.fn());
 const mockUseComputePreference = vi.hoisted(() => vi.fn());
 const mockUseComputeTargets = vi.hoisted(() => vi.fn());
 const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
@@ -32,6 +40,14 @@ vi.mock("@repo/analytics/client", () => ({
     identify: vi.fn(),
     reset: vi.fn(),
   }),
+  useFeatureFlag: (key: string) => mockUseFeatureFlag(key),
+}));
+
+// The provider reads flags through the app-core feature-flag port, not the
+// analytics SDK directly; mock the port hook off the same flag source.
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) =>
+    mockUseFeatureFlag(key)?.enabled === true,
 }));
 
 vi.mock("@repo/auth/client", () => ({
@@ -40,6 +56,7 @@ vi.mock("@repo/auth/client", () => ({
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: {
+    error: mockError,
     warning: mockWarning,
   },
 }));
@@ -47,10 +64,11 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_MCP_SERVER_URL: EXPECTED_MCP_URL,
+    NEXT_PUBLIC_POSTHOG_KEY: "test-posthog-key",
   },
 }));
 
-vi.mock("@/hooks/queries/use-compute-preference", () => ({
+vi.mock("@repo/app/compute/hooks/use-compute-preference", () => ({
   useComputePreference: (...args: unknown[]) =>
     mockUseComputePreference(...args),
 }));
@@ -66,7 +84,7 @@ vi.mock("@/hooks/queries/use-compute-targets", async (importOriginal) => {
   };
 });
 
-vi.mock("@/hooks/queries/use-electron-release", () => ({
+vi.mock("@repo/app/desktop/hooks/use-electron-release", () => ({
   useLatestElectronRelease: (...args: unknown[]) =>
     mockUseLatestElectronRelease(...args),
 }));
@@ -124,7 +142,7 @@ const failingResult = {
   allRequiredPassed: false,
 };
 
-let preference = {
+let preference: ComputePreferenceResponse = {
   preferredComputeMode: ComputePreference.Local,
   computeTargetId: "target-1",
 };
@@ -154,8 +172,8 @@ function GateHarness({
   execute,
   computeTargetId,
 }: {
-  execute: () => void;
-  computeTargetId?: string;
+  execute: (context?: unknown) => void;
+  computeTargetId?: string | null;
 }) {
   const gate = usePreLoopSystemCheckGate();
   let stateLabel = "idle";
@@ -206,8 +224,8 @@ function renderGate({
   computeTargetId,
 }: {
   queryClient: QueryClient;
-  execute: () => void;
-  computeTargetId?: string;
+  execute: (context?: unknown) => void;
+  computeTargetId?: string | null;
 }) {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -227,6 +245,13 @@ function createQueryClient() {
   });
 }
 
+function mockEnabledFeatureFlags(...enabledKeys: string[]) {
+  const enabledKeySet = new Set(enabledKeys);
+  mockUseFeatureFlag.mockImplementation((key: string) => ({
+    enabled: enabledKeySet.has(key),
+  }));
+}
+
 describe("PreLoopSystemCheckProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -235,6 +260,7 @@ describe("PreLoopSystemCheckProvider", () => {
       preferredComputeMode: ComputePreference.Local,
       computeTargetId: "target-1",
     };
+    mockEnabledFeatureFlags();
     targets = defaultTargets.map((target) => ({ ...target }));
     mockUseComputePreference.mockImplementation(() => ({
       data: preference,
@@ -253,6 +279,125 @@ describe("PreLoopSystemCheckProvider", () => {
     });
     mockApiGet.mockResolvedValue(null);
     vi.stubGlobal("fetch", vi.fn());
+  });
+
+  it("blocks before target resolution when explicit selection is required and preference is not explicit", async () => {
+    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
+    preference = {
+      preferredComputeMode: ComputePreference.Cloud,
+      computeTargetId: undefined,
+    };
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(mockError).toHaveBeenCalledWith(ComputePreferenceRequiredMessage);
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledWith(
+      "pre_loop_compute_selection_blocked",
+      expect.objectContaining({
+        reason: "missing_explicit_compute_selection",
+      })
+    );
+  });
+
+  it("honors explicit metadata target when explicit selection is required and preference is not explicit", async () => {
+    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
+    preference = {
+      preferredComputeMode: ComputePreference.Cloud,
+      computeTargetId: undefined,
+    };
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    queryClient.setQueryData(
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      healthyResult
+    );
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith({ computeTargetId: "target-1" });
+    });
+    expect(mockError).not.toHaveBeenCalledWith(
+      ComputePreferenceRequiredMessage
+    );
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("honors explicit metadata Cloud override when explicit selection is required and preference is not explicit", async () => {
+    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
+    preference = {
+      preferredComputeMode: ComputePreference.Cloud,
+      computeTargetId: undefined,
+    };
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+
+    renderGate({ queryClient, execute, computeTargetId: null });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith({ computeTargetId: null });
+    });
+    expect(mockError).not.toHaveBeenCalledWith(
+      ComputePreferenceRequiredMessage
+    );
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("passes an explicit Cloud override when explicit selection is required", async () => {
+    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
+    preference = {
+      preferredComputeMode: ComputePreference.Cloud,
+      computeTargetId: undefined,
+      isExplicit: true,
+    };
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith({ computeTargetId: null });
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("passes the resolved explicit Local target after the local health check passes", async () => {
+    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
+    preference = {
+      preferredComputeMode: ComputePreference.Local,
+      computeTargetId: "target-1",
+      isExplicit: true,
+    };
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    queryClient.setQueryData(
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      healthyResult
+    );
+
+    renderGate({ queryClient, execute });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledWith({ computeTargetId: "target-1" });
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("executes immediately for a fresh healthy cached result", async () => {
@@ -374,7 +519,10 @@ describe("PreLoopSystemCheckProvider", () => {
   it("does not refetch a persisted snapshot when a null snapshot is cached", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
-    queryClient.setQueryData(computeTargetKeys.healthCheck("target-1"), null);
+    queryClient.setQueryData(
+      computeTargetKeys.healthCheckMode("target-1", false),
+      null
+    );
     vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
 
     renderGate({ queryClient, execute, computeTargetId: "target-1" });
@@ -385,6 +533,25 @@ describe("PreLoopSystemCheckProvider", () => {
     });
     expect(mockApiGet).not.toHaveBeenCalled();
     expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("uses the production plugin auto-update flag key before sending auto-update health checks", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    mockEnabledFeatureFlags(PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY);
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(mockUseFeatureFlag).toHaveBeenCalledWith(
+      PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY
+    );
+    const [requestUrl] = vi.mocked(globalThis.fetch).mock.calls[0] ?? [];
+    expect(String(requestUrl)).toContain("pluginAutoUpdate=1");
   });
 
   it("does not allow an offline target to pass from a persisted snapshot", async () => {

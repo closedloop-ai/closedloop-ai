@@ -64,6 +64,19 @@ const refreshTokenStore = new Map<
     createdAt: Date;
   }
 >();
+const apiKeyStore = new Map<
+  string,
+  {
+    id: string;
+    keyHash: string;
+    userId: string;
+    organizationId: string;
+    scopes: string[];
+    revokedAt: Date | null;
+    expiresAt: Date | null;
+    lastUsedAt: Date | null;
+  }
+>();
 let forceNextRefreshRotateConflict = false;
 let forceNextRefreshCreateFailure = false;
 
@@ -345,8 +358,18 @@ vi.mock("@repo/database", () => {
         }
       ),
       findUnique: vi.fn(
-        ({ where }: { where: { tokenFingerprint: string } }) => {
-          return refreshTokenStore.get(where.tokenFingerprint) ?? null;
+        ({ where }: { where: { tokenFingerprint?: string; id?: string } }) => {
+          if (where.tokenFingerprint) {
+            return refreshTokenStore.get(where.tokenFingerprint) ?? null;
+          }
+          if (where.id) {
+            for (const record of refreshTokenStore.values()) {
+              if (record.id === where.id) {
+                return record;
+              }
+            }
+          }
+          return null;
         }
       ),
       updateMany: vi.fn(
@@ -397,6 +420,54 @@ vi.mock("@repo/database", () => {
           return { count };
         }
       ),
+      count: vi.fn(
+        ({ where }: { where: { familyId: string; revokedAt: null } }) => {
+          let total = 0;
+          for (const record of refreshTokenStore.values()) {
+            if (
+              record.familyId === where.familyId &&
+              record.revokedAt === null
+            ) {
+              total += 1;
+            }
+          }
+          return total;
+        }
+      ),
+    },
+    apiKey: {
+      findFirst: vi.fn(
+        ({
+          where,
+        }: {
+          where: {
+            keyHash: string;
+            revokedAt: null;
+            OR: Array<{ expiresAt: null } | { expiresAt: { gt: Date } }>;
+          };
+        }) => {
+          const now = new Date();
+          for (const record of apiKeyStore.values()) {
+            if (record.keyHash !== where.keyHash) {
+              continue;
+            }
+            if (record.revokedAt !== null) {
+              continue;
+            }
+            if (record.expiresAt !== null && record.expiresAt <= now) {
+              continue;
+            }
+            return {
+              id: record.id,
+              userId: record.userId,
+              organizationId: record.organizationId,
+              scopes: record.scopes,
+            };
+          }
+          return null;
+        }
+      ),
+      update: vi.fn(() => ({})),
     },
   };
 
@@ -410,6 +481,7 @@ vi.mock("@repo/database", () => {
           rateLimits: [...rateLimitStore.entries()],
           authCodes: [...authCodeStore.entries()],
           refreshTokens: [...refreshTokenStore.entries()],
+          apiKeys: [...apiKeyStore.entries()],
         });
         try {
           return await fn(dbMock);
@@ -429,6 +501,10 @@ vi.mock("@repo/database", () => {
           refreshTokenStore.clear();
           for (const [key, value] of snapshot.refreshTokens) {
             refreshTokenStore.set(key, value);
+          }
+          apiKeyStore.clear();
+          for (const [key, value] of snapshot.apiKeys) {
+            apiKeyStore.set(key, value);
           }
           throw error;
         }
@@ -582,6 +658,7 @@ beforeEach(() => {
   rateLimitStore.clear();
   authCodeStore.clear();
   refreshTokenStore.clear();
+  apiKeyStore.clear();
   forceNextRefreshRotateConflict = false;
   forceNextRefreshCreateFailure = false;
   verifyApiKeyMock.mockReset();
@@ -599,6 +676,59 @@ beforeEach(() => {
 });
 
 describe("OAuth endpoints", () => {
+  /**
+   * Helper: issue an auth code and exchange it for tokens.
+   * Returns the refresh_token for use in subsequent refresh tests.
+   */
+  async function obtainRefreshToken(): Promise<string> {
+    const verifier = `pkce-${Math.random().toString(36).slice(2, 10)}`;
+    const challenge = codeChallengeFor(verifier);
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read write");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    // biome-ignore lint/suspicious/noMisplacedAssertion: helper validates authorize succeeded before reading Location header
+    expect(authorizeRes.statusCode).toBe(302);
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+      scope: "read write",
+    }).toString();
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+    // biome-ignore lint/suspicious/noMisplacedAssertion: helper validates exchange succeeded before returning the token
+    expect(tokenRes.statusCode).toBe(200);
+    const json = JSON.parse(tokenRes.body) as { refresh_token: string };
+    return json.refresh_token;
+  }
+
   it("issues an auth code and exchanges it once with PKCE", async () => {
     const verifier = "pkce-verifier-1";
     const challenge = codeChallengeFor(verifier);
@@ -864,6 +994,16 @@ describe("OAuth endpoints", () => {
     expect(rotateRes.statusCode).toBe(200);
     const second = JSON.parse(rotateRes.body) as { refresh_token: string };
 
+    // Push the revoked token's revokedAt outside the grace period so the
+    // replay triggers family revocation rather than the grace-period path.
+    const firstFingerprint = createHash("sha256")
+      .update(first.refresh_token, "utf8")
+      .digest("hex");
+    const revokedEntry = refreshTokenStore.get(firstFingerprint);
+    if (revokedEntry) {
+      revokedEntry.revokedAt = new Date(Date.now() - 15_000);
+    }
+
     const replayReq = createMockRequest({
       method: "POST",
       url: "/oauth/token",
@@ -892,6 +1032,106 @@ describe("OAuth endpoints", () => {
     expect(afterReuseRes.statusCode).toBe(400);
     const afterReuseJson = JSON.parse(afterReuseRes.body) as { error: string };
     expect(afterReuseJson.error).toBe("invalid_grant");
+  });
+
+  it("returns a new access and refresh token within the grace period for concurrent refresh", async () => {
+    const verifier = "pkce-grace-period";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+      scope: "read",
+    }).toString();
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+    expect(tokenRes.statusCode).toBe(200);
+    const first = JSON.parse(tokenRes.body) as { refresh_token: string };
+
+    // Rotate the first refresh token (simulates the first concurrent caller)
+    const rotateBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: first.refresh_token,
+    }).toString();
+    const rotateReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: rotateBody,
+    });
+    const rotateRes = createMockResponse();
+    await handleOAuthToken(rotateReq, asServerResponse(rotateRes));
+    expect(rotateRes.statusCode).toBe(200);
+
+    // Replay the original token immediately (within grace period).
+    // This simulates the second concurrent caller.
+    const consoleSpy = vi.spyOn(console, "log");
+    const replayReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: rotateBody,
+    });
+    const replayRes = createMockResponse();
+    await handleOAuthToken(replayReq, asServerResponse(replayRes));
+
+    // Grace period: should succeed with a new access token and refresh token
+    expect(replayRes.statusCode).toBe(200);
+    const graceJson = JSON.parse(replayRes.body) as {
+      access_token: string;
+      refresh_token: string;
+      token_type: string;
+      expires_in: number;
+      refresh_token_expires_in: number;
+      scope: string;
+    };
+    expect(graceJson.access_token.startsWith("mcp_at_")).toBe(true);
+    expect(graceJson.refresh_token.startsWith("mcp_rt_")).toBe(true);
+    expect(graceJson.token_type).toBe("Bearer");
+    expect(graceJson.expires_in).toBeGreaterThan(0);
+    expect(graceJson.refresh_token_expires_in).toBeGreaterThan(0);
+    expect(graceJson.scope).toBe("read");
+
+    // Verify that the concurrent refresh event was logged
+    const concurrentLogs = consoleSpy.mock.calls.filter(
+      (call) =>
+        typeof call[0] === "string" &&
+        call[0].includes("oauth-refresh-concurrent")
+    );
+    expect(concurrentLogs).toHaveLength(1);
+
+    consoleSpy.mockRestore();
   });
 
   it("does not revoke refresh token family for revoked token with wrong client_id", async () => {
@@ -1857,6 +2097,384 @@ describe("OAuth endpoints", () => {
     const json = JSON.parse(res.body) as { grant_types_supported: string[] };
     expect(json.grant_types_supported).toContain("authorization_code");
     expect(json.grant_types_supported).toContain("refresh_token");
+  });
+
+  describe("refresh diagnostic logging", () => {
+    it("produces exactly one structured success log on refresh success", async () => {
+      const refreshToken = await obtainRefreshToken();
+      const consoleSpy = vi.spyOn(console, "log");
+
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+        scope: "read",
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+      expect(refreshRes.statusCode).toBe(200);
+
+      const successLogs = consoleSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("oauth-refresh-success")
+      );
+      expect(successLogs).toHaveLength(1);
+      expect(successLogs[0][0]).toContain("familyId=");
+      expect(successLogs[0][0]).toContain("clientId=");
+      expect(successLogs[0][0]).toContain("userId=");
+      expect(successLogs[0][0]).toContain("organizationId=");
+      expect(successLogs[0][0]).toContain("scopes=");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("produces exactly one structured failure log with reason=expired for expired token", async () => {
+      const refreshToken = await obtainRefreshToken();
+
+      // Expire the token by setting its expiresAt in the past
+      const fingerprint = createHash("sha256")
+        .update(refreshToken, "utf8")
+        .digest("hex");
+      const record = refreshTokenStore.get(fingerprint);
+      expect(record).toBeTruthy();
+      if (record) {
+        record.expiresAt = new Date(Date.now() - 1000);
+      }
+
+      const consoleSpy = vi.spyOn(console, "log");
+
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+      expect(refreshRes.statusCode).toBe(400);
+
+      const failureLogs = consoleSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("oauth-refresh-failure")
+      );
+      expect(failureLogs).toHaveLength(1);
+      expect(failureLogs[0][0]).toContain("reason=expired");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("produces exactly one structured failure log with reason=reuse_detected for token reuse", async () => {
+      const refreshToken = await obtainRefreshToken();
+
+      // Rotate once so the original becomes revoked
+      const rotateBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+      }).toString();
+      const rotateReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: rotateBody,
+      });
+      const rotateRes = createMockResponse();
+      await handleOAuthToken(rotateReq, asServerResponse(rotateRes));
+      expect(rotateRes.statusCode).toBe(200);
+
+      // Push revokedAt outside the grace period so the replay triggers
+      // family revocation instead of the concurrent-refresh grace path.
+      const fingerprint = createHash("sha256")
+        .update(refreshToken, "utf8")
+        .digest("hex");
+      const revokedEntry = refreshTokenStore.get(fingerprint);
+      if (revokedEntry) {
+        revokedEntry.revokedAt = new Date(Date.now() - 15_000);
+      }
+
+      // Now replay the original token -- reuse detection
+      const consoleSpy = vi.spyOn(console, "log");
+
+      const replayReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: rotateBody,
+      });
+      const replayRes = createMockResponse();
+      await handleOAuthToken(replayReq, asServerResponse(replayRes));
+      expect(replayRes.statusCode).toBe(400);
+
+      const failureLogs = consoleSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("oauth-refresh-failure")
+      );
+      expect(failureLogs).toHaveLength(1);
+      expect(failureLogs[0][0]).toContain("reason=reuse_detected");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("produces exactly one structured failure log with reason=invalid_client for wrong client", async () => {
+      const refreshToken = await obtainRefreshToken();
+
+      const consoleSpy = vi.spyOn(console, "log");
+
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "dyn_aaaabbbbccccddddeeeeffffgggghhhh",
+        refresh_token: refreshToken,
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+      expect(refreshRes.statusCode).toBe(400);
+
+      const failureLogs = consoleSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("oauth-refresh-failure")
+      );
+      expect(failureLogs).toHaveLength(1);
+      expect(failureLogs[0][0]).toContain("reason=invalid_client");
+
+      consoleSpy.mockRestore();
+    });
+
+    it("does not leak sensitive data (token values, API keys) in refresh log output", async () => {
+      const refreshToken = await obtainRefreshToken();
+      const consoleSpy = vi.spyOn(console, "log");
+
+      // Successful refresh
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+        scope: "read",
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+      expect(refreshRes.statusCode).toBe(200);
+
+      const refreshJson = JSON.parse(refreshRes.body) as {
+        access_token: string;
+        refresh_token: string;
+      };
+
+      // Collect all logged strings during the refresh
+      const allLoggedText = consoleSpy.mock.calls
+        .filter(
+          (call) =>
+            typeof call[0] === "string" && call[0].includes("oauth-refresh")
+        )
+        .map((call) => call[0] as string)
+        .join("\n");
+
+      // Verify no raw token or API key values appear in log output
+      expect(allLoggedText).not.toContain(refreshToken);
+      expect(allLoggedText).not.toContain(refreshJson.access_token);
+      expect(allLoggedText).not.toContain(refreshJson.refresh_token);
+      expect(allLoggedText).not.toContain("sk_live_valid");
+      expect(allLoggedText).not.toContain("mcp_at_");
+      expect(allLoggedText).not.toContain("mcp_rt_");
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe("non-fatal API verification during refresh", () => {
+    /**
+     * Helper: populate the apiKeyStore so that `verifyApiKeyLocally` can
+     * resolve "sk_live_valid" without hitting the upstream API.
+     */
+    function seedLocalApiKeyStore(): void {
+      const keyHash = createHash("sha256")
+        .update("sk_live_valid", "utf8")
+        .digest("hex");
+      apiKeyStore.set(keyHash, {
+        id: "ak_local_1",
+        keyHash,
+        userId: "user_1",
+        organizationId: "org_1",
+        scopes: ["read", "write"],
+        revokedAt: null,
+        expiresAt: null,
+        lastUsedAt: null,
+      });
+    }
+
+    it("refresh succeeds when verifyApiKey throws a network error (falls back to local verification)", async () => {
+      const refreshToken = await obtainRefreshToken();
+
+      // Seed the local API key store so verifyApiKeyLocally can resolve the key
+      seedLocalApiKeyStore();
+
+      // Make verifyApiKey throw (simulating a network error) for all subsequent calls
+      verifyApiKeyMock.mockImplementation(() => {
+        throw new Error("ECONNREFUSED: upstream API unreachable");
+      });
+
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+        scope: "read",
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+
+      // The refresh should succeed because the local fallback resolves the key
+      expect(refreshRes.statusCode).toBe(200);
+      const refreshJson = JSON.parse(refreshRes.body) as {
+        access_token: string;
+        refresh_token: string;
+        scope: string;
+      };
+      expect(refreshJson.access_token.startsWith("mcp_at_")).toBe(true);
+      expect(refreshJson.refresh_token.startsWith("mcp_rt_")).toBe(true);
+      expect(refreshJson.scope).toBe("read");
+    });
+
+    it("refresh fails and revokes the token family when verifyApiKey returns null (explicit rejection)", async () => {
+      const refreshToken = await obtainRefreshToken();
+
+      // Make verifyApiKey return null (API key explicitly rejected/revoked)
+      verifyApiKeyMock.mockReturnValue(null);
+
+      const consoleSpy = vi.spyOn(console, "log");
+
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+
+      // The refresh should fail
+      expect(refreshRes.statusCode).toBe(400);
+      const refreshJson = JSON.parse(refreshRes.body) as { error: string };
+      expect(refreshJson.error).toBe("invalid_grant");
+
+      // Verify the failure log has reason=api_rejected
+      const failureLogs = consoleSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("oauth-refresh-failure")
+      );
+      expect(failureLogs).toHaveLength(1);
+      expect(failureLogs[0][0]).toContain("reason=api_rejected");
+
+      // Verify the token family was revoked: attempting to use any token in
+      // the same family should also fail. Obtain the familyId from the
+      // refresh token record in our store.
+      const fingerprint = createHash("sha256")
+        .update(refreshToken, "utf8")
+        .digest("hex");
+      const record = refreshTokenStore.get(fingerprint);
+      expect(record).toBeTruthy();
+
+      // All tokens in the family should be revoked
+      const familyTokens = [...refreshTokenStore.values()].filter(
+        (entry) => entry.familyId === record?.familyId
+      );
+      for (const familyToken of familyTokens) {
+        expect(familyToken.revokedAt).not.toBeNull();
+      }
+
+      consoleSpy.mockRestore();
+    });
+
+    it("transient API verification failures produce warning-level logs", async () => {
+      const refreshToken = await obtainRefreshToken();
+
+      // Seed the local API key store so the fallback succeeds
+      seedLocalApiKeyStore();
+
+      // Make verifyApiKey throw (simulating a transient network failure)
+      verifyApiKeyMock.mockImplementation(() => {
+        throw new Error("ETIMEDOUT: upstream API timed out");
+      });
+
+      const consoleWarnSpy = vi.spyOn(console, "warn");
+      const consoleLogSpy = vi.spyOn(console, "log");
+
+      const refreshBody = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: refreshToken,
+        scope: "read",
+      }).toString();
+      const refreshReq = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: refreshBody,
+      });
+      const refreshRes = createMockResponse();
+      await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+      expect(refreshRes.statusCode).toBe(200);
+
+      // Verify console.warn was called with the fallback warning
+      const warnCalls = consoleWarnSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes(
+            "upstream API key verification failed during refresh"
+          )
+      );
+      expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+
+      // Verify the structured "oauth-refresh-api-fallback" event was logged
+      const fallbackLogs = consoleLogSpy.mock.calls.filter(
+        (call) =>
+          typeof call[0] === "string" &&
+          call[0].includes("oauth-refresh-api-fallback")
+      );
+      expect(fallbackLogs).toHaveLength(1);
+      expect(fallbackLogs[0][0]).toContain("familyId=");
+      expect(fallbackLogs[0][0]).toContain("clientId=");
+
+      consoleWarnSpy.mockRestore();
+      consoleLogSpy.mockRestore();
+    });
   });
 
   it("supports dynamic client registration for loopback redirect URIs", async () => {

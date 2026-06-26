@@ -14,11 +14,18 @@
  */
 export type MakePrDetailRowInput = {
   artifactId: string;
+  id?: string;
+  branchArtifactId?: string | null;
+  currentPullRequestDetailId?: string | null;
   workstreamId?: string | null;
   organizationId?: string;
   number?: number;
   checksStatus?: string;
   reviewDecision?: string | null;
+  prState?: string;
+  isDraft?: boolean;
+  closedAt?: Date | null;
+  mergedAt?: Date | null;
   headSha?: string | null;
   title?: string;
   externalUrl?: string;
@@ -31,17 +38,28 @@ export type MakePrDetailRowInput = {
   linkedDoc?: { id: string; slug: string } | null;
   sourceLinks?: Array<{ source: { id: string; slug: string } }>;
   targetLinks?: Array<{ source: { id: string; slug: string } }>;
+  branchTargetLinks?: Array<{ source: { id: string; slug: string } }>;
 };
 
 export function makePrDetailRow(partial: MakePrDetailRowInput) {
+  const branchArtifactId =
+    partial.branchArtifactId === undefined
+      ? partial.artifactId
+      : partial.branchArtifactId;
   const derivedTargetLinks = partial.linkedDoc
     ? [{ source: { id: partial.linkedDoc.id, slug: partial.linkedDoc.slug } }]
     : [];
   return {
+    id: partial.id ?? partial.artifactId,
     artifactId: partial.artifactId,
+    branchArtifactId,
     number: partial.number ?? 0,
     checksStatus: partial.checksStatus ?? "UNKNOWN",
     reviewDecision: partial.reviewDecision ?? null,
+    prState: partial.prState ?? "OPEN",
+    isDraft: partial.isDraft ?? false,
+    closedAt: partial.closedAt ?? null,
+    mergedAt: partial.mergedAt ?? null,
     headSha: partial.headSha ?? null,
     artifact: {
       name: partial.title ?? "",
@@ -51,5 +69,22 @@ export function makePrDetailRow(partial: MakePrDetailRowInput) {
       sourceLinks: partial.sourceLinks ?? [],
       targetLinks: partial.targetLinks ?? derivedTargetLinks,
     },
+    branchArtifact:
+      branchArtifactId === null
+        ? null
+        : {
+            organizationId: partial.organizationId ?? "",
+            projectId: "",
+            workstreamId: partial.workstreamId ?? null,
+            branch: {
+              checksStatus: partial.checksStatus ?? "UNKNOWN",
+              currentPullRequestDetailId:
+                "currentPullRequestDetailId" in partial
+                  ? partial.currentPullRequestDetailId
+                  : (partial.id ?? partial.artifactId),
+              headSha: partial.headSha ?? null,
+            },
+            targetLinks: partial.branchTargetLinks ?? derivedTargetLinks,
+          },
   };
 }

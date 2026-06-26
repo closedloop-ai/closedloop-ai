@@ -3,7 +3,7 @@
 import { cn } from "@repo/design-system/lib/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { PrCommentContext } from "@/app/(authenticated)/build/[id]/comment-context";
+import type { PrCommentContext } from "@/app/(authenticated)/[orgSlug]/build/[id]/comment-context";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useChatSession } from "@/hooks/chat/use-chat-session";
 

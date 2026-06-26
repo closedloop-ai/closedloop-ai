@@ -3,8 +3,10 @@ import { conflictBody } from "@repo/api/src/types/common";
 import type {
   LoopAlreadyActiveBody,
   LoopCommand,
+  LoopErrorCode as LoopErrorCodeType,
   LoopStatus,
 } from "@repo/api/src/types/loop";
+import { LoopErrorCode } from "@repo/api/src/types/loop";
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/route-utils";
 import {
@@ -12,6 +14,7 @@ import {
   isConcurrentLoopLimitError,
   isLoopAlreadyActiveError,
   isNestedManualLoopError,
+  isRepoNotInProjectPoolError,
   isUnauthorizedRepoError,
 } from "./loop-errors";
 
@@ -65,10 +68,31 @@ export function handleLoopServiceError(
     return errorResponse(error.message, error, 409);
   }
   if (isUnauthorizedRepoError(error)) {
-    return errorResponse(error.message, error, 403);
+    return errorResponse(error.message, error, 403, {
+      code: LoopErrorCode.RepoNotAllowed,
+      details: { repoFullName: error.unauthorizedRepos.join(", ") },
+    });
   }
   if (isBranchNotFoundError(error)) {
-    return errorResponse(error.message, error, 400);
+    return errorResponse(error.message, error, 400, {
+      code: LoopErrorCode.PreRunValidationFailed satisfies LoopErrorCodeType,
+      details: {
+        branch: error.branch,
+        repoFullName: error.repoFullName,
+      },
+    });
+  }
+  if (isRepoNotInProjectPoolError(error)) {
+    // 422 indicates the request was syntactically valid but violated the
+    // project pool-membership invariant. Distinct from 403 (unauthorized
+    // installation access) and 400 (request shape errors).
+    return errorResponse(error.message, error, 422, {
+      code: LoopErrorCode.RepoNotInProjectPool,
+      details: {
+        outsidePool: error.outsidePool.join(", "),
+        projectId: error.projectId,
+      },
+    });
   }
   return errorResponse(fallbackMessage, error);
 }

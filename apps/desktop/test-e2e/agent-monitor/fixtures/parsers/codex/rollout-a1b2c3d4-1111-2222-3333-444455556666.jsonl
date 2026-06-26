@@ -1,0 +1,8 @@
+{"type":"session_meta","timestamp":"2026-05-20T10:00:00.000Z","payload":{"cwd":"/tmp/fixture-codex-repo","model":"gpt-5","version":"0.27.0","git":{"branch":"main"}}}
+{"type":"response_item","timestamp":"2026-05-20T10:00:05.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello, please run ls"}]}}
+{"type":"response_item","timestamp":"2026-05-20T10:00:08.000Z","payload":{"type":"reasoning","summary":[{"type":"text","text":"thinking…"}]}}
+{"type":"response_item","timestamp":"2026-05-20T10:00:09.000Z","payload":{"type":"local_shell_call","action":{"command":["ls","-la"]}}}
+{"type":"response_item","timestamp":"2026-05-20T10:00:10.000Z","payload":{"type":"local_shell_call_output","output":"total 0\\ndrwxr-xr-x 2 user wheel 64 May 20 09:59 ."}}
+{"type":"response_item","timestamp":"2026-05-20T10:00:12.000Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done. Directory is empty."}]}}
+{"type":"event_msg","timestamp":"2026-05-20T10:00:13.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"output_tokens":40,"cached_input_tokens":0,"reasoning_output_tokens":15}}}}
+{"type":"turn_context","timestamp":"2026-05-20T10:00:14.000Z","payload":{"model":"gpt-5"}}

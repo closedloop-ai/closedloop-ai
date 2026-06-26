@@ -16,18 +16,18 @@
     "home": {
       "meta": {
         "title": "Turn First-pass PRDs into Approved Implementation Plans",
-        "description": "ClosedLoop.AI turns product intent into a durable, team-reviewed plan that engineers can approve and execute. Stop rebuilding context across handoffs. Ship faster on real, existing codebases."
+        "description": "Closedloop.AI turns product intent into a durable, team-reviewed plan that engineers can approve and execute. Stop rebuilding context across handoffs. Ship faster on real, existing codebases."
       },
       "hero": {
         "announcement": "Introducing AI-powered architecture planning"
       },
       "features": {
         "title": "The missing step between PRD and build",
-        "description": "ClosedLoop.AI makes Implementation Plans a first-class artifact: generated from your inputs, reviewed by your team, approved with clear ownership, and saved as the system of record.",
+        "description": "Closedloop.AI makes Implementation Plans a first-class artifact: generated from your inputs, reviewed by your team, approved with clear ownership, and saved as the system of record.",
         "items": [
           {
             "title": "Generate the Implementation Plan",
-            "description": "Start from a PRD or a lightweight issue. ClosedLoop.AI generates a structured Implementation Plan using your repo context, so the plan is explicit and ready for review."
+            "description": "Start from a PRD or a lightweight issue. Closedloop.AI generates a structured Implementation Plan using your repo context, so the plan is explicit and ready for review."
           },
           {
             "title": "Review and approve, fast",
@@ -49,12 +49,12 @@
         "cta": "Still have questions? Let's talk",
         "items": [
           {
-            "question": "What makes ClosedLoop.AI different from using an AI chat to plan work?",
-            "answer": "ClosedLoop.AI turns planning into a shared, durable artifact. Plans are saved, versioned, reviewed, and approved as a team. That means less context loss, fewer mismatches with the PRD, and a single source of truth that humans and agents can reuse."
+            "question": "What makes Closedloop.AI different from using an AI chat to plan work?",
+            "answer": "Closedloop.AI turns planning into a shared, durable artifact. Plans are saved, versioned, reviewed, and approved as a team. That means less context loss, fewer mismatches with the PRD, and a single source of truth that humans and agents can reuse."
           },
           {
-            "question": "Can ClosedLoop.AI start from something smaller than a full PRD?",
-            "answer": "Yes. ClosedLoop.AI supports lightweight inputs for small units of work, like bugs and quick fixes. You can start a workflow from an issue-sized artifact, generate the plan automatically, and only add rigor when the work demands it."
+            "question": "Can Closedloop.AI start from something smaller than a full PRD?",
+            "answer": "Yes. Closedloop.AI supports lightweight inputs for small units of work, like bugs and quick fixes. You can start a workflow from an issue-sized artifact, generate the plan automatically, and only add rigor when the work demands it."
           },
           {
             "question": "How do approvals work?",
@@ -62,17 +62,17 @@
           },
           {
             "question": "Do you keep history, or do plans get overwritten?",
-            "answer": "ClosedLoop.AI preserves every version. Each save creates a new immutable revision, so you can always reference prior decisions, reuse past context, and see how the plan evolved as the team learned."
+            "answer": "Closedloop.AI preserves every version. Each save creates a new immutable revision, so you can always reference prior decisions, reuse past context, and see how the plan evolved as the team learned."
           },
           {
-            "question": "Who is ClosedLoop.AI for?",
+            "question": "Who is Closedloop.AI for?",
             "answer": "Teams building on real codebases where context matters. Especially product managers and engineering leads at small companies who want a lightweight way to turn intent into approved plans, then move quickly with confidence."
           }
         ]
       },
       "cta": {
         "title": "Make the plan the source of truth",
-        "description": "Stop losing context between product and engineering. Generate a plan, review it quickly, approve it, and move. ClosedLoop.AI makes AI-assisted development work on brownfield codebases because the handoff is explicit, durable, and reusable.",
+        "description": "Stop losing context between product and engineering. Generate a plan, review it quickly, approve it, and move. Closedloop.AI makes AI-assisted development work on brownfield codebases because the handoff is explicit, durable, and reusable.",
         "secondaryDescription": "Loved by teams building on real codebases"
       }
     },
@@ -137,7 +137,7 @@
           },
           {
             "name": "/code",
-            "description": "Begin a coding session with full ClosedLoop orchestration"
+            "description": "Begin a coding session with full Closedloop orchestration"
           },
           {
             "name": "/code-review",
@@ -203,11 +203,11 @@
         "steps": [
           {
             "title": "Add the Plugin Marketplace",
-            "description": "Register the ClosedLoop marketplace with Claude Code:",
-            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude-plugins"
+            "description": "Register the Closedloop marketplace with Claude Code:",
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
           },
           {
-            "title": "Install ClosedLoop Core",
+            "title": "Install Closedloop Core",
             "description": "Install the plugin from the marketplace:",
             "code": "/plugin install closedloop-core"
           },

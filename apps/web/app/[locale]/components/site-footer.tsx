@@ -50,7 +50,7 @@ export const SiteFooter = ({ locale }: SiteFooterProps) => {
         <div className="grid gap-12 lg:grid-cols-[1.5fr_3fr]">
           <div className="flex flex-col gap-4">
             <Link
-              aria-label="ClosedLoop.ai home"
+              aria-label="Closedloop.ai home"
               className="inline-flex"
               href={localize(locale, "/")}
             >
@@ -61,7 +61,7 @@ export const SiteFooter = ({ locale }: SiteFooterProps) => {
               development for production software.
             </p>
             <Link
-              aria-label="ClosedLoop on GitHub"
+              aria-label="Closedloop on GitHub"
               className="inline-flex w-fit items-center gap-2 rounded-md text-muted-foreground text-sm transition-colors hover:text-primary"
               href={GITHUB_REPO_URL}
               rel="noopener noreferrer"
@@ -96,7 +96,7 @@ export const SiteFooter = ({ locale }: SiteFooterProps) => {
           </div>
         </div>
         <div className="mt-12 border-border/60 border-t pt-6 text-muted-foreground text-xs">
-          © {year} ClosedLoop.ai. All rights reserved.
+          © {year} Closedloop.ai. All rights reserved.
         </div>
       </div>
     </footer>

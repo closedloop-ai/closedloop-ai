@@ -11,7 +11,7 @@
  *    `repoFullName` populated via the PR artifact query helper
  */
 
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => {
   const mockWithDb = Object.assign(vi.fn(), { tx: vi.fn() });
@@ -19,7 +19,7 @@ vi.mock("@repo/database", () => {
     withDb: mockWithDb,
     ArtifactType: {
       DOCUMENT: "DOCUMENT",
-      PULL_REQUEST: "PULL_REQUEST",
+      BRANCH: "BRANCH",
       DEPLOYMENT: "DEPLOYMENT",
     },
   };
@@ -32,38 +32,73 @@ vi.mock("@/app/artifact-links/service", () => ({
 }));
 
 vi.mock("@/lib/artifact-adapters", () => ({
-  pullRequestArtifactToInfo: vi.fn(),
-  pullRequestWhere: (where: Record<string, unknown>) => where,
+  branchArtifactToInfo: vi.fn(() => null),
 }));
 
 import { LinkType } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
-import { pullRequestArtifactToInfo } from "@/lib/artifact-adapters";
+import { branchArtifactToInfo } from "@/lib/artifact-adapters";
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
 
 const mockWithDb = withDb as unknown as Mock;
 const mockFindTargetLinks = artifactLinksService.findTargetLinks as Mock;
-const mockPrToInfo = pullRequestArtifactToInfo as Mock;
+const mockPrToInfo = branchArtifactToInfo as Mock;
 
-/** Build a minimal PR artifact row (PrArtifactRow shape). */
+function buildBranchInfoForPr(info: ReturnType<typeof buildPullRequestInfo>) {
+  return {
+    id: info.externalLinkId ?? info.id,
+    name: info.headBranch,
+    htmlUrl: null,
+    branchName: info.headBranch,
+    baseBranch: info.baseBranch,
+    headSha: null,
+    checksStatus: info.checksStatus,
+    externalLinkId: info.externalLinkId,
+    repoFullName: info.repoFullName,
+    currentPullRequest: info,
+  };
+}
+
+/** Build a minimal branch artifact row. */
 function makePrArtifactRow(overrides?: { id?: string; repoFullName?: string }) {
   const id = overrides?.id ?? "pr-art-1";
   const repoFullName = overrides?.repoFullName ?? "owner/repo";
   return {
     id,
-    type: "PULL_REQUEST",
-    pullRequest: {
-      number: 1,
+    type: "BRANCH",
+    branch: {
+      branchName: "feature/test",
       repository: { fullName: repoFullName },
+      currentPullRequestDetail: {
+        number: 1,
+        repository: { fullName: repoFullName },
+      },
     },
   };
 }
 
 /**
+ * Build a `repository_snapshot` JSON payload for a single primary repo, or an
+ * empty `source: 'none'` snapshot when null. Matches the shape produced by
+ * `buildSnapshotFromProjectDefaults` in apps/api/app/documents/
+ * repository-snapshot-helpers.ts.
+ */
+function snapshotFor(targetRepo: string | null) {
+  if (!targetRepo) {
+    return { repositories: [], source: "none" };
+  }
+  return {
+    repositories: [{ fullName: targetRepo, role: "primary", position: 0 }],
+    source: "project_defaults",
+  };
+}
+
+/**
  * Set up the two sequential `withDb` calls that the PR artifact query helper makes:
- *   1. `artifact.findUnique` — returns the document artifact with targetRepo
+ *   1. `artifact.findUnique` — returns the document artifact with its
+ *      `repository_snapshot` (parsed for primary-repo ordering)
  *   2. `artifact.findMany`  — returns the PR artifact rows
  */
 function mockPrArtifactsDb(
@@ -76,7 +111,7 @@ function mockPrArtifactsDb(
         artifact: {
           findUnique: vi.fn().mockResolvedValue({
             type: "DOCUMENT",
-            document: { targetRepo },
+            document: { repositorySnapshot: snapshotFor(targetRepo) },
           }),
         },
       })
@@ -97,7 +132,7 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
     mockWithDb.mockImplementationOnce((fn: (db: object) => unknown) =>
       fn({
         artifact: {
-          findUnique: vi.fn().mockResolvedValue({ type: "PULL_REQUEST" }),
+          findUnique: vi.fn().mockResolvedValue({ type: "BRANCH" }),
         },
       })
     );
@@ -117,7 +152,7 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
         artifact: {
           findUnique: vi.fn().mockResolvedValue({
             type: "DOCUMENT",
-            document: { targetRepo: null },
+            document: { repositorySnapshot: snapshotFor(null) },
           }),
         },
       })
@@ -147,7 +182,7 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
       { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
     ]);
     const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
-    mockPrToInfo.mockReturnValue(expectedInfo);
+    mockPrToInfo.mockReturnValue(buildBranchInfoForPr(expectedInfo));
 
     const result = await documentPullRequestService.getDocumentPullRequests(
       "doc-1",
@@ -190,8 +225,8 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
     });
 
     mockPrToInfo
-      .mockReturnValueOnce(secondaryInfo)
-      .mockReturnValueOnce(primaryInfo);
+      .mockReturnValueOnce(buildBranchInfoForPr(secondaryInfo))
+      .mockReturnValueOnce(buildBranchInfoForPr(primaryInfo));
 
     const result = await documentPullRequestService.getDocumentPullRequests(
       "doc-1",
@@ -232,7 +267,7 @@ describe("documentPullRequestService.getDocumentPullRequest", () => {
       { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
     ]);
     const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
-    mockPrToInfo.mockReturnValue(expectedInfo);
+    mockPrToInfo.mockReturnValue(buildBranchInfoForPr(expectedInfo));
 
     const result = await documentPullRequestService.getDocumentPullRequest(
       "doc-1",
@@ -272,8 +307,8 @@ describe("documentPullRequestService.getDocumentPullRequest", () => {
       externalLinkId: "pr-art-primary",
     });
     mockPrToInfo
-      .mockReturnValueOnce(secondaryInfo)
-      .mockReturnValueOnce(primaryInfo);
+      .mockReturnValueOnce(buildBranchInfoForPr(secondaryInfo))
+      .mockReturnValueOnce(buildBranchInfoForPr(primaryInfo));
 
     const result = await documentPullRequestService.getDocumentPullRequest(
       "doc-1",

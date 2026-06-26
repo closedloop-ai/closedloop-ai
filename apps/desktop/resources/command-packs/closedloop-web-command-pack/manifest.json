@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "id": "closedloop-web-command-pack",
+  "display_name": "Closedloop Web Command Pack",
+  "version": 1,
+  "default_install": true,
+  "description": "Built-in command protocol for PLAN, EXECUTE, DECOMPOSE, EVALUATE_*, GENERATE_PRD, and REQUEST_* commands dispatched from the Closedloop web app. Claude and Codex command launches use native prompt adapters and do not require claude-plugins.",
+  "harness_adapters": [
+    {
+      "harness": "claude",
+      "binary": "claude",
+      "status": "supported",
+      "launch_modes": [
+        "native-prompt",
+        "plugin-run-loop",
+        "claude-slash-command",
+        "bundled-script"
+      ]
+    },
+    {
+      "harness": "codex",
+      "binary": "codex",
+      "status": "supported",
+      "launch_modes": ["native-prompt"]
+    },
+    {
+      "harness": "cursor",
+      "binary": "cursor",
+      "status": "planned",
+      "launch_modes": []
+    },
+    {
+      "harness": "opencode",
+      "binary": "opencode",
+      "status": "planned",
+      "launch_modes": []
+    }
+  ],
+  "commands": [
+    {
+      "command": "PLAN",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "claude",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["plan.json"],
+      "optional_outputs": [
+        "plan.md",
+        "open-questions.md",
+        "judges.json",
+        "implementation-plan.md"
+      ]
+    },
+    {
+      "command": "EXECUTE",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "claude",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["execution-result.json"],
+      "optional_outputs": ["code-judges.json"]
+    },
+    {
+      "command": "REQUEST_CHANGES",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "claude",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["plan.json"],
+      "optional_outputs": ["plan.md", "open-questions.md", "judges.json"]
+    },
+    {
+      "command": "REQUEST_PRD_CHANGES",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["prd.md"],
+      "optional_outputs": []
+    },
+    {
+      "command": "DECOMPOSE",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["features.json"],
+      "optional_outputs": []
+    },
+    {
+      "command": "GENERATE_PRD",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["prd.md"],
+      "optional_outputs": []
+    },
+    {
+      "command": "EVALUATE_PRD",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["prd-judges.json"],
+      "optional_outputs": []
+    },
+    {
+      "command": "EVALUATE_PLAN",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["plan-judges.json"],
+      "optional_outputs": []
+    },
+    {
+      "command": "EVALUATE_CODE",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["code-judges.json"],
+      "optional_outputs": []
+    },
+    {
+      "command": "EVALUATE_FEATURE",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "codex",
+      "harnesses": {
+        "claude": { "launch_mode": "native-prompt" },
+        "codex": { "launch_mode": "native-prompt" }
+      },
+      "required_outputs": ["feature-judges.json"],
+      "optional_outputs": []
+    },
+    {
+      "command": "BOOTSTRAP",
+      "desktop_default_harness": "claude",
+      "web_preferred_harness": "claude",
+      "harnesses": {
+        "claude": { "launch_mode": "bundled-script" }
+      },
+      "required_outputs": [],
+      "optional_outputs": []
+    }
+  ]
+}

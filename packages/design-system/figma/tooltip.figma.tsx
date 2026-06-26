@@ -6,7 +6,7 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=6873-680";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=6873-680";
 
 figma.connect(TooltipContent, FIGMA_URL, {
   props: {

@@ -136,7 +136,7 @@
           },
           {
             "name": "/code",
-            "description": "Begin a coding session with full ClosedLoop orchestration"
+            "description": "Begin a coding session with full Closedloop orchestration"
           },
           {
             "name": "/code-review",
@@ -202,11 +202,11 @@
         "steps": [
           {
             "title": "Add the Plugin Marketplace",
-            "description": "Register the ClosedLoop marketplace with Claude Code:",
+            "description": "Register the Closedloop marketplace with Claude Code:",
             "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
           },
           {
-            "title": "Install ClosedLoop Core",
+            "title": "Install Closedloop Core",
             "description": "Install the plugin from the marketplace:",
             "code": "/plugin install closedloop-core"
           },

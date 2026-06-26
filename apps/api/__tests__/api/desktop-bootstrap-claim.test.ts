@@ -4,7 +4,7 @@
  * Covers the PLN-319 v10 claim contract, including strict preferred-key
  * validation, legacy null-bound compatibility, and attempt consumption rules.
  */
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   apiKeysService,
   DesktopManagedKeyRotationConflictError,

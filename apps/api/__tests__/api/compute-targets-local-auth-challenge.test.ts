@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/compute-targets/local-auth/challenge/route";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {

@@ -7,7 +7,15 @@
  * checkFieldLimit limit enforcement is tested in utils.test.ts where the real
  * implementation can be exercised without interference from other mocks.
  */
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),

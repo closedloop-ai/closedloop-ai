@@ -1,6 +1,6 @@
 ---
 title: Agents API
-description: Store, version, and bulk-ingest the expert agents that drive ClosedLoop.ai loops.
+description: Store, version, and bulk-ingest the expert agents that drive Closedloop.ai loops.
 ---
 
 The agents API is the durable home for the expert agents that the `code` and `judges` plugins use to plan, implement, and grade work. Where the [`bootstrap`](./plugins/bootstrap) plugin generates a per-repo agent roster on disk, the agents API stores those agents at the organization level so they can be reused across repos, versioned, and pulled into context packs.
@@ -23,7 +23,7 @@ Every prompt edit creates a new `AgentVersion` automatically. Versions are appen
 
 ## Endpoints
 
-All endpoints live under `/agents` on the ClosedLoop API and are scoped to the caller's organization.
+All endpoints live under `/agents` on the Closedloop API and are scoped to the caller's organization.
 
 | Method | Path | Purpose |
 |---|---|---|

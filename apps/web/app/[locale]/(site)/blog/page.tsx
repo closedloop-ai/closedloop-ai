@@ -18,7 +18,7 @@ type BlogIndexProps = {
 export const generateMetadata = async () =>
   createPageMetadata(
     "Blog",
-    "Essays about coordination, team-based agentic development, and how ClosedLoop.ai is built."
+    "Essays about coordination, team-based agentic development, and how Closedloop.ai is built."
   );
 
 const BlogIndexPage = async ({ params }: BlogIndexProps) => {

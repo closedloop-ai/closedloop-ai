@@ -16,7 +16,7 @@ export type PeerWriteMode = (typeof PeerWriteMode)[keyof typeof PeerWriteMode];
  * Whether peer worktrees can reuse a previously cloned/checked-out copy
  * (`reuse-stale`) or must be re-provisioned each loop run (`always-fresh`).
  *
- * Currently consumed only by the desktop gateway (`closedloop-electron`),
+ * Currently consumed only by the Desktop gateway (`apps/desktop`),
  * where peer worktrees persist across loop runs and the freshness contract
  * decides whether to reap a leftover branch on entry. The ECS harness
  * provisions a fresh container per run, so all peers are effectively

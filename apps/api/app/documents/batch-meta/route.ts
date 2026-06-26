@@ -1,6 +1,6 @@
 import {
   BATCH_META_MAX_SLUGS,
-  type DocumentTitleMap,
+  type DocumentMetaMap,
 } from "@repo/api/src/types/document";
 import { z } from "zod";
 import { documentService } from "@/app/documents/document-service";
@@ -32,7 +32,7 @@ const batchMetaQueryValidator = z.object({
  * Slugs not found in the org are omitted from the response.
  * Authentication required.
  */
-export const GET = withAuth<DocumentTitleMap, "/documents/batch-meta">(
+export const GET = withAuth<DocumentMetaMap, "/documents/batch-meta">(
   async ({ user }, request) => {
     try {
       const rawSlugs = request.nextUrl.searchParams.get("slugs");
@@ -59,12 +59,12 @@ export const GET = withAuth<DocumentTitleMap, "/documents/batch-meta">(
         );
       }
 
-      const titlesMap = await documentService.batchFetchDocumentTitles(
+      const metaMap = await documentService.batchFetchDocumentMeta(
         user.organizationId,
         slugs
       );
 
-      return successResponse<DocumentTitleMap>(titlesMap);
+      return successResponse<DocumentMetaMap>(metaMap);
     } catch (error) {
       return errorResponse("Failed to fetch artifact titles", error);
     }

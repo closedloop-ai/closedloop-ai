@@ -9,7 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" /></a>
   <a href="https://github.com/closedloop-ai/closedloop-ai/actions/workflows/pr-test.yml"><img src="https://github.com/closedloop-ai/closedloop-ai/actions/workflows/pr-test.yml/badge.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/badge/node-20+-blue" alt="Node.js 20+" />
+  <img src="https://img.shields.io/badge/node-24+-blue" alt="Node.js 24+" />
   <img src="https://img.shields.io/badge/next.js-16-black" alt="Next.js 16" />
 </p>
 
@@ -26,7 +26,7 @@ ClosedLoop is a platform where AI agents produce delivery artifacts (PRDs, imple
 
 ## Quick Start
 
-**Prerequisites:** Node.js 20+, pnpm, Docker
+**Prerequisites:** Node.js 24+, pnpm, Docker
 
 ```bash
 git clone https://github.com/closedloop-ai/closedloop-ai.git
@@ -80,6 +80,7 @@ Next.js monorepo with Turborepo.
 | **relay** | 3020 | WebSocket relay for desktop compute |
 | **storybook** | 6006 | Component library |
 | **studio** | 3005 | Prisma Studio — database browser |
+| **desktop** | — | Electron desktop app — localhost gateway, agent monitor, packaged installer |
 
 ### Packages
 
@@ -98,6 +99,18 @@ Shared packages imported as `@repo/<name>`:
 | **analytics** | PostHog + Google Analytics |
 | **observability** | Structured logging |
 | **email** | Transactional email (Resend) |
+
+### Desktop App
+
+`apps/desktop` is an Electron app that runs a localhost gateway for local agent execution, with a built-in agent monitor. It builds and packages directly from this repo:
+
+```bash
+pnpm desktop:dev          # Run the desktop app in development
+pnpm desktop:build        # Build main + renderer bundles
+pnpm desktop:package      # Produce a distributable (.dmg + .zip) in apps/desktop/dist-dmg
+```
+
+Packaging produces an **unsigned (ad-hoc) build by default — no Apple credentials required**. Official signed + notarized releases set the Apple signing env vars (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`). Service origins default to the ClosedLoop cloud and can be overridden via `CL_RELAY_ORIGIN`, `CL_WEB_APP_ORIGIN`, and `CL_AUTH_API_ORIGIN`. See `apps/desktop/README.md`.
 
 ### Core Workflow
 

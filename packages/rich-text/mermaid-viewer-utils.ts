@@ -6,6 +6,8 @@
  * stateful logic that needs React APIs lives in `mermaid-viewer-hooks.ts`.
  */
 
+import DOMPurify from "isomorphic-dompurify";
+
 // --- Constants ---------------------------------------------------------------
 
 /** Minimum CSS scale allowed by the pan/zoom canvas. */
@@ -54,40 +56,186 @@ export type ContentBBox = {
 // --- SVG normalization -------------------------------------------------------
 
 /**
+ * Tags the `html` profile would admit inside a `<foreignObject>` label that
+ * mermaid does not need for label text and that either fetch an external
+ * resource on render (passive tracking/exfil beacons such as
+ * `<img src="http://...">`), enable DOM clobbering (`<form>`/`<input>`), or
+ * navigate the viewer (`<a href>`). Forbidding them keeps a stored diagram from
+ * smuggling a beacon, clobbering vector, or phishing link into a viewer's
+ * session. Verified zero-regression against real mermaid v11 flowchart output,
+ * whose label tag set is only div/span/p/br/strong/em and friends.
+ *
+ * `<a>` is included deliberately: it disables mermaid `click`/`href` directives
+ * (SVG node links and HTML label anchors alike). For a renderer of untrusted,
+ * stored diagrams in an authenticated session, author-controlled navigation
+ * targets are a phishing vector, so we trade that authoring feature for safety.
+ * The "anchor navigation" regression test pins this stripped behavior.
+ *
+ * Deliberately NOT forbidden: the `<style>` tag (mermaid's top-level theming
+ * block) and the `style` attribute (label layout) are load-bearing for correct
+ * rendering. Rather than remove them, the hooks below strip only the *external*
+ * `url()` / `@import` resource references they could otherwise carry, leaving
+ * internal `url(#gradient)` / `url(#marker)` references intact.
+ */
+const FORBIDDEN_LABEL_TAGS = [
+  "img",
+  "image",
+  "video",
+  "audio",
+  "source",
+  "track",
+  "picture",
+  "iframe",
+  "object",
+  "embed",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+  "option",
+  "a",
+  "link",
+  "base",
+  "meta",
+];
+
+/** Resource-loading attributes the `html` profile would otherwise admit. */
+const FORBIDDEN_RESOURCE_ATTRS = [
+  "srcset",
+  "poster",
+  "background",
+  "ping",
+  "formaction",
+  "action",
+];
+
+// Detects a CSS `url(...)` that points at an *external* resource. The negative
+// lookahead skips `url(#id)` fragment references (gradients, markers, filters)
+// that mermaid uses legitimately, so only beacon-capable URLs match.
+const RE_CSS_EXTERNAL_URL = /url\(\s*["']?(?!#)/i;
+// Strips CSS `@import` rules and external `url(...)` from `<style>` text.
+const RE_STYLE_EXTERNAL_RESOURCE =
+  /@import[^;]*;?|url\(\s*["']?(?!#)[^)]*\)?/gi;
+
+// The hooks below close two CSS-beacon paths the `html` profile opens once
+// `<foreignObject>` label content is preserved. Registered once at module load;
+// isomorphic-dompurify is the only DOMPurify consumer in this package, so the
+// hooks stay scoped in practice. Both are zero-regression for mermaid, whose
+// theming/layout CSS never references an external resource.
+
+// A label can beacon through `style="background:url(http://attacker)"`. Drop any
+// inline style value that carries an external url(); internal `url(#id)` is kept.
+DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
+  if (data.attrName === "style" && RE_CSS_EXTERNAL_URL.test(data.attrValue)) {
+    data.keepAttr = false;
+  }
+});
+
+// A label-owned `<style>@import url(...)</style>` survives tag-level allow-listing
+// (mermaid's root theming block needs `<style>`) and the attribute hook above
+// only inspects `style="..."` attributes, not element text. Scrub `@import` and
+// external `url()` from every `<style>` element's CSS so neither the theming
+// block nor an injected label `<style>` can fetch a remote resource (FEA-2086).
+DOMPurify.addHook("uponSanitizeElement", (node, data) => {
+  if (data.tagName === "style" && node.textContent) {
+    node.textContent = node.textContent.replace(RE_STYLE_EXTERNAL_RESOURCE, "");
+  }
+});
+
+/**
+ * Sanitize a mermaid-generated SVG string with DOMPurify, stripping `<script>`
+ * elements, event handlers (`onload`/`onerror`/`onclick`), and other XSS
+ * vectors before the markup is ever handed to `dangerouslySetInnerHTML`.
+ *
+ * Mermaid runs with `securityLevel: "loose"`, so node labels and other
+ * diagram content are interpolated into the SVG without escaping; a stored
+ * diagram could otherwise smuggle active content into a viewer's session.
+ *
+ * FLOWCHART LABELS (`html: true` + foreignObject):
+ * Mermaid renders flowchart/graph node and edge labels as HTML
+ * (`<div><span class="nodeLabel"><p>text</p></span></div>`) inside an SVG
+ * `<foreignObject>` (its default `htmlLabels: true` path). The SVG-only
+ * profile that originally shipped here (svg + svgFilters) silently dropped
+ * `<foreignObject>` AND every HTML child, so flowcharts rendered boxes and
+ * arrows with blank labels while sequence diagrams (which use plain SVG
+ * `<text>`) were unaffected (FEA-2086).
+ *
+ * `<foreignObject>` is a legitimate HTML integration point per the HTML5
+ * parsing spec, so the fix is a *namespace* correction, not a blanket
+ * loosening of XSS protection:
+ *   - `html: true` allows the benign formatting tags mermaid emits in labels
+ *     (`div`, `span`, `p`, `br`, `strong`/`em`).
+ *   - `ADD_TAGS: ["foreignObject"]` keeps the wrapper element itself.
+ *   - `HTML_INTEGRATION_POINTS` marks `foreignobject` as a point where DOMPurify
+ *     should treat children as the HTML namespace (it must include the built-in
+ *     `annotation-xml` because this option replaces, not merges).
+ *   - `FORBID_TAGS`/`FORBID_ATTR` then re-narrow the html profile to exactly the
+ *     formatting surface mermaid uses, blocking the passive resource-loading and
+ *     DOM-clobbering tags the profile would otherwise admit inside a label.
+ *
+ * What is NOT relaxed: `<script>`, event-handler attributes, `javascript:`
+ * URIs, `<iframe>`/`<object>`, resource-loading tags/attrs, and mutation-XSS
+ * namespace-confusion payloads are all still stripped, and external `url()` /
+ * `@import` references are scrubbed from both `style` attributes and `<style>`
+ * element text by the hooks above. Note on `FORBID_TAGS` semantics: it removes a
+ * forbidden element's own tag while DOMPurify promotes the remaining children to
+ * the parent (so benign label *text* survives); the child elements that are the
+ * actual XSS/beacon vectors are themselves in `FORBID_TAGS`, so they are removed
+ * too. `FORBID_CONTENTS` stays at its default, which still discards the contents
+ * of the elements listed there (`<script>`, `<title>`, etc.). See the security
+ * regression battery in `mermaid-viewer-utils.test.ts`.
+ */
+export function sanitizeSvg(svgString: string): string {
+  return DOMPurify.sanitize(svgString, {
+    USE_PROFILES: { svg: true, svgFilters: true, html: true },
+    ADD_TAGS: ["foreignObject"],
+    HTML_INTEGRATION_POINTS: { "annotation-xml": true, foreignobject: true },
+    FORBID_TAGS: FORBIDDEN_LABEL_TAGS,
+    FORBID_ATTR: FORBIDDEN_RESOURCE_ATTRS,
+  });
+}
+
+/**
  * Normalize a mermaid-generated SVG string so it renders at a known pixel
  * size (for consistent pan/zoom math) and report its dimensions.
  *
- * Mermaid typically emits `<svg width="100%" ... style="max-width: Xpx;">`.
- * That's great for flow-sized rendering but it means the rendered pixel size
- * depends on the container, which breaks our "SVG pixel == 1 CSS pixel at
- * scale 1" assumption. We:
+ * The input is first run through {@link sanitizeSvg} (DOMPurify) so every
+ * caller that renders the result via `dangerouslySetInnerHTML` gets sanitized
+ * markup, then:
  *   1. Read the viewBox (falling back gracefully if it's missing).
  *   2. Replace (or add) `width` and `height` attributes equal to the viewBox
  *      dimensions so the SVG renders at its native size.
  *   3. Strip every `max-width: ...` declaration in style attributes so the
  *      editor's CSS can't cap it.
+ *
+ * Mermaid typically emits `<svg width="100%" ... style="max-width: Xpx;">`.
+ * That's great for flow-sized rendering but it means the rendered pixel size
+ * depends on the container, which breaks our "SVG pixel == 1 CSS pixel at
+ * scale 1" assumption.
  */
 export function prepareSvg(svgString: string): {
   html: string;
   dims: SvgDimensions | null;
 } {
-  const viewBoxMatch = RE_VIEWBOX.exec(svgString);
+  const sanitized = sanitizeSvg(svgString);
+  const viewBoxMatch = RE_VIEWBOX.exec(sanitized);
   if (!viewBoxMatch) {
-    return { html: svgString, dims: null };
+    return { html: sanitized, dims: null };
   }
   // viewBox is "minX minY width height"; entries can be separated by spaces
   // or commas. We only care about indices 2 and 3.
   const parts = viewBoxMatch[1].split(RE_WHITESPACE_COMMA);
   if (parts.length < 4) {
-    return { html: svgString, dims: null };
+    return { html: sanitized, dims: null };
   }
   const width = Number.parseFloat(parts[2]);
   const height = Number.parseFloat(parts[3]);
   if (!(width > 0 && height > 0)) {
-    return { html: svgString, dims: null };
+    return { html: sanitized, dims: null };
   }
 
-  let processed = svgString;
+  let processed = sanitized;
   // Only rewrite attributes in the opening <svg> tag, not in descendant
   // elements that might also have `width="..."`.
   const svgTagEnd = processed.indexOf(">");

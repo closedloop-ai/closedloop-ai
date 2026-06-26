@@ -1,6 +1,20 @@
 "use client";
 
-import { ComputePreference } from "@repo/api/src/types/compute-target";
+import {
+  ComputePreference,
+  type ComputeTarget,
+  type ComputeTargetHealthCheckSnapshot,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+  HARNESS_SELECTION_FEATURE_FLAG_KEY,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
+import {
+  useComputePreference,
+  useSetComputePreference,
+} from "@repo/app/compute/hooks/use-compute-preference";
+import { resolveEffectiveComputeTargetSelection } from "@repo/app/loops/lib/compute-target-selection";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useIsMounted } from "@repo/app/shared/hooks/use-is-mounted";
 import { useUser } from "@repo/auth/client";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -21,12 +35,16 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import {
-  useComputePreference,
-  useSetComputePreference,
-} from "@/hooks/queries/use-compute-preference";
+  deriveAvailableHarnessesFromSnapshot,
+  HarnessSelector,
+  resolveDefaultHarness,
+} from "@/components/engineer/harness-selector";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
-import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
-import { resolveEffectiveComputeTargetSelection } from "@/lib/compute-target-selection";
+import {
+  useComputeTargetHealthCheckSnapshot,
+  useComputeTargets,
+  useUpdateComputeTargetHarness,
+} from "@/hooks/queries/use-compute-targets";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
 const SSE_MAX_RECONNECT_ATTEMPTS = 3;
@@ -112,6 +130,7 @@ export function ComputeTargetPopover({
   const [open, setOpen] = useState(false);
   // T-4.4: show download prompt inline when user clicks Local with zero registered targets
   const [showDownloadPrompt, setShowDownloadPrompt] = useState(false);
+  const mounted = useIsMounted();
   const { user } = useUser();
   const userId = user?.id ?? "";
   // Keep SSE stream alive for real-time target status updates
@@ -121,6 +140,13 @@ export function ComputeTargetPopover({
   const { data: preferenceData, isLoading: preferenceLoading } =
     useComputePreference(userId, { enabled: !!userId });
   const setPreference = useSetComputePreference(userId);
+  const explicitSelectionFlagEnabled = useFeatureFlagEnabled(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
+  const harnessSelectionEnabled = useFeatureFlagEnabled(
+    HARNESS_SELECTION_FEATURE_FLAG_KEY
+  );
+  const requireExplicitSelection = mounted && explicitSelectionFlagEnabled;
 
   const isDegraded = isStreamDegraded(streamReconnectAttempts);
   const ownTargets = targets.filter((t) => !t.ownerName);
@@ -130,28 +156,45 @@ export function ComputeTargetPopover({
     currentPreference,
     effectiveTarget,
     effectiveTargetId,
+    needsSelection,
     notInstalled,
   } = resolveEffectiveComputeTargetSelection({
     preference: preferenceData,
+    requireExplicitSelection,
     targets,
   });
   const isLocal = currentPreference === ComputePreference.Local;
+
+  // Harness picker is gated on `harness-selection` (consistent with the
+  // dashboard selector and the backend launch admission) and only rendered
+  // inside the already-explicit-gated popover. Hidden while a selection is still
+  // pending (no current preference to bind to) and for a Local mode with no
+  // effective target — there is no per-target harness to bind to (the offline
+  // banner already guides remediation).
+  const showHarnessSection =
+    requireExplicitSelection &&
+    harnessSelectionEnabled &&
+    !needsSelection &&
+    !(isLocal && !effectiveTarget);
 
   // T-4.4: no registered targets at all
   const shouldShowNotInstalled = !targetsLoading && notInstalled;
   // T-4.5: targets registered but all offline
   const shouldShowAllOffline = !targetsLoading && allOffline;
 
-  const triggerLabel = isLocal
-    ? `Compute: ${effectiveTarget?.machineName ?? "Local"}`
-    : "Compute: Cloud";
+  const triggerLabel = getTriggerLabel({
+    effectiveTargetName: effectiveTarget?.machineName,
+    isLocalOffline: isLocal && shouldShowAllOffline,
+    isLocal,
+    needsSelection,
+  });
 
   function getTriggerIcon() {
     if (isDegraded) {
       return (
         <AlertTriangleIcon
           aria-label="SSE stream degraded"
-          className="size-4 text-amber-500"
+          className="size-4 text-warning"
         />
       );
     }
@@ -160,7 +203,7 @@ export function ComputeTargetPopover({
       return (
         <AlertTriangleIcon
           aria-label="Desktop app offline"
-          className="size-4 text-amber-500"
+          className="size-4 text-warning"
         />
       );
     }
@@ -233,7 +276,7 @@ export function ComputeTargetPopover({
         </div>
 
         {isDegraded && (
-          <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/12 px-3 py-2 text-warning-foreground">
             <AlertTriangleIcon className="size-3.5 shrink-0" />
             <p className="text-xs">
               Live status updates unavailable. Reconnect attempts exhausted.
@@ -243,7 +286,7 @@ export function ComputeTargetPopover({
 
         {/* T-4.5: offline warning banner -- shown when preference is Local but all targets are offline */}
         {isLocal && shouldShowAllOffline && (
-          <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
+          <div className="mb-2 rounded-md border border-warning/30 bg-warning/12 px-3 py-2 text-warning-foreground">
             <div className="mb-1.5 flex items-center gap-2">
               <AlertTriangleIcon className="size-3.5 shrink-0" />
               <p className="font-medium text-xs">Desktop app is offline</p>
@@ -252,9 +295,12 @@ export function ComputeTargetPopover({
               Your local compute target is not reachable. Switch to Cloud or
               relaunch the desktop app.
             </p>
-            <div className="flex gap-2">
+            <div
+              className="flex flex-col gap-2"
+              data-testid="offline-remediation-actions"
+            >
               <Button
-                className="h-7 flex-1 text-xs"
+                className="h-7 w-full text-xs"
                 onClick={handleSelectCloud}
                 size="sm"
                 variant="outline"
@@ -265,7 +311,7 @@ export function ComputeTargetPopover({
               {/* Gate on having at least one registered ComputeTarget (user has previously installed the app) */}
               {targets.length > 0 && (
                 <Button
-                  className="h-7 flex-1 text-xs"
+                  className="h-7 w-full text-xs"
                   onClick={handleLaunchDesktopApp}
                   size="sm"
                   variant="outline"
@@ -284,8 +330,8 @@ export function ComputeTargetPopover({
           role="listbox"
         >
           <TargetOption
-            description="Runs in ClosedLoop cloud infrastructure"
-            icon={<CloudIcon className="size-4 text-blue-500" />}
+            description="Runs in Closedloop cloud infrastructure"
+            icon={<CloudIcon className="size-4 text-info" />}
             isLoading={
               setPreference.isPending &&
               currentPreference !== ComputePreference.Cloud
@@ -325,9 +371,7 @@ export function ComputeTargetPopover({
                 <LaptopIcon
                   className={cn(
                     "size-4",
-                    target.isOnline
-                      ? "text-emerald-500"
-                      : "text-muted-foreground"
+                    target.isOnline ? "text-success" : "text-muted-foreground"
                   )}
                 />
               }
@@ -388,15 +432,25 @@ export function ComputeTargetPopover({
           )}
         </div>
 
+        {showHarnessSection && (
+          <HarnessSection
+            cloudSelectedHarness={preferenceData?.selectedHarness}
+            effectiveTarget={effectiveTarget}
+            effectiveTargetId={effectiveTargetId}
+            isLocal={isLocal}
+            setPreference={setPreference}
+          />
+        )}
+
         {/* T-4.4: download prompt -- popover stays open, preference NOT changed */}
         {showDownloadPrompt && shouldShowNotInstalled && (
-          <div className="mt-2 rounded-md border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
+          <div className="mt-2 rounded-md border border-info/30 bg-info/10 px-3 py-2 text-info">
             <div className="mb-1.5 flex items-center gap-2">
               <DownloadIcon className="size-3.5 shrink-0" />
               <p className="font-medium text-xs">Install Desktop App</p>
             </div>
             <p className="mb-2 text-xs">
-              Local compute requires the ClosedLoop Desktop app.
+              Local compute requires the Closedloop Desktop app.
             </p>
             {/* TODO: Get desktop app download URL from product team */}
             <Button
@@ -406,11 +460,113 @@ export function ComputeTargetPopover({
               variant="outline"
             >
               <DownloadIcon className="size-3 shrink-0" />
-              Download ClosedLoop Desktop
+              Download Closedloop Desktop
             </Button>
           </div>
         )}
       </PopoverContent>
     </Popover>
+  );
+}
+
+function getTriggerLabel({
+  effectiveTargetName,
+  isLocalOffline,
+  isLocal,
+  needsSelection,
+}: {
+  effectiveTargetName?: string;
+  isLocalOffline: boolean;
+  isLocal: boolean;
+  needsSelection: boolean;
+}): string {
+  if (needsSelection) {
+    return "Select target";
+  }
+  if (isLocalOffline) {
+    return "Compute: Local offline";
+  }
+  if (isLocal) {
+    return `Compute: ${effectiveTargetName ?? "Local"}`;
+  }
+  return "Compute: Cloud";
+}
+
+/**
+ * Resolves the available harnesses for the Local path from the per-target
+ * health-check snapshot, falling back to the target's persisted harness when no
+ * snapshot is present (mirrors ComputeTargetWithHarnessSelector).
+ */
+function deriveLocalAvailableHarnesses(
+  snapshot: ComputeTargetHealthCheckSnapshot | null,
+  effectiveTarget: ComputeTarget | null
+): HarnessType[] {
+  if (!snapshot) {
+    return effectiveTarget ? [effectiveTarget.selectedHarness] : [];
+  }
+  return deriveAvailableHarnessesFromSnapshot(snapshot);
+}
+
+type HarnessSectionProps = {
+  /** Persisted Cloud harness; undefined falls back to the Claude default. */
+  cloudSelectedHarness: HarnessType | undefined;
+  effectiveTarget: ComputeTarget | null;
+  effectiveTargetId: string | null;
+  isLocal: boolean;
+  setPreference: ReturnType<typeof useSetComputePreference>;
+};
+
+/**
+ * AI-harness selector bound to the effective compute selection. Local routes
+ * the change to the per-target PATCH; Cloud routes it to the user-scoped
+ * compute-preference PUT. Rendering this component is itself the gate for the
+ * Local health-check snapshot query — it only mounts behind the harness flag.
+ */
+function HarnessSection({
+  cloudSelectedHarness,
+  effectiveTarget,
+  effectiveTargetId,
+  isLocal,
+  setPreference,
+}: HarnessSectionProps) {
+  const { mutate: updateHarness } = useUpdateComputeTargetHarness();
+  // The Cloud path has no per-target snapshot; the hook no-ops on a null id.
+  const { data: healthCheckSnapshot = null } =
+    useComputeTargetHealthCheckSnapshot(isLocal ? effectiveTargetId : null);
+
+  const availableHarnesses = isLocal
+    ? deriveLocalAvailableHarnesses(healthCheckSnapshot, effectiveTarget)
+    : [HarnessType.Claude, HarnessType.Codex];
+
+  const currentHarness = isLocal
+    ? effectiveTarget?.selectedHarness
+    : cloudSelectedHarness;
+  const selectedHarness =
+    currentHarness ?? resolveDefaultHarness(availableHarnesses);
+
+  function handleHarnessChange(harness: HarnessType): void {
+    if (isLocal) {
+      if (effectiveTargetId) {
+        updateHarness({ id: effectiveTargetId, harness });
+      }
+      return;
+    }
+    setPreference.mutate({
+      mode: ComputePreference.Cloud,
+      selectedHarness: harness,
+    });
+  }
+
+  return (
+    <div className="mt-2 border-t px-3 pt-3">
+      <p className="mb-1.5 font-medium text-muted-foreground text-xs">
+        AI harness
+      </p>
+      <HarnessSelector
+        availableHarnesses={availableHarnesses}
+        onHarnessChange={handleHarnessChange}
+        selectedHarness={selectedHarness}
+      />
+    </div>
   );
 }

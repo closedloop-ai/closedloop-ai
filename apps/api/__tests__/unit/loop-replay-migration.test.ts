@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { describe, expect, it } from "vitest";
 
 describe("loop replay hardening migration", () => {
   it("contains universal event replay unique index and parent loop FK", () => {

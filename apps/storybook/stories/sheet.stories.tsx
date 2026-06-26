@@ -15,7 +15,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * content of the screen.
  */
 const meta: Meta<typeof SheetContent> = {
-  title: "ui/Sheet",
+  title: "Design System/Primitives/Sheet",
   component: Sheet,
   tags: ["autodocs"],
   argTypes: {

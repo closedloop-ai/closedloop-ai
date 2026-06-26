@@ -4,11 +4,11 @@ import { Result, Status } from "@repo/api/src/types/result";
 import { ArtifactType, withDb } from "@repo/database";
 
 /**
- * Service for managing pull request ratings.
+ * Service for managing branch artifact ratings through the legacy PR rating route.
  *
  * Ratings are stored in the unified `artifact_ratings` table keyed by
- * `artifactId` (the PULL_REQUEST artifact id). Rating rows carry
- * `artifactVersion: null` for PR ratings.
+ * `artifactId` (the BRANCH artifact id). Rating rows carry
+ * `artifactVersion: null` for branch ratings.
  *
  * Both methods are org-scoped: the PR artifact is verified to belong to the
  * caller's organization before the rating row is read or upserted. When the
@@ -27,12 +27,12 @@ export const pullRequestRatingsService = {
     organizationId: string
   ): Promise<Result<PullRequestRatingSummary>> {
     const fetched = await withDb(async (db) => {
-      // Verify PR artifact belongs to user's organization.
+      // Verify branch artifact belongs to user's organization.
       const pullRequest = await db.artifact.findFirst({
         where: {
           id: pullRequestId,
           organizationId,
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
         },
         select: { id: true },
       });
@@ -98,12 +98,12 @@ export const pullRequestRatingsService = {
     // Use transaction for atomicity: PR lookup + rating upsert + aggregate
     // recalculation must happen atomically to ensure data consistency.
     return withDb.tx(async (tx) => {
-      // Verify PR artifact belongs to user's organization.
+      // Verify branch artifact belongs to user's organization.
       const pullRequest = await tx.artifact.findFirst({
         where: {
           id: pullRequestId,
           organizationId,
-          type: ArtifactType.PULL_REQUEST,
+          type: ArtifactType.BRANCH,
         },
         select: { id: true },
       });
@@ -150,7 +150,8 @@ export const pullRequestRatingsService = {
         _count: { _all: true },
       });
 
-      // AC-017 & AC-018: Track PR Rating Submitted (new) or PR Rating Updated.
+      // AC-017 & AC-018 compatibility: keep the analytics event names while
+      // the legacy route name remains, but the identifier now belongs to a branch artifact.
       analytics.capture({
         event: isUpdate ? "PR Rating Updated" : "PR Rating Submitted",
         distinctId: userId,

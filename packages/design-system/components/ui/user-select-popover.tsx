@@ -127,7 +127,7 @@ function UserSelectPopover({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger || defaultTrigger}</PopoverTrigger>
       <PopoverContent className="w-[250px] p-0" align="start">
-        <Command>
+        <Command label="Search users">
           <CommandInput placeholder="Search users..." />
           <CommandList>
             <CommandEmpty>No users found.</CommandEmpty>

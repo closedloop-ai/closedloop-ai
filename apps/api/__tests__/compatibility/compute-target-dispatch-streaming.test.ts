@@ -7,7 +7,7 @@
  * 3. Returns a response body containing commandId
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports that pull in the mocked modules) ---
 
@@ -68,7 +68,6 @@ vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
 // --- Imports (after mocks) ---
 
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it } from "vitest";
 import { POST } from "@/app/compute-targets/[id]/operations/route";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";

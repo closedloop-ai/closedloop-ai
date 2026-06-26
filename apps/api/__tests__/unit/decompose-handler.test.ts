@@ -5,7 +5,7 @@
  * linking them to the source PRD, priority mapping, and guard clauses.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { documentService } from "@/app/documents/document-service";
 
 // --- Mocks (must come before imports) ---
@@ -48,7 +48,6 @@ import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import type { DecomposeResult } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/database/generated/client";
-import { beforeEach, describe, expect, it } from "vitest";
 import { artifactLinksService } from "@/app/artifact-links/service";
 
 import { decomposeHandler } from "@/lib/loops/loop-commands/decompose-handler";

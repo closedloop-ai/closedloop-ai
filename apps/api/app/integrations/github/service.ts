@@ -1,22 +1,35 @@
 import type {
+  GitHubInstallationStatus as ApiGitHubInstallationStatus,
   GetBranchesResponse,
+  GetContributorsResponse,
   GetPullRequestsResponse,
+  GitHubContributor,
   GitHubIntegrationStatus,
 } from "@repo/api/src/types/github";
+import { GitHubInstallationStatus as ApiGitHubInstallationStatusValue } from "@repo/api/src/types/github";
+import { Result, Status } from "@repo/api/src/types/result";
 import type {
   GitHubInstallation,
   GitHubInstallationRepository,
-  GitHubInstallationStatus,
+  Prisma,
+  TransactionClient,
 } from "@repo/database";
-import { ArtifactType, withDb } from "@repo/database";
+import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   deleteInstallation,
   getRepositoryBranches,
+  getRepositoryContributors,
   getRepositoryPullRequests,
 } from "@repo/github";
 import { keys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
+import { normalizeGitHubLogin } from "@/app/comments/external-authors";
+import { projectsService } from "@/app/projects/service";
+import { getPrismaErrorCode } from "@/lib/db-utils";
+import { encryptTokenPair } from "@/lib/integration-encryption";
+import { publicRepositoryService } from "./public-repositories/service";
 
 /**
  * Input type for upserting installation repositories
@@ -30,18 +43,129 @@ export type RepositoryInput = {
 };
 
 /**
- * Result type for OAuth callback operations
+ * Result type for OAuth callback operations.
+ *
+ * `requires_confirmation` is emitted by the same-vs-different-account
+ * detection (PLN-634) when an org reconnects to a GitHub account whose
+ * numeric `accountId` differs from the previously connected one. The route
+ * returns this payload to the UI so an admin can confirm a destructive
+ * cleanup before any state is mutated.
  */
 export type OAuthCallbackResult =
-  | { success: true }
-  | { success: false; error: string };
+  | { status: "connected" }
+  | { status: "error"; error: string }
+  | {
+      status: "requires_confirmation";
+      priorAccount: { accountId: string; accountLogin: string };
+      newAccount: { accountId: string; accountLogin: string };
+      newInstallationId: string;
+    };
+
+type RepositoryRelinkCandidate = Pick<
+  GitHubInstallationRepository,
+  "id" | "githubRepoId" | "fullName"
+>;
+
+export const RepositoryArtifactRelinkStatus = {
+  Completed: "completed",
+  Partial: "partial",
+  Skipped: "skipped",
+} as const;
+export type RepositoryArtifactRelinkStatus =
+  (typeof RepositoryArtifactRelinkStatus)[keyof typeof RepositoryArtifactRelinkStatus];
+
+export const RepositoryArtifactRelinkReason = {
+  None: "none",
+  NoActiveInstallation: "no_active_installation",
+  NoActiveRepositories: "no_active_repositories",
+  ActiveRepositoryAmbiguous: "active_repository_ambiguous",
+  BranchNameCollision: "branch_name_collision",
+  PullRequestNumberCollision: "pull_request_number_collision",
+  GuardedWriteFailed: "guarded_write_failed",
+} as const;
+export type RepositoryArtifactRelinkReason =
+  (typeof RepositoryArtifactRelinkReason)[keyof typeof RepositoryArtifactRelinkReason];
+
+export type RepositoryArtifactRelinkResult = {
+  status: RepositoryArtifactRelinkStatus;
+  reasons: RepositoryArtifactRelinkReason[];
+  activeRepositoryCount: number;
+  staleRepositoryCount: number;
+  branchRelinkedCount: number;
+  pullRequestRelinkedCount: number;
+  branchCollisionSkippedCount: number;
+  pullRequestCollisionSkippedCount: number;
+  ambiguousRepositorySkippedCount: number;
+  blockedBranchCount: number;
+};
+
+export const RepositoryArtifactRelinkFailureStage = {
+  OAuthClaim: "oauth_claim",
+  SyncRepositories: "sync_repositories",
+  AddRepositories: "add_repositories",
+  SyncPreflightRelink: "sync_preflight_relink",
+} as const;
+export type RepositoryArtifactRelinkFailureStage =
+  (typeof RepositoryArtifactRelinkFailureStage)[keyof typeof RepositoryArtifactRelinkFailureStage];
+
+export const RepositoryArtifactRelinkFailureReason = {
+  RepositoryFetchFailed: "repository_fetch_failed",
+  RepositoryFetchPartial: "repository_fetch_partial",
+  TransactionFailed: "transaction_failed",
+  TelemetryEmitFailed: "telemetry_emit_failed",
+} as const;
+export type RepositoryArtifactRelinkFailureReason =
+  (typeof RepositoryArtifactRelinkFailureReason)[keyof typeof RepositoryArtifactRelinkFailureReason];
+
+export const RepositoryArtifactRelinkMetricName = {
+  Completed: "github.installation_artifact_relink.completed",
+  Failed: "github.installation_artifact_relink.failed",
+} as const;
+export type RepositoryArtifactRelinkMetricName =
+  (typeof RepositoryArtifactRelinkMetricName)[keyof typeof RepositoryArtifactRelinkMetricName];
+
+type FetchInstallationRepositoriesResult =
+  | { ok: true; repositories: RepositoryInput[] }
+  | {
+      ok: false;
+      repositories: RepositoryInput[];
+      error:
+        | typeof RepositoryArtifactRelinkFailureReason.RepositoryFetchFailed
+        | typeof RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial;
+    };
+
+type RelinkPullRequestDetailsInput = {
+  activeRepositoryId: string;
+  branchArtifactId: string;
+  currentPullRequestDetailId: string | null;
+  oldRepositoryId: string;
+  organizationId: string;
+};
+
+type GitHubOAuthToken = {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresInSeconds: number | null;
+  refreshTokenExpiresInSeconds: number | null;
+  scopes: string[];
+};
+
+type GitHubOAuthUser = {
+  id: number;
+  login: string;
+  node_id?: string | null;
+  avatar_url?: string | null;
+  html_url?: string | null;
+};
+
+const OAUTH_SCOPE_SEPARATOR_PATTERN = /[,\s]+/;
 
 /**
  * Fetch the authenticated GitHub user's info using an access token.
  */
 async function fetchGitHubUser(
   accessToken: string
-): Promise<{ id: number; login: string } | null> {
+): Promise<GitHubOAuthUser | null> {
   const response = await fetch("https://api.github.com/user", {
     headers: {
       Accept: "application/vnd.github+json",
@@ -57,23 +181,38 @@ async function fetchGitHubUser(
     return null;
   }
 
-  return response.json() as Promise<{ id: number; login: string }>;
+  return response.json() as Promise<GitHubOAuthUser>;
+}
+
+async function fetchRequiredGitHubUser(
+  accessToken: string
+): Promise<GitHubOAuthUser> {
+  const user = await fetchGitHubUser(accessToken);
+  if (!user) {
+    throw new Error("Failed to fetch GitHub user info");
+  }
+  return user;
 }
 
 /**
  * Check if an installation can be claimed by the given organization.
  * Returns an error message if claim is blocked, null if allowed.
  *
- * Blocks claims when the installation is already owned by a different org,
- * regardless of status (ACTIVE, SUSPENDED, etc.). This prevents hijacking
- * when a GitHub admin suspends an installation but the org link remains.
- * Only UNINSTALLED installations (which have organizationId cleared) can be re-claimed.
+ * Ownership rules:
+ *  - unclaimed (organizationId === null) → claim allowed
+ *  - same-org (organizationId === targetOrgId) → claim allowed regardless of
+ *    status. Covers idempotent re-claim of an ACTIVE row and re-claim of an
+ *    UNINSTALLED row whose org link is preserved across disconnect for the
+ *    same-account reconnect path (see disconnectInstallation).
+ *  - different-org (organizationId set and ≠ targetOrgId) → claim blocked.
+ *    Prevents hijacking when a GitHub admin suspends an installation but the
+ *    org link remains, and prevents a fresh installation row from being
+ *    claimed for the wrong tenant.
  */
 function validateInstallationClaim(
   installation: { organizationId: string | null; status: string },
   targetOrgId: string
 ): string | null {
-  // Block claim if installation is already owned by a different org (any status)
   if (
     installation.organizationId &&
     installation.organizationId !== targetOrgId
@@ -83,13 +222,1120 @@ function validateInstallationClaim(
   return null;
 }
 
+function repositoryIdentityKey(repo: { githubRepoId: string }): string {
+  return repo.githubRepoId;
+}
+
+function createRepositoryArtifactRelinkResult(
+  overrides: Partial<RepositoryArtifactRelinkResult> = {}
+): RepositoryArtifactRelinkResult {
+  return {
+    status: RepositoryArtifactRelinkStatus.Skipped,
+    reasons: [RepositoryArtifactRelinkReason.None],
+    activeRepositoryCount: 0,
+    staleRepositoryCount: 0,
+    branchRelinkedCount: 0,
+    pullRequestRelinkedCount: 0,
+    branchCollisionSkippedCount: 0,
+    pullRequestCollisionSkippedCount: 0,
+    ambiguousRepositorySkippedCount: 0,
+    blockedBranchCount: 0,
+    ...overrides,
+  };
+}
+
+function addRelinkReason(
+  result: RepositoryArtifactRelinkResult,
+  reason: RepositoryArtifactRelinkReason
+) {
+  if (reason === RepositoryArtifactRelinkReason.None) {
+    return;
+  }
+  result.reasons = result.reasons.filter(
+    (existing) => existing !== RepositoryArtifactRelinkReason.None
+  );
+  if (!result.reasons.includes(reason)) {
+    result.reasons.push(reason);
+  }
+}
+
+function finalizeRepositoryArtifactRelinkResult(
+  result: RepositoryArtifactRelinkResult
+): RepositoryArtifactRelinkResult {
+  const skippedOrBlocked =
+    result.branchCollisionSkippedCount +
+    result.pullRequestCollisionSkippedCount +
+    result.ambiguousRepositorySkippedCount +
+    result.blockedBranchCount;
+  if (skippedOrBlocked > 0) {
+    return { ...result, status: RepositoryArtifactRelinkStatus.Partial };
+  }
+  if (result.branchRelinkedCount > 0 || result.pullRequestRelinkedCount > 0) {
+    return { ...result, status: RepositoryArtifactRelinkStatus.Completed };
+  }
+  return { ...result, status: RepositoryArtifactRelinkStatus.Skipped };
+}
+
+function emitRepositoryArtifactRelinkCompletedMetric(
+  result: RepositoryArtifactRelinkResult,
+  failureStage: RepositoryArtifactRelinkFailureStage
+) {
+  try {
+    emitTelemetryMetric({
+      metric: RepositoryArtifactRelinkMetricName.Completed,
+      count: 1,
+      status: result.status,
+      reasonCount: result.reasons.filter(
+        (reason) => reason !== RepositoryArtifactRelinkReason.None
+      ).length,
+      activeRepositoryCount: result.activeRepositoryCount,
+      staleRepositoryCount: result.staleRepositoryCount,
+      branchRelinkedCount: result.branchRelinkedCount,
+      pullRequestRelinkedCount: result.pullRequestRelinkedCount,
+      branchCollisionSkippedCount: result.branchCollisionSkippedCount,
+      pullRequestCollisionSkippedCount: result.pullRequestCollisionSkippedCount,
+      ambiguousRepositorySkippedCount: result.ambiguousRepositorySkippedCount,
+      blockedBranchCount: result.blockedBranchCount,
+    });
+  } catch (error) {
+    emitRepositoryArtifactRelinkFailedMetric(
+      failureStage,
+      RepositoryArtifactRelinkFailureReason.TelemetryEmitFailed
+    );
+    log.warn("[github] Failed to emit artifact relink metric", {
+      error: parseError(error),
+    });
+  }
+}
+
+function emitRepositoryArtifactRelinkFailedMetric(
+  stage: RepositoryArtifactRelinkFailureStage,
+  reason: RepositoryArtifactRelinkFailureReason
+) {
+  try {
+    emitTelemetryMetric({
+      metric: RepositoryArtifactRelinkMetricName.Failed,
+      count: 1,
+      stage,
+      reason,
+    });
+  } catch (error) {
+    log.warn("[github] Failed to emit artifact relink failure metric", {
+      stage,
+      reason,
+      error: parseError(error),
+    });
+  }
+}
+
+/** Validate that an existing current-PR pointer still belongs to this branch. */
+async function loadValidCurrentPullRequestDetailId(
+  tx: TransactionClient,
+  input: RelinkPullRequestDetailsInput
+): Promise<string | null> {
+  if (!input.currentPullRequestDetailId) {
+    return null;
+  }
+
+  const currentDetail = await tx.pullRequestDetail.findFirst({
+    where: {
+      id: input.currentPullRequestDetailId,
+      branchArtifactId: input.branchArtifactId,
+      branchArtifact: { organizationId: input.organizationId },
+      OR: [
+        { repositoryId: input.oldRepositoryId },
+        { repositoryId: input.activeRepositoryId },
+      ],
+    },
+    select: { id: true },
+  });
+  if (currentDetail) {
+    return currentDetail.id;
+  }
+
+  log.warn(
+    "[github] Cleared invalid current PR pointer before stale repository relink",
+    {
+      activeRepositoryId: input.activeRepositoryId,
+      branchArtifactId: input.branchArtifactId,
+      currentPullRequestDetailId: input.currentPullRequestDetailId,
+      oldRepositoryId: input.oldRepositoryId,
+    }
+  );
+  return null;
+}
+
+type ActivePrCollision = {
+  id: string;
+  number: number;
+  branchArtifactId: string;
+  branchArtifact: { organizationId: string };
+};
+
+/**
+ * Load active-repository PR details that share a number with any stale detail,
+ * keyed by number. (repositoryId, number) is unique, so each number maps to at
+ * most one active row, and stale details carry distinct numbers within their
+ * repository, so this single read losslessly replaces the per-detail findFirst.
+ */
+async function loadActivePrCollisionsByNumber(
+  tx: TransactionClient,
+  activeRepositoryId: string,
+  numbers: number[]
+): Promise<Map<number, ActivePrCollision>> {
+  if (numbers.length === 0) {
+    return new Map();
+  }
+  const collisions = await tx.pullRequestDetail.findMany({
+    where: {
+      repositoryId: activeRepositoryId,
+      number: { in: numbers },
+    },
+    select: {
+      id: true,
+      number: true,
+      branchArtifactId: true,
+      branchArtifact: { select: { organizationId: true } },
+    },
+  });
+  return new Map(collisions.map((collision) => [collision.number, collision]));
+}
+
+/**
+ * Move branch-owned PR details to the active repository row while preserving
+ * the invariant that a branch has at most one current PR detail. A PR-number
+ * collision can only be reused when it already belongs to the same branch
+ * artifact and organization; collisions for any other branch block the branch
+ * relink so tenant isolation and current-detail ownership stay intact.
+ */
+async function relinkPullRequestDetailsForBranch(
+  tx: TransactionClient,
+  input: RelinkPullRequestDetailsInput
+): Promise<{
+  blocked: boolean;
+  currentPullRequestDetailId: string | null;
+  pullRequestCount: number;
+  pullRequestCollisionSkippedCount: number;
+}> {
+  let currentPullRequestDetailId = await loadValidCurrentPullRequestDetailId(
+    tx,
+    input
+  );
+  let pullRequestCount = 0;
+  let pullRequestCollisionSkippedCount = 0;
+
+  const stalePrDetails = await tx.pullRequestDetail.findMany({
+    where: {
+      branchArtifactId: input.branchArtifactId,
+      repositoryId: input.oldRepositoryId,
+      branchArtifact: {
+        organizationId: input.organizationId,
+      },
+    },
+    select: { id: true, isCurrent: true, number: true },
+  });
+  if (!currentPullRequestDetailId) {
+    currentPullRequestDetailId =
+      stalePrDetails.find((detail) => detail.isCurrent)?.id ?? null;
+  }
+  const collisionByStaleDetailId = new Map<string, string>();
+
+  // Batch the active-repository collision lookups into a single read keyed by
+  // PR number instead of one findFirst per stale detail.
+  const activeCollisionByNumber = await loadActivePrCollisionsByNumber(
+    tx,
+    input.activeRepositoryId,
+    stalePrDetails.map((detail) => detail.number)
+  );
+
+  for (const detail of stalePrDetails) {
+    const candidate = activeCollisionByNumber.get(detail.number);
+    // A stale detail lives in oldRepositoryId, so it never matches the active
+    // query; the id guard preserves the original `id: { not: detail.id }` skip.
+    if (candidate && candidate.id !== detail.id) {
+      const collision = candidate;
+      if (
+        collision.branchArtifact.organizationId !== input.organizationId ||
+        collision.branchArtifactId !== input.branchArtifactId
+      ) {
+        log.warn(
+          "[github] Skipped stale PR relink because active PR number collision belongs to another branch artifact",
+          {
+            activeRepositoryId: input.activeRepositoryId,
+            branchArtifactId: input.branchArtifactId,
+            collisionBranchArtifactId: collision.branchArtifactId,
+            oldRepositoryId: input.oldRepositoryId,
+            prNumber: detail.number,
+          }
+        );
+        return {
+          blocked: true,
+          currentPullRequestDetailId: input.currentPullRequestDetailId,
+          pullRequestCount,
+          pullRequestCollisionSkippedCount:
+            pullRequestCollisionSkippedCount + 1,
+        };
+      }
+      collisionByStaleDetailId.set(detail.id, collision.id);
+      pullRequestCollisionSkippedCount++;
+    }
+  }
+
+  for (const detail of stalePrDetails) {
+    const collisionId = collisionByStaleDetailId.get(detail.id);
+    if (collisionId) {
+      if (currentPullRequestDetailId === detail.id) {
+        currentPullRequestDetailId = collisionId;
+      }
+      continue;
+    }
+
+    await tx.pullRequestDetail.update({
+      where: { id: detail.id },
+      data: {
+        isCurrent: detail.id === currentPullRequestDetailId,
+        repositoryId: input.activeRepositoryId,
+      },
+    });
+    pullRequestCount++;
+  }
+
+  if (currentPullRequestDetailId) {
+    await tx.pullRequestDetail.updateMany({
+      where: {
+        branchArtifactId: input.branchArtifactId,
+        isCurrent: true,
+        id: { not: currentPullRequestDetailId },
+      },
+      data: { isCurrent: false },
+    });
+    const updateCurrentResult = await tx.pullRequestDetail.updateMany({
+      where: {
+        id: currentPullRequestDetailId,
+        branchArtifactId: input.branchArtifactId,
+        branchArtifact: { organizationId: input.organizationId },
+        repositoryId: input.activeRepositoryId,
+      },
+      data: { isCurrent: true },
+    });
+    if (updateCurrentResult.count !== 1) {
+      log.warn(
+        "[github] Cleared current PR pointer because current detail ownership changed",
+        {
+          activeRepositoryId: input.activeRepositoryId,
+          branchArtifactId: input.branchArtifactId,
+          currentPullRequestDetailId,
+          oldRepositoryId: input.oldRepositoryId,
+        }
+      );
+      currentPullRequestDetailId = null;
+      await tx.pullRequestDetail.updateMany({
+        where: {
+          branchArtifactId: input.branchArtifactId,
+          isCurrent: true,
+        },
+        data: { isCurrent: false },
+      });
+    }
+  }
+
+  return {
+    blocked: false,
+    currentPullRequestDetailId,
+    pullRequestCount,
+    pullRequestCollisionSkippedCount,
+  };
+}
+
+async function relinkBranchDetailsToActiveRepository(
+  tx: TransactionClient,
+  oldRepositoryId: string,
+  activeRepositoryId: string,
+  organizationId: string
+): Promise<{
+  branchCount: number;
+  pullRequestCount: number;
+  branchCollisionSkippedCount: number;
+  pullRequestCollisionSkippedCount: number;
+  blockedBranchCount: number;
+}> {
+  let branchCount = 0;
+  let pullRequestCount = 0;
+  let branchCollisionSkippedCount = 0;
+  let pullRequestCollisionSkippedCount = 0;
+  let blockedBranchCount = 0;
+  const staleBranches = await tx.branchDetail.findMany({
+    where: {
+      repositoryId: oldRepositoryId,
+      artifact: {
+        organizationId,
+      },
+    },
+    select: {
+      artifactId: true,
+      branchName: true,
+      currentPullRequestDetailId: true,
+    },
+  });
+
+  // Batch the active-repository branch-name collision lookups into a single
+  // read instead of one findUnique per stale branch. (repositoryId, branchName)
+  // is unique and stale branches all live in oldRepositoryId with distinct
+  // names, so the map captures every collision without loss.
+  const staleBranchNames = staleBranches.map((branch) => branch.branchName);
+  const activeBranchCollisions =
+    staleBranchNames.length > 0
+      ? await tx.branchDetail.findMany({
+          where: {
+            repositoryId: activeRepositoryId,
+            branchName: { in: staleBranchNames },
+          },
+          select: { artifactId: true, branchName: true },
+        })
+      : [];
+  const activeBranchCollisionByName = new Map<
+    string,
+    (typeof activeBranchCollisions)[number]
+  >();
+  for (const collision of activeBranchCollisions) {
+    activeBranchCollisionByName.set(collision.branchName, collision);
+  }
+
+  for (const branch of staleBranches) {
+    const branchCollision =
+      activeBranchCollisionByName.get(branch.branchName) ?? null;
+
+    if (branchCollision) {
+      branchCollisionSkippedCount++;
+      continue;
+    }
+
+    const prRelink = await relinkPullRequestDetailsForBranch(tx, {
+      activeRepositoryId,
+      branchArtifactId: branch.artifactId,
+      currentPullRequestDetailId: branch.currentPullRequestDetailId,
+      oldRepositoryId,
+      organizationId,
+    });
+    if (prRelink.blocked) {
+      blockedBranchCount++;
+      pullRequestCollisionSkippedCount +=
+        prRelink.pullRequestCollisionSkippedCount;
+      continue;
+    }
+
+    await tx.branchDetail.update({
+      where: { artifactId: branch.artifactId },
+      data: {
+        currentPullRequestDetailId: prRelink.currentPullRequestDetailId,
+        repositoryId: activeRepositoryId,
+      },
+    });
+    branchCount++;
+    pullRequestCount += prRelink.pullRequestCount;
+    pullRequestCollisionSkippedCount +=
+      prRelink.pullRequestCollisionSkippedCount;
+  }
+
+  return {
+    branchCount,
+    pullRequestCount,
+    branchCollisionSkippedCount,
+    pullRequestCollisionSkippedCount,
+    blockedBranchCount,
+  };
+}
+
+/**
+ * Re-home branch and PR detail rows after a GitHub App reinstall creates a
+ * replacement GitHubInstallationRepository row for the same GitHub repo.
+ *
+ * Branch view intentionally requires the repository's installation to be
+ * ACTIVE. Without this reconciliation, existing branch artifacts can keep
+ * pointing at a repository row owned by an UNINSTALLED installation and 404
+ * even though the branch artifact and pull request still exist.
+ */
+async function relinkArtifactsToActiveRepositories(
+  tx: TransactionClient,
+  activeInstallationId: string,
+  repositories: RepositoryRelinkCandidate[],
+  expectedOrganizationId?: string
+): Promise<RepositoryArtifactRelinkResult> {
+  const activeRepositories = repositories.filter(
+    (repo) => repo.id && repo.githubRepoId && repo.fullName
+  );
+  const result = createRepositoryArtifactRelinkResult({
+    activeRepositoryCount: activeRepositories.length,
+  });
+  if (activeRepositories.length === 0) {
+    addRelinkReason(
+      result,
+      RepositoryArtifactRelinkReason.NoActiveRepositories
+    );
+    return finalizeRepositoryArtifactRelinkResult(result);
+  }
+
+  const activeInstallation = await tx.gitHubInstallation.findFirst({
+    where: {
+      id: activeInstallationId,
+      status: GitHubInstallationStatus.ACTIVE,
+      ...(expectedOrganizationId
+        ? { organizationId: expectedOrganizationId }
+        : { organizationId: { not: null } }),
+    },
+    select: { organizationId: true, status: true },
+  });
+  if (!activeInstallation?.organizationId) {
+    addRelinkReason(
+      result,
+      RepositoryArtifactRelinkReason.NoActiveInstallation
+    );
+    return finalizeRepositoryArtifactRelinkResult(result);
+  }
+
+  const activeByIdentity = new Map<string, RepositoryRelinkCandidate>();
+  const ambiguousActiveIdentities = new Set<string>();
+  for (const activeRepository of activeRepositories) {
+    const identity = repositoryIdentityKey(activeRepository);
+    if (activeByIdentity.has(identity)) {
+      activeByIdentity.delete(identity);
+      ambiguousActiveIdentities.add(identity);
+      result.ambiguousRepositorySkippedCount++;
+      addRelinkReason(
+        result,
+        RepositoryArtifactRelinkReason.ActiveRepositoryAmbiguous
+      );
+      continue;
+    }
+    if (!ambiguousActiveIdentities.has(identity)) {
+      activeByIdentity.set(identity, activeRepository);
+    }
+  }
+  const staleRepositories = await tx.gitHubInstallationRepository.findMany({
+    where: {
+      installationId: { not: activeInstallationId },
+      githubRepoId: { in: activeRepositories.map((repo) => repo.githubRepoId) },
+      branchDetails: {
+        some: {
+          artifact: {
+            organizationId: activeInstallation.organizationId,
+          },
+        },
+      },
+      installation: {
+        OR: [
+          { organizationId: null },
+          { status: { not: GitHubInstallationStatus.ACTIVE } },
+        ],
+      },
+    },
+    select: {
+      id: true,
+      githubRepoId: true,
+      fullName: true,
+    },
+  });
+  result.staleRepositoryCount = staleRepositories.length;
+
+  for (const staleRepository of staleRepositories) {
+    const activeRepository = activeByIdentity.get(
+      repositoryIdentityKey(staleRepository)
+    );
+    if (!activeRepository) {
+      result.ambiguousRepositorySkippedCount++;
+      addRelinkReason(
+        result,
+        RepositoryArtifactRelinkReason.ActiveRepositoryAmbiguous
+      );
+      continue;
+    }
+
+    const relinked = await relinkBranchDetailsToActiveRepository(
+      tx,
+      staleRepository.id,
+      activeRepository.id,
+      activeInstallation.organizationId
+    );
+    result.branchRelinkedCount += relinked.branchCount;
+    result.pullRequestRelinkedCount += relinked.pullRequestCount;
+    result.branchCollisionSkippedCount += relinked.branchCollisionSkippedCount;
+    result.pullRequestCollisionSkippedCount +=
+      relinked.pullRequestCollisionSkippedCount;
+    result.blockedBranchCount += relinked.blockedBranchCount;
+  }
+
+  if (result.branchCollisionSkippedCount > 0) {
+    addRelinkReason(result, RepositoryArtifactRelinkReason.BranchNameCollision);
+  }
+  if (result.pullRequestCollisionSkippedCount > 0) {
+    addRelinkReason(
+      result,
+      RepositoryArtifactRelinkReason.PullRequestNumberCollision
+    );
+  }
+  if (result.blockedBranchCount > 0) {
+    addRelinkReason(result, RepositoryArtifactRelinkReason.GuardedWriteFailed);
+  }
+
+  const finalizedResult = finalizeRepositoryArtifactRelinkResult(result);
+  if (
+    finalizedResult.branchRelinkedCount > 0 ||
+    finalizedResult.pullRequestRelinkedCount > 0
+  ) {
+    log.info("[github] Relinked stale repository artifacts", {
+      activeInstallationId,
+      branchCount: finalizedResult.branchRelinkedCount,
+      pullRequestCount: finalizedResult.pullRequestRelinkedCount,
+    });
+  }
+
+  return finalizedResult;
+}
+
+async function runRepositoryArtifactRelink(input: {
+  installationId: string;
+  repositories: RepositoryRelinkCandidate[];
+  expectedOrganizationId?: string;
+  failureStage: RepositoryArtifactRelinkFailureStage;
+}): Promise<RepositoryArtifactRelinkResult> {
+  try {
+    const result = await withDb.tx((tx) =>
+      relinkArtifactsToActiveRepositories(
+        tx,
+        input.installationId,
+        input.repositories,
+        input.expectedOrganizationId
+      )
+    );
+    emitRepositoryArtifactRelinkCompletedMetric(result, input.failureStage);
+    return result;
+  } catch (error) {
+    emitRepositoryArtifactRelinkFailedMetric(
+      input.failureStage,
+      RepositoryArtifactRelinkFailureReason.TransactionFailed
+    );
+    log.warn("[github] Failed to relink stale repository artifacts", {
+      installationId: input.installationId,
+      stage: input.failureStage,
+      error: parseError(error),
+    });
+    return createRepositoryArtifactRelinkResult({
+      reasons: [RepositoryArtifactRelinkReason.GuardedWriteFailed],
+    });
+  }
+}
+
+/**
+ * Subset of the GitHub `installation` payload we actually persist. Anchored
+ * to the Octokit `GET /user/installations` response — the upstream type's
+ * `account` is `SimpleUser | Enterprise | null`, so we keep this narrower
+ * shape (non-null account, only the fields we read) instead of threading
+ * null checks through every call site that builds a Prisma row.
+ *
+ * Source of truth: Endpoints["GET /user/installations"] in `@octokit/types`.
+ */
 type GitHubRawInstallation = {
   id: number;
   account: { id: number; login: string; type: string };
-  permissions: unknown;
-  events: unknown;
+  permissions: Prisma.InputJsonValue;
+  events: Prisma.InputJsonValue;
   repository_selection: string;
 };
+
+function parseOAuthScopes(scope: string | null | undefined): string[] {
+  return (scope ?? "")
+    .split(OAUTH_SCOPE_SEPARATOR_PATTERN)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function expiresAtFromSeconds(
+  issuedAt: Date,
+  seconds: number | null
+): Date | null {
+  if (seconds === null) {
+    return null;
+  }
+  return new Date(issuedAt.getTime() + seconds * 1000);
+}
+
+function parseExpiresInSeconds(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+async function persistGitHubUserConnection(
+  tx: TransactionClient,
+  input: {
+    organizationId: string;
+    userId: string;
+    githubUser: GitHubOAuthUser;
+    token: GitHubOAuthToken;
+    encryptedAccessToken: string;
+    encryptedRefreshToken: string | null;
+    issuedAt: Date;
+  }
+): Promise<void> {
+  const connectionData = {
+    githubUserId: String(input.githubUser.id),
+    githubNodeId: input.githubUser.node_id ?? null,
+    login: input.githubUser.login,
+    normalizedLogin: normalizeGitHubLogin(input.githubUser.login),
+    avatarUrl: input.githubUser.avatar_url ?? null,
+    profileUrl: input.githubUser.html_url ?? null,
+    accessTokenEncrypted: input.encryptedAccessToken,
+    refreshTokenEncrypted: input.encryptedRefreshToken,
+    tokenExpiresAt: expiresAtFromSeconds(
+      input.issuedAt,
+      input.token.expiresInSeconds
+    ),
+    refreshTokenExpiresAt: expiresAtFromSeconds(
+      input.issuedAt,
+      input.token.refreshTokenExpiresInSeconds
+    ),
+    scopes: input.token.scopes,
+  };
+
+  await tx.gitHubUserConnection.upsert({
+    where: {
+      organizationId_userId: {
+        organizationId: input.organizationId,
+        userId: input.userId,
+      },
+    },
+    create: {
+      organizationId: input.organizationId,
+      userId: input.userId,
+      ...connectionData,
+    },
+    update: {
+      ...connectionData,
+      revokedAt: null,
+    },
+  });
+}
+
+async function claimInstallationAndPersistGitHubUserConnection(input: {
+  installationRecordId: string;
+  organizationId: string;
+  userId: string;
+  githubUser: GitHubOAuthUser;
+  token: GitHubOAuthToken;
+  encryptedAccessToken: string;
+  encryptedRefreshToken: string | null;
+  issuedAt: Date;
+}): Promise<number> {
+  return await withDb.tx(async (tx) => {
+    const claimResult = await tx.gitHubInstallation.updateMany({
+      where: {
+        id: input.installationRecordId,
+        OR: [
+          { organizationId: null },
+          { organizationId: input.organizationId },
+        ],
+      },
+      data: {
+        status: GitHubInstallationStatus.ACTIVE,
+        organizationId: input.organizationId,
+        claimedAt: new Date(),
+        claimedByUserId: input.userId,
+      },
+    });
+
+    if (claimResult.count !== 1) {
+      return claimResult.count;
+    }
+
+    await persistGitHubUserConnection(tx, {
+      organizationId: input.organizationId,
+      userId: input.userId,
+      githubUser: input.githubUser,
+      token: input.token,
+      encryptedAccessToken: input.encryptedAccessToken,
+      encryptedRefreshToken: input.encryptedRefreshToken,
+      issuedAt: input.issuedAt,
+    });
+
+    return claimResult.count;
+  });
+}
+
+type ResolvedInstallation = {
+  id: number;
+  info: GitHubRawInstallation;
+};
+
+/**
+ * Fetch the repository list for a given installation via GitHub's user
+ * installations endpoint. Returns null when the request fails so the caller
+ * can decide whether to abort or proceed. Extracted from completeOAuthCallback
+ * so the same fetch can feed both the regular claim path and the reuse-in-
+ * place reconciler (PLN-634).
+ */
+async function fetchInstallationRepositories(
+  userAccessToken: string,
+  resolvedInstallationId: number
+): Promise<FetchInstallationRepositoriesResult> {
+  const repositories: RepositoryInput[] = [];
+  let pageUrl: string | null =
+    `https://api.github.com/user/installations/${resolvedInstallationId}/repositories?per_page=100`;
+  let page = 1;
+
+  try {
+    while (pageUrl) {
+      const reposResponse = await fetch(pageUrl, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${userAccessToken}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
+
+      if (!reposResponse.ok) {
+        const error =
+          page === 1
+            ? RepositoryArtifactRelinkFailureReason.RepositoryFetchFailed
+            : RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial;
+        log.warn("[github/oauth] Failed to fetch repositories", {
+          status: reposResponse.status,
+          installationId: resolvedInstallationId,
+          page,
+          error,
+        });
+        return { ok: false, repositories, error };
+      }
+
+      const reposData = (await reposResponse.json()) as {
+        repositories?: Array<{
+          id: number;
+          full_name: string;
+          name: string;
+          owner: { login: string };
+          private: boolean;
+        }>;
+      };
+
+      repositories.push(
+        ...(reposData.repositories ?? []).map((repo) => ({
+          githubRepoId: String(repo.id),
+          fullName: repo.full_name,
+          name: repo.name,
+          owner: repo.owner.login,
+          private: repo.private,
+        }))
+      );
+
+      const nextPage = parseNextRepositoryPageUrl(
+        reposResponse.headers.get("link"),
+        resolvedInstallationId
+      );
+      if (!nextPage.valid) {
+        log.warn("[github/oauth] Ignored invalid repository pagination link", {
+          installationId: resolvedInstallationId,
+          page,
+        });
+        return {
+          ok: false,
+          repositories,
+          error: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
+        };
+      }
+      pageUrl = nextPage.url;
+      page++;
+    }
+
+    return { ok: true, repositories };
+  } catch (error) {
+    log.warn("[github/oauth] Repository fetch threw", {
+      installationId: resolvedInstallationId,
+      error: parseError(error),
+    });
+    return {
+      ok: false,
+      repositories,
+      error:
+        repositories.length === 0
+          ? RepositoryArtifactRelinkFailureReason.RepositoryFetchFailed
+          : RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
+    };
+  }
+}
+
+function parseNextRepositoryPageUrl(
+  linkHeader: string | null,
+  resolvedInstallationId: number
+): { valid: true; url: string | null } | { valid: false } {
+  if (!linkHeader) {
+    return { valid: true, url: null };
+  }
+  for (const part of linkHeader.split(",")) {
+    const [urlPart, ...parameters] = part.trim().split(";");
+    const hasNextRel = parameters.some(
+      (parameter) => parameter.trim() === 'rel="next"'
+    );
+    if (hasNextRel && !(urlPart.startsWith("<") && urlPart.endsWith(">"))) {
+      return { valid: false };
+    }
+    if (hasNextRel) {
+      const url = urlPart.slice(1, -1);
+      if (isAllowedRepositoryPageUrl(url, resolvedInstallationId)) {
+        return { valid: true, url };
+      }
+      return { valid: false };
+    }
+  }
+  return { valid: true, url: null };
+}
+
+function isAllowedRepositoryPageUrl(
+  candidate: string,
+  resolvedInstallationId: number
+): boolean {
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== "https:" || url.hostname !== "api.github.com") {
+      return false;
+    }
+    if (
+      url.pathname !==
+      `/user/installations/${resolvedInstallationId}/repositories`
+    ) {
+      return false;
+    }
+    if (url.searchParams.get("per_page") !== "100") {
+      return false;
+    }
+    const page = url.searchParams.get("page");
+    return Boolean(page && Number.isInteger(Number(page)) && Number(page) > 1);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Same-account reconnect path (PLN-634).
+ *
+ * Reuses the prior UNINSTALLED installation row in place so all dependent
+ * UUIDs (TeamRepository, BranchDetail.repositoryId, PullRequestDetail.
+ * repositoryId, GitHubInstallationRepository) are preserved across the
+ * disconnect/reinstall window.
+ *
+ * Steps inside a single transaction:
+ *  1. Drop a freshly-created row (if any) carrying the new GitHub
+ *     installationId — typically created by the `installation.created`
+ *     webhook between disconnect and OAuth callback. This frees the
+ *     `installationId @unique` slot before step 2.
+ *  2. Update the prior row's `installationId` to the new GitHub install ID,
+ *     flip status to ACTIVE, refresh GitHub-side fields.
+ *  3. Reconcile repositories by `githubRepoId`:
+ *     - Upsert each incoming repo (existing rows keep their UUID; fullName
+ *       and other fields are refreshed; `removedAt` is cleared if the repo
+ *       reappears after a previous tombstone).
+ *     - Tombstone each existing repo whose `githubRepoId` is absent from
+ *       the new install. We do NOT delete because BranchDetail /
+ *       PullRequestDetail rows may still reference the row.
+ */
+async function reconnectByAccount(input: {
+  priorInstallationId: string;
+  resolved: ResolvedInstallation;
+  organizationId: string;
+  userId: string;
+  githubUser: GitHubOAuthUser;
+  token: GitHubOAuthToken;
+  encryptedAccessToken: string;
+  encryptedRefreshToken: string | null;
+  issuedAt: Date;
+  repositories: RepositoryInput[];
+}): Promise<void> {
+  const newGithubInstallationId = String(input.resolved.id);
+  await withDb.tx(async (tx) => {
+    // Only drop a fresh PENDING_CLAIM row created by the webhook race. The
+    // `organizationId: null` + `status: PENDING_CLAIM` filter guarantees we
+    // never delete a row that some other tenant has already claimed or that
+    // is in any state other than the transient PENDING_CLAIM the webhook
+    // creates. If a sibling row exists in a different state the subsequent
+    // update will fail on the `installationId @unique` constraint, surfacing
+    // the conflict rather than silently corrupting another org's installation.
+    await tx.gitHubInstallation.deleteMany({
+      where: {
+        installationId: newGithubInstallationId,
+        id: { not: input.priorInstallationId },
+        organizationId: null,
+        status: GitHubInstallationStatus.PENDING_CLAIM,
+      },
+    });
+
+    await tx.gitHubInstallation.update({
+      where: { id: input.priorInstallationId },
+      data: {
+        installationId: newGithubInstallationId,
+        status: GitHubInstallationStatus.ACTIVE,
+        claimedAt: new Date(),
+        claimedByUserId: input.userId,
+        accountLogin: input.resolved.info.account.login,
+        accountType: input.resolved.info.account.type,
+        senderLogin: input.githubUser?.login ?? "oauth",
+        senderId: String(input.githubUser?.id ?? 0),
+        permissions: input.resolved.info.permissions,
+        events: input.resolved.info.events,
+        repositorySelection: input.resolved.info.repository_selection,
+        // Any prior different-account confirmation is moot now.
+        pendingNewInstallationId: null,
+      },
+    });
+
+    await persistGitHubUserConnection(tx, {
+      organizationId: input.organizationId,
+      userId: input.userId,
+      githubUser: input.githubUser,
+      token: input.token,
+      encryptedAccessToken: input.encryptedAccessToken,
+      encryptedRefreshToken: input.encryptedRefreshToken,
+      issuedAt: input.issuedAt,
+    });
+
+    const incomingByRepoId = new Set(
+      input.repositories.map((repo) => repo.githubRepoId)
+    );
+
+    await Promise.all(
+      input.repositories.map((repo) =>
+        tx.gitHubInstallationRepository.upsert({
+          where: {
+            installationId_githubRepoId: {
+              installationId: input.priorInstallationId,
+              githubRepoId: repo.githubRepoId,
+            },
+          },
+          create: {
+            installationId: input.priorInstallationId,
+            githubRepoId: repo.githubRepoId,
+            fullName: repo.fullName,
+            name: repo.name,
+            owner: repo.owner,
+            private: repo.private,
+          },
+          update: {
+            fullName: repo.fullName,
+            name: repo.name,
+            owner: repo.owner,
+            private: repo.private,
+            removedAt: null,
+          },
+        })
+      )
+    );
+
+    const existing = await tx.gitHubInstallationRepository.findMany({
+      where: {
+        installationId: input.priorInstallationId,
+        removedAt: null,
+      },
+      select: { id: true, githubRepoId: true },
+    });
+    const tombstoneIds = existing
+      .filter((row) => !incomingByRepoId.has(row.githubRepoId))
+      .map((row) => row.id);
+    if (tombstoneIds.length > 0) {
+      await tx.gitHubInstallationRepository.updateMany({
+        where: { id: { in: tombstoneIds } },
+        data: { removedAt: new Date() },
+      });
+    }
+  });
+
+  log.info("[github/oauth] Reused prior installation in-place", {
+    priorInstallationId: input.priorInstallationId,
+    newGithubInstallationId,
+    organizationId: input.organizationId,
+    repositoryCount: input.repositories.length,
+  });
+}
+
+/**
+ * Detect and execute the same-account reconnect path, or surface a
+ * pending-confirmation payload for the different-account path (PLN-634).
+ * Returns `null` when no prior UNINSTALLED row exists for this org so the
+ * caller falls through to the regular claim flow.
+ */
+async function tryReconnectExistingInstallation(input: {
+  organizationId: string;
+  userId: string;
+  userAccessToken: string;
+  githubUser: GitHubOAuthUser;
+  token: GitHubOAuthToken;
+  resolved: ResolvedInstallation;
+}): Promise<OAuthCallbackResult | null> {
+  const priorUninstalled = await withDb((db) =>
+    db.gitHubInstallation.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        status: GitHubInstallationStatus.UNINSTALLED,
+      },
+    })
+  );
+  if (!priorUninstalled) {
+    return null;
+  }
+
+  const newAccountId = String(input.resolved.info.account.id);
+  const newInstallationId = String(input.resolved.id);
+  const sameAccount = priorUninstalled.accountId === newAccountId;
+  if (!sameAccount) {
+    // Pin the candidate installation server-side so confirm-reset can't be
+    // tricked into claiming an attacker-supplied installationId. A fresh
+    // OAuth attempt simply overwrites the pinned value.
+    await withDb((db) =>
+      db.gitHubInstallation.update({
+        where: { id: priorUninstalled.id },
+        data: { pendingNewInstallationId: newInstallationId },
+      })
+    );
+    log.info("[github/oauth] Detected different-account reconnect", {
+      organizationId: input.organizationId,
+      priorAccountId: priorUninstalled.accountId,
+      newAccountId,
+    });
+    return {
+      status: "requires_confirmation",
+      priorAccount: {
+        accountId: priorUninstalled.accountId,
+        accountLogin: priorUninstalled.accountLogin,
+      },
+      newAccount: {
+        accountId: newAccountId,
+        accountLogin: input.resolved.info.account.login,
+      },
+      newInstallationId,
+    };
+  }
+
+  const repositoriesResult = await fetchInstallationRepositories(
+    input.userAccessToken,
+    input.resolved.id
+  );
+  if (!repositoriesResult.ok) {
+    return {
+      status: "error",
+      error: "Failed to fetch repositories from GitHub",
+    };
+  }
+  const issuedAt = new Date();
+  const { encryptedAccessToken, encryptedRefreshToken } =
+    await encryptTokenPair(input.token.accessToken, input.token.refreshToken);
+  await reconnectByAccount({
+    priorInstallationId: priorUninstalled.id,
+    resolved: input.resolved,
+    organizationId: input.organizationId,
+    userId: input.userId,
+    githubUser: input.githubUser,
+    token: input.token,
+    encryptedAccessToken,
+    encryptedRefreshToken,
+    issuedAt,
+    repositories: repositoriesResult.repositories,
+  });
+  return { status: "connected" };
+}
 
 /**
  * Exchange an OAuth authorization code for a user access token.
@@ -99,7 +1345,7 @@ async function exchangeCodeForToken(
   redirectUri: string,
   config: { GITHUB_APP_CLIENT_ID: string; GITHUB_APP_CLIENT_SECRET: string }
 ): Promise<
-  { success: true; token: string } | { success: false; error: string }
+  { success: true; token: GitHubOAuthToken } | { success: false; error: string }
 > {
   const tokenResponse = await fetch(
     "https://github.com/login/oauth/access_token",
@@ -131,6 +1377,10 @@ async function exchangeCodeForToken(
 
   const tokenData = (await tokenResponse.json()) as {
     access_token?: string;
+    refresh_token?: string;
+    expires_in?: unknown;
+    refresh_token_expires_in?: unknown;
+    scope?: string;
     error?: string;
     error_description?: string;
   };
@@ -146,7 +1396,18 @@ async function exchangeCodeForToken(
     };
   }
 
-  return { success: true, token: tokenData.access_token };
+  return {
+    success: true,
+    token: {
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token ?? null,
+      expiresInSeconds: parseExpiresInSeconds(tokenData.expires_in),
+      refreshTokenExpiresInSeconds: parseExpiresInSeconds(
+        tokenData.refresh_token_expires_in
+      ),
+      scopes: parseOAuthScopes(tokenData.scope),
+    },
+  };
 }
 
 /**
@@ -252,7 +1513,7 @@ export const githubService = {
           },
         },
         include: {
-          repositories: true,
+          repositories: { where: { removedAt: null } },
         },
       })
     );
@@ -268,7 +1529,7 @@ export const githubService = {
         installationId: installation.installationId,
         accountLogin: installation.accountLogin,
         accountType: installation.accountType,
-        status: installation.status,
+        status: installation.status as ApiGitHubInstallationStatus,
         repositorySelection: installation.repositorySelection,
         repositoryCount: installation.repositories.length,
         claimedAt: installation.claimedAt?.toISOString() ?? null,
@@ -301,12 +1562,12 @@ export const githubService = {
       // Exchange authorization code for user access token
       const tokenResult = await exchangeCodeForToken(code, redirectUri, config);
       if (!tokenResult.success) {
-        return tokenResult;
+        return { status: "error", error: tokenResult.error };
       }
-      const userAccessToken = tokenResult.token;
+      const userAccessToken = tokenResult.token.accessToken;
 
       // Fetch the authenticated GitHub user's info (for sender fields if we create the record)
-      const githubUser = await fetchGitHubUser(userAccessToken);
+      const githubUser = await fetchRequiredGitHubUser(userAccessToken);
 
       // Resolve installation: verify the provided ID, or pick from user's list
       const resolved = await resolveInstallation(
@@ -315,9 +1576,24 @@ export const githubService = {
         userId
       );
       if (!resolved.success) {
-        return resolved;
+        return { status: "error", error: resolved.error };
       }
       const resolvedInstallationId = resolved.id;
+
+      // PLN-634: detect same-vs-different-account reconnect for orgs that
+      // previously disconnected. `accountId` is the only stable identifier
+      // across reinstalls (installationId churns; accountLogin is renameable).
+      const reconnectResult = await tryReconnectExistingInstallation({
+        organizationId,
+        userId,
+        userAccessToken,
+        githubUser,
+        token: tokenResult.token,
+        resolved,
+      });
+      if (reconnectResult) {
+        return reconnectResult;
+      }
 
       // Find the installation record, or create it if the webhook hasn't arrived yet
       // This handles the race condition where OAuth callback arrives before webhook
@@ -331,26 +1607,43 @@ export const githubService = {
           { installationId: resolvedInstallationId }
         );
 
-        // Create the installation record (webhook will upsert if it arrives later)
-        installation = await this.upsertInstallation(
-          String(resolvedInstallationId),
+        try {
+          installation = await withDb((db) =>
+            db.gitHubInstallation.create({
+              data: {
+                installationId: String(resolvedInstallationId),
+                accountId: String(resolved.info.account.id),
+                accountLogin: resolved.info.account.login,
+                accountType: resolved.info.account.type,
+                senderLogin: githubUser.login,
+                senderId: String(githubUser.id),
+                status: GitHubInstallationStatus.PENDING_CLAIM,
+                permissions: resolved.info.permissions,
+                events: resolved.info.events,
+                repositorySelection: resolved.info.repository_selection,
+              },
+            })
+          );
+        } catch (error) {
+          if (getPrismaErrorCode(error) !== "P2002") {
+            throw error;
+          }
+          const racedInstallation = await this.findInstallationByInstallationId(
+            String(resolvedInstallationId)
+          );
+          if (!racedInstallation) {
+            throw error;
+          }
+          installation = racedInstallation;
+        }
+
+        log.info(
+          "[github/oauth] Resolved installation record from OAuth flow",
           {
-            accountId: String(resolved.info.account.id),
-            accountLogin: resolved.info.account.login,
-            accountType: resolved.info.account.type,
-            senderLogin: githubUser?.login ?? "oauth",
-            senderId: String(githubUser?.id ?? 0),
-            status: "PENDING_CLAIM", // Will be set to ACTIVE below
-            permissions: resolved.info.permissions,
-            events: resolved.info.events,
-            repositorySelection: resolved.info.repository_selection,
+            installationId: installation.id,
+            githubInstallationId: resolvedInstallationId,
           }
         );
-
-        log.info("[github/oauth] Created installation record from OAuth flow", {
-          installationId: installation.id,
-          githubInstallationId: resolvedInstallationId,
-        });
       }
 
       // Security check: Block claim if installation is already owned by a different org
@@ -368,62 +1661,73 @@ export const githubService = {
             userId,
           }
         );
-        return { success: false, error: claimError };
+        return { status: "error", error: claimError };
       }
 
-      // Claim the installation and link to organization in single update
-      await withDb((db) =>
-        db.gitHubInstallation.update({
-          where: { id: installation.id },
-          data: {
-            status: "ACTIVE",
+      const issuedAt = new Date();
+      const { encryptedAccessToken, encryptedRefreshToken } =
+        await encryptTokenPair(
+          tokenResult.token.accessToken,
+          tokenResult.token.refreshToken
+        );
+      let claimResultCount = 0;
+
+      try {
+        // Claim the installation and persist user OAuth identity in one
+        // transaction so upsert failures cannot leave a partial claim.
+        claimResultCount =
+          await claimInstallationAndPersistGitHubUserConnection({
+            installationRecordId: installation.id,
             organizationId,
-            claimedAt: new Date(),
-            claimedByUserId: userId,
-          },
-        })
-      );
-
-      // Fetch and sync repositories
-      const reposResponse = await fetch(
-        `https://api.github.com/user/installations/${resolvedInstallationId}/repositories`,
-        {
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${userAccessToken}`,
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        }
-      );
-
-      if (reposResponse.ok) {
-        const reposData = (await reposResponse.json()) as {
-          repositories?: Array<{
-            id: number;
-            full_name: string;
-            name: string;
-            owner: { login: string };
-            private: boolean;
-          }>;
-        };
-
-        if (reposData.repositories && reposData.repositories.length > 0) {
-          await this.syncRepositories(
-            installation.id,
-            reposData.repositories.map((repo) => ({
-              githubRepoId: String(repo.id),
-              fullName: repo.full_name,
-              name: repo.name,
-              owner: repo.owner.login,
-              private: repo.private,
-            }))
-          );
-        }
-      } else {
-        log.warn("[github/oauth] Failed to fetch repositories", {
-          status: reposResponse.status,
-          installationId: resolvedInstallationId,
+            userId,
+            githubUser,
+            token: tokenResult.token,
+            encryptedAccessToken,
+            encryptedRefreshToken,
+            issuedAt,
+          });
+      } catch (error) {
+        log.error("[github/oauth] Failed to persist GitHub user connection", {
+          installationId,
+          organizationId,
+          userId,
+          error: parseError(error),
         });
+        return {
+          status: "error",
+          error: "Failed to complete GitHub connection",
+        };
+      }
+
+      if (claimResultCount !== 1) {
+        log.warn(
+          "[github/oauth] Installation ownership changed before claim completed",
+          {
+            installationId,
+            attemptedOrgId: organizationId,
+            userId,
+          }
+        );
+        return {
+          status: "error",
+          error:
+            "This GitHub installation is already connected to another organization",
+        };
+      }
+      const repositoriesResult = await fetchInstallationRepositories(
+        userAccessToken,
+        resolvedInstallationId
+      );
+      if (!repositoriesResult.ok) {
+        emitRepositoryArtifactRelinkFailedMetric(
+          RepositoryArtifactRelinkFailureStage.OAuthClaim,
+          repositoriesResult.error
+        );
+      } else if (repositoriesResult.repositories.length > 0) {
+        await this.syncRepositories(
+          installation.id,
+          repositoriesResult.repositories
+        );
       }
 
       log.info("[github/oauth] Successfully connected GitHub installation", {
@@ -432,7 +1736,7 @@ export const githubService = {
         userId,
       });
 
-      return { success: true };
+      return { status: "connected" };
     } catch (error) {
       log.error("[github/oauth] Failed to complete OAuth callback", {
         installationId,
@@ -441,7 +1745,7 @@ export const githubService = {
         error: parseError(error),
       });
       return {
-        success: false,
+        status: "error",
         error: "Failed to complete GitHub connection",
       };
     }
@@ -539,6 +1843,47 @@ export const githubService = {
   },
 
   /**
+   * Relink stale Branch View rows to the active credential repository chosen
+   * by the resolver, then let callers reload a pinned-active context before
+   * running any provider-backed sync writes.
+   */
+  async relinkBranchViewRepositoryCredential(input: {
+    organizationId: string;
+    activeRepositoryId: string;
+  }): Promise<RepositoryArtifactRelinkResult> {
+    const activeRepository = await withDb((db) =>
+      db.gitHubInstallationRepository.findFirst({
+        where: {
+          id: input.activeRepositoryId,
+          removedAt: null,
+          installation: {
+            organizationId: input.organizationId,
+            status: GitHubInstallationStatus.ACTIVE,
+          },
+        },
+        select: {
+          id: true,
+          githubRepoId: true,
+          fullName: true,
+          installationId: true,
+        },
+      })
+    );
+    if (!activeRepository) {
+      return createRepositoryArtifactRelinkResult({
+        reasons: [RepositoryArtifactRelinkReason.NoActiveRepositories],
+      });
+    }
+
+    return await runRepositoryArtifactRelink({
+      installationId: activeRepository.installationId,
+      repositories: [activeRepository],
+      expectedOrganizationId: input.organizationId,
+      failureStage: RepositoryArtifactRelinkFailureStage.SyncPreflightRelink,
+    });
+  },
+
+  /**
    * Sync repositories for an installation.
    * Uses upsert to preserve record IDs and only removes repos no longer in the list.
    */
@@ -546,54 +1891,72 @@ export const githubService = {
     installationId: string,
     repositories: RepositoryInput[]
   ): Promise<GitHubInstallationRepository[]> {
-    return withDb.tx(async (tx) => {
-      // Get the set of GitHub repo IDs we're syncing
-      const incomingRepoIds = new Set(repositories.map((r) => r.githubRepoId));
+    return withDb
+      .tx(async (tx) => {
+        // Get the set of GitHub repo IDs we're syncing
+        const incomingRepoIds = new Set(
+          repositories.map((r) => r.githubRepoId)
+        );
 
-      // Delete repos that are no longer in the installation
-      await tx.gitHubInstallationRepository.deleteMany({
-        where: {
-          installationId,
-          githubRepoId: { notIn: [...incomingRepoIds] },
-        },
-      });
+        // Delete repos that are no longer in the installation
+        await tx.gitHubInstallationRepository.deleteMany({
+          where: {
+            installationId,
+            githubRepoId: { notIn: [...incomingRepoIds] },
+          },
+        });
 
-      if (repositories.length === 0) {
-        return [];
-      }
+        if (repositories.length === 0) {
+          return [];
+        }
 
-      // Upsert each repository to preserve IDs
-      await Promise.all(
-        repositories.map((repo) =>
-          tx.gitHubInstallationRepository.upsert({
-            where: {
-              installationId_githubRepoId: {
+        // Upsert each repository to preserve IDs. `removedAt: null` clears
+        // any tombstone left from a previous disconnect/reconnect window
+        // (PLN-634); without this, a re-added repo would stay invisible.
+        await Promise.all(
+          repositories.map((repo) =>
+            tx.gitHubInstallationRepository.upsert({
+              where: {
+                installationId_githubRepoId: {
+                  installationId,
+                  githubRepoId: repo.githubRepoId,
+                },
+              },
+              create: {
                 installationId,
                 githubRepoId: repo.githubRepoId,
+                fullName: repo.fullName,
+                name: repo.name,
+                owner: repo.owner,
+                private: repo.private,
               },
-            },
-            create: {
-              installationId,
-              githubRepoId: repo.githubRepoId,
-              fullName: repo.fullName,
-              name: repo.name,
-              owner: repo.owner,
-              private: repo.private,
-            },
-            update: {
-              fullName: repo.fullName,
-              name: repo.name,
-              owner: repo.owner,
-              private: repo.private,
-            },
-          })
-        )
-      );
+              update: {
+                fullName: repo.fullName,
+                name: repo.name,
+                owner: repo.owner,
+                private: repo.private,
+                removedAt: null,
+              },
+            })
+          )
+        );
 
-      return tx.gitHubInstallationRepository.findMany({
-        where: { installationId },
+        const syncedRepositories =
+          await tx.gitHubInstallationRepository.findMany({
+            where: { installationId },
+          });
+        return syncedRepositories;
+      })
+      .then(async (syncedRepositories) => {
+        if (syncedRepositories.length > 0) {
+          await runRepositoryArtifactRelink({
+            installationId,
+            repositories: syncedRepositories,
+            failureStage: RepositoryArtifactRelinkFailureStage.SyncRepositories,
+          });
+        }
+        return syncedRepositories;
       });
-    });
   },
 
   /**
@@ -610,7 +1973,9 @@ export const githubService = {
     }
 
     const result = await withDb.tx(async (tx) => {
-      // Upsert each repository (creates if not exists, updates if exists)
+      // Upsert each repository (creates if not exists, updates if exists).
+      // `removedAt: null` clears any tombstone left from a previous
+      // disconnect/reconnect window (PLN-634).
       await Promise.all(
         repositories.map((repo) =>
           tx.gitHubInstallationRepository.upsert({
@@ -633,19 +1998,26 @@ export const githubService = {
               name: repo.name,
               owner: repo.owner,
               private: repo.private,
+              removedAt: null,
             },
           })
         )
       );
 
-      // Return the created/updated records
       const githubRepoIds = repositories.map((r) => r.githubRepoId);
-      return tx.gitHubInstallationRepository.findMany({
+      const addedRepositories = await tx.gitHubInstallationRepository.findMany({
         where: {
           installationId,
           githubRepoId: { in: githubRepoIds },
         },
       });
+      return addedRepositories;
+    });
+
+    await runRepositoryArtifactRelink({
+      installationId,
+      repositories: result,
+      failureStage: RepositoryArtifactRelinkFailureStage.AddRepositories,
     });
 
     log.info("[github] Added repositories", {
@@ -688,6 +2060,7 @@ export const githubService = {
 
   /**
    * Find the GitHub installationId for a repository fullName owned by an organization.
+   * Skips tombstoned repos (PLN-634) so dispatch never targets a removed repo.
    */
   async findInstallationForRepoFullName(
     organizationId: string,
@@ -697,9 +2070,10 @@ export const githubService = {
       db.gitHubInstallationRepository.findFirst({
         where: {
           fullName,
+          removedAt: null,
           installation: {
             organizationId,
-            status: "ACTIVE",
+            status: ApiGitHubInstallationStatusValue.Active,
           },
         },
         select: {
@@ -746,7 +2120,16 @@ export const githubService = {
 
   /**
    * Disconnect an installation from an organization.
-   * Also uninstalls the GitHub App from the GitHub side.
+   *
+   * Marks the installation UNINSTALLED but preserves `organizationId` so a
+   * subsequent reconnect from the same GitHub account can reuse the row
+   * in-place (see `reconnectByAccount`). Without preservation, the cascade
+   * chain GitHubInstallation → GitHubInstallationRepository → TeamRepository
+   * (and BranchDetail / PullRequestDetail) would destroy org-level repo
+   * configuration and branch/PR history on every disconnect.
+   *
+   * Idempotent because Settings may send a DELETE from stale cached UI after
+   * another tab, webhook, or local repair has already disconnected.
    */
   async disconnectInstallation(organizationId: string): Promise<void> {
     const installation = await withDb((db) =>
@@ -756,10 +2139,28 @@ export const githubService = {
     );
 
     if (!installation) {
-      throw new Error("No installation found for organization");
+      log.info("[github] No installation found to disconnect", {
+        organizationId,
+      });
+      return;
     }
 
-    // Uninstall from GitHub side first
+    const leaseResult = await withDb((db) =>
+      db.gitHubInstallation.updateMany({
+        where: { id: installation.id, organizationId },
+        data: { status: GitHubInstallationStatus.UNINSTALLED },
+      })
+    );
+    if (leaseResult.count !== 1) {
+      log.warn("[github] Skipped disconnect because ownership changed", {
+        installationId: installation.id,
+        githubInstallationId: installation.installationId,
+        organizationId,
+      });
+      return;
+    }
+
+    // Uninstall from GitHub only after the org-scoped local transition wins.
     const result = await deleteInstallation(installation.installationId);
 
     if (!result.success) {
@@ -770,19 +2171,8 @@ export const githubService = {
           error: result.error,
         }
       );
-      // Continue anyway - we'll mark as UNINSTALLED locally even if GitHub API fails
+      // Continue anyway - we've marked UNINSTALLED locally.
     }
-
-    // Update our database record
-    await withDb((db) =>
-      db.gitHubInstallation.update({
-        where: { id: installation.id },
-        data: {
-          status: "UNINSTALLED",
-          organizationId: null,
-        },
-      })
-    );
 
     log.info("[github] Disconnected and uninstalled", {
       installationId: installation.id,
@@ -793,8 +2183,153 @@ export const githubService = {
   },
 
   /**
+   * Confirm and execute the different-account reset (PLN-634 Phase 3).
+   *
+   * Runs once the admin has confirmed the destructive cleanup that swaps the
+   * org from GitHub account A to account B. Side effects, all in one
+   * transaction:
+   *  - Delete `TeamRepository` rows for every team in the org.
+   *  - Tombstone `GitHubInstallationRepository` rows owned by the prior
+   *    installation. Branch / PR repository FKs remain non-null, so old
+   *    repository rows stay FK-resolvable while render recovery and explicit
+   *    relink paths restore visibility through a live installation generation.
+   *  - Clear `organizationId` on the prior `GitHubInstallation` row to
+   *    release the `@unique` slot. The row remains in the DB as an orphan.
+   *  - Claim the new installation row for the org (mark ACTIVE).
+   *  - Wipe `Project.settings.repositoryOverrides` for every project in the
+   *    org.
+   *  - Emit an audit log line with prior/new account ids and counts.
+   *
+   * `RepoBootstrapConfig` is intentionally left in place per Q-002 — it is
+   * keyed by fullName and degrades naturally if the repo isn't present in
+   * the new account.
+   */
+  confirmDifferentAccountReset(input: {
+    organizationId: string;
+    userId: string;
+  }): Promise<Result<{ confirmed: true }>> {
+    return withDb.tx<Result<{ confirmed: true }>>(async (tx) => {
+      const prior = await tx.gitHubInstallation.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          status: GitHubInstallationStatus.UNINSTALLED,
+        },
+      });
+      if (!prior) {
+        log.warn("[github/reset] No prior UNINSTALLED installation found", {
+          organizationId: input.organizationId,
+        });
+        return Result.err(Status.BadRequest);
+      }
+      // Read the installation to claim from the prior row, not from the
+      // request body. The OAuth callback pins this value when it detects the
+      // mismatch, so a phished admin posting a crafted body cannot redirect
+      // the claim to an attacker-owned installation.
+      if (!prior.pendingNewInstallationId) {
+        log.warn(
+          "[github/reset] No pending new installation pinned on prior row",
+          {
+            organizationId: input.organizationId,
+            priorInstallationId: prior.id,
+          }
+        );
+        return Result.err(Status.BadRequest);
+      }
+
+      const newInstall = await tx.gitHubInstallation.findUnique({
+        where: { installationId: prior.pendingNewInstallationId },
+      });
+      if (!newInstall) {
+        log.warn("[github/reset] Pinned new installation not found", {
+          organizationId: input.organizationId,
+          pendingNewInstallationId: prior.pendingNewInstallationId,
+        });
+        return Result.err(Status.BadRequest);
+      }
+      if (newInstall.accountId === prior.accountId) {
+        log.warn(
+          "[github/reset] Reset called with same-account install; reject",
+          {
+            organizationId: input.organizationId,
+            accountId: prior.accountId,
+          }
+        );
+        return Result.err(Status.BadRequest);
+      }
+      if (
+        newInstall.organizationId &&
+        newInstall.organizationId !== input.organizationId
+      ) {
+        log.warn(
+          "[github/reset] New installation already claimed by another org",
+          {
+            organizationId: input.organizationId,
+            newInstallationOrgId: newInstall.organizationId,
+          }
+        );
+        return Result.err(Status.Forbidden);
+      }
+
+      const teamReposDeleted = await tx.teamRepository.deleteMany({
+        where: { team: { organizationId: input.organizationId } },
+      });
+
+      // Tombstone all repos previously linked to this installation row.
+      // `installationId` here is the FK to GitHubInstallation.id (UUID),
+      // not the GitHub App installation ID string.
+      await tx.gitHubInstallationRepository.updateMany({
+        where: { installationId: prior.id, removedAt: null },
+        data: { removedAt: new Date() },
+      });
+
+      // Releasing the @unique(organizationId) slot must happen before we
+      // claim the new row for the same org. Clearing pendingNewInstallationId
+      // here prevents a second confirm-reset call from re-firing this flow.
+      await tx.gitHubInstallation.update({
+        where: { id: prior.id },
+        data: { organizationId: null, pendingNewInstallationId: null },
+      });
+
+      await tx.gitHubInstallation.update({
+        where: { id: newInstall.id },
+        data: {
+          organizationId: input.organizationId,
+          status: GitHubInstallationStatus.ACTIVE,
+          claimedAt: new Date(),
+          claimedByUserId: input.userId,
+        },
+      });
+
+      // Sibling-service call — joins the outer transaction via
+      // AsyncLocalStorage so the wipe is atomic with the installation swap.
+      const projectsCleared =
+        await projectsService.clearRepositorySettingsForOrganization(
+          input.organizationId
+        );
+
+      log.info("[github/reset] Different-account reset completed", {
+        organizationId: input.organizationId,
+        userId: input.userId,
+        priorAccountId: prior.accountId,
+        priorAccountLogin: prior.accountLogin,
+        newAccountId: newInstall.accountId,
+        newAccountLogin: newInstall.accountLogin,
+        priorInstallationId: prior.id,
+        newInstallationId: newInstall.id,
+        teamRepositoriesDeleted: teamReposDeleted.count,
+        projectsWithOverridesCleared: projectsCleared,
+      });
+
+      return Result.ok({ confirmed: true as const });
+    });
+  },
+
+  /**
    * Get repositories for an organization's GitHub installation.
-   * Returns all repositories associated with the installation.
+   * Returns active repositories associated with the installation.
+   * Tombstoned rows (PLN-634) are filtered out so they no longer appear in
+   * pickers or pool queries, while remaining FK-resolvable for branch/PR
+   * history.
    *
    * @param organizationId - Organization ID to scope the query
    * @param orderBy - Optional sort order (default: lastPushedAt desc with nulls last, then name asc)
@@ -810,10 +2345,11 @@ export const githubService = {
       db.gitHubInstallation.findFirst({
         where: {
           organizationId,
-          status: "ACTIVE",
+          status: ApiGitHubInstallationStatusValue.Active,
         },
         include: {
           repositories: {
+            where: { removedAt: null },
             orderBy: orderBy ?? [
               { lastPushedAt: { sort: "desc", nulls: "last" } },
               { name: "asc" },
@@ -832,8 +2368,8 @@ export const githubService = {
 
   /**
    * Get branches for a GitHub repository.
-   * Fetches branches via GitHub GraphQL API, sorts by committedDate descending,
-   * and pins the default branch at position 0.
+   * Fetches installation-backed repos via GitHub GraphQL and falls back to the
+   * public-repository store for repos added without an installation.
    *
    * @param repositoryId - Internal UUID of GitHubInstallationRepository
    * @param organizationId - Organization ID for authorization
@@ -857,7 +2393,11 @@ export const githubService = {
     );
 
     if (!repository) {
-      throw new Error("Repository not found");
+      return publicRepositoryService.getBranches(
+        repositoryId,
+        organizationId,
+        limit
+      );
     }
 
     // Verify organization ownership
@@ -929,31 +2469,63 @@ export const githubService = {
         { state: "all", limit: options?.limit ?? 30 }
       );
 
-      // Find which PR URLs are already tracked as PR artifacts in this project
+      // Find which branch artifacts are already tracked in this project. PR URL
+      // compatibility is derived from the current PR detail when present.
       let trackedPrUrls: string[] = [];
+      let trackedBranches: NonNullable<
+        GetPullRequestsResponse["trackedBranches"]
+      > = [];
+      let trackedBranchKeys: string[] = [];
       if (projectId) {
-        const existingLinks = await withDb((db) =>
+        const existingBranches = await withDb((db) =>
           db.artifact.findMany({
             where: {
               organizationId,
               projectId,
-              type: ArtifactType.PULL_REQUEST,
+              type: ArtifactType.BRANCH,
+              branch: { repositoryId: repository.id },
             },
-            select: { externalUrl: true },
+            select: {
+              externalUrl: true,
+              branch: {
+                select: {
+                  branchName: true,
+                  currentPullRequestDetail: {
+                    select: { htmlUrl: true },
+                  },
+                },
+              },
+            },
           })
         );
 
-        const repoPrefix = `https://github.com/${owner}/${name}/pull/`;
-        trackedPrUrls = existingLinks.flatMap((el) => {
-          const url = el.externalUrl;
-          if (url?.startsWith(repoPrefix)) {
-            return [url];
+        trackedBranches = existingBranches.flatMap((artifact) => {
+          if (!artifact.branch) {
+            return [];
           }
-          return [];
+          const branchKey = `${repository.fullName}:${artifact.branch.branchName}`;
+          return [
+            {
+              branchName: artifact.branch.branchName,
+              branchKey,
+              htmlUrl: artifact.externalUrl ?? "",
+              pullRequestUrl:
+                artifact.branch.currentPullRequestDetail?.htmlUrl ?? null,
+            },
+          ];
         });
+        trackedBranchKeys = trackedBranches.map((branch) => branch.branchKey);
+        trackedPrUrls = trackedBranches.flatMap((branch) =>
+          branch.pullRequestUrl ? [branch.pullRequestUrl] : []
+        );
       }
 
-      return { pullRequests, trackedPrUrls };
+      return {
+        pullRequests,
+        trackedPrUrls,
+        trackedBranches,
+        trackedBranchKeys,
+      };
     } catch (error) {
       log.error("[github/service] Failed to fetch pull requests", {
         repositoryId,
@@ -962,5 +2534,71 @@ export const githubService = {
       });
       throw new Error("Failed to fetch pull requests from GitHub");
     }
+  },
+
+  /**
+   * Fetch contributors aggregated across all connected repositories for an organization.
+   * Deduplicates contributors by GitHub login, summing contribution counts across
+   * all repositories the contributor appears in.
+   */
+  async getContributorsAcrossRepos(
+    organizationId: string,
+    options?: { maxRepos?: number; perRepoLimit?: number }
+  ): Promise<GetContributorsResponse> {
+    const maxRepos = options?.maxRepos ?? 10;
+    const perRepoLimit = options?.perRepoLimit ?? 30;
+
+    const installation = await withDb((db) =>
+      db.gitHubInstallation.findFirst({
+        where: { organizationId, status: GitHubInstallationStatus.ACTIVE },
+        include: {
+          repositories: {
+            where: { removedAt: null },
+            orderBy: [
+              { lastPushedAt: { sort: "desc", nulls: "last" } },
+              { name: "asc" },
+            ],
+            take: maxRepos,
+          },
+        },
+      })
+    );
+
+    if (!installation || installation.repositories.length === 0) {
+      return { contributors: [] };
+    }
+
+    const installationId = installation.installationId;
+
+    const perRepoResults = await Promise.all(
+      installation.repositories.map((repo) =>
+        getRepositoryContributors(installationId, repo.owner, repo.name, {
+          perPage: perRepoLimit,
+        })
+      )
+    );
+
+    const byLogin = new Map<string, GitHubContributor>();
+    for (const list of perRepoResults) {
+      for (const contributor of list) {
+        const existing = byLogin.get(contributor.login);
+        if (!existing) {
+          byLogin.set(contributor.login, contributor);
+          continue;
+        }
+        byLogin.set(contributor.login, {
+          login: contributor.login,
+          avatarUrl: existing.avatarUrl || contributor.avatarUrl,
+          contributions: existing.contributions + contributor.contributions,
+          htmlUrl: existing.htmlUrl || contributor.htmlUrl,
+        });
+      }
+    }
+
+    const contributors = [...byLogin.values()].sort(
+      (a, b) => b.contributions - a.contributions
+    );
+
+    return { contributors };
   },
 };

@@ -1,9 +1,9 @@
 "use client";
 
 import { ClientSideSuspense } from "@liveblocks/react/suspense";
-import { useUnreadInboxNotificationsCount } from "@repo/collaboration/hooks";
-import { useLiveblocksAvailability } from "@repo/collaboration/liveblocks-error-boundary";
-import { SidebarCountBadge } from "./sidebar-count-badge";
+import { useUnreadInboxNotificationsCount } from "@repo/collaboration/client/hooks";
+import { useLiveblocksAvailability } from "@repo/collaboration/client/liveblocks-error-boundary";
+import { SidebarCountBadge } from "@repo/design-system/components/ui/sidebar-count-badge";
 
 function InboxBadgeContent() {
   const { count } = useUnreadInboxNotificationsCount();

@@ -46,11 +46,9 @@ export function registerListDocumentVersions(
     },
     ({ documentId, limit, offset }) =>
       withErrorHandling(async () => {
-        const response = await apiClient.get<{
-          success: boolean;
-          data: unknown[];
-        }>(`/documents/${encodePathSegment(documentId)}/versions`);
-        const versions = response.data;
+        const versions = await apiClient.get<unknown[]>(
+          `/documents/${encodePathSegment(documentId)}/versions`
+        );
         const payload = buildPaginatedPayload(versions, {
           limit,
           offset,

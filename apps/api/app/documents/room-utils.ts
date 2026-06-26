@@ -1,6 +1,8 @@
 import type { Document } from "@repo/api/src/types/document";
-import { generateDocumentRoomId } from "@repo/collaboration/room-utils";
+import { RoomEventType } from "@repo/collaboration/shared/room-events";
+import { generateDocumentRoomId } from "@repo/collaboration/shared/room-utils";
 import {
+  broadcastLiveblocksRoomEvent,
   createLiveblocksRoom,
   deleteLiveblocksRoom,
   resetLiveblocksRoom,
@@ -30,7 +32,8 @@ export async function resetDocumentRoom(
   document: Pick<
     Document,
     "id" | "organizationId" | "slug" | "type" | "latestVersion"
-  >
+  >,
+  publisherId: string | null = null
 ) {
   const roomId = generateDocumentRoomId(document.organizationId, document.slug);
   await resetLiveblocksRoom(roomId);
@@ -39,6 +42,16 @@ export async function resetDocumentRoom(
     documentType: document.type,
     slug: document.slug,
     version: String(document.latestVersion),
+  });
+  // Notify connected clients so they refetch the new content and re-seed
+  // the Y.Doc, rather than rendering blank against the cleared room. Every
+  // client reacts (including the publisher's own tab); the receiving side
+  // dedupes idempotently per version, not on `publisherId`.
+  await broadcastLiveblocksRoomEvent(roomId, {
+    type: RoomEventType.DocumentVersionPublished,
+    version: document.latestVersion,
+    publisherId,
+    publishedAt: new Date().toISOString(),
   });
 }
 

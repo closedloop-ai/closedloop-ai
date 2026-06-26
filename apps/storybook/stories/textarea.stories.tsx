@@ -5,7 +5,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Displays a form textarea or a component that looks like a textarea.
  */
 const meta = {
-  title: "ui/Textarea",
+  title: "Design System/Primitives/Textarea",
   component: Textarea,
   tags: ["autodocs"],
   argTypes: {},

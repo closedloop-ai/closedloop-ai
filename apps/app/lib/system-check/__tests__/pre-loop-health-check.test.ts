@@ -5,9 +5,12 @@ import {
   buildPreLoopAnalyticsProperties,
   getFailingRequiredCheckIds,
   getFailingRequiredFingerprint,
+  getPreLoopHealthCheckTimeoutMs,
   getPreLoopTargetKey,
   getRequiredFailureSummary,
   isPreLoopHealthCheckFresh,
+  PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS,
+  PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS,
   PreLoopAnalyticsEvent,
   PreLoopCommand,
 } from "../pre-loop-health-check";
@@ -81,6 +84,7 @@ describe("pre-loop health-check helpers", () => {
         computeTargetId: "target-1",
         label: "Laptop",
         isOnline: true,
+        isOwnedByCurrentUser: true,
         mode: "local_compute_target",
       },
       failingChecks: getRequiredFailureSummary(failingHealthCheck, null).checks,
@@ -105,5 +109,17 @@ describe("pre-loop health-check helpers", () => {
       usedCachedHealthCheck: true,
       healthCheckCacheAgeMs: 250,
     });
+  });
+
+  it("selects the longer timeout only for plugin auto-update mode", () => {
+    expect(getPreLoopHealthCheckTimeoutMs(false)).toBe(
+      PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS
+    );
+    expect(getPreLoopHealthCheckTimeoutMs()).toBe(
+      PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS
+    );
+    expect(getPreLoopHealthCheckTimeoutMs(true)).toBe(
+      PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS
+    );
   });
 });

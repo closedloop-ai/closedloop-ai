@@ -7,7 +7,7 @@ import {
 } from "@repo/design-system/components/ui/table";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2807-10070";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2807-10070";
 
 figma.connect(Table, FIGMA_URL, {
   props: {

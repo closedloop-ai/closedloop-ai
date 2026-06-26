@@ -8,7 +8,7 @@ import {
 } from "@repo/design-system/components/ui/select";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2738-3406";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2738-3406";
 
 figma.connect(SelectTrigger, FIGMA_URL, {
   props: {

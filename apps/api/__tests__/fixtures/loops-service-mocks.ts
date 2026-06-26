@@ -13,8 +13,11 @@ export type LoopsServiceHandles = {
   loopCreate: ReturnType<typeof vi.fn>;
   loopCount: ReturnType<typeof vi.fn>;
   loopFindFirst: ReturnType<typeof vi.fn>;
+  loopFindMany: ReturnType<typeof vi.fn>;
   loopFindUnique: ReturnType<typeof vi.fn>;
   loopUpdateMany: ReturnType<typeof vi.fn>;
+  loopEventCreate: ReturnType<typeof vi.fn>;
+  loopEventFindUnique: ReturnType<typeof vi.fn>;
   orgFindUnique: ReturnType<typeof vi.fn>;
   repoFindMany: ReturnType<typeof vi.fn>;
 };
@@ -26,8 +29,11 @@ export function resetLoopsServiceHandles(handles: LoopsServiceHandles): void {
     .mockResolvedValue({ id: "loop-new", status: LoopStatus.Pending });
   handles.loopCount.mockReset().mockResolvedValue(0);
   handles.loopFindFirst.mockReset().mockResolvedValue(null);
+  handles.loopFindMany.mockReset().mockResolvedValue([]);
   handles.loopFindUnique.mockReset().mockResolvedValue(null);
   handles.loopUpdateMany.mockReset().mockResolvedValue({ count: 0 });
+  handles.loopEventCreate.mockReset().mockResolvedValue({ id: "evt-new" });
+  handles.loopEventFindUnique.mockReset().mockResolvedValue(null);
   handles.orgFindUnique.mockReset().mockResolvedValue({ settings: null });
   handles.repoFindMany.mockReset().mockResolvedValue([]);
 }
@@ -43,20 +49,48 @@ export function databaseModuleMock(
             create: handles.loopCreate,
             count: handles.loopCount,
             findFirst: handles.loopFindFirst,
+            findMany: handles.loopFindMany,
             findUnique: handles.loopFindUnique,
             updateMany: handles.loopUpdateMany,
-            findMany: vi.fn().mockResolvedValue([]),
           },
           organization: { findUnique: handles.orgFindUnique },
           gitHubInstallationRepository: { findMany: handles.repoFindMany },
+          // Dependency-aware dispatch gating queries inbound BLOCKS links on
+          // create(); default to none so concurrency/dispatch tests are not
+          // gated.
+          artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
           loopEvent: {
+            create: handles.loopEventCreate,
+            findUnique: handles.loopEventFindUnique,
             findMany: vi.fn().mockResolvedValue([]),
             count: vi.fn().mockResolvedValue(0),
           },
         })
       ),
-      { tx: vi.fn() }
+      {
+        tx: vi.fn((fn: (db: unknown) => unknown) =>
+          fn({
+            loop: {
+              update: vi.fn().mockResolvedValue({}),
+              updateMany: handles.loopUpdateMany,
+            },
+            loopTokenRefresh: {
+              deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+            },
+            loopEvent: {
+              create: vi.fn().mockResolvedValue({}),
+            },
+          })
+        ),
+      }
     ),
+    Prisma: {
+      sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+        strings,
+        values,
+      }),
+      join: vi.fn(),
+    },
     GitHubInstallationStatus: { ACTIVE: "ACTIVE" },
   };
 }

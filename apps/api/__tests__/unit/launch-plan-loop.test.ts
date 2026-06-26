@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -27,7 +27,6 @@ vi.mock("@/lib/loops/loop-orchestrator", () => ({
   launchLoop: vi.fn(),
 }));
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { resolveLoopContext } from "@/app/documents/[id]/run-loop/run-loop-helpers";
 import { loopsService } from "@/app/loops/service";
 import { resolveComputeTargetWithPreferences } from "@/lib/loops/compute-target-resolver";

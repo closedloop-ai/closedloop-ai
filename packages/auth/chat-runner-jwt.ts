@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
-import { getRunnerSecret } from "./runner-jwt-base";
+import { getRunnerSecret, RUNNER_JWT_SECRET_ENV } from "./runner-jwt-base";
 
 export const AUDIENCE = "closedloop-chat-runner";
 export const ISSUER = "closedloop-api";
-export const SECRET_ENV = "CLOSEDLOOP_RUNNER_JWT_SECRET";
+export const SECRET_ENV = RUNNER_JWT_SECRET_ENV;
 export const DEFAULT_TTL_SECONDS = 4 * 60 * 60;
 
 function getSecret(): Uint8Array {
   return getRunnerSecret(SECRET_ENV);
 }
 
-export type ChatRunnerTokenIssueClaims = {
+type ChatRunnerTokenIssueClaims = {
   userId: string;
   organizationId: string;
   chatKey: string;

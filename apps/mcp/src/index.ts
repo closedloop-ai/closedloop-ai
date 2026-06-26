@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { withDb } from "@repo/database";
+import { createRedisClient } from "@repo/redis";
 import {
   type ApiClient,
   checkApiReachable,
@@ -24,19 +25,26 @@ import {
   type ApiKeyScope,
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
+import {
+  type AuthCacheStore,
+  type AuthKeyCipher,
+  RedisAuthCacheStore,
+  type SerializedMcpAuth,
+} from "./auth-cache-store.js";
+import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { registerAddLoopEvent } from "./tools/add-loop-event.js";
 import { registerCancelLoop } from "./tools/cancel-loop.js";
 import { registerCompleteLoop } from "./tools/complete-loop.js";
 import { registerCreateArtifactLink } from "./tools/create-artifact-link.js";
+import { registerCreateBranchArtifact } from "./tools/create-branch-artifact.js";
 import { registerCreateDocument } from "./tools/create-document.js";
 import { registerCreateDocumentThread } from "./tools/create-document-thread.js";
 import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
 import { registerCreateLoop } from "./tools/create-loop.js";
 import { registerCreateProject } from "./tools/create-project.js";
-import { registerCreateWorkstream } from "./tools/create-workstream.js";
+import { registerDeleteAttachment } from "./tools/delete-attachment.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
 import { registerFailLoop } from "./tools/fail-loop.js";
-import { registerGetDashboardStats } from "./tools/get-dashboard-stats.js";
 import { registerGetDocument } from "./tools/get-document.js";
 import { registerGetDocumentComments } from "./tools/get-document-comments.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
@@ -45,7 +53,6 @@ import { registerGetLinearStatus } from "./tools/get-linear-status.js";
 import { registerGetLoop } from "./tools/get-loop.js";
 import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
-import { registerGetWorkstream } from "./tools/get-workstream.js";
 import { registerListArtifactLinks } from "./tools/list-artifact-links.js";
 import { registerListAttachments } from "./tools/list-attachments.js";
 import { registerListDocumentVersions } from "./tools/list-document-versions.js";
@@ -54,10 +61,11 @@ import { registerListLoops } from "./tools/list-loops.js";
 import { registerListProjects } from "./tools/list-projects.js";
 import { registerListTemplates } from "./tools/list-templates.js";
 import { registerListUsers } from "./tools/list-users.js";
-import { registerListWorkstreams } from "./tools/list-workstreams.js";
+import { registerMoveArtifact } from "./tools/move-artifact.js";
+import { setSessionOrgSlug } from "./tools/tool-utils.js";
 import { registerUpdateDocument } from "./tools/update-document.js";
 import { registerUpdateProject } from "./tools/update-project.js";
-import { registerUpdateWorkstream } from "./tools/update-workstream.js";
+import { registerUploadAttachment } from "./tools/upload-attachment.js";
 
 const BEARER_API_KEY_REGEX = /^Bearer\s+(sk_live_\S+)$/;
 const BEARER_OAUTH_TOKEN_REGEX = /^Bearer\s+(mcp_at_[A-Za-z0-9._-]+)$/;
@@ -103,6 +111,11 @@ const OAUTH_AUTH_CODE_TTL_SECONDS = parsePositiveIntegerEnv(
   "MCP_OAUTH_AUTH_CODE_TTL_SECONDS",
   600
 );
+const OAUTH_REFRESH_REUSE_GRACE_PERIOD_SECONDS = parsePositiveIntegerEnv(
+  "MCP_OAUTH_REFRESH_REUSE_GRACE_PERIOD_SECONDS",
+  10,
+  0
+);
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const WEBAPP_ENV = process.env.WEBAPP_ENV ?? "local";
 const OAUTH_RATE_LIMIT_WINDOW_MS = Number(
@@ -143,6 +156,7 @@ const INTERNAL_ENDPOINT_ALLOWLIST = (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const MCP_SESSION_STORE = process.env.MCP_SESSION_STORE ?? "memory";
 
 class RequestBodyTooLargeError extends Error {
   constructor() {
@@ -283,6 +297,7 @@ const OAUTH_NO_STORE_HEADERS = {
 type ToolRegistration = {
   name: string;
   register: (server: McpServer, apiClient: ApiClient) => void;
+  requiredScopes?: ApiKeyScope[];
   requiresWrite?: boolean;
 };
 
@@ -331,26 +346,29 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     requiresWrite: true,
   },
   {
+    name: "move-artifact",
+    register: registerMoveArtifact,
+    requiresWrite: true,
+  },
+  {
     name: "create-document-version",
     register: registerCreateDocumentVersion,
     requiresWrite: true,
   },
   { name: "list-document-versions", register: registerListDocumentVersions },
   { name: "list-attachments", register: registerListAttachments },
+  {
+    name: "upload-attachment",
+    register: registerUploadAttachment,
+    requiresWrite: true,
+  },
   { name: "download-attachment", register: registerDownloadAttachment },
+  {
+    name: "delete-attachment",
+    register: registerDeleteAttachment,
+    requiredScopes: ["delete"],
+  },
   { name: "get-me", register: registerGetMe },
-  { name: "list-workstreams", register: registerListWorkstreams },
-  { name: "get-workstream", register: registerGetWorkstream },
-  {
-    name: "create-workstream",
-    register: registerCreateWorkstream,
-    requiresWrite: true,
-  },
-  {
-    name: "update-workstream",
-    register: registerUpdateWorkstream,
-    requiresWrite: true,
-  },
   { name: "list-loops", register: registerListLoops },
   { name: "get-loop", register: registerGetLoop },
   {
@@ -379,11 +397,15 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     requiresWrite: true,
   },
   { name: "list-users", register: registerListUsers },
-  { name: "get-dashboard-stats", register: registerGetDashboardStats },
   { name: "list-artifact-links", register: registerListArtifactLinks },
   {
     name: "create-artifact-link",
     register: registerCreateArtifactLink,
+    requiresWrite: true,
+  },
+  {
+    name: "create_branch_artifact",
+    register: registerCreateBranchArtifact,
     requiresWrite: true,
   },
   { name: "list-templates", register: registerListTemplates },
@@ -398,24 +420,53 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
  */
 const TOOL_NAMES = TOOL_REGISTRATIONS.map((entry) => entry.name);
 
+async function resolveOrgSlug(organizationId: string): Promise<void> {
+  try {
+    const org = await withDb((db) =>
+      db.organization.findUnique({
+        where: { id: organizationId },
+        select: { slug: true },
+      })
+    );
+    if (org?.slug) {
+      setSessionOrgSlug(org.slug);
+    }
+  } catch {
+    // Non-fatal — URLs fall back to legacy format without org slug
+  }
+}
+
 /**
  * Create a new MCP server instance with all tools registered.
  * Each session gets its own McpServer bound to a verified API key context.
  */
-function createMcpServer(
+async function createMcpServer(
   context: VerifiedApiKeyContext,
   plaintextKey: string,
   grantedScopes: string[]
-): McpServer {
-  const server = new McpServer({
-    name: "closedloop",
-    version: "0.0.1",
-  });
+): Promise<McpServer> {
+  const server = new McpServer(
+    {
+      name: "closedloop",
+      version: "0.0.1",
+    },
+    {
+      instructions: SERVER_INSTRUCTIONS,
+    }
+  );
 
   const apiClient = createApiClient(context, plaintextKey);
   const allowWriteTools = hasWriteScope(grantedScopes);
 
+  await resolveOrgSlug(context.organizationId);
+
   for (const registration of TOOL_REGISTRATIONS) {
+    if (
+      registration.requiredScopes &&
+      !hasRequiredScopes(grantedScopes, registration.requiredScopes)
+    ) {
+      continue;
+    }
     if (registration.requiresWrite && !allowWriteTools) {
       continue;
     }
@@ -423,6 +474,13 @@ function createMcpServer(
   }
 
   return server;
+}
+
+function hasRequiredScopes(
+  grantedScopes: string[],
+  requiredScopes: ApiKeyScope[]
+): boolean {
+  return requiredScopes.every((scope) => grantedScopes.includes(scope));
 }
 
 /**
@@ -848,9 +906,9 @@ type OAuthRefreshTokenDbClient = {
         expiresAt: Date;
       };
     }): Promise<{ id: string }>;
-    findUnique(args: {
-      where: { tokenFingerprint: string };
-    }): Promise<RefreshTokenRecord | null>;
+    findUnique(
+      args: { where: { tokenFingerprint: string } } | { where: { id: string } }
+    ): Promise<RefreshTokenRecord | null>;
     updateMany(args: {
       where: {
         id?: string;
@@ -863,6 +921,9 @@ type OAuthRefreshTokenDbClient = {
         replacedByTokenId?: string;
       };
     }): Promise<{ count: number }>;
+    count(args: {
+      where: { familyId: string; revokedAt: null };
+    }): Promise<number>;
   };
 };
 
@@ -920,6 +981,17 @@ function loadRefreshTokenRecord(
   });
 }
 
+function loadRefreshTokenRecordById(
+  id: string
+): Promise<RefreshTokenRecord | null> {
+  return withDb((db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    return client.oAuthRefreshToken.findUnique({
+      where: { id },
+    });
+  });
+}
+
 async function revokeRefreshTokenFamily(familyId: string): Promise<void> {
   await withDb((db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
@@ -930,17 +1002,91 @@ async function revokeRefreshTokenFamily(familyId: string): Promise<void> {
   });
 }
 
-function rotateRefreshToken(
-  token: string,
-  clientId: string,
-  nextScopes: string[]
-): Promise<
+type RotateRefreshTokenResult =
   | { status: "rotated"; token: string; expiresIn: number }
   | { status: "invalid" }
   | { status: "invalid_client" }
   | { status: "invalid_scope" }
   | { status: "reuse_detected" }
-> {
+  | {
+      status: "concurrent_ok";
+      replacementToken: RefreshTokenRecord;
+      encryptedApiKey: string;
+      keyId: string;
+      msSinceRevocation: number;
+    };
+
+/**
+ * Check if a revoked token was replaced within the grace period and the
+ * replacement is still live. Returns `concurrent_ok` if so, `null` otherwise.
+ */
+async function checkGracePeriodReplacement(
+  client: OAuthRefreshTokenDbClient,
+  revokedAt: Date,
+  replacedByTokenId: string | null,
+  encryptedApiKey: string,
+  keyId: string,
+  now: Date
+): Promise<Extract<
+  RotateRefreshTokenResult,
+  { status: "concurrent_ok" }
+> | null> {
+  const msSinceRevocation = now.getTime() - revokedAt.getTime();
+  const withinGrace =
+    msSinceRevocation <= OAUTH_REFRESH_REUSE_GRACE_PERIOD_SECONDS * 1000;
+  if (!(withinGrace && replacedByTokenId)) {
+    return null;
+  }
+  const replacement = await client.oAuthRefreshToken.findUnique({
+    where: { id: replacedByTokenId },
+  });
+  if (!replacement || replacement.revokedAt !== null) {
+    return null;
+  }
+  return {
+    status: "concurrent_ok",
+    replacementToken: replacement,
+    encryptedApiKey,
+    keyId,
+    msSinceRevocation,
+  };
+}
+
+/**
+ * Handle a revoked token inside the rotation transaction: check whether the
+ * revocation falls within the grace window (concurrent refresh) and return
+ * the replacement, otherwise revoke the entire family and report reuse.
+ */
+async function handleRevokedTokenInRotation(
+  client: OAuthRefreshTokenDbClient,
+  revokedAt: Date,
+  replacedByTokenId: string | null,
+  current: { encryptedApiKey: string; keyId: string; familyId: string },
+  now: Date
+): Promise<RotateRefreshTokenResult> {
+  const graceResult = await checkGracePeriodReplacement(
+    client,
+    revokedAt,
+    replacedByTokenId,
+    current.encryptedApiKey,
+    current.keyId,
+    now
+  );
+  if (graceResult) {
+    return graceResult;
+  }
+  await client.oAuthRefreshToken.updateMany({
+    where: { familyId: current.familyId, revokedAt: null },
+    data: { revokedAt: now },
+  });
+  return { status: "reuse_detected" };
+}
+
+function rotateRefreshToken(
+  token: string,
+  clientId: string,
+  nextScopes: string[]
+): Promise<RotateRefreshTokenResult> {
   const tokenFingerprint = getTokenFingerprint(token);
   return withDb.tx(async (db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
@@ -955,11 +1101,13 @@ function rotateRefreshToken(
       return { status: "invalid" };
     }
     if (current.revokedAt !== null) {
-      await client.oAuthRefreshToken.updateMany({
-        where: { familyId: current.familyId, revokedAt: null },
-        data: { revokedAt: now },
-      });
-      return { status: "reuse_detected" };
+      return handleRevokedTokenInRotation(
+        client,
+        current.revokedAt,
+        current.replacedByTokenId,
+        current,
+        now
+      );
     }
     if (current.clientId !== clientId) {
       return { status: "invalid_client" };
@@ -977,6 +1125,20 @@ function rotateRefreshToken(
     });
 
     if (revoked.count !== 1) {
+      // CAS failure: another caller revoked this token concurrently.
+      // Re-read to get the revokedAt timestamp and replacedByTokenId set by the winner.
+      const reread = await client.oAuthRefreshToken.findUnique({
+        where: { id: current.id },
+      });
+      if (reread?.revokedAt) {
+        return handleRevokedTokenInRotation(
+          client,
+          reread.revokedAt,
+          reread.replacedByTokenId,
+          current,
+          now
+        );
+      }
       await client.oAuthRefreshToken.updateMany({
         where: { familyId: current.familyId, revokedAt: null },
         data: { revokedAt: now },
@@ -1520,6 +1682,41 @@ type McpSession = {
 
 const mcpSessions = new Map<string, McpSession>();
 
+let authCacheStore: AuthCacheStore | null = null;
+
+// Reuses the server's AES-256-GCM OAuth signing keys to encrypt the bearer API
+// key before it is written to Redis, and to decrypt it on read. The plaintext
+// key is never persisted; only its ciphertext plus the key id reach Redis.
+const authKeyCipher: AuthKeyCipher = {
+  encrypt: (plaintext) => ({
+    ciphertext: encryptApiKey(plaintext, OAUTH_CURRENT_SIGNING_KEY.kid),
+    kid: OAUTH_CURRENT_SIGNING_KEY.kid,
+  }),
+  decrypt: (ciphertext, kid) => decryptApiKey(ciphertext, kid),
+};
+
+if (MCP_SESSION_STORE === "redis" && process.env.REDIS_URL) {
+  const redisClient = createRedisClient({
+    url: process.env.REDIS_URL,
+    keyPrefix: "mcp:",
+    onError: (error) => console.warn("[mcp] redis error:", error.message),
+  });
+  // Set the store up front so commands issued during the connect window are
+  // queued by ioredis (offline queue) and served once connected. Connecting is
+  // intentionally not awaited — awaiting here would block module load on Redis
+  // availability. On a hard connect failure, degrade cleanly to memory-only
+  // auth, mirroring the relay's in-memory fallback, rather than retaining a
+  // client that will never connect.
+  authCacheStore = new RedisAuthCacheStore(redisClient, authKeyCipher);
+  redisClient.connect().catch((error) => {
+    console.warn(
+      "[mcp] redis connect failed, operating in memory-only mode:",
+      error.message
+    );
+    authCacheStore = null;
+  });
+}
+
 function cleanupExpiredMcpSessions(nowMs: number): void {
   for (const [sessionId, session] of mcpSessions.entries()) {
     if (nowMs - session.lastActivityMs > MCP_SERVER_CACHE_TTL_MS) {
@@ -1592,6 +1789,13 @@ async function handleMcpExistingSession(
     return;
   }
 
+  if (authCacheStore) {
+    const sid = req.headers["mcp-session-id"] as string | undefined;
+    if (sid) {
+      authCacheStore.touch(sid, MCP_SERVER_CACHE_TTL_MS).catch(() => {});
+    }
+  }
+
   let rawBody: string;
   try {
     rawBody = await readRequestBody(req);
@@ -1655,7 +1859,7 @@ async function handleMcpStatelessRequest(
   auth: ResolvedMcpAuth,
   parsedBody: unknown
 ): Promise<void> {
-  const server = createMcpServer(
+  const server = await createMcpServer(
     auth.context,
     auth.plaintextKey,
     auth.grantedScopes
@@ -1689,6 +1893,9 @@ async function handleSessionScopedMcpRequest(
     if (req.method === "DELETE") {
       mcpSessions.delete(sessionId);
       await session.server.close();
+      if (authCacheStore) {
+        authCacheStore.delete(sessionId).catch(() => {});
+      }
       logMcpEvent("session-closed", { sessionId });
     }
     return { unknownSessionId: null, shouldContinue: false };
@@ -1697,6 +1904,9 @@ async function handleSessionScopedMcpRequest(
   // Unknown session can happen behind non-sticky load balancers.
   // For POST requests we fall back to stateless handling below.
   if (req.method !== "POST") {
+    if (req.method === "DELETE" && authCacheStore && sessionId) {
+      await authCacheStore.delete(sessionId);
+    }
     logMcpEvent("session-miss", { method: req.method, sessionId });
     sendJson(res, 404, {
       error: "Session not found. Please reinitialize.",
@@ -1802,6 +2012,17 @@ async function handleMcp(
     return;
   }
 
+  if (sessionState.unknownSessionId && authCacheStore) {
+    const handled = await handleCachedAuthRequest(
+      req,
+      res,
+      sessionState.unknownSessionId
+    );
+    if (handled) {
+      return;
+    }
+  }
+
   const auth = await resolveMcpAuth(req.headers.authorization ?? null);
   if (!auth) {
     sendMcpAuthChallenge(res);
@@ -1823,7 +2044,7 @@ async function handleMcp(
   }
 
   logMcpEvent("session-initialize", { method: req.method });
-  const server = createMcpServer(
+  const server = await createMcpServer(
     auth.context,
     auth.plaintextKey,
     auth.grantedScopes
@@ -1845,6 +2066,17 @@ async function handleMcp(
       lastActivityMs: Date.now(),
     });
     logMcpEvent("session-created", { sessionId: newSessionId });
+    if (authCacheStore) {
+      const serializedAuth: SerializedMcpAuth = {
+        plaintextKey: auth.plaintextKey,
+        context: auth.context,
+        grantedScopes: auth.grantedScopes,
+        createdAt: Date.now(),
+      };
+      authCacheStore
+        .set(newSessionId, serializedAuth, MCP_SERVER_CACHE_TTL_MS)
+        .catch(() => {});
+    }
   } else {
     // No session created — clean up
     await server.close();
@@ -2099,7 +2331,7 @@ function buildAuthorizeHtml(queryString: string, error?: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Authorize — ClosedLoop MCP</title>
+  <title>Authorize — Closedloop MCP</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
     .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); padding: 32px; max-width: 420px; width: 100%; }
@@ -2114,7 +2346,7 @@ function buildAuthorizeHtml(queryString: string, error?: string): string {
 <body>
   <div class="card">
     <h1>Authorize MCP Access</h1>
-    <p>Enter your ClosedLoop API key to grant access to the MCP client.</p>
+    <p>Enter your Closedloop API key to grant access to the MCP client.</p>
     ${errorHtml}
     <form method="POST" action="/oauth/authorize?${queryString}">
       <label for="api_key">API Key</label>
@@ -2545,11 +2777,295 @@ async function handleAuthorizationCodeGrant(
   });
 }
 
+const RefreshFailureReason = {
+  ReuseDetected: "reuse_detected",
+  ApiUnreachable: "api_unreachable",
+  ApiRejected: "api_rejected",
+  Expired: "expired",
+  InvalidClient: "invalid_client",
+  InvalidScope: "invalid_scope",
+  DecryptFailed: "decrypt_failed",
+  Unknown: "unknown",
+} as const;
+type RefreshFailureReason =
+  (typeof RefreshFailureReason)[keyof typeof RefreshFailureReason];
+
+function logRefreshAttempt(details: {
+  familyId?: string;
+  clientId?: string;
+  userId?: string;
+  organizationId?: string;
+}): void {
+  logMcpEvent("oauth-refresh-attempt", details);
+}
+
+function logRefreshSuccess(details: {
+  familyId: string;
+  clientId: string;
+  userId: string;
+  organizationId: string;
+  scopes: string;
+}): void {
+  logMcpEvent("oauth-refresh-success", details);
+}
+
+function logRefreshFailure(details: {
+  familyId?: string;
+  clientId?: string;
+  reason: RefreshFailureReason;
+}): void {
+  logMcpEvent("oauth-refresh-failure", details);
+}
+
+type ConcurrentGrantResult = {
+  accessToken: string;
+  refreshToken: string;
+  refreshTokenExpiresIn: number;
+  scopes: string[];
+  userId: string;
+  organizationId: string;
+};
+
+const MAX_ACTIVE_TOKENS_PER_FAMILY = 2;
+
+/**
+ * Issue a new access token + refresh token for a concurrent caller whose
+ * original refresh token was already rotated by another request.
+ *
+ * Callers must supply the already-decrypted key and verified context to
+ * avoid redundant upstream verification with weaker security guarantees.
+ *
+ * Returns null if the family already has too many active tokens.
+ */
+async function issueConcurrentGrant(
+  plaintextKey: string,
+  context: VerifiedApiKeyContext,
+  replacementScopes: string[],
+  refreshRecord: RefreshTokenRecord,
+  requestedScope?: string
+): Promise<ConcurrentGrantResult | null> {
+  const keyScopes = effectiveKeyScopes(context.scopes);
+  const grantScopes = replacementScopes.filter((scope) =>
+    keyScopes.includes(scope)
+  );
+
+  if (requestedScope) {
+    const requested = parseScopeParam(requestedScope);
+    if (requested.length > 0) {
+      const hasInvalid = requested.some(
+        (scope) => !grantScopes.includes(scope)
+      );
+      if (hasInvalid) {
+        return null;
+      }
+    }
+  }
+
+  const accessToken = issueOAuthAccessToken(plaintextKey, context, grantScopes);
+
+  const graceToken = await withDb.tx(async (db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    const activeCount = await client.oAuthRefreshToken.count({
+      where: { familyId: refreshRecord.familyId, revokedAt: null },
+    });
+    if (activeCount >= MAX_ACTIVE_TOKENS_PER_FAMILY) {
+      return null;
+    }
+    const nextExpiry = new Date(
+      Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
+    );
+    return createRefreshTokenRecord(client, {
+      encryptedApiKey: refreshRecord.encryptedApiKey,
+      keyId: refreshRecord.keyId,
+      userId: refreshRecord.userId,
+      organizationId: refreshRecord.organizationId,
+      clientId: refreshRecord.clientId,
+      scopes: grantScopes,
+      familyId: refreshRecord.familyId,
+      expiresAt: nextExpiry,
+    });
+  });
+
+  if (!graceToken) {
+    return null;
+  }
+
+  return {
+    accessToken,
+    refreshToken: graceToken.token,
+    refreshTokenExpiresIn: graceToken.expiresIn,
+    scopes: grantScopes,
+    userId: context.userId,
+    organizationId: context.organizationId,
+  };
+}
+
+async function tryRefreshGracePeriod(
+  refreshRecord: RefreshTokenRecord,
+  msSinceRevocation: number,
+  requestedScope?: string
+): Promise<(ConcurrentGrantResult & { msSinceRevocation: number }) | null> {
+  if (!refreshRecord.replacedByTokenId) {
+    return null;
+  }
+
+  const replacement = await loadRefreshTokenRecordById(
+    refreshRecord.replacedByTokenId
+  );
+  if (!replacement || replacement.revokedAt !== null) {
+    return null;
+  }
+
+  const plaintextKey = decryptApiKey(
+    refreshRecord.encryptedApiKey,
+    refreshRecord.keyId
+  );
+  if (!plaintextKey) {
+    await revokeRefreshTokenFamily(refreshRecord.familyId);
+    return null;
+  }
+
+  const verification = await verifyApiKeyForRefresh(
+    plaintextKey,
+    refreshRecord
+  );
+  if (!verification.ok) {
+    return null;
+  }
+
+  const result = await issueConcurrentGrant(
+    plaintextKey,
+    verification.context,
+    replacement.scopes,
+    refreshRecord,
+    requestedScope
+  );
+  if (!result) {
+    return null;
+  }
+
+  return { ...result, msSinceRevocation };
+}
+
+async function handleRevokedRefreshToken(
+  refreshRecord: RefreshTokenRecord,
+  res: import("node:http").ServerResponse,
+  requestedScope?: string
+): Promise<void> {
+  const msSinceRevocation =
+    Date.now() - (refreshRecord.revokedAt as Date).getTime();
+  const withinGracePeriod =
+    msSinceRevocation <= OAUTH_REFRESH_REUSE_GRACE_PERIOD_SECONDS * 1000;
+  const graceResult = withinGracePeriod
+    ? await tryRefreshGracePeriod(
+        refreshRecord,
+        msSinceRevocation,
+        requestedScope
+      )
+    : null;
+
+  if (graceResult) {
+    logMcpEvent("oauth-refresh-concurrent", {
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      userId: graceResult.userId,
+      organizationId: graceResult.organizationId,
+      msSinceRevocation: String(graceResult.msSinceRevocation),
+    });
+    sendOAuthJson(res, 200, {
+      access_token: graceResult.accessToken,
+      refresh_token: graceResult.refreshToken,
+      token_type: "Bearer",
+      expires_in: OAUTH_TOKEN_TTL_SECONDS,
+      refresh_token_expires_in: graceResult.refreshTokenExpiresIn,
+      scope: graceResult.scopes.join(" "),
+    });
+    return;
+  }
+
+  // Outside grace period or replacement not usable: revoke the family.
+  await revokeRefreshTokenFamily(refreshRecord.familyId);
+  logRefreshFailure({
+    familyId: refreshRecord.familyId,
+    clientId: refreshRecord.clientId,
+    reason: RefreshFailureReason.ReuseDetected,
+  });
+  sendOAuthJson(res, 400, {
+    error: "invalid_grant",
+    error_description: "Refresh token reuse detected",
+  });
+}
+
+type VerifyApiKeyForRefreshResult =
+  | { ok: true; context: VerifiedApiKeyContext }
+  | {
+      ok: false;
+      reason: RefreshFailureReason;
+      status: number;
+      errorCode: string;
+      errorDescription: string;
+    };
+
+/**
+ * Verify the decrypted API key for a refresh grant, falling back to local
+ * verification when the upstream API is unreachable.
+ */
+async function verifyApiKeyForRefresh(
+  plaintextKey: string,
+  refreshRecord: { familyId: string; clientId: string }
+): Promise<VerifyApiKeyForRefreshResult> {
+  let context: VerifiedApiKeyContext | null;
+  try {
+    context = await verifyApiKey(plaintextKey);
+  } catch (error) {
+    // Network/transient error — fall back to local verification instead of
+    // revoking the family.  Only explicit API rejection (null) should revoke.
+    console.warn(
+      "[oauth] upstream API key verification failed during refresh, falling back to local DB verification",
+      error
+    );
+    logMcpEvent("oauth-refresh-api-fallback", {
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    try {
+      context = await withTimeout(
+        verifyApiKeyLocally(plaintextKey),
+        OAUTH_VERIFY_FALLBACK_TIMEOUT_MS,
+        "oauth local api-key verification (refresh)"
+      );
+    } catch {
+      return {
+        ok: false,
+        reason: RefreshFailureReason.ApiUnreachable,
+        status: 503,
+        errorCode: "temporarily_unavailable",
+        errorDescription: "Unable to verify API key — please try again later",
+      };
+    }
+  }
+
+  if (!context) {
+    await revokeRefreshTokenFamily(refreshRecord.familyId);
+    return {
+      ok: false,
+      reason: RefreshFailureReason.ApiRejected,
+      status: 400,
+      errorCode: "invalid_grant",
+      errorDescription: "Refresh token is no longer valid",
+    };
+  }
+
+  return { ok: true, context };
+}
+
 async function handleRefreshTokenGrant(
   body: OAuthTokenBody,
   res: import("node:http").ServerResponse
 ): Promise<void> {
   if (!body.refresh_token?.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)) {
+    logRefreshFailure({ reason: RefreshFailureReason.Unknown });
     sendOAuthJson(res, 400, {
       error: "invalid_request",
       error_description: "refresh_token is required",
@@ -2560,7 +3076,28 @@ async function handleRefreshTokenGrant(
   // Best-effort pre-check for clearer OAuth errors; rotateRefreshToken below
   // revalidates token state transactionally as the authoritative gate.
   const refreshRecord = await loadRefreshTokenRecord(body.refresh_token);
-  if (!refreshRecord || refreshRecord.expiresAt <= new Date()) {
+  if (!refreshRecord) {
+    logRefreshFailure({ reason: RefreshFailureReason.Unknown });
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Invalid or expired refresh token",
+    });
+    return;
+  }
+
+  logRefreshAttempt({
+    familyId: refreshRecord.familyId,
+    clientId: refreshRecord.clientId,
+    userId: refreshRecord.userId,
+    organizationId: refreshRecord.organizationId,
+  });
+
+  if (refreshRecord.expiresAt <= new Date()) {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.Expired,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Invalid or expired refresh token",
@@ -2573,10 +3110,20 @@ async function handleRefreshTokenGrant(
     !clientId ||
     (!clientId.startsWith("dyn_") && clientId !== OAUTH_CLIENT_ID)
   ) {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.InvalidClient,
+    });
     sendInvalidClient(res, "Invalid client_id");
     return;
   }
   if (refreshRecord.clientId !== clientId) {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.InvalidClient,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Refresh token was not issued to this client",
@@ -2585,15 +3132,7 @@ async function handleRefreshTokenGrant(
   }
 
   if (refreshRecord.revokedAt !== null) {
-    // Intentionally conservative: if a revoked token is presented by the bound
-    // client, revoke the remaining family immediately. A concurrent rotation
-    // may cause over-revocation (forcing re-auth), which is preferred over
-    // under-revocation in replay scenarios.
-    await revokeRefreshTokenFamily(refreshRecord.familyId);
-    sendOAuthJson(res, 400, {
-      error: "invalid_grant",
-      error_description: "Refresh token reuse detected",
-    });
+    await handleRevokedRefreshToken(refreshRecord, res, body.scope);
     return;
   }
 
@@ -2603,6 +3142,11 @@ async function handleRefreshTokenGrant(
   );
   if (!plaintextKey) {
     await revokeRefreshTokenFamily(refreshRecord.familyId);
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.DecryptFailed,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Refresh token is no longer valid",
@@ -2610,15 +3154,23 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  const context = await verifyApiKeyWithFallback(plaintextKey);
-  if (!context) {
-    await revokeRefreshTokenFamily(refreshRecord.familyId);
-    sendOAuthJson(res, 400, {
-      error: "invalid_grant",
-      error_description: "Refresh token is no longer valid",
+  const verification = await verifyApiKeyForRefresh(
+    plaintextKey,
+    refreshRecord
+  );
+  if (!verification.ok) {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: verification.reason,
+    });
+    sendOAuthJson(res, verification.status, {
+      error: verification.errorCode,
+      error_description: verification.errorDescription,
     });
     return;
   }
+  const { context } = verification;
 
   const keyScopes = effectiveKeyScopes(context.scopes);
   const grantScopes = refreshRecord.scopes.filter((scope) =>
@@ -2628,6 +3180,11 @@ async function handleRefreshTokenGrant(
   const scopes = requestedScopes.length > 0 ? requestedScopes : grantScopes;
   const hasInvalidScope = scopes.some((scope) => !grantScopes.includes(scope));
   if (hasInvalidScope) {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.InvalidScope,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_scope",
       error_description: "Requested scope exceeds the refresh token grant",
@@ -2641,6 +3198,11 @@ async function handleRefreshTokenGrant(
     scopes
   );
   if (rotated.status === "reuse_detected") {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.ReuseDetected,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Refresh token reuse detected",
@@ -2648,6 +3210,11 @@ async function handleRefreshTokenGrant(
     return;
   }
   if (rotated.status === "invalid") {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.Expired,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Invalid or expired refresh token",
@@ -2655,6 +3222,11 @@ async function handleRefreshTokenGrant(
     return;
   }
   if (rotated.status === "invalid_client") {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.InvalidClient,
+    });
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Refresh token was not issued to this client",
@@ -2662,6 +3234,11 @@ async function handleRefreshTokenGrant(
     return;
   }
   if (rotated.status === "invalid_scope") {
+    logRefreshFailure({
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      reason: RefreshFailureReason.InvalidScope,
+    });
     // Defensive fallback: scope validation currently happens before rotate call.
     sendOAuthJson(res, 400, {
       error: "invalid_scope",
@@ -2669,8 +3246,53 @@ async function handleRefreshTokenGrant(
     });
     return;
   }
+  if (rotated.status === "concurrent_ok") {
+    const concurrentGrant = await issueConcurrentGrant(
+      plaintextKey,
+      context,
+      rotated.replacementToken.scopes,
+      refreshRecord,
+      body.scope
+    );
+    if (!concurrentGrant) {
+      logRefreshFailure({
+        familyId: refreshRecord.familyId,
+        clientId: refreshRecord.clientId,
+        reason: RefreshFailureReason.Unknown,
+      });
+      sendOAuthJson(res, 400, {
+        error: "invalid_grant",
+        error_description: "Refresh token is no longer valid",
+      });
+      return;
+    }
+
+    logMcpEvent("oauth-refresh-concurrent", {
+      familyId: refreshRecord.familyId,
+      clientId: refreshRecord.clientId,
+      userId: concurrentGrant.userId,
+      organizationId: concurrentGrant.organizationId,
+      msSinceRevocation: String(rotated.msSinceRevocation),
+    });
+    sendOAuthJson(res, 200, {
+      access_token: concurrentGrant.accessToken,
+      refresh_token: concurrentGrant.refreshToken,
+      token_type: "Bearer",
+      expires_in: OAUTH_TOKEN_TTL_SECONDS,
+      refresh_token_expires_in: concurrentGrant.refreshTokenExpiresIn,
+      scope: concurrentGrant.scopes.join(" "),
+    });
+    return;
+  }
 
   const accessToken = issueOAuthAccessToken(plaintextKey, context, scopes);
+  logRefreshSuccess({
+    familyId: refreshRecord.familyId,
+    clientId: refreshRecord.clientId,
+    userId: context.userId,
+    organizationId: context.organizationId,
+    scopes: scopes.join(" "),
+  });
   sendOAuthJson(res, 200, {
     access_token: accessToken,
     refresh_token: rotated.token,
@@ -2950,7 +3572,8 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
     sendJson(res, 200, {
       name: "closedloop",
       version: "0.0.1",
-      description: "ClosedLoop AI software delivery platform — MCP server",
+      description:
+        "Closedloop AI software delivery platform — project management, document tracking, and work execution monitoring for AI-driven development workflows.",
       url: `${MCP_SERVER_URL}/mcp`,
       transport: { type: "streamable-http" },
       authentication: { type: "bearer", format: "sk_live_*" },
@@ -3107,12 +3730,43 @@ export function createHttpServer(): import("node:http").Server {
   });
 }
 
+async function handleCachedAuthRequest(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  sessionId: string
+): Promise<boolean> {
+  if (!authCacheStore) {
+    return false;
+  }
+  const cachedAuth = await authCacheStore.get(sessionId);
+  if (!cachedAuth) {
+    return false;
+  }
+  logMcpEvent("session-restored-from-cache", {
+    method: req.method,
+    sessionId,
+  });
+  const { plaintextKey, context, grantedScopes } = cachedAuth;
+  const cachedParsedBody = await parseMcpJsonBody(req, res);
+  if (cachedParsedBody === null) {
+    return true;
+  }
+  await handleMcpStatelessRequest(
+    req,
+    res,
+    { plaintextKey, context, grantedScopes },
+    cachedParsedBody
+  );
+  authCacheStore.touch(sessionId, MCP_SERVER_CACHE_TTL_MS).catch(() => {});
+  return true;
+}
+
 export function startHttpServer(port = PORT): import("node:http").Server {
   requireRedirectAllowlistForEnvironment();
   requireInternalAllowlistForEnvironment();
   const httpServer = createHttpServer();
   httpServer.listen(port, () => {
-    console.log(`ClosedLoop MCP server running on port ${port}`);
+    console.log(`Closedloop MCP server running on port ${port}`);
     console.log(`MCP endpoint: http://localhost:${port}/mcp`);
     console.log(`Health: http://localhost:${port}/health`);
     console.log(`Ready:  http://localhost:${port}/ready`);
@@ -3134,6 +3788,7 @@ if (
 }
 
 export const __testables = {
+  createMcpServer,
   dispatchHttpRequest,
   handleOAuthAuthorize,
   handleOAuthToken,
@@ -3146,6 +3801,10 @@ export const __testables = {
   isRedirectUriAllowedByEntry,
   consumeInMemoryRateLimit,
   inMemoryRateLimits,
+  handleCachedAuthRequest,
+  get authCacheStore() {
+    return authCacheStore;
+  },
   resetInMemorySecurityState: () => {
     lastOAuthCleanupMs = 0;
     mcpSessions.clear();

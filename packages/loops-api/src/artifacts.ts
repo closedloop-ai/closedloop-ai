@@ -16,6 +16,7 @@ export const LoopArtifactFile = {
   Plan: "plan.json",
   PlanMarkdown: "plan.md",
   Prd: "prd.md",
+  Feature: "feature.md",
   ExecutionResult: "execution-result.json",
   Judges: "judges.json",
   PrdJudges: "prd-judges.json",

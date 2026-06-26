@@ -1,16 +1,16 @@
 ---
 title: Claude Code plugins
-description: The six plugins that ship the ClosedLoop.ai agent and orchestration layer.
+description: The six plugins that ship the Closedloop.ai agent and orchestration layer.
 ---
 
-ClosedLoop.ai distributes its agent and orchestration layer as six Claude Code plugins. Each plugin is a self-contained marketplace entry that installs under `~/.claude/plugins/cache/closedloop-ai/`.
+Closedloop.ai distributes its agent and orchestration layer as six Claude Code plugins. Each plugin is a self-contained marketplace entry that installs under `~/.claude/plugins/cache/closedloop-ai/`.
 
 ## The roster
 
 | Plugin | Purpose |
 |---|---|
 | [`bootstrap`](./plugins/bootstrap) | Meta-orchestrator that reads your codebase and generates a project-specific agent suite and critic config. |
-| [`code`](./plugins/code) | The hub plugin. Implements the full ClosedLoop autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation. |
+| [`code`](./plugins/code) | The hub plugin. Implements the full Closedloop autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation. |
 | [`code-review`](./plugins/code-review) | Multi-agent partitioned code review with deterministic hygiene checks, risk-based routing, caching, and GitHub PR inline comments. |
 | [`judges`](./plugins/judges) | LLM-as-judge framework with 21 judge agents that score plans, code, and PRDs. |
 | [`platform`](./plugins/platform) | Claude Code expert guidance, prompt engineering, mermaid diagrams, artifact upload, and skill scaffolding. |
@@ -32,7 +32,7 @@ The `docs/dependencies.md` file in the plugins repo has the full graph.
 
 Commands are namespaced by plugin (`/<plugin>:<command>`). The full reference is at [Commands reference](../resources/commands-reference). The most-used commands:
 
-- `/code:code` — start a ClosedLoop coding session against a PRD or plan.
+- `/code:code` — start a Closedloop coding session against a PRD or plan.
 - `/code:amend-plan` — interactively amend a running plan.
 - `/code:cancel-code` — stop a running loop.
 - `/code:plan-with-codex` — run a Claude-versus-Codex debate to refine a plan.

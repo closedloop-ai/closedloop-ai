@@ -1,7 +1,16 @@
+import { BranchViewLocalHeader } from "@repo/api/src/types/branch-view-local";
 import { failure } from "@repo/api/src/types/common";
 import type { RelayOperationDispatchRequest } from "@repo/api/src/types/compute-target";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  classifyBranchViewLocalCommand,
+  validateBranchViewLocalAccess,
+} from "@/lib/branch-view-local-authorization";
+import {
+  browserKeyRevocationReservedResponse,
+  isReservedBrowserKeyRevocationRelayOperation,
+} from "@/lib/browser-key-revocation-command";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
@@ -32,6 +41,11 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
+    const operation = body as RelayOperationDispatchRequest;
+    if (isReservedBrowserKeyRevocationRelayOperation(operation)) {
+      return browserKeyRevocationReservedResponse();
+    }
+
     await computeTargetsService.markStaleTargetsOffline({
       organizationId: user.organizationId,
       userId: user.id,
@@ -48,16 +62,57 @@ export const POST = withAnyAuth<
       });
     }
 
-    const operation = body as RelayOperationDispatchRequest;
+    let operationForDispatch = operation;
+    if (classifyBranchViewLocalCommand(operation)) {
+      const params = isRecord(operation.params) ? operation.params : {};
+      const requestPayload = isRecord(params.request) ? params.request : {};
+      const headers = isRecord(requestPayload.headers)
+        ? Object.fromEntries(
+            Object.entries(requestPayload.headers).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string"
+            )
+          )
+        : {};
+      const proof = await validateBranchViewLocalAccess({
+        userId: user.id,
+        organizationId: user.organizationId,
+        computeTargetId: target.id,
+        externalLinkId: headers[BranchViewLocalHeader.ExternalLinkId] ?? "",
+        repoFullName: headers[BranchViewLocalHeader.RepoFullName] ?? "",
+        headBranch: headers[BranchViewLocalHeader.HeadBranch] ?? "",
+        prNumber: Number(headers[BranchViewLocalHeader.PrNumber]),
+        operationPath:
+          typeof requestPayload.path === "string" ? requestPayload.path : "",
+      });
+      if (!proof.ok) {
+        return NextResponse.json(failure(proof.error, { code: proof.code }), {
+          status: proof.status,
+        });
+      }
+      operationForDispatch = {
+        ...operation,
+        params: {
+          ...params,
+          request: {
+            ...requestPayload,
+            headers: {
+              ...headers,
+              ...proof.metadataHeaders,
+            },
+          },
+        } as RelayOperationDispatchRequest["params"],
+      };
+    }
+
     const createResult = await desktopCommandStore.createFromRelayOperation(
       target.id,
-      operation
+      operationForDispatch
     );
     const operationWithCommandId: RelayOperationDispatchRequest = {
-      ...operation,
-      params: isRecord(operation.params)
+      ...operationForDispatch,
+      params: isRecord(operationForDispatch.params)
         ? ({
-            ...operation.params,
+            ...operationForDispatch.params,
             commandId: createResult.command.commandId,
           } as RelayOperationDispatchRequest["params"])
         : ({

@@ -6,8 +6,8 @@ import type {
 } from "@repo/api/src/types/compute-target";
 import { queryOptions } from "@tanstack/react-query";
 import { env } from "@/env";
+import { COMPUTE_TARGET_HEADER } from "@/lib/desktop-command-signing/constants";
 import {
-  COMPUTE_TARGET_HEADER,
   GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_RELAY_HEALTH_CHECK_PATH,
 } from "@/lib/engineer/constants";
@@ -36,12 +36,14 @@ type HealthCheckTargetScope =
 type HealthCheckOptionsConfig = {
   relayTargetId?: string | null;
   latestVersion?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
 };
 
 type HealthCheckRequestInput = {
   expectedMcpUrl: string | null;
   relayTargetId?: string | null;
   latestVersion?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
 };
 
 export type HealthCheckRequestConfig = {
@@ -216,6 +218,7 @@ export function buildHealthCheckRequest({
   expectedMcpUrl,
   relayTargetId = null,
   latestVersion = null,
+  pluginAutoUpdateEnabled = false,
 }: HealthCheckRequestInput): HealthCheckRequestConfig {
   const params = new URLSearchParams();
   if (expectedMcpUrl) {
@@ -223,6 +226,9 @@ export function buildHealthCheckRequest({
   }
   if (latestVersion) {
     params.set("latestVersion", latestVersion);
+  }
+  if (pluginAutoUpdateEnabled) {
+    params.set("pluginAutoUpdate", "1");
   }
 
   const path =
@@ -254,18 +260,32 @@ export function healthCheckOptions(
     typeof routing === "string" ? routing : getHealthCheckTargetKey(routing);
   const relayTargetId = config.relayTargetId ?? null;
   const latestVersion = config.latestVersion || null;
+  const pluginAutoUpdateEnabled = config.pluginAutoUpdateEnabled ?? false;
 
   return queryOptions<HealthCheckResponse>({
-    queryKey: queryKeys.healthCheck(targetKey, expectedMcpUrl, latestVersion),
+    queryKey: queryKeys.healthCheck(
+      targetKey,
+      expectedMcpUrl,
+      latestVersion,
+      pluginAutoUpdateEnabled
+    ),
     queryFn: async () => {
       const request = buildHealthCheckRequest({
         expectedMcpUrl,
         relayTargetId,
         latestVersion,
+        pluginAutoUpdateEnabled,
       });
       const res = await fetch(request.url, request.init);
       return res.json();
     },
-    staleTime: HEALTH_CHECK_QUERY_STALE_TIME_MS,
+    staleTime: (query) => {
+      const data = query.state.data;
+      if (!data) {
+        return HEALTH_CHECK_QUERY_STALE_TIME_MS;
+      }
+      const hasFailingCheck = data.checks?.some((check) => !check.passed);
+      return hasFailingCheck ? 0 : HEALTH_CHECK_QUERY_STALE_TIME_MS;
+    },
   });
 }

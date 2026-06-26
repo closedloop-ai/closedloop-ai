@@ -5,6 +5,7 @@ type ThemeProviderProperties = {
   children: ReactNode;
   themes?: string[];
   forcedTheme?: string;
+  nonce?: string;
   enableSystem?: boolean;
   disableTransitionOnChange?: boolean;
   enableColorScheme?: boolean;

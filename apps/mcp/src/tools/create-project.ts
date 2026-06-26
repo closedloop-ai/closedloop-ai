@@ -13,7 +13,7 @@ export function registerCreateProject(
     "create-project",
     {
       description:
-        "Create a project — the top-level container for workstreams and documents. The assigned slug (PRO-*) is returned in the response and is the preferred handle for future calls.",
+        "Create a project — the top-level container for documents. The assigned slug (PRO-*) is returned in the response and is the preferred handle for future calls.",
       inputSchema: {
         name: z.string().describe("Name of the project"),
         description: z
