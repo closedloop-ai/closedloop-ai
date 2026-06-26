@@ -3,7 +3,7 @@
  * CommandAcknowledged lifecycle emission.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/telemetry/origin", () => ({
   ORIGIN: "api",
@@ -58,7 +58,6 @@ import { buildTelemetryTraceContext } from "@repo/observability/telemetry/contex
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
 import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
 import { TelemetryCategory } from "@repo/observability/telemetry/schema";
-import { beforeEach, describe, expect, it } from "vitest";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +174,21 @@ describe("acknowledgeCommand — CommandAcknowledged lifecycle emission", () => 
         ctx
       )
     ).resolves.not.toThrow();
+  });
+
+  it("does not emit CommandAcknowledged when context is omitted", async () => {
+    mockFindFirst.mockResolvedValue(makeCommandRow());
+    mockUpdateMany.mockResolvedValue({ count: 1 });
+
+    await desktopCommandStore.acknowledgeCommand(
+      COMMAND_ID,
+      true,
+      undefined,
+      COMPUTE_TARGET_ID
+    );
+
+    expect(vi.mocked(emitCommandLifecycleEvent)).not.toHaveBeenCalled();
+    expect(vi.mocked(emitQueueMetric)).toHaveBeenCalled();
   });
 
   it("does not inject an explicit origin key into the trace arg (origin is auto-stamped downstream by the emitter)", async () => {

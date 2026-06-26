@@ -9,7 +9,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Accessible resizable panel groups and layouts with keyboard support.
  */
 const meta: Meta<typeof ResizablePanelGroup> = {
-  title: "ui/ResizablePanelGroup",
+  title: "Design System/Layout/Resizable Panel Group",
   component: ResizablePanelGroup,
   tags: ["autodocs"],
   argTypes: {

@@ -5,6 +5,7 @@ import type {
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
+import { isExplicitComputeSelectionRequired } from "@/lib/loops/explicit-compute-selection";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import {
   parseBody,
@@ -30,9 +31,8 @@ export const POST = withAnyAuth<ResumeLoopRouteResponse, "/loops/[id]/resume">(
         return parseError;
       }
 
-      // Always validate the compute target — whether explicitly provided or
-      // inherited from the parent. An inherited target may have been unshared
-      // or gone offline since the parent ran; soft-fail to cloud in that case.
+      // Always validate explicit targets. Inherited targets keep legacy soft
+      // Cloud fallback unless explicit compute selection is enabled.
       let resolvedComputeTargetId: string | undefined;
       if (body.computeTargetId) {
         const ctResult = await resolveComputeTargetForRoute(
@@ -54,6 +54,14 @@ export const POST = withAnyAuth<ResumeLoopRouteResponse, "/loops/[id]/resume">(
             parentLoop.computeTargetId
           );
           if ("errorResponse" in ctResult) {
+            const enforceInheritedTarget =
+              await isExplicitComputeSelectionRequired({
+                clerkUserId: user.clerkId,
+                userId: user.id,
+              });
+            if (enforceInheritedTarget) {
+              return ctResult.errorResponse;
+            }
             log.warn(
               "[resume] Parent compute target no longer accessible, falling back to cloud",
               {

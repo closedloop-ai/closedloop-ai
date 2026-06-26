@@ -15,6 +15,7 @@ const DESKTOP_SETUP_COMPLETE = /closedloop desktop setup is complete/i;
 const DESKTOP_SETUP_INCOMPLETE = /setup is not complete yet/i;
 const DESKTOP_SETUP_UNKNOWN = /does not report setup status/i;
 const GENERATE_API_KEY = /generate api key/i;
+const COPY_API_KEY = /copy api key/i;
 const MANUAL_SETUP = "Manual setup";
 const DOWNLOAD_LATEST_VERSION = /download latest version/i;
 const UPDATE_AVAILABLE = /update available/i;
@@ -34,7 +35,6 @@ const WORKSPACE_DIRECTORY = /workspace directory/i;
 const SANDBOX_CONTROL_CHARACTER_ERROR =
   /sandbox directory cannot contain control characters/i;
 const TEST_WORKSPACE_DIRECTORY = "~/workspace";
-
 const mockUseLatestElectronRelease = vi.fn();
 const mockUseElectronDetection = vi.fn();
 const mockUseCreatePlatformApiKey = vi.fn();
@@ -54,7 +54,7 @@ function enterWorkspaceDirectory(value = TEST_WORKSPACE_DIRECTORY) {
   });
 }
 
-vi.mock("@/hooks/queries/use-electron-release", () => ({
+vi.mock("@repo/app/desktop/hooks/use-electron-release", () => ({
   useLatestElectronRelease: () => mockUseLatestElectronRelease(),
 }));
 
@@ -62,7 +62,7 @@ vi.mock("@/lib/engineer/electron-detection", () => ({
   useElectronDetection: () => mockUseElectronDetection(),
 }));
 
-vi.mock("@/hooks/queries/use-platform-api-keys", () => ({
+vi.mock("@repo/app/api-keys/hooks/use-platform-api-keys", () => ({
   useCreatePlatformApiKey: () => mockUseCreatePlatformApiKey(),
 }));
 
@@ -96,7 +96,7 @@ const MOCK_API_KEY_RESPONSE = {
   id: "key-1",
   organizationId: "org-1",
   userId: "user-1",
-  name: "ClosedLoop Desktop",
+  name: "Closedloop Desktop",
   keyPrefix: "cl_",
   expiresAt: null,
   scopes: ["read", "write"],
@@ -129,7 +129,8 @@ describe("DownloadElectronAppStep", () => {
 
     mockUseLatestElectronRelease.mockReturnValue({
       data: {
-        downloadUrl: "https://example.com/closedloop-1.0.0.dmg",
+        downloadUrl:
+          "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v1.0.0/Closedloop-1.0.0-universal.dmg",
         version: "1.0.0",
         releaseNotes: "Initial release",
       },
@@ -195,7 +196,7 @@ describe("DownloadElectronAppStep", () => {
       expect(downloadLink).toBeInTheDocument();
       expect(downloadLink).toHaveAttribute(
         "href",
-        "https://example.com/closedloop-1.0.0.dmg"
+        "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v1.0.0/Closedloop-1.0.0-universal.dmg"
       );
     });
 
@@ -228,6 +229,22 @@ describe("DownloadElectronAppStep", () => {
         name: DOWNLOAD_FOR_MACOS,
       });
       expect(downloadLink).toHaveAttribute("href", "#");
+    });
+
+    it("renders fallback state when the release hook rejects cached data", () => {
+      mockUseLatestElectronRelease.mockReturnValue({
+        data: null,
+        isLoading: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      const downloadLink = screen.getByRole("link", {
+        name: DOWNLOAD_FOR_MACOS,
+      });
+      expect(downloadLink).toHaveAttribute("href", "#");
+      expect(downloadLink).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByText("Latest version")).toBeInTheDocument();
     });
 
     it("shows a loading spinner while release is loading", () => {
@@ -434,12 +451,15 @@ describe("DownloadElectronAppStep", () => {
       expect(screen.getByText(UPDATE_AVAILABLE)).toBeInTheDocument();
       expect(
         screen.getByText(
-          "ClosedLoop Desktop version 0.9.0 is running. Version 1.0.0 is available."
+          "Closedloop Desktop version 0.9.0 is running. Version 1.0.0 is available."
         )
       ).toBeInTheDocument();
       expect(
         screen.getByRole("link", { name: DOWNLOAD_LATEST_VERSION })
-      ).toHaveAttribute("href", "https://example.com/closedloop-1.0.0.dmg");
+      ).toHaveAttribute(
+        "href",
+        "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v1.0.0/Closedloop-1.0.0-universal.dmg"
+      );
     });
 
     it("does not call out an update when the detected version matches the latest release", () => {
@@ -545,7 +565,7 @@ describe("DownloadElectronAppStep", () => {
       fireEvent.click(generateButton);
 
       expect(mockMutate).toHaveBeenCalledWith(
-        { name: "ClosedLoop Desktop" },
+        { name: "Closedloop Desktop" },
         expect.objectContaining({ onSuccess: expect.any(Function) })
       );
     });
@@ -632,7 +652,9 @@ describe("DownloadElectronAppStep", () => {
         ).toBeInTheDocument();
       });
 
-      const copyButton = screen.getByRole("button", { name: "" });
+      const copyButton = screen.getByRole("button", {
+        name: COPY_API_KEY,
+      });
       fireEvent.click(copyButton);
 
       await waitFor(() => {
@@ -663,6 +685,28 @@ describe("DownloadElectronAppStep", () => {
       render(<DownloadElectronAppStep onNext={mockOnNext} />);
 
       expect(screen.getByLabelText(WORKSPACE_DIRECTORY)).toBeRequired();
+    });
+
+    it("does not generate an automated command when the release hook rejects cached data", () => {
+      mockUseLatestElectronRelease.mockReturnValue({
+        data: null,
+        isLoading: false,
+      });
+      mockUseDesktopProvisioningCapability.mockReturnValue({
+        data: {
+          automatedManagedProvisioningEnabled: true,
+          supportedPlatform: DesktopProvisioningPlatform.Darwin,
+        },
+        isLoading: false,
+      });
+
+      render(<DownloadElectronAppStep onNext={mockOnNext} />);
+
+      enterWorkspaceDirectory();
+
+      expect(
+        screen.getByRole("button", { name: GENERATE_INSTALL_COMMAND })
+      ).toBeDisabled();
     });
 
     it("creates an attempt-backed command without API or relay origins", async () => {
@@ -711,7 +755,7 @@ describe("DownloadElectronAppStep", () => {
           `CL_WEB_APP_ORIGIN='${globalThis.location.origin}'`
         );
         expect(command.value).toContain(
-          "CL_DESKTOP_DOWNLOAD_URL='https://example.com/closedloop-1.0.0.dmg'"
+          "CL_DESKTOP_DOWNLOAD_URL='https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v1.0.0/Closedloop-1.0.0-universal.dmg'"
         );
         expect(command.value).toContain("/api/desktop/install.sh");
         expect(command.value).not.toContain("api.closedloop.ai");

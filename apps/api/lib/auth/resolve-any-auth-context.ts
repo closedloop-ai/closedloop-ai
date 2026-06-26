@@ -10,6 +10,7 @@ import {
   getDesktopManagedPopRequestFailure,
   resolveDesktopManagedPopMode,
 } from "./desktop-managed-pop";
+import { resolveOrgHeader } from "./resolve-org-header";
 
 type ResolvedAuthContext = {
   organizationId: string;
@@ -43,13 +44,13 @@ export async function resolveAnyAuthContext(
   }
 
   if (token) {
-    const bearerContext = await resolveClerkBearerTokenContext(token);
+    const bearerContext = await resolveClerkBearerTokenContext(token, request);
     if (bearerContext) {
       return bearerContext;
     }
   }
 
-  return resolveClerkContext();
+  return resolveClerkContext(request);
 }
 
 /**
@@ -156,14 +157,19 @@ function resolveClerkRequestContext(
       return Promise.resolve(null);
     }
 
-    return resolveClerkIdentityContext(requestAuth.userId, requestAuth.orgId);
+    return resolveClerkIdentityContext(
+      requestAuth.userId,
+      requestAuth.orgId,
+      request
+    );
   } catch {
     return Promise.resolve(null);
   }
 }
 
 async function resolveClerkBearerTokenContext(
-  token: string
+  token: string,
+  request?: Request
 ): Promise<ResolvedAuthContext | null> {
   const secretKey = process.env.CLERK_SECRET_KEY;
   if (!secretKey) {
@@ -178,26 +184,44 @@ async function resolveClerkBearerTokenContext(
     if (!(clerkUserId && clerkOrgId)) {
       return null;
     }
-    return resolveClerkIdentityContext(clerkUserId, clerkOrgId);
+    return resolveClerkIdentityContext(clerkUserId, clerkOrgId, request);
   } catch {
     return null;
   }
 }
 
-async function resolveClerkContext(): Promise<ResolvedAuthContext | null> {
+async function resolveClerkContext(
+  request?: Request
+): Promise<ResolvedAuthContext | null> {
   const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
   if (!(clerkUserId && clerkOrgId)) {
     return null;
   }
 
-  return resolveClerkIdentityContext(clerkUserId, clerkOrgId);
+  return resolveClerkIdentityContext(clerkUserId, clerkOrgId, request);
 }
 
 async function resolveClerkIdentityContext(
   clerkUserId: string,
-  clerkOrgId: string
+  clerkOrgId: string,
+  request?: Request
 ): Promise<ResolvedAuthContext | null> {
-  const organization = await organizationsService.findByClerkId(clerkOrgId);
+  let effectiveClerkOrgId = clerkOrgId;
+
+  if (request) {
+    const orgResolution = await resolveOrgHeader(
+      request,
+      clerkUserId,
+      clerkOrgId
+    );
+    if (orgResolution.kind === "forbidden") {
+      return null;
+    }
+    effectiveClerkOrgId = orgResolution.clerkOrgId;
+  }
+
+  const organization =
+    await organizationsService.findByClerkId(effectiveClerkOrgId);
   if (!organization) {
     return null;
   }

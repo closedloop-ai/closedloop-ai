@@ -7,7 +7,7 @@ import { action } from "storybook/actions";
  * A date field component that allows users to enter and edit date.
  */
 const meta = {
-  title: "ui/Calendar",
+  title: "Design System/Primitives/Calendar",
   component: Calendar,
   tags: ["autodocs"],
   argTypes: {},

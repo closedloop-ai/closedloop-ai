@@ -1,4 +1,7 @@
-import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import {
+  type ComputeTarget,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +20,7 @@ const mockEnsureLocalGatewaySession = vi.fn();
 const mockSetLocalGatewayAuthTokenProvider = vi.fn();
 const mockEnsureLocalGatewayApiNamespace = vi.fn();
 const mockApiPut = vi.fn();
+const mockUsePath = vi.fn();
 
 // Mutable flag so individual describe blocks can flip CLOUD_RELAY_ENABLED.
 // The component reads this value at effect run time via the mock factory closure.
@@ -24,6 +28,10 @@ let mockCloudRelayEnabled = false;
 
 vi.mock("@repo/auth/client", () => ({
   useAuth: (...args: unknown[]) => mockUseAuth(...args),
+}));
+
+vi.mock("@repo/navigation/use-path", () => ({
+  usePath: () => mockUsePath(),
 }));
 
 vi.mock("@/lib/engineer/electron-detection", () => ({
@@ -136,6 +144,7 @@ function makeTarget(overrides: Partial<ComputeTarget> = {}): ComputeTarget {
     lastSeenAt: new Date("2026-04-15T00:00:00.000Z"),
     isOnline: true,
     isSharedWithOrg: false,
+    selectedHarness: HarnessType.Claude,
     createdAt: new Date("2026-04-15T00:00:00.000Z"),
     updatedAt: new Date("2026-04-15T00:00:00.000Z"),
     ...overrides,
@@ -156,6 +165,7 @@ describe("EngineerTransportBootstrap (CLOUD_RELAY_ENABLED=false)", () => {
     mockUseElectronDetection.mockReturnValue(noElectron);
     mockUseComputeTargets.mockReturnValue({ data: [], isLoading: false });
     mockUseComputeTargetStatusStream.mockReturnValue(undefined);
+    mockUsePath.mockReturnValue("/closedloop-ai/build/123");
     mockGetEngineerRoutingSelection.mockReturnValue(defaultAutoSelection);
     mockSetEngineerRoutingAutoSelection.mockReturnValue(defaultAutoSelection);
     mockSetEngineerRoutingManualSelection.mockReturnValue(defaultAutoSelection);
@@ -191,6 +201,17 @@ describe("EngineerTransportBootstrap (CLOUD_RELAY_ENABLED=false)", () => {
     });
 
     expect(mockSetEngineerRoutingAutoSelection).not.toHaveBeenCalled();
+  });
+
+  it("does not probe the local desktop gateway on insights routes", () => {
+    mockUsePath.mockReturnValue("/closedloop-ai/insights");
+    mockUseElectronDetection.mockReturnValue(detectedElectron);
+
+    render(<EngineerTransportBootstrap />);
+
+    expect(mockUseElectronDetection).toHaveBeenCalledWith(false);
+    expect(mockSetEngineerRoutingAutoSelection).not.toHaveBeenCalled();
+    expect(mockEnsureLocalGatewaySession).not.toHaveBeenCalled();
   });
 
   it("does NOT call setEngineerRoutingAutoSelection when Electron is NOT detected with explicit manual CloudRelay selection", () => {
@@ -233,7 +254,9 @@ describe("EngineerTransportBootstrap (CLOUD_RELAY_ENABLED=false)", () => {
     );
     await waitFor(() =>
       expect(mockApiPut).toHaveBeenCalledWith("/compute-targets/target-owned", {
-        capabilities: { desktopApiNamespace: "engineer" },
+        // withDesktopApiNamespaceCapability now deletes the legacy key, leaving an
+        // empty capabilities object for the current /api/gateway/ namespace.
+        capabilities: {},
       })
     );
   });
@@ -302,6 +325,7 @@ describe("EngineerTransportBootstrap (CLOUD_RELAY_ENABLED=true)", () => {
     mockUseElectronDetection.mockReturnValue(noElectron);
     mockUseComputeTargets.mockReturnValue({ data: [], isLoading: false });
     mockUseComputeTargetStatusStream.mockReturnValue(undefined);
+    mockUsePath.mockReturnValue("/closedloop-ai/build/123");
     mockGetEngineerRoutingSelection.mockReturnValue(defaultAutoSelection);
     mockSetEngineerRoutingAutoSelection.mockReturnValue(defaultAutoSelection);
     mockSetEngineerRoutingManualSelection.mockReturnValue(defaultAutoSelection);

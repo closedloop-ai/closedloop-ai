@@ -5,7 +5,7 @@
  * - ingestCommandEvent — event_ordering_gaps metric on sequence gap (T-3.2)
  */
 
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -15,6 +15,7 @@ const {
   mockEmitQueueMetric,
   mockEmitProtocolMetric,
   desktopCommandCountSpy,
+  desktopCommandCreateSpy,
   desktopCommandUpdateManySpy,
 } = vi.hoisted(() => ({
   mockWithDb: vi.fn(),
@@ -22,6 +23,7 @@ const {
   mockEmitQueueMetric: vi.fn(),
   mockEmitProtocolMetric: vi.fn(),
   desktopCommandCountSpy: vi.fn(),
+  desktopCommandCreateSpy: vi.fn(),
   desktopCommandUpdateManySpy: vi.fn(),
 }));
 
@@ -48,8 +50,13 @@ vi.mock("@repo/database", () => ({
 
 // --- Imports (after mocks) ---
 
-import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  type BrowserSignedCommandId,
+  DesktopCommandStatus,
+} from "@repo/api/src/types/compute-target";
+import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
+import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
+import { TelemetryCategory } from "@repo/observability/telemetry/schema";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 
 beforeEach(() => {
@@ -60,10 +67,106 @@ beforeEach(() => {
     fn({
       desktopCommand: {
         count: desktopCommandCountSpy,
+        create: desktopCommandCreateSpy,
         updateMany: desktopCommandUpdateManySpy,
       },
     })
   );
+});
+
+function installCreateCommandMock(): void {
+  desktopCommandCreateSpy.mockImplementation(
+    ({ data }: { data: Record<string, unknown> }) => ({
+      id: data.id ?? "server-command-id",
+      computeTargetId: data.computeTargetId,
+      operationId: data.operationId,
+      status: data.status,
+      requestPayload: data.requestPayload,
+      error: null,
+      createdAt: new Date("2026-05-08T12:00:00.000Z"),
+      startedAt: null,
+      finishedAt: null,
+      lastSequenceAcked: data.lastSequenceAcked,
+      idempotencyKey: data.idempotencyKey,
+      requestFingerprint: data.requestFingerprint,
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// command signing persistence
+// ---------------------------------------------------------------------------
+
+describe("desktopCommandStore.createCommand command signing fields", () => {
+  beforeEach(() => {
+    desktopCommandStore.__resetForTests();
+    installCreateCommandMock();
+  });
+
+  it("uses a browser-supplied command id without persisting signature material", async () => {
+    const commandId =
+      "0196b1bb-7a00-7000-8000-000000000001" as BrowserSignedCommandId;
+
+    await desktopCommandStore.createCommand("target-1", {
+      commandId,
+      operationId: "git_action",
+      method: "POST",
+      path: "/api/gateway/git",
+      body: { action: "status" },
+      signature: "signature-base64",
+      signaturePayload: '{"signed":true}',
+      publicKeyFingerprint: "cl:testfingerprint",
+    });
+
+    const createData = desktopCommandCreateSpy.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(createData.id).toBe(commandId);
+    expect(createData.requestPayload).toEqual({
+      operationId: "git_action",
+      method: "POST",
+      path: "/api/gateway/git",
+      body: { action: "status" },
+    });
+  });
+
+  it("keeps request fingerprints stable across browser re-signing", async () => {
+    const baseCommand = {
+      operationId: "git_action",
+      method: "POST" as const,
+      path: "/api/gateway/git",
+      body: { action: "status", repoPath: "/repo" },
+    };
+
+    await desktopCommandStore.createCommand("target-1", {
+      ...baseCommand,
+      commandId:
+        "0196b1bb-7a00-7000-8000-000000000002" as BrowserSignedCommandId,
+      signature: "first-signature",
+      signaturePayload: '{"nonce":"first"}',
+      publicKeyFingerprint: "cl:first",
+    });
+    await desktopCommandStore.createCommand("target-1", {
+      ...baseCommand,
+      commandId:
+        "0196b1bb-7a00-7000-8000-000000000003" as BrowserSignedCommandId,
+      signature: "second-signature",
+      signaturePayload: '{"nonce":"second"}',
+      publicKeyFingerprint: "cl:second",
+    });
+
+    const firstData = desktopCommandCreateSpy.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    const secondData = desktopCommandCreateSpy.mock.calls[1][0].data as Record<
+      string,
+      unknown
+    >;
+
+    expect(firstData.requestFingerprint).toBe(secondData.requestFingerprint);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -163,6 +266,8 @@ describe("desktopCommandStore.markCommandExpired", () => {
     expect(droppedArg).toMatchObject({
       metric: "dropped_expired_work_items",
       count: expiredCount,
+      filterToken: FilterToken.WorkItemDroppedExpired,
+      reason: "timed out",
     });
     expect(droppedArg?.count).toBe(expiredCount);
     expect(droppedArg?.value).toBeUndefined();
@@ -237,6 +342,7 @@ describe("desktopCommandStore.markCommandExpired", () => {
       metric: "dropped_expired_work_items",
       count: 2,
       computeTargetId: "target-99",
+      filterToken: FilterToken.WorkItemDroppedExpired,
     });
   });
 });
@@ -480,5 +586,51 @@ describe("desktopCommandStore.ingestCommandEvent", () => {
       (call) => call[0]?.metric === "event_ordering_gaps"
     );
     expect(gapCall).toBeUndefined();
+  });
+
+  it("emits terminal lifecycle events with the stored operationId when context has the empty default", async () => {
+    const computeTargetId = "target-lifecycle";
+    mockWithDbTx.mockImplementation((fn: (tx: unknown) => unknown) => {
+      const tx = {
+        desktopCommand: {
+          findUnique: vi.fn().mockResolvedValue(makeCommandRow(0)),
+          findFirst: vi
+            .fn()
+            .mockResolvedValue(makeCommandRow(0, computeTargetId)),
+          update: vi.fn().mockResolvedValue({}),
+        },
+        desktopCommandEvent: {
+          create: vi.fn().mockResolvedValue({
+            createdAt: new Date("2024-01-01T00:00:02Z"),
+          }),
+        },
+      };
+      return fn(tx);
+    });
+
+    await desktopCommandStore.ingestCommandEvent({
+      commandId: "cmd-seq-1",
+      eventType: "done",
+      data: {},
+      sequence: 1,
+      computeTargetId,
+      context: {
+        commandId: "",
+        operationId: "",
+        computeTargetId: "",
+        gatewaySessionId: "550e8400-e29b-41d4-a716-446655440000",
+        schemaVersion: "1",
+      },
+    });
+
+    expect(vi.mocked(emitCommandLifecycleEvent)).toHaveBeenCalledWith(
+      TelemetryCategory.CommandCompleted,
+      expect.objectContaining({
+        commandId: "cmd-seq-1",
+        operationId: "op-1",
+        computeTargetId,
+        gatewaySessionId: "550e8400-e29b-41d4-a716-446655440000",
+      })
+    );
   });
 });

@@ -12,12 +12,6 @@ export type GoogleIntegrationStatus = {
   email: string | null;
 };
 
-export type ConnectGoogleInput = {
-  code: string;
-  codeVerifier: string;
-  redirectUri: string;
-};
-
 export type ConnectGoogleResponse = {
   connected: true;
   email: string | null;

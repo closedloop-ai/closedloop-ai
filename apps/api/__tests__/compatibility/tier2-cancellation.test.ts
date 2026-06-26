@@ -8,7 +8,7 @@
  *    HTTP 200 (the route does not reject events after cancellation).
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports that transitively pull in the mocked modules) ---
 
@@ -56,9 +56,12 @@ vi.mock("@/lib/desktop-command-store", () => ({
   },
 }));
 
+vi.mock("@/lib/loops/rejected-command-loop-failure", () => ({
+  failLoopFromRejectedCommand: vi.fn().mockResolvedValue({ failed: false }),
+}));
+
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { POST } from "@/app/internal/relay/socket-event/route";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 
@@ -126,7 +129,7 @@ describe("tier-2: cancellation flow", () => {
         false,
         "cancelled",
         TARGET_ID,
-        expect.anything()
+        undefined
       );
     });
 

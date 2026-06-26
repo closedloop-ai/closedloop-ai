@@ -132,7 +132,7 @@ describe("LoopDispatchTargetSelector", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
-  it("applies emerald indicator class for an online target", () => {
+  it("applies success indicator class for an online target", () => {
     const { container } = render(
       <LoopDispatchTargetSelector
         availableTargets={[
@@ -142,12 +142,12 @@ describe("LoopDispatchTargetSelector", () => {
       />
     );
 
-    const indicator = container.querySelector(".bg-emerald-500");
+    const indicator = container.querySelector(".bg-success");
 
     expect(indicator).toBeInTheDocument();
   });
 
-  it("applies red indicator class for an offline target", () => {
+  it("applies destructive indicator class for an offline target", () => {
     const { container } = render(
       <LoopDispatchTargetSelector
         availableTargets={[
@@ -157,7 +157,7 @@ describe("LoopDispatchTargetSelector", () => {
       />
     );
 
-    const indicator = container.querySelector(".bg-red-500");
+    const indicator = container.querySelector(".bg-destructive");
 
     expect(indicator).toBeInTheDocument();
   });

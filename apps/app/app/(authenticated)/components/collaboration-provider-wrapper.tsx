@@ -1,17 +1,20 @@
 "use client";
 
 import { LiveblocksProvider } from "@liveblocks/react/suspense";
-import {
-  LiveblocksAvailabilityContext,
-  LiveblocksErrorBoundary,
-} from "@repo/collaboration/liveblocks-error-boundary";
-import { TopLevelCollaborationProvider } from "@repo/collaboration/top-level-collaboration-provider";
-import { type ReactNode, useMemo } from "react";
+import { ApiError } from "@repo/app/shared/api/api-error";
+import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { createResolveRoomsInfo } from "@repo/app/shared/lib/room-resolvers";
 import {
   useCurrentUser,
   useOrganizationUsers,
-} from "@/hooks/queries/use-users";
-import { createResolveRoomsInfo } from "@/lib/room-resolvers";
+} from "@repo/app/users/hooks/use-users";
+import type { AuthEndpoint } from "@repo/collaboration/client/collaboration-provider";
+import {
+  LiveblocksAvailabilityContext,
+  LiveblocksErrorBoundary,
+} from "@repo/collaboration/client/liveblocks-error-boundary";
+import { TopLevelCollaborationProvider } from "@repo/collaboration/client/top-level-collaboration-provider";
+import { type ReactNode, useMemo } from "react";
 
 const LIVEBLOCKS_UNAVAILABLE = { isAvailable: false };
 
@@ -34,6 +37,34 @@ export function CollaborationProviderWrapper({
 }: Readonly<CollaborationProviderWrapperProps>) {
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
   const { data: users = [] } = useOrganizationUsers();
+  const apiClient = useApiClient();
+
+  // Liveblocks room auth goes through apps/api (FEA-1510), reusing the same
+  // transport (origin + bearer token) as every other BFF call, so the same
+  // provider works on the desktop renderer. The route returns the raw
+  // Liveblocks `{ token }` body, which `postRaw` parses and the provider's
+  // auth callback consumes directly.
+  const authEndpoint = useMemo<AuthEndpoint>(
+    () => (room?: string) =>
+      apiClient
+        .postRaw<{ token: string }>("/collaboration/auth", { room })
+        // Liveblocks' auth callback contract expects an auth-failure to resolve
+        // to `{ error }`, not throw. `postRaw` throws ApiError on 401/403, so
+        // translate those; rethrow anything else as a genuine transport error.
+        .catch((error) => {
+          if (
+            error instanceof ApiError &&
+            (error.status === 401 || error.status === 403)
+          ) {
+            return {
+              error: "forbidden" as const,
+              reason: "Not authorized for this Liveblocks room",
+            };
+          }
+          return Promise.reject(error);
+        }),
+    [apiClient]
+  );
 
   const organizationId = currentUser?.organizationId;
   const resolveRoomsInfo = useMemo(
@@ -46,7 +77,7 @@ export function CollaborationProviderWrapper({
   // inbox hooks until full provider mounts.
   if (isUserLoading || !currentUser) {
     return (
-      <LiveblocksProvider authEndpoint="/api/collaboration/auth">
+      <LiveblocksProvider authEndpoint={authEndpoint}>
         <LiveblocksErrorBoundary>
           <LiveblocksAvailabilityContext.Provider
             value={LIVEBLOCKS_UNAVAILABLE}
@@ -70,6 +101,7 @@ export function CollaborationProviderWrapper({
 
   return (
     <TopLevelCollaborationProvider
+      authEndpoint={authEndpoint}
       resolveRoomsInfo={resolveRoomsInfo}
       users={userInfo}
     >

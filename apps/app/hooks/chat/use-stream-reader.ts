@@ -1,5 +1,6 @@
 "use client";
 
+import type { ChatStreamAction } from "@repo/app/chat/hooks/chat-stream-reducer";
 import { type Dispatch, useCallback, useRef } from "react";
 import {
   parseLearningsUsed,
@@ -7,7 +8,6 @@ import {
   readChatStream,
   type StreamErrorEvent,
 } from "@/lib/chat/chat-utils";
-import type { ChatStreamAction } from "./chat-stream-reducer";
 import type { UseChatStreamCallbacks } from "./use-chat-stream";
 
 /**

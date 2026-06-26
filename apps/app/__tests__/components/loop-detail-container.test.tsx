@@ -3,6 +3,7 @@
  * Focuses on the restart button: visibility based on loop status and navigation on success.
  */
 
+import { DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE } from "@repo/api/src/types/friendly-error";
 import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,6 +14,7 @@ const mockCancelMutateAsync = vi.fn();
 const mockMutate = vi.fn();
 const mockCancelMutate = vi.fn();
 const mockPush = vi.fn();
+const mockUseFeatureFlagEnabled = vi.fn();
 
 const RESTART_BUTTON_NAME = /restart/i;
 const CANCEL_BUTTON_NAME = /cancel/i;
@@ -26,8 +28,14 @@ const CACHE_WRITE = /cache write/i;
 const CACHE_READ = /cache read/i;
 const NO_OUTPUT_PRODUCED = /No output produced/;
 const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
-const CLAUDE_RATE_LIMIT_ERROR = /^Error: Claude rate limit$/;
-const CLAUDE_RATE_LIMIT_MESSAGE = /Claude rate limit reached\./;
+const CLAUDE_RATE_LIMIT_ERROR = /^Claude rate limit reached$/;
+const CLAUDE_RATE_LIMIT_MESSAGE =
+  /Claude was rate limited before the runner completed\./;
+const UNKNOWN_SKILL_ERROR = /^Closedloop plugin command unavailable$/;
+const UNKNOWN_SKILL_MESSAGE =
+  /Claude could not find the required Closedloop plugin command for this loop\./;
+const GENERIC_RUNNER_ERROR = /^Runner failed$/;
+const COMMAND_FAILED_EXACT = /^Command failed$/;
 const ERROR_LABEL = /^Error:/;
 const ARTIFACTS_TAB_NAME = /Artifacts/i;
 const SUPPORT_CLAUDE_OUTPUT_LINK = /claude-output\.jsonl/i;
@@ -36,6 +44,7 @@ const SUPPORT_PERF_LINK = /perf\.jsonl/i;
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
   usePathname: vi.fn(() => "/loops/loop-001"),
+  useParams: vi.fn(() => ({ orgSlug: "test-org" })),
   useSearchParams: vi.fn(
     () =>
       new URLSearchParams() as unknown as ReturnType<
@@ -44,57 +53,72 @@ vi.mock("next/navigation", () => ({
   ),
 }));
 
-vi.mock("@/hooks/queries/use-loops", () => ({
+vi.mock("@repo/app/loops/hooks/use-loops", () => ({
   useLoop: vi.fn(),
   useResumeLoop: vi.fn(() => ({
     mutate: mockMutate,
     mutateAsync: mockMutateAsync,
     isPending: false,
   })),
+  useLoopEventsPaginated: vi.fn(() => ({ data: null })),
+}));
+
+vi.mock("@/hooks/queries/use-loops", () => ({
   useCancelLoop: vi.fn(() => ({
     mutate: mockCancelMutate,
     mutateAsync: mockCancelMutateAsync,
     isPending: false,
   })),
-  useLoopEventsPaginated: vi.fn(() => ({ data: null })),
 }));
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@repo/analytics/client", () => ({ useFeatureFlag: vi.fn() }));
+vi.mock("@repo/analytics/client", () => ({
+  useFeatureFlag: vi.fn(),
+}));
 
-vi.mock("@/hooks/queries/use-documents", () => ({
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
+}));
+
+vi.mock("@repo/app/documents/hooks/use-documents", () => ({
   useDocument: vi.fn(() => ({ data: null })),
 }));
 
 // Mock heavy sub-components that would require extra providers or network calls
-vi.mock("@/components/loops/loop-progress-panel", () => ({
+vi.mock("@repo/app/loops/components/loop-progress-panel", () => ({
   LoopProgressPanel: () => <div data-testid="loop-progress-panel" />,
 }));
 
-vi.mock("@/components/loops/loop-audit-log", () => ({
+vi.mock("@repo/app/loops/components/loop-audit-log", () => ({
   LoopAuditLog: () => <div data-testid="loop-audit-log" />,
 }));
 
 import { useFeatureFlag } from "@repo/analytics/client";
-import { LoopDetailContainer } from "@/app/(authenticated)/loops/[id]/loop-detail-container";
 // Import after mocks
 import {
-  useCancelLoop,
   useLoop,
   useLoopEventsPaginated,
   useResumeLoop,
-} from "@/hooks/queries/use-loops";
+} from "@repo/app/loops/hooks/use-loops";
+import { ApiError } from "@repo/app/shared/api/api-error";
 import {
   createMockLoopWithUser,
   RUNNER_RATE_LIMIT_LOOP_ERROR,
-} from "../fixtures/loops";
+  RUNNER_UNKNOWN_SKILL_LOOP_ERROR,
+} from "@repo/app/shared/test-fixtures/loops";
+import { LoopDetailContainer } from "@/app/(authenticated)/[orgSlug]/loops/[id]/loop-detail-container";
+import { useCancelLoop } from "@/hooks/queries/use-loops";
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  mockUseFeatureFlagEnabled.mockReturnValue(false);
+});
 
 describe("LoopDetailContainer — restart button visibility", () => {
   beforeEach(() => {
@@ -240,8 +264,83 @@ describe("LoopDetailContainer — restart button interaction", () => {
     fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/loops/new-loop-999");
+      expect(mockPush).toHaveBeenCalledWith("/test-org/loops/new-loop-999");
     });
+  });
+
+  it("preserves legacy restart payload when explicit compute selection is disabled", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        id: "loop-001",
+        status: LoopStatus.Failed,
+        computeTarget: {
+          id: "target-1",
+          machineName: "danielochoa-MacBook-Pro",
+          isOnline: false,
+        } as never,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { id: "loop-001" },
+      expect.any(Object)
+    );
+  });
+
+  it("passes the displayed compute target id when restarting a targeted loop with explicit selection enabled", () => {
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        id: "loop-001",
+        status: LoopStatus.Failed,
+        computeTarget: {
+          id: "target-1",
+          machineName: "danielochoa-MacBook-Pro",
+          isOnline: false,
+        } as never,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { id: "loop-001", computeTargetId: "target-1" },
+      expect.any(Object)
+    );
+  });
+
+  it("shows a human-readable compute target restart failure", async () => {
+    mockMutate.mockImplementation((_input, opts) =>
+      opts?.onError?.(
+        new ApiError("Compute target is offline", 400, {
+          code: LoopErrorCode.PreRunValidationFailed,
+          details: { category: "compute_target_offline" },
+        })
+      )
+    );
+
+    render(<LoopDetailContainer id="loop-001" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RESTART_BUTTON_NAME }));
+
+    expect(
+      await screen.findByText("Compute target is offline")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The loop was not restarted because the selected compute target is not online."
+      )
+    ).toBeInTheDocument();
   });
 
   it("does not navigate to the original loop id after restart", async () => {
@@ -253,7 +352,7 @@ describe("LoopDetailContainer — restart button interaction", () => {
       expect(mockPush).toHaveBeenCalled();
     });
 
-    expect(mockPush).not.toHaveBeenCalledWith("/loops/loop-001");
+    expect(mockPush).not.toHaveBeenCalledWith("/test-org/loops/loop-001");
   });
 });
 
@@ -420,7 +519,7 @@ describe("LoopDetailContainer — cancel button interaction", () => {
     } as ReturnType<typeof useLoop>);
   });
 
-  it("calls mutate with the loop id after confirming the stop dialog", async () => {
+  it("calls mutate with the loop identity after confirming the stop dialog", async () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     fireEvent.click(screen.getByRole("button", { name: CANCEL_BUTTON_NAME }));
@@ -432,7 +531,10 @@ describe("LoopDetailContainer — cancel button interaction", () => {
 
     await waitFor(() => {
       expect(mockCancelMutate).toHaveBeenCalledWith(
-        "loop-001",
+        {
+          id: "loop-001",
+          computeTargetId: null,
+        },
         expect.any(Object)
       );
     });
@@ -559,11 +661,11 @@ describe("LoopDetailContainer — cache token display", () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     // Stacked layout: Input and Output shown as separate labeled values
-    expect(screen.getByText("10.0k")).toBeInTheDocument();
-    expect(screen.getByText("5.0k")).toBeInTheDocument();
+    expect(screen.getByText("10.00k")).toBeInTheDocument();
+    expect(screen.getByText("5.00k")).toBeInTheDocument();
     // "effective" label and effective total should be absent
     expect(screen.queryByText("effective")).not.toBeInTheDocument();
-    expect(screen.queryByText("~23.3k")).not.toBeInTheDocument();
+    expect(screen.queryByText("~23.33k")).not.toBeInTheDocument();
   });
 
   it("cache-only case: input=0, output=0, cacheRead>0 still renders cache summary", () => {
@@ -607,8 +709,8 @@ describe("LoopDetailContainer — cache token display", () => {
     render(<LoopDetailContainer id="loop-001" />);
 
     // Stacked layout: large numbers abbreviated
-    expect(screen.getByText("15.0M")).toBeInTheDocument();
-    expect(screen.getByText("2.8k")).toBeInTheDocument();
+    expect(screen.getByText("15.00M")).toBeInTheDocument();
+    expect(screen.getByText("2.80k")).toBeInTheDocument();
   });
 
   it("default key is filtered from ModelTokenBreakdown (no model row rendered for it)", () => {
@@ -748,7 +850,66 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
     expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
   });
 
-  it("renders raw 'NO_WORK_PRODUCED' string (not 'No output produced') when flag is disabled", () => {
+  it("renders unknown-skill runner subcode with plugin guidance when flag is disabled", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: false,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: RUNNER_UNKNOWN_SKILL_LOOP_ERROR,
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-unknown-skill" />);
+
+    expect(screen.getByText(UNKNOWN_SKILL_ERROR)).toBeInTheDocument();
+    expect(screen.getByText(UNKNOWN_SKILL_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
+    expect(screen.queryByText(GENERIC_RUNNER_ERROR)).not.toBeInTheDocument();
+  });
+
+  it("renders desktop managed-key fail-fast remediation as visible error copy", () => {
+    vi.mocked(useFeatureFlag).mockReturnValue({
+      key: "ghost-loop-ux",
+      enabled: false,
+      variant: undefined,
+      payload: undefined,
+    });
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        error: {
+          code: LoopErrorCode.ProcessFailed,
+          message: DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-managed-key-error" />);
+
+    expect(
+      screen.getByText("Desktop managed signing is not ready")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Re-run managed onboarding on the selected desktop target."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(COMMAND_FAILED_EXACT)).not.toBeInTheDocument();
+  });
+
+  it("renders friendly 'No output produced' copy and preserves raw details when flag is disabled", () => {
     vi.mocked(useFeatureFlag).mockReturnValue({
       key: "ghost-loop-ux",
       enabled: false,
@@ -769,7 +930,7 @@ describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
 
     render(<LoopDetailContainer id="loop-004" />);
 
-    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
+    expect(screen.getByText(NO_OUTPUT_PRODUCED)).toBeInTheDocument();
     expect(screen.getByText(NO_WORK_PRODUCED_RAW)).toBeInTheDocument();
   });
 });
@@ -808,6 +969,71 @@ describe("LoopDetailContainer — additional repositories display", () => {
     expect(screen.getByText("main")).toBeInTheDocument();
     expect(screen.getByText("org/repo-beta")).toBeInTheDocument();
     expect(screen.getByText("develop")).toBeInTheDocument();
+  });
+
+  it("renders branch artifact links when branch-pr is enabled", () => {
+    vi.mocked(useFeatureFlag).mockImplementation((key: string) =>
+      key === "branch-pr"
+        ? {
+            key,
+            enabled: true,
+            variant: undefined,
+            payload: undefined,
+          }
+        : undefined
+    );
+    vi.mocked(useLoop).mockReturnValue({
+      data: {
+        ...createMockLoopWithUser({
+          status: LoopStatus.Completed,
+          repo: { fullName: "org/repo-alpha", branch: "main" },
+        }),
+        additionalRepos: [
+          {
+            fullName: "org/repo-beta",
+            branch: "develop",
+            branchArtifact: {
+              id: "branch-beta",
+              name: "feature/beta",
+              htmlUrl: "https://github.com/org/repo-beta/tree/feature%2Fbeta",
+              branchName: "feature/beta",
+              baseBranch: "develop",
+              headSha: "abc123",
+              checksStatus: "PASSING",
+              externalLinkId: "branch-beta",
+              repoFullName: "org/repo-beta",
+              currentPullRequest: null,
+            },
+          },
+        ],
+        primaryBranch: {
+          id: "branch-alpha",
+          name: "feature/alpha",
+          htmlUrl: "https://github.com/org/repo-alpha/tree/feature%2Falpha",
+          branchName: "feature/alpha",
+          baseBranch: "main",
+          headSha: "def456",
+          checksStatus: "PASSING",
+          externalLinkId: "branch-alpha",
+          repoFullName: "org/repo-alpha",
+          currentPullRequest: null,
+        },
+        primaryPullRequest: null,
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-branch" />);
+
+    expect(screen.getByRole("link", { name: "feature/alpha" })).toHaveAttribute(
+      "href",
+      "/test-org/build/branch-alpha"
+    );
+    expect(screen.getByRole("link", { name: "feature/beta" })).toHaveAttribute(
+      "href",
+      "/test-org/build/branch-beta"
+    );
   });
 
   it("does not render additional repositories card when additionalRepos is null", () => {

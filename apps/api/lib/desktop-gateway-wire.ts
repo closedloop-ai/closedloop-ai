@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import {
-  isDesktopApiPath,
-  normalizeDesktopApiPath,
-} from "@repo/api/src/desktop-api-namespace";
+  BranchViewLocalGatewayPath,
+  BranchViewLocalOperationId,
+} from "@repo/api/src/types/branch-view-local";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
@@ -55,10 +56,6 @@ const commandEventPayloadSchema = z.object({
   eventType: desktopCommandEventTypeSchema,
   data: jsonValueSchema.optional(),
 });
-
-export function isStringArray(value: unknown): value is string[] {
-  return stringArraySchema.safeParse(value).success;
-}
 
 export function isDesktopCommandEventType(
   value: unknown
@@ -247,6 +244,16 @@ export function toWireCommandFromRelayOperation(operation: {
         ? params.approvalReason
         : undefined,
     streaming: operation.streaming === true ? true : undefined,
+    signature:
+      typeof params.signature === "string" ? params.signature : undefined,
+    signaturePayload:
+      typeof params.signaturePayload === "string"
+        ? params.signaturePayload
+        : undefined,
+    publicKeyFingerprint:
+      typeof params.publicKeyFingerprint === "string"
+        ? params.publicKeyFingerprint
+        : undefined,
   };
 }
 
@@ -281,6 +288,10 @@ export const EXACT_OPERATION_IDS: Record<string, string> = {
   "/api/gateway/files/search": "filesystem",
   "/api/gateway/git/user": "git_pr",
   "/api/gateway/git/branch-worktree": "git_branch_worktree",
+  [BranchViewLocalGatewayPath.List]: BranchViewLocalOperationId.Read,
+  [BranchViewLocalGatewayPath.Diff]: BranchViewLocalOperationId.Read,
+  [BranchViewLocalGatewayPath.CommitPush]:
+    BranchViewLocalOperationId.CommitPush,
 };
 
 /**
@@ -320,18 +331,17 @@ export const PREFIX_OPERATION_IDS: [string, string][] = [
  * desktop app's `resolveOperationId()` in `apps/desktop/src/main/app.ts`.
  */
 export function resolveOperationId(pathname: string): string | null {
-  const normalizedPath = normalizeDesktopApiPath(pathname);
-  if (!normalizedPath) {
+  if (!isDesktopApiPath(pathname)) {
     return null;
   }
 
-  const exact = EXACT_OPERATION_IDS[normalizedPath];
+  const exact = EXACT_OPERATION_IDS[pathname];
   if (exact) {
     return exact;
   }
 
   for (const [prefix, operationId] of PREFIX_OPERATION_IDS) {
-    if (normalizedPath.startsWith(prefix)) {
+    if (pathname.startsWith(prefix)) {
       return operationId;
     }
   }

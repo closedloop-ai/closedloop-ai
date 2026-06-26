@@ -18,7 +18,9 @@ export const keys = () =>
       GITHUB_APP_WEBHOOK_SECRET: z.string().min(1),
       GITHUB_APP_CLIENT_ID: z.string().min(1),
       GITHUB_APP_CLIENT_SECRET: z.string().min(1),
-      GITHUB_APP_DISPATCH_REPO: z.string().regex(OWNER_REPO_REGEX), // owner/repo format
+      // owner/repo of the GitHub App installation used for app-authenticated
+      // reads (e.g. Desktop release lookup via getAuthenticatedOctokit()).
+      GITHUB_APP_DISPATCH_REPO: z.string().regex(OWNER_REPO_REGEX),
       WEBAPP_ENV: z.enum(["local", "stage", "prod"]).default("stage"),
     },
     runtimeEnv: {
@@ -53,5 +55,24 @@ export const clientKeys = () =>
     runtimeEnv: {
       GITHUB_APP_CLIENT_ID: process.env.GITHUB_APP_CLIENT_ID,
       NEXT_PUBLIC_GITHUB_APP_SLUG: process.env.NEXT_PUBLIC_GITHUB_APP_SLUG,
+    },
+  });
+
+/**
+ * Narrow validator for GitHub webhook signature verification, which only needs
+ * the webhook secret. Kept separate from `keys()` so verifying a (kept) GitHub
+ * webhook does not transitively require unrelated GitHub App config — OAuth
+ * client credentials or the App installation repo — which would otherwise fail
+ * validation in partial-config environments. The webhook route still gates on
+ * `isGitHubConfigured()` before verification is attempted.
+ */
+export const webhookSecretKeys = () =>
+  createEnv({
+    emptyStringAsUndefined: true,
+    server: {
+      GITHUB_APP_WEBHOOK_SECRET: z.string().min(1),
+    },
+    runtimeEnv: {
+      GITHUB_APP_WEBHOOK_SECRET: process.env.GITHUB_APP_WEBHOOK_SECRET,
     },
   });

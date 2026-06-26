@@ -82,7 +82,7 @@ export const POST = withAnyAuth<DocumentDetail, "/documents/[id]/versions">(
           documentId: resolvedId,
           version: updatedArtifact.latestVersion,
         });
-        await resetDocumentRoom(updatedArtifact).catch((error) => {
+        await resetDocumentRoom(updatedArtifact, user.id).catch((error) => {
           log.error("[liveblocks] Failed to reset room after version create", {
             documentId: resolvedId,
             version: updatedArtifact.latestVersion,

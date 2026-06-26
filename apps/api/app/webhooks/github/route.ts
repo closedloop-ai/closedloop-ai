@@ -28,9 +28,9 @@ import {
   type HandledPullRequestReviewEvent,
   handlePullRequestReview,
 } from "./handlers/pull-request-review-handler";
+import { handlePullRequestReviewThread } from "./handlers/pull-request-review-thread-handler";
 import { handlePush } from "./handlers/push-handler";
-import { handleWorkflowRun } from "./handlers/workflow-run-handler";
-import type { WorkflowRunEvent } from "./types";
+import { maybeDropPreviewSchemaOnClose } from "./preview-schema-drop";
 import { isGitHubConfigured, validateRequest } from "./webhook-service";
 
 export async function POST(request: Request): Promise<Response> {
@@ -67,9 +67,6 @@ export async function POST(request: Request): Promise<Response> {
     const parsedBody = JSON.parse(body) as { action?: string };
 
     switch (eventType) {
-      case "workflow_run":
-        return await handleWorkflowRun(parsedBody as WorkflowRunEvent);
-
       case "installation":
         return await handleInstallation(parsedBody as { action: string });
 
@@ -78,8 +75,16 @@ export async function POST(request: Request): Promise<Response> {
           parsedBody as { action: string }
         );
 
-      case "pull_request":
-        return await handlePullRequest(parsedBody as HandledPullRequestEvent);
+      case "pull_request": {
+        const prEvent = parsedBody as HandledPullRequestEvent;
+        const prResponse = await handlePullRequest(prEvent);
+        maybeDropPreviewSchemaOnClose({
+          action: parsedBody.action ?? "",
+          branch: prEvent.pull_request.head.ref,
+          repoFullName: prEvent.repository.full_name,
+        });
+        return prResponse;
+      }
 
       case "check_run":
         // GitHub App settings (T-7.1) filter delivery to completed events;
@@ -100,6 +105,9 @@ export async function POST(request: Request): Promise<Response> {
         return await handlePullRequestReviewComment(
           parsedBody as HandledPullRequestReviewCommentEvent
         );
+
+      case "pull_request_review_thread":
+        return await handlePullRequestReviewThread(parsedBody);
 
       case "issue_comment":
         return await handleIssueComment(parsedBody as HandledIssueCommentEvent);

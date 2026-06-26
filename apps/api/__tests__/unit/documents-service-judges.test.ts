@@ -15,14 +15,22 @@ import {
   EvalStatus,
   EvaluationReportType,
 } from "@repo/api/src/types/evaluation";
-import { type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {
@@ -100,10 +108,8 @@ function buildEvalRow(overrides?: {
     id: base.id,
     artifactId: overrides?.artifactId ?? base.entityId,
     organizationId: base.organizationId,
-    actionRunId: base.actionRunId,
     reportType: base.reportType,
     reportId: base.reportId,
-    reportData: base.reportData,
     createdAt: base.createdAt,
   };
 }

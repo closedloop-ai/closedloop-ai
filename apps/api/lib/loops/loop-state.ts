@@ -139,6 +139,8 @@ export async function scrubContextPackSecrets(
 
   const scrubbed: ContextPack = {
     ...contextPack,
+    // FEA-585 supportingArtifacts and codeEvaluationContext are intentionally
+    // metadata/source artifacts only; their schemas do not admit token fields.
     secrets: undefined,
     additionalRepos: contextPack.additionalRepos?.map(
       ({ githubToken: _, ...rest }) => rest
@@ -150,19 +152,6 @@ export async function scrubContextPackSecrets(
 }
 
 // --- Conversation History (uploaded by container after completion) ---
-
-export async function downloadConversation(
-  stateKeyPrefix: string
-): Promise<unknown[] | null> {
-  try {
-    const key = `${stateKeyPrefix}/conversation.json`;
-    const data = await getObject(key);
-    return JSON.parse(data.toString()) as unknown[];
-  } catch (error) {
-    log.warn("Conversation not found", { stateKeyPrefix, error });
-    return null;
-  }
-}
 
 // --- Metadata (uploaded by container after completion) ---
 
@@ -194,20 +183,6 @@ export async function downloadMetadata(
 }
 
 // --- Event Logs (JSONL format, uploaded by container) ---
-
-export async function downloadEventLog(
-  stateKeyPrefix: string
-): Promise<unknown[] | null> {
-  try {
-    const key = `${stateKeyPrefix}/logs/conversation.jsonl`;
-    const data = await getObject(key);
-    const lines = data.toString().split("\n").filter(Boolean);
-    return lines.map((line) => JSON.parse(line));
-  } catch (error) {
-    log.warn("Event log not found", { stateKeyPrefix, error });
-    return null;
-  }
-}
 
 // --- Full state download (for Resume) ---
 
@@ -324,25 +299,6 @@ export async function listAndGenerateDownloadUrls(
   } while (continuationToken);
 
   return results;
-}
-
-/**
- * Validate that an S3 key belongs to the expected organization prefix.
- * Prevents path traversal and cross-org access.
- *
- * Rejects keys containing path traversal sequences (`..`, `./`) and verifies
- * the key starts with the organization's prefix. organizationId is assumed
- * to be a DB-generated UUID (no `/` or special characters).
- */
-export function validateKeyBelongsToOrg(
-  key: string,
-  organizationId: string
-): boolean {
-  // Reject path traversal sequences before checking prefix
-  if (key.includes("..") || key.includes("./")) {
-    return false;
-  }
-  return key.startsWith(`${organizationId}/`);
 }
 
 /**

@@ -43,6 +43,23 @@ export const clerkService = {
     };
   },
 
+  async updateOrganization(
+    organizationId: string,
+    data: { slug?: string; name?: string }
+  ): Promise<ClerkOrganization> {
+    const client = await clerkClient();
+    const org = await client.organizations.updateOrganization(organizationId, {
+      ...(data.slug !== undefined && { slug: data.slug }),
+      ...(data.name !== undefined && { name: data.name }),
+    });
+
+    return {
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+    };
+  },
+
   /**
    * Fetch a user from Clerk by ID
    */

@@ -9,7 +9,7 @@ vi.mock("@repo/database", () => ({
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {

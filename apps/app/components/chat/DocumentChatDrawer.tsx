@@ -1,9 +1,9 @@
 "use client";
 
+import { buildDocumentChatContext } from "@repo/app/chat/lib/contexts/document-context";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { ChatDrawerPanel } from "@/components/chat/ChatDrawerPanel";
-import { buildDocumentChatContext } from "@/lib/chat/contexts/document-context";
 import {
   getHealthCheckTargetKey,
   healthCheckOptions,

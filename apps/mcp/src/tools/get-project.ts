@@ -15,7 +15,7 @@ export function registerGetProject(
     "get-project",
     {
       description:
-        'Get one project by UUID or slug (PRO-*), including recent workstreams. When the user references a project by its slug (e.g. "tell me about PRO-7"), pass that slug as projectId directly.',
+        'Get one project by UUID or slug (PRO-*). When the user references a project by its slug (e.g. "tell me about PRO-7"), pass that slug as projectId directly.',
       inputSchema: {
         projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
       },

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { JsonObject, Priority } from "./common";
 import type { CustomFieldValueDetail } from "./custom-field";
+import type { TagSummary } from "./tag";
 import type { BasicUser } from "./user";
 
 export const ProjectStatus = {
@@ -30,20 +31,13 @@ export type Project = {
   updatedAt: Date;
 };
 
-export type ProjectWithOrganization = Project & {
-  organization: {
-    id: string;
-    name: string;
-    slug: string;
-  };
-};
-
 export type ProjectWithDetails = Project & {
   assignee?: BasicUser;
   completionPercentage: number; // 0-100 percentage from calculateStatus()
   teams: Array<{ id: string; name: string }>;
   /** Custom field values attached to this project. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];
+  tags?: TagSummary[];
 };
 
 export type CreateProjectInput = {
@@ -89,31 +83,9 @@ export type Repository = {
   updatedAt: Date;
 };
 
-export type CreateRepositoryInput = {
-  projectId: string;
-  githubId: number;
-  owner: string;
-  name: string;
-  fullName: string;
-  defaultBranch?: string;
-  isPrimary?: boolean;
-};
-
 // =============================================================================
 // Project Settings (stored in the `settings` JSON column)
 // =============================================================================
-
-/**
- * Legacy single-default-repo shape. Superseded by `repositoryOverrides`.
- * Kept on the type so that pre-migration data continues to round-trip and so
- * the legacy fallback in `resolveProjectRepoDefaults()` has a stable input
- * shape. New writes should populate `repositoryOverrides`.
- */
-export type DefaultRepository = {
-  repoId: string;
-  repoFullName: string;
-  branch: string;
-};
 
 /**
  * Project-level override of which team repositories are pre-selected for new
@@ -128,15 +100,8 @@ export type RepositoryOverrides = {
 };
 
 export type ProjectSettings = {
-  defaultRepository?: DefaultRepository;
   repositoryOverrides?: RepositoryOverrides;
 };
-
-export const defaultRepositoryValidator = z.object({
-  repoId: z.string().min(1),
-  repoFullName: z.string().min(1),
-  branch: z.string().min(1),
-});
 
 export const repositoryOverridesValidator = z
   .object({
@@ -150,14 +115,6 @@ export const repositoryOverridesValidator = z
 
 export function getProjectSettings(settings: JsonObject): ProjectSettings {
   const result: ProjectSettings = {};
-  // Each known field is parsed independently so a malformed value for one key
-  // does not void an unrelated valid value on the same settings object.
-  const legacy = defaultRepositoryValidator.safeParse(
-    settings.defaultRepository
-  );
-  if (legacy.success) {
-    result.defaultRepository = legacy.data;
-  }
   const override = repositoryOverridesValidator.safeParse(
     settings.repositoryOverrides
   );
@@ -197,11 +154,8 @@ export type ResolveProjectRepoDefaultsInput = {
  *  2. Single-team inheritance — when the project belongs to exactly one team
  *     and has no override, the team's default-selected repos are inherited
  *     and the team's primary becomes the project primary.
- *  3. Legacy `defaultRepository` fallback — pre-migration projects whose
- *     legacy `repoId` still exists in the team pool resolve to that single
- *     repo as both selection and primary.
- *  4. Otherwise null — the user must pick repos at job launch (multi-team
- *     project with no override and no legacy fallback).
+ *  3. Otherwise null — the user must pick repos at job launch (multi-team
+ *     project with no override).
  */
 export function resolveProjectRepoDefaults(
   input: ResolveProjectRepoDefaultsInput
@@ -230,14 +184,6 @@ export function resolveProjectRepoDefaults(
     if (inherited) {
       return inherited;
     }
-  }
-
-  const legacy = projectSettings.defaultRepository;
-  if (legacy && (poolIds.size === 0 || poolIds.has(legacy.repoId))) {
-    return {
-      selectedRepoIds: [legacy.repoId],
-      primaryRepoId: legacy.repoId,
-    };
   }
 
   return null;

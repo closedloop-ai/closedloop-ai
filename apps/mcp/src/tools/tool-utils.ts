@@ -1,5 +1,12 @@
+import { getRoutePrefixForType } from "@repo/api/src/types/document.js";
+import { resolveFriendlyError } from "@repo/api/src/types/friendly-error.js";
+import { McpApiError } from "../api-error.js";
+
 type ToolResult = {
-  content: { type: "text"; text: string }[];
+  content: (
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  )[];
   isError?: boolean;
 };
 
@@ -7,10 +14,14 @@ export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 100;
 export const DOCUMENT_DOC_HELP =
   "User-facing documents are PRDs (PRD-*), implementation plans (PLN-*), and features (FEA-*). Templates exist but are internal and not exposed to end users.";
-export const WORKSTREAM_HELP =
-  "Workstreams are initiatives or tracks of work inside a project.";
 export const ARTIFACT_LINK_SLUG_HELP =
   "User-facing slugs are supported for documents (PRD-7, PLN-4, FEA-42); other artifacts (pull requests, deployments) require UUIDs.";
+export const ARTIFACT_LINK_TYPE_HELP =
+  "Link types: PRODUCES — directional lineage where the source artifact produces/derives the target (e.g. a PRD PRODUCES a feature; a feature PRODUCES the implementation plan written from it). PRODUCES is the only type that establishes parent→child lineage and drives the project tree and loop roll-ups. BLOCKS — the source blocks the target (the target cannot proceed until the source is done); directional, but not lineage. RELATES_TO — a non-hierarchical association between peers; direction carries no special meaning.";
+export const ARTIFACT_LINK_DIRECTION_HELP =
+  "Links are directional: source → target. The source is the upstream/producing artifact (the parent for PRODUCES); the target is the downstream/produced artifact (the child for PRODUCES). Example: you fetched feature FEA-42 and authored plan PLN-12 from it → link with sourceId=FEA-42, targetId=PLN-12, linkType=PRODUCES.";
+export const PARENT_ARTIFACT_METADATA_HELP =
+  "`parentArtifact` is a selected direct-parent convenience projection from artifact-link lineage, useful for grouping or stack-ranking. It is null when no qualifying direct parent exists. Use `list-artifact-links` for complete lineage traversal.";
 
 export function withErrorHandling(
   fn: () => Promise<ToolResult>
@@ -19,11 +30,39 @@ export function withErrorHandling(
     content: [
       {
         type: "text" as const,
-        text: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        text: formatToolError(error),
       },
     ],
     isError: true,
   }));
+}
+
+function formatToolError(error: unknown): string {
+  const friendly = resolveFriendlyError(
+    error instanceof McpApiError
+      ? {
+          code: error.code,
+          details: error.details,
+          message: error.message,
+          timestamp: error.timestamp,
+        }
+      : {
+          message: error instanceof Error ? error.message : "Unknown error",
+        }
+  );
+  const parts = [friendly.title, "", friendly.description];
+  if (friendly.remediation.length > 0) {
+    parts.push("", "Remediation:");
+    parts.push(...friendly.remediation.map((step) => `- ${step}`));
+  }
+  if (Object.keys(friendly.technicalDetails).length > 0) {
+    parts.push(
+      "",
+      "Technical details:",
+      JSON.stringify(friendly.technicalDetails, null, 2)
+    );
+  }
+  return parts.join("\n");
 }
 
 /**
@@ -47,6 +86,66 @@ export function readString(value: unknown): string | null {
 
 export function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export type ParentArtifactProjectionInput = {
+  linkId?: string | null;
+  linkType?: string | null;
+  linkCreatedAt?: string | null;
+  parentArtifact?: {
+    id?: string | null;
+    type?: string | null;
+    subtype?: string | null;
+    name?: string | null;
+    slug?: string | null;
+    externalUrl?: string | null;
+  } | null;
+};
+
+export type ParentArtifactShape = {
+  id: string | null;
+  type: string | null;
+  subtype: string | null;
+  name: string | null;
+  slug: string | null;
+  externalUrl: string | null;
+  linkId: string | null;
+  linkType: string | null;
+  linkCreatedAt: string | null;
+};
+
+/**
+ * Shape the artifact-link selected-parent projection into the nested MCP
+ * document field. Missing endpoint values become null, but a null projection
+ * remains null instead of synthesizing a parent.
+ */
+export function shapeParentArtifact(
+  projection: ParentArtifactProjectionInput | null | undefined
+): ParentArtifactShape | null {
+  if (!projection || projection.parentArtifact == null) {
+    return null;
+  }
+  return {
+    id: projection.parentArtifact.id ?? null,
+    type: projection.parentArtifact.type ?? null,
+    subtype: projection.parentArtifact.subtype ?? null,
+    name: projection.parentArtifact.name ?? null,
+    slug: projection.parentArtifact.slug ?? null,
+    externalUrl: projection.parentArtifact.externalUrl ?? null,
+    linkId: projection.linkId ?? null,
+    linkType: projection.linkType ?? null,
+    linkCreatedAt: projection.linkCreatedAt ?? null,
+  };
+}
+
+export function withParentArtifactProjection<T extends object>(
+  base: T,
+  projection: ParentArtifactProjectionInput | null
+): T & { parentArtifact: ParentArtifactShape | null } {
+  return {
+    ...base,
+    parentArtifact: shapeParentArtifact(projection),
+  };
 }
 
 export function truncateString(value: string, maxChars: number): string {
@@ -100,7 +199,7 @@ export function buildPaginatedPayload<T>(
   };
 }
 
-function extractArrayItems<T>(payload: unknown): T[] {
+export function extractArrayItems<T>(payload: unknown): T[] {
   if (Array.isArray(payload)) {
     return payload as T[];
   }
@@ -109,4 +208,53 @@ function extractArrayItems<T>(payload: unknown): T[] {
     return record.data as T[];
   }
   throw new Error("Expected array response or { data: [] } response");
+}
+
+export const WEBAPP_URL =
+  process.env.WEBAPP_URL?.replace(/\/+$/, "") ?? "https://app.closedloop.ai";
+
+const DOCUMENT_FALLBACK_PREFIX = "documents";
+
+let sessionOrgSlug: string | null = null;
+
+export function setSessionOrgSlug(slug: string): void {
+  sessionOrgSlug = slug;
+}
+
+function withOrgPrefix(path: string): string {
+  return sessionOrgSlug
+    ? `${WEBAPP_URL}/${sessionOrgSlug}${path}`
+    : `${WEBAPP_URL}${path}`;
+}
+
+/**
+ * Build a full webapp URL for a document, using the document type to resolve
+ * the correct route prefix (e.g. `/acme/features/FEA-42`, `/acme/prds/PRD-7`).
+ */
+export function buildDocumentUrl(slug: string, documentType: string): string {
+  const prefix =
+    getRoutePrefixForType(documentType) ?? DOCUMENT_FALLBACK_PREFIX;
+  return withOrgPrefix(`/${prefix}/${encodePathSegment(slug)}`);
+}
+
+/**
+ * Extract slug and type from a document record and build the webapp URL.
+ * Returns null when slug or type are missing.
+ */
+export function buildDocumentUrlFromRecord(
+  row: Record<string, unknown>
+): string | null {
+  const slug = readString(row.slug);
+  const docType = readString(row.type);
+  if (!(slug && docType)) {
+    return null;
+  }
+  return buildDocumentUrl(slug, docType);
+}
+
+/**
+ * Build a full webapp URL for a loop (e.g. `/acme/loops/{id}`).
+ */
+export function buildLoopUrl(loopId: string): string {
+  return withOrgPrefix(`/loops/${encodePathSegment(loopId)}`);
 }

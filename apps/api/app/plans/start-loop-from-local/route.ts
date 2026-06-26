@@ -1,8 +1,3 @@
-import {
-  CURRENT_DESKTOP_API_NAMESPACE,
-  DESKTOP_API_NAMESPACE_CAPABILITY_KEY,
-  LEGACY_DESKTOP_API_NAMESPACE,
-} from "@repo/api/src/desktop-api-namespace";
 import { success } from "@repo/api/src/types/common";
 import type { LoopAlreadyActiveBody } from "@repo/api/src/types/loop";
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
@@ -33,9 +28,6 @@ const bodySchema = z
     ticketTitle: z.string().optional(),
     computeTargetId: z.string().uuid(),
     localRepoPath: z.string().min(1),
-    desktopApiNamespace: z
-      .enum([CURRENT_DESKTOP_API_NAMESPACE, LEGACY_DESKTOP_API_NAMESPACE])
-      .optional(),
     repo: repoSchema.optional(),
     selectedDocumentId: z.string().uuid().optional(),
   })
@@ -127,12 +119,6 @@ export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
           localRepoPath: body.localRepoPath,
           launchSource: "engineer_start_planning",
           featureId: body.featureId,
-          ...(body.desktopApiNamespace === LEGACY_DESKTOP_API_NAMESPACE
-            ? {
-                [DESKTOP_API_NAMESPACE_CAPABILITY_KEY]:
-                  body.desktopApiNamespace,
-              }
-            : {}),
         },
       });
 

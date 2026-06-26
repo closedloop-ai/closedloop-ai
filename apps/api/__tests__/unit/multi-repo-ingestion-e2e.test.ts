@@ -8,7 +8,7 @@
  * - DB operations flow correctly through the full chain (findFirst, PR upsert, linkage records)
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import {
   getMockWithDb,
   mockWithDbCall,
@@ -54,8 +54,7 @@ vi.mock("@/lib/prompts-service", async () => {
 // Imports — after mocks
 // ---------------------------------------------------------------------------
 
-import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
-import type { Mock } from "vitest";
+import { parseExecutionResultFile } from "@repo/api/src/types/loop";
 import { ingestRepoExecutionResults } from "@/lib/loops/ingest-repo-execution-results";
 import { ensurePrLinkageRecords } from "@/lib/pr-linkage";
 import {
@@ -90,7 +89,7 @@ function makeV2Payload() {
         fullName: "org/repo-success",
         prUrl: "https://github.com/org/repo-success/pull/100",
         prNumber: 100,
-        prTitle: "ClosedLoop: success feature",
+        prTitle: "Closedloop: success feature",
         branchName: "symphony/success-feature",
         commitSha: "abc123def456",
         githubId: 9001,
@@ -123,7 +122,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       const parsed = parseExecutionResultFile(payload);
 
       expect(parsed.ok).toBe(true);
-      if (!parsed.ok) {
+      if (parsed.ok !== true) {
         return;
       }
 
@@ -152,7 +151,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       const parsed = parseExecutionResultFile(payload);
 
       expect(parsed.ok).toBe(true);
-      if (!parsed.ok) {
+      if (parsed.ok !== true) {
         return;
       }
 
@@ -174,7 +173,6 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
         mockTx,
         expect.objectContaining({
           organizationId: "org-e2e",
-          workstreamId: "ws-e2e",
           documentId: "doc-e2e",
           prUrl: "https://github.com/org/repo-success/pull/100",
           prNumber: 100,
@@ -187,7 +185,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       const parsed = parseExecutionResultFile(payload);
 
       expect(parsed.ok).toBe(true);
-      if (!parsed.ok) {
+      if (parsed.ok !== true) {
         return;
       }
 
@@ -213,12 +211,12 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       expect(mockEnsurePrLinkageRecords).toHaveBeenCalledTimes(1);
     });
 
-    it("workstream event is created for the success entry with correct data", async () => {
+    it("does not emit a workstream event for the success entry", async () => {
       const payload = makeV2Payload();
       const parsed = parseExecutionResultFile(payload);
 
       expect(parsed.ok).toBe(true);
-      if (!parsed.ok) {
+      if (parsed.ok !== true) {
         return;
       }
 
@@ -235,20 +233,7 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
 
       await ingestRepoExecutionResults(ctx, parsed.results);
 
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledTimes(1);
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            workstreamId: "ws-e2e",
-            type: "GITHUB_PR_CREATED",
-            data: expect.objectContaining({
-              prNumber: 100,
-              prUrl: "https://github.com/org/repo-success/pull/100",
-              fullName: "org/repo-success",
-            }),
-          }),
-        })
-      );
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
 });

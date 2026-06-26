@@ -5,7 +5,7 @@
  * binding check, and the service-result → HTTP status mapping for
  * conflicts and successful upserts.
  */
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -39,7 +39,6 @@ vi.mock("@repo/observability/log", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { createMockRequest } from "../../../../__tests__/utils/auth-helpers";
 import { chatSessionsService } from "../../service";
 import { POST } from "../route";

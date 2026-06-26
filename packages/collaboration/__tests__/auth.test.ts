@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { authenticate } from "../auth";
+import { authenticate } from "../server/auth";
 
 // Mock @liveblocks/node
 const mockAuthorize = vi.fn();
@@ -17,7 +17,7 @@ vi.mock("@liveblocks/node", () => {
 });
 
 // Mock keys
-vi.mock("../keys", () => ({
+vi.mock("../server/keys", () => ({
   keys: () => ({ LIVEBLOCKS_SECRET: "test-secret-key" }),
 }));
 
@@ -54,7 +54,7 @@ describe("authenticate", () => {
       expect(result.status).toBe(200);
     });
 
-    it("prepares session with userId, userInfo, and tenantId", async () => {
+    it("prepares session with userId, userInfo, and organizationId", async () => {
       await authenticate({
         userId: "user-123",
         organizationId: "org-456",
@@ -71,7 +71,7 @@ describe("authenticate", () => {
           avatar: undefined,
           color: "var(--color-red)",
         },
-        tenantId: "org-456",
+        organizationId: "org-456",
       });
     });
 
@@ -153,11 +153,13 @@ describe("authenticate", () => {
   describe("error handling", () => {
     it("throws error when LIVEBLOCKS_SECRET is not set", async () => {
       vi.resetModules();
-      vi.doMock("../keys", () => ({
+      vi.doMock("../server/keys", () => ({
         keys: () => ({ LIVEBLOCKS_SECRET: undefined }),
       }));
 
-      const { authenticate: authenticateNoSecret } = await import("../auth");
+      const { authenticate: authenticateNoSecret } = await import(
+        "../server/auth"
+      );
 
       await expect(
         authenticateNoSecret({
@@ -211,7 +213,7 @@ describe("authenticate", () => {
       );
     });
 
-    it("uses organizationId as tenantId", async () => {
+    it("forwards organizationId to the Liveblocks session", async () => {
       await authenticate({
         userId: "user-123",
         organizationId: "org-tenant-test",
@@ -220,7 +222,7 @@ describe("authenticate", () => {
 
       expect(mockPrepareSession).toHaveBeenCalledWith("user-123", {
         userInfo: { name: "Tenant User", color: "var(--color-gray)" },
-        tenantId: "org-tenant-test",
+        organizationId: "org-tenant-test",
       });
     });
   });

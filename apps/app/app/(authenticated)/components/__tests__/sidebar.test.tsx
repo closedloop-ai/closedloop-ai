@@ -1,20 +1,31 @@
 import { cleanup, render } from "@testing-library/react";
 import type React from "react";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { GlobalSidebar } from "../sidebar";
 
 // Mock dependencies
 const mockQueryClientClear = vi.fn();
-const mockUseSidebar = vi.fn();
 const mockUseOrganization = vi.fn();
+
+const flagResult = (flag: string, enabled: boolean) => ({
+  key: flag,
+  enabled,
+  variant: undefined,
+  payload: undefined,
+});
+
+// Defaults to every flag enabled; individual tests override the implementation
+// to exercise flag-gated visibility.
+const mockUseFeatureFlag = vi.fn((flag: string) => flagResult(flag, true));
 
 // Mock @repo/auth/client
 vi.mock("@repo/auth/client", () => ({
-  OrganizationSwitcher: () => (
-    <div data-testid="org-switcher">Organization Switcher</div>
-  ),
-  UserButton: () => <div data-testid="user-button">User Button</div>,
   useOrganization: () => mockUseOrganization(),
+}));
+
+vi.mock("@repo/analytics/client", () => ({
+  useFeatureFlag: (flag: string) => mockUseFeatureFlag(flag),
 }));
 
 // Mock @tanstack/react-query
@@ -53,13 +64,34 @@ vi.mock("@repo/design-system/components/ui/sidebar", () => ({
   SidebarMenu: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="sidebar-menu">{children}</div>
   ),
+  SidebarNavLinkItem: ({
+    title,
+    icon,
+    trailing,
+  }: {
+    title: React.ReactNode;
+    icon?: React.ReactNode;
+    trailing?: React.ReactNode;
+  }) => (
+    <div data-testid="sidebar-nav-link-item">
+      {icon}
+      <span>{title}</span>
+      {trailing}
+    </div>
+  ),
   SidebarMenuButton: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="sidebar-menu-button">{children}</div>
   ),
   SidebarMenuItem: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="sidebar-menu-item">{children}</div>
   ),
-  useSidebar: () => mockUseSidebar(),
+}));
+
+// Mock next/navigation
+vi.mock("next/navigation", () => ({
+  useParams: vi.fn(() => ({ orgSlug: "test-org" })),
+  usePathname: vi.fn(() => "/test-org"),
+  useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
 }));
 
 // Mock environment lib - default to local
@@ -76,20 +108,12 @@ vi.mock("../sidebar-teams", () => ({
   SidebarTeams: () => <div data-testid="sidebar-teams">Teams</div>,
 }));
 
-vi.mock("../sidebar-favorites", () => ({
-  SidebarFavorites: () => <div data-testid="sidebar-favorites">Favorites</div>,
-}));
-
-vi.mock("@repo/design-system/components/ui/mode-toggle", () => ({
-  ModeToggle: () => <div data-testid="mode-toggle">Mode Toggle</div>,
+vi.mock("../account-menu", () => ({
+  AccountMenu: () => <div data-testid="account-menu">Account Menu</div>,
 }));
 
 vi.mock("../inbox-badge", () => ({
   InboxBadge: () => null,
-}));
-
-vi.mock("../engineer-badge", () => ({
-  EngineerBadge: () => null,
 }));
 
 vi.mock("@/components/compute-target-popover", () => ({
@@ -116,17 +140,6 @@ describe("GlobalSidebar - Cache Invalidation", () => {
   afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();
-
-    // Default sidebar state
-    mockUseSidebar.mockReturnValue({
-      open: true,
-      state: "expanded",
-      isMobile: false,
-      openMobile: false,
-      setOpen: vi.fn(),
-      setOpenMobile: vi.fn(),
-      toggleSidebar: vi.fn(),
-    });
 
     // Default organization state
     mockUseOrganization.mockReturnValue({
@@ -189,7 +202,7 @@ describe("GlobalSidebar - Cache Invalidation", () => {
   });
 });
 
-describe("GlobalSidebar - Conditional Rendering", () => {
+describe("GlobalSidebar - Account Menu", () => {
   afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();
@@ -200,84 +213,88 @@ describe("GlobalSidebar - Conditional Rendering", () => {
     });
   });
 
-  test("renders organization avatar when sidebar is collapsed", () => {
-    mockUseSidebar.mockReturnValue({
-      open: false,
-      state: "collapsed",
-    });
-
-    mockUseOrganization.mockReturnValue({
-      organization: createMockOrganization({
-        name: "Test Org",
-        imageUrl: "https://example.com/avatar.jpg",
-      }),
-      isLoaded: true,
-    });
-
-    const { container } = render(
+  test("renders the combined account menu in the header", () => {
+    const { getByTestId } = render(
       <GlobalSidebar>
         <div>Content</div>
       </GlobalSidebar>
     );
 
-    // Avatar container should render when sidebar is collapsed
-    const avatar = container.querySelector('[data-slot="avatar"]');
-    expect(avatar).not.toBeNull();
-    // Fallback shows the first letter (JSDOM can't load images so AvatarImage won't render)
-    const fallback = container.querySelector('[data-slot="avatar-fallback"]');
-    expect(fallback).not.toBeNull();
-    expect(fallback?.textContent).toBe("T");
+    expect(getByTestId("account-menu")).not.toBeNull();
+  });
+});
+
+describe("GlobalSidebar - Feature Flag Hydration", () => {
+  afterEach(cleanup);
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockUseOrganization.mockReturnValue({
+      organization: createMockOrganization(),
+      isLoaded: true,
+    });
   });
 
-  test("displays organization name fallback when imageUrl is missing", () => {
-    mockUseSidebar.mockReturnValue({
-      open: false,
-      state: "collapsed",
-    });
-
-    mockUseOrganization.mockReturnValue({
-      organization: createMockOrganization({
-        name: "Acme Corp",
-        imageUrl: undefined,
-      }),
-      isLoaded: true,
-    });
-
-    const { container } = render(
+  test("does not render a separate Agent Management section", () => {
+    const markup = renderToString(
       <GlobalSidebar>
         <div>Content</div>
       </GlobalSidebar>
     );
 
-    // Should show fallback with first letter of org name in the avatar fallback
-    const fallback = container.querySelector('[data-slot="avatar-fallback"]');
-    expect(fallback).not.toBeNull();
-    expect(fallback?.textContent).toBe("A");
+    expect(markup).not.toContain("Agent Management");
+    expect(markup).toContain("Teams");
+  });
+});
+
+describe("GlobalSidebar - Artifacts section flag gating", () => {
+  afterEach(() => {
+    cleanup();
+    // Restore the default (all flags enabled) so other suites are unaffected.
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, true)
+    );
   });
 
-  test("displays 'O' fallback when organization name is missing", () => {
-    mockUseSidebar.mockReturnValue({
-      open: false,
-      state: "collapsed",
-    });
-
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, true)
+    );
     mockUseOrganization.mockReturnValue({
-      organization: createMockOrganization({
-        name: undefined as unknown as string,
-        imageUrl: undefined,
-      }),
+      organization: createMockOrganization(),
       isLoaded: true,
     });
+  });
 
-    const { container } = render(
+  test("hides the Artifacts section when every item flag is disabled", () => {
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, false)
+    );
+
+    const { queryByText } = render(
       <GlobalSidebar>
         <div>Content</div>
       </GlobalSidebar>
     );
 
-    // Should show "O" fallback in avatar
-    const fallback = container.querySelector('[data-slot="avatar-fallback"]');
-    expect(fallback).not.toBeNull();
-    expect(fallback?.textContent).toBe("O");
+    expect(queryByText("Artifacts")).toBeNull();
+    expect(queryByText("Documents")).toBeNull();
+  });
+
+  test("shows the Artifacts section when at least one item flag is enabled", () => {
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, flag === "documents-nav")
+    );
+
+    const { queryByText } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(queryByText("Artifacts")).not.toBeNull();
+    expect(queryByText("Documents")).not.toBeNull();
+    expect(queryByText("Issues")).toBeNull();
   });
 });

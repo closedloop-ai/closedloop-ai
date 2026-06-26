@@ -8,8 +8,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 /**
  * Displays rich content in a portal, triggered by a button.
  */
-const meta = {
-  title: "ui/Popover",
+const meta: Meta<typeof Popover> = {
+  title: "Design System/Primitives/Popover",
   component: Popover,
   tags: ["autodocs"],
   argTypes: {},
@@ -23,7 +23,7 @@ const meta = {
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof Popover>;
+};
 
 export default meta;
 

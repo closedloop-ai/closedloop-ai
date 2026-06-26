@@ -43,6 +43,7 @@ function makePrData(
     draft: boolean;
     merged_at: string | null;
     closed_at: string | null;
+    merge_commit_sha: string | null;
     head: { ref: string; sha: string };
     base: { ref: string; sha: string };
     user: { login: string } | null;
@@ -57,6 +58,7 @@ function makePrData(
     draft: false,
     merged_at: null,
     closed_at: null,
+    merge_commit_sha: null,
     head: { ref: "feature-x", sha: "abc123" },
     base: { ref: "main", sha: "def456" },
     user: null,
@@ -105,6 +107,7 @@ describe("getSinglePullRequest", () => {
       authorLogin: null,
       mergedAt: null,
       closedAt: null,
+      mergeCommitSha: null,
     });
 
     expect(mockPullsGet).toHaveBeenCalledWith({
@@ -120,6 +123,7 @@ describe("getSinglePullRequest", () => {
         state: "closed",
         merged_at: "2026-03-01T12:00:00Z",
         closed_at: "2026-03-01T12:00:00Z",
+        merge_commit_sha: "merge-sha-123",
       }),
     });
 
@@ -133,6 +137,7 @@ describe("getSinglePullRequest", () => {
     expect(result?.state).toBe("MERGED");
     expect(result?.mergedAt).toBe("2026-03-01T12:00:00Z");
     expect(result?.closedAt).toBe("2026-03-01T12:00:00Z");
+    expect(result?.mergeCommitSha).toBe("merge-sha-123");
   });
 
   it("returns CLOSED state when PR is closed without merge", async () => {

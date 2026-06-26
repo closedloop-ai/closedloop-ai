@@ -347,6 +347,7 @@ const TeamsGroup = () => {
           Your Teams
         </span>
         <button
+          aria-label="Add team"
           className="flex size-5 items-center justify-center rounded-md hover:bg-sidebar-accent"
           type="button"
         >

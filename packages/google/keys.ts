@@ -4,7 +4,7 @@ import { z } from "zod";
 /**
  * Google OAuth integration keys.
  * Made optional because Google OAuth is an optional integration - validated at runtime
- * when the integration is actually used. See isGoogleConfigured().
+ * when the integration is actually used.
  *
  * - GOOGLE_CLIENT_ID: Needed by both app (OAuth initiation) and API (token exchange)
  * - GOOGLE_CLIENT_SECRET: Only needed by API (token exchange) - never expose to frontend

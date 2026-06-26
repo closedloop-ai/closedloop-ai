@@ -7,7 +7,8 @@ import {
   type UpdateProjectInput,
 } from "@repo/api/src/types/project";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
-import { ArtifactType, type Prisma, withDb } from "@repo/database";
+import { ArtifactType, Prisma, withDb } from "@repo/database";
+import { mapTagRelations, TAG_RELATION_INCLUDE } from "@/app/tags/service";
 import { basicUserSelect } from "@/lib/db-utils";
 import { generateSlug } from "@/lib/slug-generator";
 
@@ -202,14 +203,16 @@ export const projectsService = {
         );
       }
 
-      await Promise.all(
-        uniqueIds.map((id, index) =>
-          tx.project.update({
-            where: { id, organizationId },
-            data: { sortOrder: index },
-          })
-        )
+      const valueRows = uniqueIds.map(
+        (id, index) => Prisma.sql`(${id}::uuid, ${index}::int)`
       );
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "projects"
+        SET "sort_order" = data.new_order
+        FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
+        WHERE "projects"."id" = data.id
+          AND "projects"."organization_id" = ${organizationId}::uuid
+      `);
 
       return uniqueIds;
     });
@@ -300,6 +303,44 @@ export const projectsService = {
 
     return Math.round((completedCount / artifacts.length) * 100);
   },
+
+  /**
+   * Strip the GitHub-installation-bound fields out of every project's
+   * `settings` JSON for an organization. Used by the PLN-634
+   * different-account reconnect cleanup: the prior installation's repo
+   * UUIDs are no longer valid references, so the resolver would fall
+   * through to "pick at job launch" regardless, but explicitly clearing
+   * keeps the settings JSON honest and avoids stale fullNames after a
+   * reset.
+   *
+   * Returns the number of projects whose settings were rewritten. Safe to
+   * call from inside an outer `withDb.tx` — joins the active transaction
+   * via AsyncLocalStorage.
+   */
+  clearRepositorySettingsForOrganization(
+    organizationId: string
+  ): Promise<number> {
+    return withDb.tx(async (tx) => {
+      const projects = await tx.project.findMany({
+        where: { organizationId },
+        select: { id: true, settings: true },
+      });
+      let cleared = 0;
+      for (const project of projects) {
+        const current = (project.settings ?? {}) as Record<string, unknown>;
+        if (!("repositoryOverrides" in current)) {
+          continue;
+        }
+        const { repositoryOverrides, ...rest } = current;
+        await tx.project.update({
+          where: { id: project.id },
+          data: { settings: rest as Prisma.InputJsonValue },
+        });
+        cleared++;
+      }
+      return cleared;
+    });
+  },
 };
 
 type ProjectListOptions = {
@@ -327,6 +368,9 @@ const PROJECT_DETAIL_INCLUDE = {
     where: { type: ArtifactType.DOCUMENT },
     select: { status: true },
   },
+  tagProjects: {
+    include: TAG_RELATION_INCLUDE,
+  },
 } as const;
 
 /** Type for project returned from database with includes */
@@ -352,6 +396,7 @@ function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
       id: pt.team.id,
       name: pt.team.name,
     })),
+    tags: mapTagRelations(project.tagProjects ?? []),
   };
 }
 

@@ -9,6 +9,14 @@
     {
       "path": "/cron/timeout-loops",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/cron/sample-heartbeat-lag",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/cron/cleanup-preview-schemas",
+      "schedule": "17 6 * * *"
     }
   ]
 }

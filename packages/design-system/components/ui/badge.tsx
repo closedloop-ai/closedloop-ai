@@ -15,6 +15,15 @@ const badgeVariants = cva(
           "border-transparent bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
         destructive:
           "border-transparent bg-destructive text-white [a&]:hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
+        success:
+          "border-success/25 bg-success/12 text-success [a&]:hover:bg-success/18",
+        warning:
+          "border-warning/30 bg-warning/14 text-warning-foreground [a&]:hover:bg-warning/20",
+        info: "border-info/25 bg-info/12 text-info [a&]:hover:bg-info/18",
+        accent:
+          "border-primary/20 bg-primary/10 text-primary [a&]:hover:bg-primary/16",
+        muted:
+          "border-border bg-muted/70 text-muted-foreground [a&]:hover:bg-muted",
         outline:
           "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
       },
@@ -43,4 +52,8 @@ function Badge({
   )
 }
 
+type BadgeProps = React.ComponentProps<"span"> &
+  VariantProps<typeof badgeVariants> & { asChild?: boolean };
+
 export { Badge, badgeVariants }
+export type { BadgeProps }

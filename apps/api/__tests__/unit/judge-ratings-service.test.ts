@@ -6,7 +6,7 @@
  * Validator: boundary values for rating [0, 1], UUID check for judgeScoreId.
  */
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMockWithDb,
   mockWithDbCall,
@@ -17,7 +17,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   ArtifactSubtype: {

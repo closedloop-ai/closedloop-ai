@@ -1,0 +1,2342 @@
+/*
+ * Tailwind source registration for @repo/app (FEA-1510 / PLN-810).
+ *
+ * Tailwind v4 only scans the building app's own tree (plus any explicit
+ * `@source` globs), so utility classes used exclusively inside this package
+ * are silently dropped from the compiled CSS unless the consumer registers
+ * the package as a source. Every surface that renders app-core components
+ * (apps/app, the desktop renderer) must import this file from its Tailwind
+ * entry stylesheet.
+ */
+@source "./**/*.{ts,tsx}";
+
+/* Session Trace detail screen. Shared by the web app and desktop renderer. */
+.sd3 {
+  --sd3-cmts-w: 360px;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.sd3-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.sd3-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-padding-top: 360px;
+}
+
+.sd3-doc {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 0 32px 96px;
+}
+
+.sd3 .mono,
+.st .mono {
+  font-family: var(--font-mono);
+}
+
+.st [data-row],
+.st [data-row] button {
+  scroll-margin-top: 380px;
+}
+
+.sd3-link,
+.st-link {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.sd3-link:hover,
+.st-link:hover {
+  text-decoration: underline;
+}
+
+.sd3-stickyhead.is-sticky {
+  position: sticky;
+  top: 0;
+  isolation: isolate;
+  z-index: 20;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.sd3-stickyhead.is-sticky::before {
+  position: absolute;
+  inset: 0 -100vw;
+  z-index: -1;
+  background: var(--background);
+  content: "";
+}
+
+.sd3-head {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 32px 0 0;
+}
+
+.sd3-back {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.sd3-back:hover {
+  color: var(--foreground);
+}
+
+.sd3-title {
+  margin: 0;
+  font-weight: 600;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: 0;
+  text-wrap: pretty;
+}
+
+.sd3-stickyhead.is-sticky .sd3-head {
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.sd3-stickyhead.is-sticky .sd3-title {
+  margin-bottom: 0;
+  font-size: 18px;
+}
+
+.sd3-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-full);
+}
+
+.sd3-props {
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-right: 0;
+  padding-left: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd3-stickyhead.is-sticky .sd3-props {
+  margin-top: 0;
+}
+
+.sd3-props .prd-props-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sd3-props .prd-props-title {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: normal;
+}
+
+.sd3-props .prd-props-chevron {
+  display: inline-flex;
+  color: var(--muted-foreground);
+  transform: rotate(90deg);
+}
+
+.sd3-props[data-open="false"] .prd-props-chevron {
+  transform: rotate(0deg);
+}
+
+.sd3-props-preview {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sd3-props .sd3-props-preview,
+.sd3-props .prd-props {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.sd3-pp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sd3-pp svg {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.sd3-pp.mono {
+  font-size: 11.5px;
+}
+
+.sd3-props .prd-props {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  column-gap: 40px;
+  row-gap: 2px;
+}
+
+.sd3-props .prd-prop {
+  display: grid;
+  min-height: 28px;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.sd3-props .prd-prop-label {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.sd3-props .prd-prop-value {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -8px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sd3-props .prd-prop-value:hover {
+  background: var(--muted);
+}
+
+.sd3-props .prd-prop-value > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pull-requests property value. The `.sd3-result-pr`, `.sd3-result-status`, and
+   `.sd3-out-diff` markup shipped from the trace-view mock (FEA-1768) and was
+   never styled, so the row rendered as run-together / overlapping text. Style it
+   here to match the quiet properties-pane aesthetic (cf. `.st-fail-pill`,
+   `.bq-add` / `.bq-del`). The value cell wraps so multiple PR pills plus the
+   lines-changed diff lay out cleanly instead of overflowing on one line. */
+.sd3-props .sd3-prs-value {
+  flex-wrap: wrap;
+}
+
+.sd3-props .sd3-result-pr {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.sd3-props a.sd3-result-pr:hover {
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+
+.sd3-props .sd3-result-status {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.sd3-props .sd3-out-diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.sd3-props .sd3-out-diff .add {
+  color: var(--success-foreground);
+  font-weight: 600;
+}
+
+.sd3-props .sd3-out-diff .del {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+.cb-cache {
+  background: #94a3b8;
+}
+
+.cb-out {
+  background: #7c5cff;
+}
+
+.cb-in {
+  background: #0e9997;
+}
+
+.sd3-actbar {
+  padding: 16px 0 8px;
+  background: var(--background);
+}
+
+.sd3-act-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+
+.sd3-act-title {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: normal;
+}
+
+.sd3-bars2-wrap {
+  position: relative;
+}
+
+.sd3-bars2 {
+  display: flex;
+  box-sizing: border-box;
+  height: 78px;
+  align-items: flex-end;
+  gap: 2px;
+  padding-top: 15px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sd3-bar2 {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  min-height: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px 2px 0 0;
+  background: #94a3b8;
+  cursor: pointer;
+}
+
+.sd3-bar2 > i {
+  display: block;
+  width: 100%;
+  flex: 0 0 auto;
+}
+
+.sd3-bar2:hover,
+.sd3-bar2.hot {
+  outline: 1px solid color-mix(in oklab, var(--primary) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.sd3-bar2.idle {
+  height: 7px !important;
+  align-self: flex-end;
+  border-radius: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 4px
+  );
+}
+
+.sd3-bar2-lbl {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.sd3-drail {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 36px;
+  margin-top: 6px;
+}
+
+.sd3-dcell {
+  display: flex;
+  min-width: 0;
+  min-height: 36px;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+.sd3-dot {
+  box-sizing: border-box;
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  transition: transform 0.1s;
+  cursor: pointer;
+}
+
+.sd3-dot:hover,
+.sd3-dot.hot {
+  transform: scale(1.4);
+}
+
+.sd3-dot.d-b {
+  background: var(--primary);
+}
+
+.sd3-dot.d-g {
+  background: var(--success);
+}
+
+.sd3-dot.d-r {
+  background: var(--destructive);
+}
+
+.sd3-playhead {
+  position: absolute;
+  top: 0;
+  z-index: 7;
+  width: 0;
+  height: 100px;
+  padding: 0;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 2px solid var(--foreground);
+  background: transparent;
+  cursor: ew-resize;
+  transform: translateX(-0.5px);
+}
+
+.sd3-playhead::before {
+  position: absolute;
+  top: 0;
+  left: -6px;
+  width: 13px;
+  height: 100px;
+  content: "";
+}
+
+.sd3-playhead.dragging {
+  border-left-color: var(--primary);
+}
+
+.sd3-playhead-grip {
+  position: absolute;
+  top: 0;
+  left: -1px;
+  display: grid;
+  width: 14px;
+  height: 16px;
+  place-items: center;
+  border-radius: 3px;
+  background: var(--foreground);
+  color: var(--background);
+  transform: translateX(-50%);
+}
+
+.sd3-playhead.dragging .sd3-playhead-grip {
+  background: var(--primary);
+}
+
+.sd3-act-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+}
+
+.sd3-act-mid {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.sd3-tip {
+  position: fixed;
+  z-index: 10000;
+  width: 260px;
+  max-width: calc(100vw - 48px);
+  overflow: auto;
+  pointer-events: none;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-sm);
+}
+
+.sd3-tip-mk {
+  width: min(480px, calc(100vw - 48px));
+}
+
+.sd3-tip-h,
+.sd3-tip-mkhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.sd3-tip-idle,
+.sd3-tip-meta {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.sd3-tip-idle {
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+.sd3-tip-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.sd3-tip-tbl th {
+  padding: 2px 0 4px;
+  color: var(--muted-foreground);
+  font-weight: 500;
+  font-size: 10px;
+  text-align: right;
+}
+
+.sd3-tip-tbl th:first-child,
+.sd3-tip-tbl td:first-child {
+  text-align: left;
+}
+
+.sd3-tip-tbl th i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 3px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+.sd3-tip-tbl td {
+  padding: 1px 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.sd3-tip-list {
+  display: flex;
+  max-height: 220px;
+  flex-direction: column;
+  gap: 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.sd3-tip-li {
+  display: grid;
+  grid-template-columns: minmax(112px, max-content) auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.sd3-tip-lt {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.sd3-tip-lk {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sd3-tip-ll {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sd3-tip-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.sd3-tracehead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 26px 0 8px;
+}
+
+.sd3-th-title {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: normal;
+}
+
+.sd3-th-count {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.sd3-trace {
+  display: flex;
+  flex-direction: column;
+}
+
+.sd3-trace-chat {
+  margin-top: 2px;
+}
+
+.sd3-cmts {
+  position: relative;
+  display: flex;
+  width: var(--sd3-cmts-w);
+  min-width: 0;
+  height: 100%;
+  flex: 0 0 var(--sd3-cmts-w);
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--background);
+}
+
+.fp-resize {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  z-index: 6;
+  width: 7px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.fp-resize::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.12s;
+  content: "";
+}
+
+.fp-resize:hover::after,
+.fp-resize.dragging::after {
+  background: var(--primary);
+}
+
+.fp-head {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.fp-head-row,
+.fp-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.fp-count {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.fp-head-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.fp-icon-btn {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.fp-icon-btn:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.fp-stream {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 12px;
+}
+
+.fp-daysep {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.fp .fp-daysep span {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-weight: 500;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fp-comment {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.fp-rail {
+  position: relative;
+  display: flex;
+  width: 32px;
+  flex-shrink: 0;
+  justify-content: center;
+}
+
+.fp-comment-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.fp-comment-head {
+  height: 22px;
+  margin-bottom: 4px;
+}
+
+.fp-comment-head b {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.fp-when,
+.sd3-cmt-role {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.fp-comment-actions {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  gap: 0;
+  margin-left: auto;
+  visibility: hidden;
+}
+
+.fp-comment:hover .fp-comment-actions {
+  visibility: visible;
+}
+
+.fp-comment-actions .fp-icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.fp-quote {
+  display: flex;
+  width: 100%;
+  align-items: stretch;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fp-quote-bar {
+  width: 2.5px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: oklch(0.82 0.17 85 / 0.55);
+}
+
+.fp-quote-text {
+  padding: 1px 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  font-style: italic;
+}
+
+.fp-quote:hover .fp-quote-text,
+.fp-quote.is-active .fp-quote-text {
+  color: var(--foreground);
+}
+
+.fp-quote:hover .fp-quote-bar,
+.fp-quote.is-active .fp-quote-bar {
+  background: oklch(0.65 0.17 85);
+}
+
+.fp-comment-text {
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.fp-comment.is-active .fp-comment-body {
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: oklch(0.82 0.17 85 / 0.06);
+}
+
+.fp-composer {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--background);
+}
+
+.fp-composer-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-left: 2px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.sd3-cmts .fp-composer-box {
+  padding: 8px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-md);
+}
+
+.sd3-cmts .fp-composer-box:focus-within {
+  border-color: color-mix(in oklab, var(--primary) 45%, var(--input-border));
+}
+
+.fp-composer-box textarea {
+  width: 100%;
+  padding: 2px 0 6px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.fp-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 0;
+}
+
+.fp-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.st {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-sm);
+}
+
+.st-text {
+  color: var(--foreground);
+  font-size: 13.5px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.st-msg,
+.st-sysline,
+.st-toolswrap {
+  position: relative;
+}
+
+.st-msg {
+  display: flex;
+  padding: 5px 92px 5px 0;
+}
+
+.st-msg.right {
+  justify-content: flex-end;
+}
+
+.st-msg.left {
+  justify-content: flex-start;
+}
+
+.st-bubble {
+  display: flex;
+  width: 80%;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 13px;
+  border-radius: 12px;
+}
+
+.st-bubble .st-text {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Allow flex children to shrink so code/tables scroll internally instead of
+   widening the bubble past its column. */
+.st-bubble > * {
+  min-width: 0;
+}
+
+/* Collapse the markdown root's leading/trailing block margins so the bubble
+   keeps tight padding around parsed prose. */
+.st-text > :first-child {
+  margin-top: 0;
+}
+
+.st-text > :last-child {
+  margin-bottom: 0;
+}
+
+/* Fenced code, tables and preformatted blocks scroll horizontally rather than
+   stretching the trace column. */
+.st-text pre,
+.st-text table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.st-ext-link {
+  color: var(--primary);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.st-ext-link:hover {
+  text-decoration: underline;
+}
+
+/* Collapsible chip for Claude Code harness wrapper tags (command-name,
+   local-command-caveat, system-reminder, …) so harness noise stays folded. */
+.st-tag {
+  margin: 2px 0;
+}
+
+.st-tag-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  color: var(--muted-foreground);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.st-tag-head:hover {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+}
+
+.st-tag-chev {
+  flex: 0 0 auto;
+}
+
+.st-tag-name {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.st-tag-body {
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  background: color-mix(in oklab, var(--card) 75%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.st-bubble.p-human {
+  background: color-mix(in oklab, var(--primary) 22%, var(--background));
+}
+
+.st-bubble.p-agent {
+  background: color-mix(in oklab, var(--primary) 5%, var(--card));
+}
+
+/* Muted model caption rendered once per assistant bubble (e.g. claude-opus-4-8)
+   so the model is metadata, never inline body text. */
+.st-model {
+  align-self: flex-end;
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
+/* Reasoning/thinking turns render as their own distinct, dimmed bubble. */
+.st-bubble.st-reason {
+  border: 1px dashed var(--border);
+  background: color-mix(in oklab, var(--muted) 35%, var(--card));
+}
+
+.st-reason-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.st-reason-label {
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.st-reason-chev {
+  color: var(--muted-foreground);
+}
+
+.st-reason .st-text {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.st-gut {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  width: 78px;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 1px;
+  padding: 9px 0 0;
+  pointer-events: none;
+}
+
+.st-gut-bot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.st-gut-line,
+.st-time {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.st-gut-line.cost {
+  color: var(--foreground);
+}
+
+.st-time {
+  position: absolute;
+  top: 11px;
+  right: 0;
+  width: 64px;
+  text-align: right;
+  pointer-events: none;
+}
+
+.st-tools-head,
+.st-sub-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-tools-head:hover,
+.st-sub-head:hover {
+  color: var(--foreground);
+}
+
+/* Non-expandable tools summary (no per-tool rows): not interactive. */
+.st-tools-head-static {
+  cursor: default;
+}
+
+.st-tools-head-static:hover {
+  color: var(--muted-foreground);
+}
+
+.st-tools-summary,
+.st-sub-sum {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-sub-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.st-tools-chev,
+.st-sub-chev,
+.st-toolrow-chev {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.st-tools-body {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+}
+
+.st-bubble .st-tools-body,
+.st-sub-body {
+  background: color-mix(in oklab, var(--card) 75%, transparent);
+}
+
+.st-toolrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.st-toolrow:hover {
+  background: var(--card);
+}
+
+.st-tool-label {
+  flex: 0 0 auto;
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.st-tool-detail {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-toolrow.err,
+.st-toolrow.err .st-tool-label,
+.st-fail-pill,
+.st-flag-tag {
+  color: var(--destructive);
+}
+
+.st-fail-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+  font-weight: 600;
+  font-size: 10px;
+}
+
+.st-sys-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  align-self: center;
+  border-radius: 50%;
+}
+
+.st-sys-dot.d-g {
+  background: var(--success);
+}
+
+.st-sys-dot.d-r {
+  background: var(--destructive);
+}
+
+.st-sub {
+  padding: 1px 0;
+}
+
+.st-sub-body {
+  display: flex;
+  max-height: 260px;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  margin: 4px 0 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+}
+
+.st-sub-info {
+  margin-bottom: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.st-sub-empty,
+.st-sub-ln {
+  font-size: 12px;
+}
+
+.st-sub-empty {
+  color: var(--muted-foreground);
+}
+
+.st-sub-ln {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.st-sub-ln-t {
+  white-space: pre-wrap;
+}
+
+.st-sub-ln.k-task {
+  margin-bottom: 2px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.st-sub-ln.k-tool .st-sub-ln-t,
+.st-sub-ln.k-status .st-sub-ln-x {
+  color: var(--muted-foreground);
+}
+
+.st-sub-ln.k-status .st-sub-ln-x {
+  font-style: italic;
+}
+
+.st-sysline {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+  margin: 2px 0;
+  padding: 8px 72px;
+  color: var(--muted-foreground);
+}
+
+.st-sysline::before,
+.st-sysline::after {
+  height: 1px;
+  flex: 0 0 22px;
+  align-self: center;
+  background: var(--border);
+  content: "";
+}
+
+.st-sysline-text {
+  font-size: 12px;
+}
+
+.st-end {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 8px 0 0 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.st-end svg {
+  color: var(--success-foreground);
+}
+
+.st-flagged {
+  border-left: 2px solid
+    color-mix(in oklab, var(--destructive) 60%, transparent);
+}
+
+.st-flag-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.st-flash {
+  animation: stflash 1.1s ease-out;
+}
+
+@keyframes stflash {
+  0% {
+    background: color-mix(in oklab, var(--primary) 12%, transparent);
+  }
+
+  100% {
+    background: transparent;
+  }
+}
+
+/* ── Branch Detail "quiet" panels (FEA-1950 / Epic D) ──────────────────────
+   Ported from the Branches Page Claude Design handoff (branch-quiet.css),
+   aligned to the shared design tokens. The Properties panel reuses the session
+   detail's `.sd3-props` styling (same quiet aesthetic); these `.bq-*` rules
+   cover the Epic-D-owned metric panels: section heads, the cost-to-merge
+   breakdown bar, and the lead-time waterfall. */
+.bq-add {
+  color: var(--success-foreground);
+  font-weight: 600;
+}
+
+.bq-del {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+.bq-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 26px 0 8px;
+}
+
+.bq-sec-title {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bq-sec-count {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+/* Files-changed list (Epic F / FEA-1952 — F1). Ported from the Branches Page
+   design handoff (branch-quiet.css). Rows are display-only (the gateway returns
+   filenames only; there is no per-file diff route in this version). */
+.bq-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.bq-file {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  color: var(--foreground);
+}
+
+.bq-file-ic {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+}
+
+.bq-file-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "What was delivered" section (Epic F / FEA-1952). Ported from the Branches
+   Page design handoff (branch-quiet.css): a linked-artifacts list + the
+   read-only PR description (clamped/expandable). */
+.bq-ctx {
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bq-ctx-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Rendered as a non-interactive <div> in v1 (slug-only, no artifact URL yet),
+   so NO hover affordance or text-decoration reset — both would falsely imply a
+   click target. Restore them (and an <a href>) once FEA-1899 supplies URLs. */
+.bq-ctx-issue {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 8px 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.bq-ctx-iss-key {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.bq-ctx-iss-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bq-ctx-empty-hint {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.bq-ctx-pr {
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.bq-ctx-prhead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: var(--muted-foreground);
+}
+
+.bq-ctx-prlabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.bq-ctx-prnum {
+  font-size: 11.5px;
+  color: var(--foreground);
+}
+
+.bq-ctx-prbody {
+  position: relative;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bq-ctx-prbody.clamped {
+  max-height: 92px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+.bq-ctx-more {
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.bq-ctx-more:hover {
+  text-decoration: underline;
+}
+
+.bq-ctx-empty-t {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.bq-statcards {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+/* Cost-to-merge breakdown (bar + per-phase rows) */
+.bq-costbd {
+  margin-top: 22px;
+}
+
+.bq-cost-bar {
+  display: flex;
+  height: 14px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  margin: 12px 0 10px;
+  gap: 1.5px;
+  background: var(--muted);
+}
+
+.bq-cost-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.bq-costbd-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 10px;
+}
+
+.bq-costbd-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+}
+
+.bq-cost-sw {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.bq-costbd-name {
+  flex: 1;
+  color: var(--foreground);
+  font-size: 12.5px;
+}
+
+.bq-costbd-val {
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+}
+
+.bq-costbd-foot,
+.bq-lead-foot {
+  margin-top: 8px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* Lead-time-for-change waterfall (staged wall-clock; idle gaps hatched) */
+.bq-lead {
+  margin-top: 22px;
+}
+
+.bq-lead-track {
+  display: flex;
+  height: 18px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 10px;
+  gap: 1px;
+  background: var(--muted);
+}
+
+.bq-lead-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.bq-lead-gap {
+  height: 100%;
+  min-width: 2px;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    color-mix(in oklab, var(--muted-foreground) 28%, transparent) 3px,
+    color-mix(in oklab, var(--muted-foreground) 28%, transparent) 6px
+  );
+}
+
+.bq-lead-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+}
+
+.bq-lead-mergept {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bq-lead-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  margin-top: 11px;
+}
+
+.bq-lead-kitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.bq-lead-kitem b {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.bq-lead-ksw {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.bq-lead-ksw.idle {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 38%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 38%, transparent) 4px
+  );
+  border: 1px solid var(--border);
+}
+
+/* Non-blocking multi-PR notice + the deferred (Epic F) slot stubs */
+.bq-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 9px 12px;
+  border: 1px solid
+    color-mix(in oklab, var(--warning, #d9a441) 40%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--warning, #d9a441) 10%, transparent);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bq-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--warning, #d9a441);
+}
+
+/* PR activity timeline (Epic E / E1): per-hour stacked token bars, by actor */
+.bq-act {
+  margin-top: 26px;
+}
+
+/* Combined merged trace (D2): a bounded, self-contained scroll viewport so a
+   timeline scrub scrolls the trace in place rather than the whole branch page
+   (mirrors the Session detail page's `.sd3-scroll`). */
+.bq-trace-scroll {
+  max-height: 70vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.bq-act-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.bq-act-title {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bq-act-sub {
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.8;
+}
+
+.bq-act-legend {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.bq-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+}
+
+.bq-lg-sw {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.bq-lg-name {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bq-bars-wrap {
+  position: relative;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.bq-bars {
+  position: relative;
+  display: flex;
+  height: 92px;
+  align-items: flex-end;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bq-bar {
+  display: flex;
+  min-width: 0;
+  min-height: 3px;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: none;
+  border-radius: 2px 2px 0 0;
+  padding: 0;
+  background: #94a3b8;
+  cursor: pointer;
+}
+
+.bq-bar > i {
+  display: block;
+  width: 100%;
+}
+
+.bq-bar.hot {
+  outline: 1px solid color-mix(in oklab, var(--primary) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.bq-bar.idle {
+  height: 6px !important;
+  align-self: flex-end;
+  border-radius: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 32%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 32%, transparent) 4px
+  );
+}
+
+.bq-bar.conc {
+  border-radius: 3px;
+  box-shadow: 0 0 0 1.5px color-mix(in oklab, #c0762b 60%, transparent);
+}
+
+/* "You are here" playhead scrubber (Epic E / E2), overlaying the timeline */
+.bq-playhead-rail {
+  position: relative;
+  height: 92px;
+  margin-top: 6px;
+}
+
+.bq-playhead {
+  position: absolute;
+  /* Bar hangs from the grip handle (top) down to the bars' baseline — `bottom`
+     clears the time-axis row (`.bq-axis`: 6px margin + ~14px text) so the line
+     sits below the handle, over the graph, rather than above it. */
+  top: 14px;
+  bottom: 22px;
+  width: 0;
+  border: none;
+  border-left: 2px solid var(--foreground);
+  background: transparent;
+  padding: 0;
+  cursor: ew-resize;
+  z-index: 9;
+}
+
+.bq-playhead-grip {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  display: grid;
+  width: 14px;
+  height: 16px;
+  place-items: center;
+  border-radius: 3px;
+  background: var(--foreground);
+  color: var(--background);
+  transform: translateX(-50%);
+}
+
+/* Event-dot rail (Epic E / E3): green/red local outcomes + orange PR comments */
+.bq-drail-wrap {
+  position: relative;
+  margin-top: 6px;
+}
+
+.bq-drail {
+  position: relative;
+  height: 14px;
+}
+
+.bq-dot {
+  position: absolute;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.1s;
+  transform: translateX(-50%);
+}
+
+.bq-dot:hover,
+.bq-dot.hot {
+  transform: translateX(-50%) scale(1.4);
+}
+
+.bq-dot.d-green {
+  background: var(--success-foreground);
+}
+
+.bq-dot.d-red {
+  background: var(--destructive);
+}
+
+.bq-dot.d-orange {
+  background: var(--warning, #d9a441);
+}
+
+.bq-drail-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.bq-drail-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bq-drail-comments .bq-dot {
+  position: static;
+  transform: none;
+}
+
+.bq-drail-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Hover tooltips (Epic E): the design handoff's `bq-tip` card. The bar tooltip
+   shows the hour + total + per-actor input/output/cache split; the `bq-tip-mk`
+   variant lists event markers. Positioned absolutely within `.bq-bars-wrap` /
+   `.bq-drail-wrap` via an inline `left`; `is-left` flips the anchor near the
+   right edge. Pointer-events:none so it never eats the hover. */
+.bq-tip {
+  position: absolute;
+  bottom: 100%;
+  z-index: 12;
+  margin-bottom: 8px;
+  min-width: 180px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.16));
+  padding: 9px 11px;
+  pointer-events: none;
+}
+
+.bq-tip.is-left {
+  transform: translateX(-86%);
+}
+
+.bq-tip-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.bq-tip-h .font-mono {
+  font-weight: 600;
+}
+
+.bq-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 0;
+  font-size: 11.5px;
+}
+
+.bq-tip-sw {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.bq-tip-name {
+  flex: 1;
+  color: var(--foreground);
+}
+
+.bq-tip-tok {
+  color: var(--muted-foreground);
+}
+
+.bq-tip-srow {
+  padding: 3px 0;
+}
+
+.bq-tip-srow + .bq-tip-srow {
+  border-top: 1px solid var(--border);
+}
+
+.bq-tip-split {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 1px 15px;
+}
+
+.bq-tip-sp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+}
+
+.bq-tip-spdot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.bq-tip-spk {
+  flex: 1;
+  color: var(--muted-foreground);
+}
+
+.bq-tip-spv {
+  color: var(--foreground);
+}
+
+.bq-tip-mk {
+  min-width: 230px;
+  max-width: 320px;
+}
+
+.bq-tip-mkhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.bq-tip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bq-tip-li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.bq-tip-litop {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.bq-tip-lt {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.bq-tip-ll {
+  min-width: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+/* Actor Gantt swimlane (Epic E / E4): one lane per session, active bursts solid */
+.bq-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.bq-lane {
+  display: grid;
+  grid-template-columns: 200px 1fr 120px;
+  align-items: center;
+  gap: 12px;
+}
+
+.bq-lane-id {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.bq-aico {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid;
+  border-radius: 50%;
+  background: var(--card);
+}
+
+.bq-lane-name {
+  flex: 0 0 auto;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bq-lane-sub {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bq-lane-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  color: var(--muted-foreground);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.bq-lane-resumed {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+  background: color-mix(in oklab, #c0762b 16%, transparent);
+  color: #9a5a1e;
+  font-weight: 600;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.bq-lane-track {
+  position: relative;
+  height: 16px;
+  border-radius: var(--radius-sm);
+}
+
+.bq-lane-extent {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 3px;
+  background: var(--muted);
+}
+
+.bq-lane-seg {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border: none;
+  border-radius: 3px;
+  opacity: 0.92;
+  cursor: pointer;
+}
+
+.bq-lane-seg:hover {
+  outline: 1px solid color-mix(in oklab, var(--primary) 45%, transparent);
+  opacity: 1;
+}
+
+.bq-lane-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px solid var(--foreground);
+  pointer-events: none;
+}
+
+.bq-lane-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* Composition: overlay the E2 playhead across the E1 timeline without blocking
+   bar clicks — the overlay is click-through; only the handle re-enables it. */
+.bq-playhead-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.bq-playhead-overlay .bq-playhead-rail {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  margin: 0;
+}
+
+.bq-playhead-overlay .bq-playhead {
+  /* Inherit the base top/bottom anchoring; only re-enable the handle's pointer
+     events over the otherwise click-through overlay. */
+  pointer-events: auto;
+}
+
+/* PR timeline header stat cluster (cost / value / wall clock) + time axis */
+.bq-stats {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.bq-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.bq-stat b {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.bq-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}

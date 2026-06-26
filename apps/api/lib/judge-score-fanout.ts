@@ -49,7 +49,7 @@ export async function fanOutJudgeScores(params: {
       continue;
     }
 
-    const finalStatus = normalizeFinalStatus(caseScore.final_status as unknown);
+    const finalStatus = normalizeFinalStatus(caseScore.final_status);
     if (finalStatus === null) {
       log.warn("judge_final_status_invalid", {
         caseId: caseScore.case_id,

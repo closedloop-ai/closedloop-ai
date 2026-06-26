@@ -4,8 +4,12 @@ import { cookies } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
 import {
+  createGitHubOAuthReturnToCookie,
   GITHUB_ERROR_CODES,
+  GITHUB_OAUTH_RETURN_TO_COOKIE,
+  GITHUB_OAUTH_RETURN_TO_COOKIE_PATH,
   GITHUB_OAUTH_STATE_COOKIE,
+  getCanonicalBranchViewReturnPath,
   getErrorRedirectUrl,
   getGitHubCallbackUrl,
 } from "./github-utils";
@@ -60,6 +64,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     };
 
     cookieStore.set(GITHUB_OAUTH_STATE_COOKIE, state, cookieOptions);
+    const returnTo = getCanonicalBranchViewReturnPath(
+      request.nextUrl.searchParams.get("returnTo")
+    );
+    if (returnTo && request.nextUrl.searchParams.get("install") !== "true") {
+      cookieStore.set(
+        GITHUB_OAUTH_RETURN_TO_COOKIE,
+        createGitHubOAuthReturnToCookie({
+          issuedAt: Date.now(),
+          returnTo,
+          state,
+        }),
+        { ...cookieOptions, path: GITHUB_OAUTH_RETURN_TO_COOKIE_PATH }
+      );
+    }
 
     // Determine which flow to use:
     // 1. ?install=true forces the /installations/new flow (first-time setup)

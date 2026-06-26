@@ -8,7 +8,15 @@
  * in build-context-pack.test.ts — no need to duplicate here.
  */
 
-import { vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 // --- Mocks (must come before imports) ---
 // These exist because loop-orchestrator.ts transitively imports them.
@@ -45,6 +53,7 @@ vi.mock("@/app/loops/service", () => ({
     findById: vi.fn().mockResolvedValue(null),
     updateStatus: vi.fn().mockResolvedValue(undefined),
     addEvent: vi.fn().mockResolvedValue(undefined),
+    updateMetadata: vi.fn().mockResolvedValue(1),
     persistLaunchInfo: vi.fn(),
     cancel: vi.fn().mockResolvedValue(undefined),
   },
@@ -58,9 +67,12 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  issueLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
+  const { createLoopRunnerJwtMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopRunnerJwtMockModule(importOriginal);
+});
 
 vi.mock("@/lib/aws-credentials", () => ({
   getAwsCredentials: vi.fn(),
@@ -168,7 +180,6 @@ import {
   type LoopWithUser,
 } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
-import { afterEach, beforeEach, describe, expect, it, type Mock } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -189,6 +200,7 @@ const mockLoopsService = loopsService as unknown as {
   findById: MockFn;
   updateStatus: MockFn;
   addEvent: MockFn;
+  updateMetadata: MockFn;
   cancel: MockFn;
 };
 
@@ -581,6 +593,7 @@ describe("handleLoopEvent isOverridingFailure for CANCELLED loops", () => {
     vi.spyOn(loopsService, "findById").mockResolvedValue({
       ...(cancelledLoop as LoopWithUser),
       additionalRepos: null,
+      primaryBranch: null,
       primaryPullRequest: null,
     });
     vi.spyOn(loopsService, "addEvent").mockResolvedValue(true);

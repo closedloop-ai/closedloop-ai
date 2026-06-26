@@ -1,9 +1,12 @@
 import { Buffer } from "node:buffer";
 import {
   CURRENT_DESKTOP_API_NAMESPACE,
-  getDesktopApiNamespaceFromCapabilities,
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
+import {
+  BranchViewLocalErrorCode,
+  isBranchViewLocalGatewayPath,
+} from "@repo/api/src/types/branch-view-local";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   HealthCheckResponse,
@@ -11,12 +14,23 @@ import type {
 } from "@repo/api/src/types/compute-target";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
+import type {
+  RelayEncodedBody,
+  RelayHttpRequestPayload,
+} from "@repo/shared-platform/relay-request-model";
 import { after, type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { env } from "@/env";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import {
+  COMMAND_ID_HEADER,
+  COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER,
+  COMMAND_SIGNATURE_HEADER,
+  COMMAND_SIGNATURE_PAYLOAD_HEADER,
   COMPUTE_TARGET_HEADER,
+} from "@/lib/desktop-command-signing/constants";
+import { collectCommandSigningHeaders } from "@/lib/desktop-command-signing/relay-command-signing";
+import {
   GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_PATH_PREFIX,
   GATEWAY_RELAY_PATH_PREFIX,
@@ -24,14 +38,49 @@ import {
 import {
   isStreamingGatewayRequest,
   RelayClient,
-  type RelayEncodedBody,
-  type RelayHttpRequestPayload,
   RelayRequestError,
 } from "@/lib/engineer/relay-client";
+import { parseRelayHttpResponse } from "@/lib/engineer/relay-response";
 
 export const maxDuration = 300; // 5 minutes — relay proxies long-running streams (reviews, chat)
 
-function toGatewayPath(request: NextRequest): string {
+/**
+ * Route-owned headers are consumed by the app boundary and must not be copied
+ * into the Desktop gateway request payload.
+ */
+const BASE_RELAY_HEADER_DENYLIST = new Set([
+  "authorization",
+  "cookie",
+  COMPUTE_TARGET_HEADER,
+  COMMAND_ID_HEADER,
+  COMMAND_SIGNATURE_HEADER,
+  COMMAND_SIGNATURE_PAYLOAD_HEADER,
+  COMMAND_PUBLIC_KEY_FINGERPRINT_HEADER,
+  "x-relay-command-id",
+  "x-relay-after-sequence",
+  "host",
+  "content-length",
+]);
+
+/**
+ * Client IP and proxy provenance headers are stripped unconditionally so
+ * relayed Desktop requests do not receive browser, edge-network, or
+ * hosting-platform IP data.
+ */
+const CLIENT_IP_FORWARDING_HEADER_DENYLIST = new Set([
+  "x-forwarded-for",
+  "x-vercel-forwarded-for",
+  "cf-connecting-ip",
+  "x-real-ip",
+  "true-client-ip",
+  "x-client-ip",
+  "forwarded",
+]);
+
+function toGatewayPath(
+  request: NextRequest,
+  options?: { stripPluginAutoUpdate?: boolean }
+): string {
   const pathname = request.nextUrl.pathname.startsWith(
     GATEWAY_RELAY_PATH_PREFIX
   )
@@ -40,23 +89,29 @@ function toGatewayPath(request: NextRequest): string {
         GATEWAY_PATH_PREFIX
       )
     : request.nextUrl.pathname;
-  return `${pathname}${request.nextUrl.search}`;
+  const gatewayUrl = new URL(
+    `${pathname}${request.nextUrl.search}`,
+    "http://local"
+  );
+
+  if (
+    options?.stripPluginAutoUpdate &&
+    gatewayUrl.pathname === GATEWAY_HEALTH_CHECK_PATH
+  ) {
+    gatewayUrl.searchParams.delete("pluginAutoUpdate");
+  }
+
+  return `${gatewayUrl.pathname}${gatewayUrl.search}`;
 }
 
 function collectRelayHeaders(request: NextRequest): Record<string, string> {
-  const blocked = new Set([
-    "authorization",
-    "cookie",
-    COMPUTE_TARGET_HEADER,
-    "x-relay-command-id",
-    "x-relay-after-sequence",
-    "host",
-    "content-length",
-  ]);
-
   const headers: Record<string, string> = {};
   for (const [key, value] of request.headers.entries()) {
-    if (blocked.has(key.toLowerCase())) {
+    const normalizedKey = key.toLowerCase();
+    if (
+      BASE_RELAY_HEADER_DENYLIST.has(normalizedKey) ||
+      CLIENT_IP_FORWARDING_HEADER_DENYLIST.has(normalizedKey)
+    ) {
       continue;
     }
     headers[key] = value;
@@ -100,56 +155,6 @@ async function encodeBody(request: NextRequest): Promise<RelayEncodedBody> {
   };
 }
 
-type ParsedRelayHttpResponse = {
-  status: number;
-  headers: Headers;
-  body: unknown;
-};
-
-function parseRelayHttpResponse(
-  value: unknown
-): ParsedRelayHttpResponse | null {
-  if (typeof value !== "object" || value === null) {
-    return {
-      status: 200,
-      headers: new Headers(),
-      body: value,
-    };
-  }
-
-  const record = value as Record<string, unknown>;
-
-  // Electron gateway wraps results as { statusCode, success, data }
-  // while the relay envelope uses { status, body }. Handle both.
-  let status: number | undefined;
-  if (typeof record.status === "number") {
-    status = record.status;
-  } else if (typeof record.statusCode === "number") {
-    status = record.statusCode;
-  }
-
-  let body: unknown;
-  if ("body" in record) {
-    body = record.body;
-  } else if ("data" in record) {
-    body = record.data;
-  }
-
-  if (status !== undefined && body !== undefined) {
-    return {
-      status,
-      headers: new Headers(
-        typeof record.headers === "object" && record.headers !== null
-          ? (record.headers as Record<string, string>)
-          : undefined
-      ),
-      body,
-    };
-  }
-
-  return null;
-}
-
 function toRelayHttpResponse(value: unknown): Response {
   const parsed = parseRelayHttpResponse(value);
   if (parsed) {
@@ -189,6 +194,24 @@ function isHealthCheckPath(path: string): boolean {
   return new URL(path, "http://local").pathname === GATEWAY_HEALTH_CHECK_PATH;
 }
 
+function isPluginAutoUpdateEnabledPath(path: string): boolean {
+  const url = new URL(path, "http://local");
+  return (
+    url.pathname === GATEWAY_HEALTH_CHECK_PATH &&
+    url.searchParams.get("pluginAutoUpdate") === "1"
+  );
+}
+
+function branchViewLocalDeniedResponse(): Response {
+  return NextResponse.json(
+    {
+      error: BranchViewLocalErrorCode.AuthorizationRequired,
+      code: BranchViewLocalErrorCode.AuthorizationRequired,
+    },
+    { status: 403 }
+  );
+}
+
 const healthCheckResponseSchema = z
   .object({
     checks: z.array(z.unknown()),
@@ -201,17 +224,20 @@ async function persistHealthCheckSnapshot({
   authToken,
   targetId,
   request,
+  pluginAutoUpdateEnabled,
   result,
 }: {
   apiOrigin: string;
   authToken: string;
   targetId: string;
   request: NextRequest;
+  pluginAutoUpdateEnabled: boolean;
   result: HealthCheckResponse;
 }): Promise<void> {
   const payload: UpsertComputeTargetHealthCheckSnapshotInput = {
     expectedMcpUrl: request.nextUrl.searchParams.get("expectedMcpUrl"),
     latestVersion: request.nextUrl.searchParams.get("latestVersion"),
+    pluginAutoUpdateEnabled,
     result,
   };
   const response = await fetch(
@@ -245,6 +271,7 @@ function scheduleHealthCheckPersistence({
   targetId,
   request,
   path,
+  pluginAutoUpdateEnabled,
   value,
 }: {
   apiOrigin: string;
@@ -252,6 +279,7 @@ function scheduleHealthCheckPersistence({
   targetId: string;
   request: NextRequest;
   path: string;
+  pluginAutoUpdateEnabled: boolean;
   value: unknown;
 }): void {
   if (!isHealthCheckPath(path)) {
@@ -275,6 +303,7 @@ function scheduleHealthCheckPersistence({
       authToken,
       targetId,
       request,
+      pluginAutoUpdateEnabled,
       result,
     }).catch((error) => {
       log.warn("Failed to persist relay health check snapshot", {
@@ -288,6 +317,7 @@ function scheduleHealthCheckPersistence({
 type TargetOwnershipCheck = {
   id: string;
   isOnline: boolean;
+  ownerName?: string;
   capabilities: Record<string, unknown>;
 };
 
@@ -354,18 +384,24 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   const apiOrigin = resolveApiOrigin(request);
   const target = await ensureTargetOwnedAndOnline(apiOrigin, token, targetId);
 
-  const gatewayPath = toGatewayPath(request);
+  const gatewayPath = toGatewayPath(request, {
+    stripPluginAutoUpdate: Boolean(target.ownerName),
+  });
+  const pluginAutoUpdateEnabled = isPluginAutoUpdateEnabledPath(gatewayPath);
   const path = rewriteDesktopApiPath(
     gatewayPath,
-    getDesktopApiNamespaceFromCapabilities(target.capabilities) ??
-      CURRENT_DESKTOP_API_NAMESPACE
+    CURRENT_DESKTOP_API_NAMESPACE
   );
+  if (isBranchViewLocalGatewayPath(path)) {
+    return branchViewLocalDeniedResponse();
+  }
   const relayRequest: RelayHttpRequestPayload = {
     method: request.method,
     path,
     headers: collectRelayHeaders(request),
     body: await encodeBody(request),
   };
+  const commandSigning = collectCommandSigningHeaders(request.headers);
 
   const relayClient = new RelayClient(
     apiOrigin,
@@ -387,9 +423,24 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     const afterSequence =
       Number.isInteger(afterSeqRaw) && afterSeqRaw >= 0 ? afterSeqRaw : 0;
 
+    const resumeOptions = reconnectCommandId
+      ? await relayClient.resolveResumeOptions(targetId, reconnectCommandId)
+      : {};
+    if (resumeOptions.localContent === true) {
+      return branchViewLocalDeniedResponse();
+    }
     const { stream, commandId } = reconnectCommandId
-      ? relayClient.resumeStream(targetId, reconnectCommandId, afterSequence)
-      : await relayClient.streamOperation(targetId, relayRequest);
+      ? relayClient.resumeStream(
+          targetId,
+          reconnectCommandId,
+          afterSequence,
+          resumeOptions
+        )
+      : await relayClient.streamOperation(
+          targetId,
+          relayRequest,
+          commandSigning
+        );
 
     // Body is NDJSON but we use text/event-stream so Vercel's CDN layer
     // treats this as an SSE response and skips Brotli/gzip compression
@@ -409,13 +460,18 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     });
   }
 
-  const { value } = await relayClient.executeOperation(targetId, relayRequest);
+  const { value } = await relayClient.executeOperation(
+    targetId,
+    relayRequest,
+    commandSigning
+  );
   scheduleHealthCheckPersistence({
     apiOrigin,
     authToken: token,
     targetId,
     request,
     path: gatewayPath,
+    pluginAutoUpdateEnabled,
     value,
   });
   return toRelayHttpResponse(value);

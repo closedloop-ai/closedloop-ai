@@ -82,22 +82,6 @@ export async function resolveProjectId(
   return row?.id ?? null;
 }
 
-export async function resolveWorkstreamId(
-  id: string,
-  organizationId: string
-): Promise<string | null> {
-  if (isUuid(id)) {
-    return id;
-  }
-  const row = await withDb((db) =>
-    db.workstream.findUnique({
-      where: { organizationId_slug: { organizationId, slug: id } },
-      select: { id: true },
-    })
-  );
-  return row?.id ?? null;
-}
-
 /**
  * Resolve an artifact identifier that may be a UUID or a document slug.
  * Non-document artifacts (PR, deployment) don't carry slugs, so non-UUID

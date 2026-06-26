@@ -1,42 +1,40 @@
 "use client";
 
 import { mergeAttributes, Node } from "@tiptap/core";
-import {
-  type NodeViewProps,
-  NodeViewWrapper,
-  ReactNodeViewRenderer,
-} from "@tiptap/react";
+import { NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react";
 import mermaid from "mermaid";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
+import {
+  applyMermaidSvgTheme,
+  getMermaidConfig,
+  type MermaidInitializeConfig,
+  MermaidThemeMode,
+} from "./mermaid-theme";
 import { MermaidTransformPlugin } from "./mermaid-transform-plugin";
 import { MermaidViewer } from "./mermaid-viewer";
-
-type MermaidTheme = "dark" | "default";
+import { prepareSvg } from "./mermaid-viewer-utils";
 
 /**
- * `mermaid.initialize` mutates a module-global config object. Two diagrams
- * rendering concurrently (e.g. the same page containing multiple mermaid
- * blocks) can race — the second component's call can overwrite the first's
- * theme between when that first component initialized and when its async
- * `render()` actually executes.
+ * `mermaid.initialize` mutates Mermaid's module-global config object. Two
+ * diagrams rendering concurrently can race if each render blindly writes that
+ * config before its async `render()` call executes.
  *
- * Cache the last theme we initialized with and skip redundant calls. All
- * viewer instances on a given page derive `theme` from the same
- * `resolvedTheme`, so in practice this turns N concurrent calls into 1.
+ * `getMermaidConfig()` intentionally returns a fresh object so callers cannot
+ * mutate shared config. Cache a stable semantic key instead of object identity
+ * so repeated diagrams dedupe initialization while config drift still
+ * reinitializes Mermaid.
  */
-let lastInitializedTheme: MermaidTheme | null = null;
+let lastInitializedConfigKey: string | null = null;
 
-function ensureMermaidInitialized(theme: MermaidTheme) {
-  if (lastInitializedTheme === theme) {
+function ensureMermaidInitialized(mode: MermaidThemeMode) {
+  const config = getMermaidConfig(mode);
+  const configKey = getMermaidConfigKey(mode, config);
+  if (lastInitializedConfigKey === configKey) {
     return;
   }
-  mermaid.initialize({
-    startOnLoad: false,
-    theme,
-    securityLevel: "loose",
-  });
-  lastInitializedTheme = theme;
+  mermaid.initialize(config);
+  lastInitializedConfigKey = configKey;
 }
 
 type MermaidExtensionOptions = {
@@ -49,6 +47,14 @@ type MermaidExtensionOptions = {
   enhancementsEnabled: boolean;
 };
 
+type MermaidNodeViewProps = {
+  deleteNode: () => void;
+  extension: { options: MermaidExtensionOptions };
+  node: { attrs: { content?: string } };
+  selected: boolean;
+  updateAttributes: (attrs: { content: string }) => void;
+};
+
 /**
  * Pre-FEA-658 renderer: static SVG with a hover-revealed Edit button.
  * Kept so the feature flag can fall back to the prior behavior.
@@ -57,12 +63,16 @@ function LegacyMermaidDisplay({
   svg,
   onEdit,
 }: Readonly<{ svg: string; onEdit: () => void }>) {
+  // Route through prepareSvg so the markup is DOMPurify-sanitized before it
+  // reaches dangerouslySetInnerHTML (same path the interactive MermaidViewer
+  // uses). We only need the sanitized/normalized html here, not the dims.
+  const { html: sanitizedSvg } = prepareSvg(svg);
   return (
     <div className="group relative">
       <div
         className="mermaid-diagram overflow-x-auto"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid generates safe SVG output
-        dangerouslySetInnerHTML={{ __html: svg }}
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: SVG is DOMPurify-sanitized via prepareSvg before rendering
+        dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
       />
       <button
         className="absolute top-2 right-2 rounded border bg-background/80 px-3 py-1 text-sm opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
@@ -75,41 +85,110 @@ function LegacyMermaidDisplay({
   );
 }
 
-function MermaidComponent({
+export function MermaidComponent({
   node,
   updateAttributes,
   deleteNode,
   selected,
   extension,
-}: Readonly<NodeViewProps>) {
+}: Readonly<MermaidNodeViewProps>) {
   const { enhancementsEnabled } = extension.options as MermaidExtensionOptions;
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [isEditing, setIsEditing] = useState(false);
-  const [editContent, setEditContent] = useState(node.attrs.content as string);
+  const [editContent, setEditContent] = useState(node.attrs.content ?? "");
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const [documentDark, setDocumentDark] = useState(false);
+  const renderSeqRef = useRef(0);
+  const latestRenderStateRef = useRef<MermaidRenderState>({
+    content: normalizeMermaidContent(node.attrs.content),
+    isEditing,
+    mode: MermaidThemeMode.Light,
+  });
 
   useEffect(() => setMounted(true), []);
-  const isDark = mounted && resolvedTheme === "dark";
+  useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
+    const updateDocumentDark = () => {
+      setDocumentDark(document.documentElement.classList.contains("dark"));
+    };
+    updateDocumentDark();
+
+    const observer = new MutationObserver(updateDocumentDark);
+    observer.observe(document.documentElement, {
+      attributeFilter: ["class"],
+      attributes: true,
+    });
+
+    return () => observer.disconnect();
+  }, [mounted]);
+  // `resolvedTheme` is the normal production signal. The document class
+  // fallback keeps Mermaid in sync during forced-theme/hydration windows where
+  // next-themes has already updated the DOM but has not published the value.
+  const isDark = mounted && (resolvedTheme === "dark" || documentDark);
+  const themeMode = isDark ? MermaidThemeMode.Dark : MermaidThemeMode.Light;
 
   useEffect(() => {
-    const renderDiagram = async () => {
-      if (!node.attrs.content || isEditing) {
-        return;
-      }
+    const requestSeq = renderSeqRef.current + 1;
+    renderSeqRef.current = requestSeq;
+    const requestState = {
+      content: normalizeMermaidContent(node.attrs.content),
+      isEditing,
+      mode: themeMode,
+    };
+    latestRenderStateRef.current = requestState;
 
-      ensureMermaidInitialized(isDark ? "dark" : "default");
+    if (!requestState.content || requestState.isEditing) {
+      if (
+        isCurrentRenderRequest(
+          requestSeq,
+          requestState,
+          renderSeqRef,
+          latestRenderStateRef
+        )
+      ) {
+        setSvg("");
+        setError("");
+      }
+      return;
+    }
+
+    const renderDiagram = async () => {
+      ensureMermaidInitialized(requestState.mode);
 
       try {
-        const id = `mermaid-${Math.random().toString(36).substring(2, 11)}`;
+        const id = `mermaid-${Math.random().toString(36).slice(2, 11)}`;
         const { svg: renderedSvg } = await mermaid.render(
           id,
-          node.attrs.content as string
+          requestState.content
         );
-        setSvg(renderedSvg);
+        if (
+          !isCurrentRenderRequest(
+            requestSeq,
+            requestState,
+            renderSeqRef,
+            latestRenderStateRef
+          )
+        ) {
+          return;
+        }
+        setSvg(applyMermaidSvgTheme(renderedSvg, requestState.mode));
         setError("");
       } catch (err) {
+        if (
+          !isCurrentRenderRequest(
+            requestSeq,
+            requestState,
+            renderSeqRef,
+            latestRenderStateRef
+          )
+        ) {
+          return;
+        }
         setError(
           err instanceof Error ? err.message : "Failed to render diagram"
         );
@@ -118,11 +197,11 @@ function MermaidComponent({
     };
 
     renderDiagram();
-  }, [node.attrs.content, isEditing, isDark]);
+  }, [node.attrs.content, isEditing, themeMode]);
 
   function handleEdit() {
     setIsEditing(true);
-    setEditContent(node.attrs.content);
+    setEditContent(node.attrs.content ?? "");
   }
 
   function handleSave() {
@@ -131,7 +210,7 @@ function MermaidComponent({
   }
 
   function handleCancel() {
-    setEditContent(node.attrs.content);
+    setEditContent(node.attrs.content ?? "");
     setIsEditing(false);
   }
 
@@ -153,6 +232,7 @@ function MermaidComponent({
               </span>
             </div>
             <textarea
+              aria-label="Mermaid diagram source"
               className="min-h-[200px] w-full rounded-md border bg-muted/50 p-3 font-mono text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/50"
               onChange={(e) => setEditContent(e.target.value)}
               placeholder="Enter Mermaid diagram code..."
@@ -306,3 +386,42 @@ export const MermaidExtension = Node.create<MermaidExtensionOptions>({
     return [MermaidTransformPlugin];
   },
 });
+
+function getMermaidConfigKey(
+  mode: MermaidThemeMode,
+  config: MermaidInitializeConfig
+) {
+  return JSON.stringify({
+    mode,
+    securityLevel: config.securityLevel,
+    startOnLoad: config.startOnLoad,
+    theme: config.theme,
+    themeCSS: config.themeCSS,
+    themeVariables: config.themeVariables,
+  });
+}
+
+function normalizeMermaidContent(content: unknown) {
+  return typeof content === "string" ? content.trim() : "";
+}
+
+function isCurrentRenderRequest(
+  requestSeq: number,
+  requestState: MermaidRenderState,
+  renderSeqRef: RefObject<number>,
+  latestRenderStateRef: RefObject<MermaidRenderState>
+) {
+  const latest = latestRenderStateRef.current;
+  return (
+    requestSeq === renderSeqRef.current &&
+    requestState.content === latest.content &&
+    requestState.isEditing === latest.isEditing &&
+    requestState.mode === latest.mode
+  );
+}
+
+type MermaidRenderState = {
+  content: string;
+  isEditing: boolean;
+  mode: MermaidThemeMode;
+};

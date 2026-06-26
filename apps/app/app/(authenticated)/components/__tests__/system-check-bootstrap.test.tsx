@@ -11,6 +11,9 @@ const mockUseComputeTargetHealthCheckSnapshot = vi.fn();
 const mockHealthCheckDialog = vi.hoisted(() => vi.fn());
 const mockHealthCheckQueryFn = vi.hoisted(() => vi.fn());
 const EXPECTED_MCP_URL = vi.hoisted(() => "https://mcp.closedloop.ai/mcp");
+const mockUseFeatureFlag = vi.hoisted(() => vi.fn());
+const mockApiGet = vi.hoisted(() => vi.fn());
+const mockUsePath = vi.hoisted(() => vi.fn(() => "/my-tasks"));
 const mockHealthCheckOptions = vi.hoisted(() =>
   vi.fn((_routing?: unknown, _expectedMcpUrl?: unknown, _config?: unknown) => ({
     queryKey: ["health-check"],
@@ -18,17 +21,22 @@ const mockHealthCheckOptions = vi.hoisted(() =>
     staleTime: 30_000,
   }))
 );
-const mockUseLatestElectronRelease = vi.hoisted(() => vi.fn());
 
 vi.mock("@/env", () => ({
   env: {
     NEXT_PUBLIC_MCP_SERVER_URL: EXPECTED_MCP_URL,
+    NEXT_PUBLIC_POSTHOG_KEY: "test-posthog-key",
   },
+}));
+
+vi.mock("@repo/analytics/client", () => ({
+  useFeatureFlag: (key: string) => mockUseFeatureFlag(key),
 }));
 
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   HealthCheckDialog: (props: {
     latestVersionOverride?: string | null;
+    pluginAutoUpdateEnabled?: boolean;
     relayTargetId?: string | null;
     targetKey?: string;
   }) => {
@@ -36,6 +44,7 @@ vi.mock("@/components/engineer/HealthCheckDialog", () => ({
     return (
       <div
         data-latest-version={props.latestVersionOverride ?? ""}
+        data-plugin-auto-update={String(props.pluginAutoUpdateEnabled ?? false)}
         data-relay-target-id={props.relayTargetId ?? ""}
         data-target-key={props.targetKey}
         data-testid="health-check-dialog"
@@ -71,20 +80,31 @@ vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: () => mockUseComputeTargets(),
   useComputeTargetHealthCheckSnapshot: (
     targetId: string | null | undefined,
+    pluginAutoUpdateEnabledOrOptions: unknown,
     options: unknown
-  ) => mockUseComputeTargetHealthCheckSnapshot(targetId, options),
+  ) =>
+    mockUseComputeTargetHealthCheckSnapshot(
+      targetId,
+      pluginAutoUpdateEnabledOrOptions,
+      options
+    ),
 }));
 
-vi.mock("@/hooks/queries/use-electron-release", () => ({
-  useLatestElectronRelease: (options: unknown) =>
-    mockUseLatestElectronRelease(options),
+vi.mock("@repo/app/shared/api/use-api-client", () => ({
+  useApiClient: () => ({
+    get: mockApiGet,
+  }),
+}));
+
+vi.mock("@repo/navigation/use-path", () => ({
+  usePath: () => mockUsePath(),
 }));
 
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/my-tasks",
   useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
 }));
 
+import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "@/lib/system-check/plugin-auto-update";
 import { SystemCheckBootstrap } from "../system-check-bootstrap";
 
 function createBootstrapQueryClient() {
@@ -121,14 +141,7 @@ describe("SystemCheckBootstrap", () => {
       checks: [],
       allRequiredPassed: true,
     });
-    mockUseLatestElectronRelease.mockReturnValue({
-      data: {
-        downloadUrl: "https://example.com/closedloop.dmg",
-        releaseNotes: "",
-        version: "1.0.0",
-      },
-      isLoading: false,
-    });
+    mockApiGet.mockResolvedValue(desktopRelease());
     mockUseEngineerRoutingSelection.mockReturnValue({
       mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: null,
@@ -140,6 +153,8 @@ describe("SystemCheckBootstrap", () => {
       data: null,
       isLoading: false,
     });
+    mockUseFeatureFlag.mockReturnValue({ enabled: false });
+    mockUsePath.mockReturnValue("/my-tasks");
   });
 
   it("does not render the dialog while eligibility is loading", () => {
@@ -162,6 +177,16 @@ describe("SystemCheckBootstrap", () => {
     renderBootstrap();
 
     expect(screen.queryByTestId("health-check-dialog")).toBeNull();
+  });
+
+  it("does not run ambient system checks on insights routes", () => {
+    mockUsePath.mockReturnValue("/closedloop-ai/insights");
+
+    renderBootstrap();
+
+    expect(screen.queryByTestId("health-check-dialog")).toBeNull();
+    expect(mockUseSystemCheckEligibility).not.toHaveBeenCalled();
+    expect(mockHealthCheckOptions).not.toHaveBeenCalled();
   });
 
   it("renders the dialog when the active execution target is eligible", () => {
@@ -231,17 +256,186 @@ describe("SystemCheckBootstrap", () => {
       "data-relay-target-id",
       "target-1"
     );
-    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
-      "data-latest-version",
-      "1.0.0"
-    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+        "data-latest-version",
+        "1.0.0"
+      );
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          latestVersion: "1.0.0",
+          relayTargetId: "target-1",
+        })
+      );
+    });
+    expect(mockApiGet).toHaveBeenCalledWith("/electron-release");
+  });
+
+  it.each([
+    {
+      label: "stale old-repo release data",
+      release: desktopRelease({
+        downloadUrl:
+          "https://github.com/closedloop-ai/closedloop-electron/releases/download/v9.9.9/Closedloop-9.9.9-universal.dmg",
+        version: "9.9.9",
+      }),
+    },
+    {
+      label: "non-Desktop symphony-alpha release data",
+      release: desktopRelease({
+        downloadUrl:
+          "https://github.com/closedloop-ai/symphony-alpha/releases/download/deploy-9.9.9/Closedloop-9.9.9-universal.dmg",
+        version: "9.9.9",
+      }),
+    },
+    {
+      label: "malformed release data",
+      release: { downloadUrl: "not a url", releaseNotes: "", version: "9.9.9" },
+    },
+  ])("sanitizes $label before passing latest version to health checks", async ({
+    release,
+  }) => {
+    mockApiGet.mockResolvedValue(release);
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    renderBootstrap();
 
     await waitFor(() => {
       expect(mockHealthCheckOptions).toHaveBeenCalledWith(
         "cloud-relay:target-1",
         EXPECTED_MCP_URL,
         expect.objectContaining({
-          latestVersion: "1.0.0",
+          latestVersion: null,
+          relayTargetId: "target-1",
+        })
+      );
+    });
+    expect(mockApiGet).toHaveBeenCalledWith("/electron-release");
+    expect(mockHealthCheckOptions).not.toHaveBeenCalledWith(
+      "cloud-relay:target-1",
+      EXPECTED_MCP_URL,
+      expect.objectContaining({
+        latestVersion: "9.9.9",
+        relayTargetId: "target-1",
+      })
+    );
+  });
+
+  it("treats an unavailable release response as no latest Desktop version", async () => {
+    mockApiGet.mockResolvedValue(null);
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+
+    renderBootstrap();
+
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          latestVersion: null,
+          relayTargetId: "target-1",
+        })
+      );
+    });
+  });
+
+  it("treats a loading relay target as not owned before enabling plugin auto-update", async () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseFeatureFlag.mockReturnValue({ enabled: true });
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargets.mockReturnValue({ data: undefined });
+
+    renderBootstrap();
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-plugin-auto-update",
+      "false"
+    );
+    expect(mockUseComputeTargetHealthCheckSnapshot).toHaveBeenCalledWith(
+      "target-1",
+      false,
+      expect.objectContaining({ enabled: true })
+    );
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          pluginAutoUpdateEnabled: false,
+          relayTargetId: "target-1",
+        })
+      );
+    });
+  });
+
+  it("enables plugin auto-update only for a loaded owned relay target", async () => {
+    mockUseSystemCheckEligibility.mockReturnValue({
+      shouldRunSystemCheck: true,
+      isLoading: false,
+    });
+    mockUseFeatureFlag.mockImplementation((key: string) => ({
+      enabled: key === PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY,
+    }));
+    mockUseEngineerRoutingSelection.mockReturnValue({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: "target-1",
+      source: "manual",
+      updatedAt: Date.now(),
+    });
+    mockUseComputeTargets.mockReturnValue({
+      data: [
+        {
+          id: "target-1",
+          machineName: "Owner relay",
+          ownerName: null,
+        },
+      ],
+    });
+
+    renderBootstrap();
+
+    expect(screen.getByTestId("health-check-dialog")).toHaveAttribute(
+      "data-plugin-auto-update",
+      "true"
+    );
+    expect(mockUseFeatureFlag).toHaveBeenCalledWith(
+      PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY
+    );
+    await waitFor(() => {
+      expect(mockHealthCheckOptions).toHaveBeenCalledWith(
+        "cloud-relay:target-1",
+        EXPECTED_MCP_URL,
+        expect.objectContaining({
+          pluginAutoUpdateEnabled: true,
           relayTargetId: "target-1",
         })
       );
@@ -297,15 +491,21 @@ describe("SystemCheckBootstrap", () => {
 
   it("does not overwrite a newer live health-check cache with an older persisted snapshot", async () => {
     const queryClient = createBootstrapQueryClient();
-    const persistedCheckedAt = new Date("2026-05-08T16:00:00.000Z");
+    const persistedCheckedAt = new Date(Date.now() - 60_000); // 1 minute ago (within freshness window)
     const liveResult = {
       checks: [{ id: "live-git", label: "Git", required: true, passed: true }],
       allRequiredPassed: true,
     };
 
-    queryClient.setQueryData(["health-check"], liveResult, {
-      updatedAt: persistedCheckedAt.getTime() + 1000,
-    });
+    queryClient.setQueryData(["health-check"], liveResult);
+    // Manually set dataUpdatedAt to a time newer than the persisted snapshot
+    // so the component's guard (existingState.dataUpdatedAt >= snapshotUpdatedAt) holds.
+    const cache = queryClient
+      .getQueryCache()
+      .find({ queryKey: ["health-check"] });
+    if (cache) {
+      cache.state.dataUpdatedAt = persistedCheckedAt.getTime() + 1000;
+    }
     mockUseSystemCheckEligibility.mockReturnValue({
       shouldRunSystemCheck: true,
       isLoading: false,
@@ -327,7 +527,7 @@ describe("SystemCheckBootstrap", () => {
         result: {
           checks: [
             {
-              id: "persisted-git",
+              id: "git",
               label: "Git",
               required: true,
               passed: true,
@@ -360,3 +560,19 @@ describe("SystemCheckBootstrap", () => {
     expect(mockHealthCheckQueryFn).not.toHaveBeenCalled();
   });
 });
+
+function desktopRelease(
+  overrides: Partial<{
+    downloadUrl: string;
+    releaseNotes: string;
+    version: string;
+  }> = {}
+) {
+  return {
+    downloadUrl:
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    releaseNotes: "",
+    version: "1.0.0",
+    ...overrides,
+  };
+}

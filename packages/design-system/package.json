@@ -1,51 +1,1447 @@
 {
-  "name": "@repo/design-system",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@closedloop-ai/design-system",
+  "version": "0.1.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/closedloop-ai/symphony-alpha.git",
+    "directory": "packages/design-system"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
+      "default": "./dist/index.js"
+    },
+    "./lib/fonts": {
+      "types": "./dist/lib/fonts.d.ts",
+      "import": {
+        "types": "./dist/lib/fonts.d.ts",
+        "default": "./dist/lib/fonts.js"
+      },
+      "require": {
+        "types": "./dist/lib/fonts.d.cts",
+        "default": "./dist/lib/fonts.cjs"
+      },
+      "default": "./dist/lib/fonts.js"
+    },
+    "./styles/globals.css": {
+      "default": "./styles/globals.css"
+    },
+    "./postcss.config.mjs": {
+      "default": "./postcss.config.mjs"
+    },
+    "./storybook/component-catalog": {
+      "types": "./dist/storybook/component-catalog.d.ts",
+      "import": {
+        "types": "./dist/storybook/component-catalog.d.ts",
+        "default": "./dist/storybook/component-catalog.js"
+      },
+      "require": {
+        "types": "./dist/storybook/component-catalog.d.cts",
+        "default": "./dist/storybook/component-catalog.cjs"
+      },
+      "default": "./dist/storybook/component-catalog.js"
+    },
+    "./storybook/mock-data": {
+      "types": "./dist/storybook/mock-data.d.ts",
+      "import": {
+        "types": "./dist/storybook/mock-data.d.ts",
+        "default": "./dist/storybook/mock-data.js"
+      },
+      "require": {
+        "types": "./dist/storybook/mock-data.d.cts",
+        "default": "./dist/storybook/mock-data.cjs"
+      },
+      "default": "./dist/storybook/mock-data.js"
+    },
+    "./components/ui/active-filters-bar": {
+      "types": "./dist/components/ui/active-filters-bar.d.ts",
+      "import": {
+        "types": "./dist/components/ui/active-filters-bar.d.ts",
+        "default": "./dist/components/ui/active-filters-bar.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/active-filters-bar.d.cts",
+        "default": "./dist/components/ui/active-filters-bar.cjs"
+      },
+      "default": "./dist/components/ui/active-filters-bar.js"
+    },
+    "./components/ui/alert-dialog": {
+      "types": "./dist/components/ui/alert-dialog.d.ts",
+      "import": {
+        "types": "./dist/components/ui/alert-dialog.d.ts",
+        "default": "./dist/components/ui/alert-dialog.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/alert-dialog.d.cts",
+        "default": "./dist/components/ui/alert-dialog.cjs"
+      },
+      "default": "./dist/components/ui/alert-dialog.js"
+    },
+    "./components/ui/alert": {
+      "types": "./dist/components/ui/alert.d.ts",
+      "import": {
+        "types": "./dist/components/ui/alert.d.ts",
+        "default": "./dist/components/ui/alert.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/alert.d.cts",
+        "default": "./dist/components/ui/alert.cjs"
+      },
+      "default": "./dist/components/ui/alert.js"
+    },
+    "./components/ui/analytics-range-toggle": {
+      "types": "./dist/components/ui/analytics-range-toggle.d.ts",
+      "import": {
+        "types": "./dist/components/ui/analytics-range-toggle.d.ts",
+        "default": "./dist/components/ui/analytics-range-toggle.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/analytics-range-toggle.d.cts",
+        "default": "./dist/components/ui/analytics-range-toggle.cjs"
+      },
+      "default": "./dist/components/ui/analytics-range-toggle.js"
+    },
+    "./components/ui/avatar": {
+      "types": "./dist/components/ui/avatar.d.ts",
+      "import": {
+        "types": "./dist/components/ui/avatar.d.ts",
+        "default": "./dist/components/ui/avatar.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/avatar.d.cts",
+        "default": "./dist/components/ui/avatar.cjs"
+      },
+      "default": "./dist/components/ui/avatar.js"
+    },
+    "./components/ui/badge": {
+      "types": "./dist/components/ui/badge.d.ts",
+      "import": {
+        "types": "./dist/components/ui/badge.d.ts",
+        "default": "./dist/components/ui/badge.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/badge.d.cts",
+        "default": "./dist/components/ui/badge.cjs"
+      },
+      "default": "./dist/components/ui/badge.js"
+    },
+    "./components/ui/breadcrumb": {
+      "types": "./dist/components/ui/breadcrumb.d.ts",
+      "import": {
+        "types": "./dist/components/ui/breadcrumb.d.ts",
+        "default": "./dist/components/ui/breadcrumb.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/breadcrumb.d.cts",
+        "default": "./dist/components/ui/breadcrumb.cjs"
+      },
+      "default": "./dist/components/ui/breadcrumb.js"
+    },
+    "./components/ui/button": {
+      "types": "./dist/components/ui/button.d.ts",
+      "import": {
+        "types": "./dist/components/ui/button.d.ts",
+        "default": "./dist/components/ui/button.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/button.d.cts",
+        "default": "./dist/components/ui/button.cjs"
+      },
+      "default": "./dist/components/ui/button.js"
+    },
+    "./components/ui/calendar": {
+      "types": "./dist/components/ui/calendar.d.ts",
+      "import": {
+        "types": "./dist/components/ui/calendar.d.ts",
+        "default": "./dist/components/ui/calendar.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/calendar.d.cts",
+        "default": "./dist/components/ui/calendar.cjs"
+      },
+      "default": "./dist/components/ui/calendar.js"
+    },
+    "./components/ui/card": {
+      "types": "./dist/components/ui/card.d.ts",
+      "import": {
+        "types": "./dist/components/ui/card.d.ts",
+        "default": "./dist/components/ui/card.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/card.d.cts",
+        "default": "./dist/components/ui/card.cjs"
+      },
+      "default": "./dist/components/ui/card.js"
+    },
+    "./components/ui/category-bar-chart": {
+      "types": "./dist/components/ui/category-bar-chart.d.ts",
+      "import": {
+        "types": "./dist/components/ui/category-bar-chart.d.ts",
+        "default": "./dist/components/ui/category-bar-chart.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/category-bar-chart.d.cts",
+        "default": "./dist/components/ui/category-bar-chart.cjs"
+      },
+      "default": "./dist/components/ui/category-bar-chart.js"
+    },
+    "./components/ui/chart": {
+      "types": "./dist/components/ui/chart.d.ts",
+      "import": {
+        "types": "./dist/components/ui/chart.d.ts",
+        "default": "./dist/components/ui/chart.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/chart.d.cts",
+        "default": "./dist/components/ui/chart.cjs"
+      },
+      "default": "./dist/components/ui/chart.js"
+    },
+    "./components/ui/chart-colors": {
+      "types": "./dist/components/ui/chart-colors.d.ts",
+      "import": {
+        "types": "./dist/components/ui/chart-colors.d.ts",
+        "default": "./dist/components/ui/chart-colors.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/chart-colors.d.cts",
+        "default": "./dist/components/ui/chart-colors.cjs"
+      },
+      "default": "./dist/components/ui/chart-colors.js"
+    },
+    "./components/ui/donut-chart": {
+      "types": "./dist/components/ui/donut-chart.d.ts",
+      "import": {
+        "types": "./dist/components/ui/donut-chart.d.ts",
+        "default": "./dist/components/ui/donut-chart.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/donut-chart.d.cts",
+        "default": "./dist/components/ui/donut-chart.cjs"
+      },
+      "default": "./dist/components/ui/donut-chart.js"
+    },
+    "./components/ui/time-series-area-chart": {
+      "types": "./dist/components/ui/time-series-area-chart.d.ts",
+      "import": {
+        "types": "./dist/components/ui/time-series-area-chart.d.ts",
+        "default": "./dist/components/ui/time-series-area-chart.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/time-series-area-chart.d.cts",
+        "default": "./dist/components/ui/time-series-area-chart.cjs"
+      },
+      "default": "./dist/components/ui/time-series-area-chart.js"
+    },
+    "./components/ui/chip": {
+      "import": {
+        "types": "./dist/components/ui/chip.d.ts",
+        "default": "./dist/components/ui/chip.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/chip.d.cts",
+        "default": "./dist/components/ui/chip.cjs"
+      },
+      "default": "./dist/components/ui/chip.js"
+    },
+    "./components/ui/checkbox": {
+      "types": "./dist/components/ui/checkbox.d.ts",
+      "import": {
+        "types": "./dist/components/ui/checkbox.d.ts",
+        "default": "./dist/components/ui/checkbox.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/checkbox.d.cts",
+        "default": "./dist/components/ui/checkbox.cjs"
+      },
+      "default": "./dist/components/ui/checkbox.js"
+    },
+    "./components/ui/collapsible": {
+      "types": "./dist/components/ui/collapsible.d.ts",
+      "import": {
+        "types": "./dist/components/ui/collapsible.d.ts",
+        "default": "./dist/components/ui/collapsible.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/collapsible.d.cts",
+        "default": "./dist/components/ui/collapsible.cjs"
+      },
+      "default": "./dist/components/ui/collapsible.js"
+    },
+    "./components/ui/collapsible-section": {
+      "types": "./dist/components/ui/collapsible-section.d.ts",
+      "import": {
+        "types": "./dist/components/ui/collapsible-section.d.ts",
+        "default": "./dist/components/ui/collapsible-section.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/collapsible-section.d.cts",
+        "default": "./dist/components/ui/collapsible-section.cjs"
+      },
+      "default": "./dist/components/ui/collapsible-section.js"
+    },
+    "./components/ui/collapsed-comment-row": {
+      "types": "./dist/components/ui/collapsed-comment-row.d.ts",
+      "import": {
+        "types": "./dist/components/ui/collapsed-comment-row.d.ts",
+        "default": "./dist/components/ui/collapsed-comment-row.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/collapsed-comment-row.d.cts",
+        "default": "./dist/components/ui/collapsed-comment-row.cjs"
+      },
+      "default": "./dist/components/ui/collapsed-comment-row.js"
+    },
+    "./components/ui/comment-action-menu": {
+      "types": "./dist/components/ui/comment-action-menu.d.ts",
+      "import": {
+        "types": "./dist/components/ui/comment-action-menu.d.ts",
+        "default": "./dist/components/ui/comment-action-menu.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/comment-action-menu.d.cts",
+        "default": "./dist/components/ui/comment-action-menu.cjs"
+      },
+      "default": "./dist/components/ui/comment-action-menu.js"
+    },
+    "./components/ui/comment-composer": {
+      "types": "./dist/components/ui/comment-composer.d.ts",
+      "import": {
+        "types": "./dist/components/ui/comment-composer.d.ts",
+        "default": "./dist/components/ui/comment-composer.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/comment-composer.d.cts",
+        "default": "./dist/components/ui/comment-composer.cjs"
+      },
+      "default": "./dist/components/ui/comment-composer.js"
+    },
+    "./components/ui/comment-thread-action-footer": {
+      "types": "./dist/components/ui/comment-thread-action-footer.d.ts",
+      "import": {
+        "types": "./dist/components/ui/comment-thread-action-footer.d.ts",
+        "default": "./dist/components/ui/comment-thread-action-footer.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/comment-thread-action-footer.d.cts",
+        "default": "./dist/components/ui/comment-thread-action-footer.cjs"
+      },
+      "default": "./dist/components/ui/comment-thread-action-footer.js"
+    },
+    "./components/ui/comment-thread": {
+      "types": "./dist/components/ui/comment-thread.d.ts",
+      "import": {
+        "types": "./dist/components/ui/comment-thread.d.ts",
+        "default": "./dist/components/ui/comment-thread.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/comment-thread.d.cts",
+        "default": "./dist/components/ui/comment-thread.cjs"
+      },
+      "default": "./dist/components/ui/comment-thread.js"
+    },
+    "./components/ui/command": {
+      "types": "./dist/components/ui/command.d.ts",
+      "import": {
+        "types": "./dist/components/ui/command.d.ts",
+        "default": "./dist/components/ui/command.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/command.d.cts",
+        "default": "./dist/components/ui/command.cjs"
+      },
+      "default": "./dist/components/ui/command.js"
+    },
+    "./components/ui/conversation-message": {
+      "types": "./dist/components/ui/conversation-message.d.ts",
+      "import": {
+        "types": "./dist/components/ui/conversation-message.d.ts",
+        "default": "./dist/components/ui/conversation-message.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/conversation-message.d.cts",
+        "default": "./dist/components/ui/conversation-message.cjs"
+      },
+      "default": "./dist/components/ui/conversation-message.js"
+    },
+    "./components/ui/conversation-transcript": {
+      "types": "./dist/components/ui/conversation-transcript.d.ts",
+      "import": {
+        "types": "./dist/components/ui/conversation-transcript.d.ts",
+        "default": "./dist/components/ui/conversation-transcript.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/conversation-transcript.d.cts",
+        "default": "./dist/components/ui/conversation-transcript.cjs"
+      },
+      "default": "./dist/components/ui/conversation-transcript.js"
+    },
+    "./components/ui/data-table": {
+      "types": "./dist/components/ui/data-table.d.ts",
+      "import": {
+        "types": "./dist/components/ui/data-table.d.ts",
+        "default": "./dist/components/ui/data-table.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/data-table.d.cts",
+        "default": "./dist/components/ui/data-table.cjs"
+      },
+      "default": "./dist/components/ui/data-table.js"
+    },
+    "./components/ui/date-picker-popover": {
+      "types": "./dist/components/ui/date-picker-popover.d.ts",
+      "import": {
+        "types": "./dist/components/ui/date-picker-popover.d.ts",
+        "default": "./dist/components/ui/date-picker-popover.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/date-picker-popover.d.cts",
+        "default": "./dist/components/ui/date-picker-popover.cjs"
+      },
+      "default": "./dist/components/ui/date-picker-popover.js"
+    },
+    "./components/ui/dialog": {
+      "types": "./dist/components/ui/dialog.d.ts",
+      "import": {
+        "types": "./dist/components/ui/dialog.d.ts",
+        "default": "./dist/components/ui/dialog.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/dialog.d.cts",
+        "default": "./dist/components/ui/dialog.cjs"
+      },
+      "default": "./dist/components/ui/dialog.js"
+    },
+    "./components/ui/drawer": {
+      "types": "./dist/components/ui/drawer.d.ts",
+      "import": {
+        "types": "./dist/components/ui/drawer.d.ts",
+        "default": "./dist/components/ui/drawer.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/drawer.d.cts",
+        "default": "./dist/components/ui/drawer.cjs"
+      },
+      "default": "./dist/components/ui/drawer.js"
+    },
+    "./components/ui/dropdown-menu": {
+      "types": "./dist/components/ui/dropdown-menu.d.ts",
+      "import": {
+        "types": "./dist/components/ui/dropdown-menu.d.ts",
+        "default": "./dist/components/ui/dropdown-menu.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/dropdown-menu.d.cts",
+        "default": "./dist/components/ui/dropdown-menu.cjs"
+      },
+      "default": "./dist/components/ui/dropdown-menu.js"
+    },
+    "./components/ui/favorite-button": {
+      "types": "./dist/components/ui/favorite-button.d.ts",
+      "import": {
+        "types": "./dist/components/ui/favorite-button.d.ts",
+        "default": "./dist/components/ui/favorite-button.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/favorite-button.d.cts",
+        "default": "./dist/components/ui/favorite-button.cjs"
+      },
+      "default": "./dist/components/ui/favorite-button.js"
+    },
+    "./components/ui/feed-rail": {
+      "types": "./dist/components/ui/feed-rail.d.ts",
+      "import": {
+        "types": "./dist/components/ui/feed-rail.d.ts",
+        "default": "./dist/components/ui/feed-rail.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/feed-rail.d.cts",
+        "default": "./dist/components/ui/feed-rail.cjs"
+      },
+      "default": "./dist/components/ui/feed-rail.js"
+    },
+    "./components/ui/filter-popover": {
+      "types": "./dist/components/ui/filter-popover.d.ts",
+      "import": {
+        "types": "./dist/components/ui/filter-popover.d.ts",
+        "default": "./dist/components/ui/filter-popover.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/filter-popover.d.cts",
+        "default": "./dist/components/ui/filter-popover.cjs"
+      },
+      "default": "./dist/components/ui/filter-popover.js"
+    },
+    "./components/ui/filter-chip": {
+      "types": "./dist/components/ui/filter-chip.d.ts",
+      "import": {
+        "types": "./dist/components/ui/filter-chip.d.ts",
+        "default": "./dist/components/ui/filter-chip.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/filter-chip.d.cts",
+        "default": "./dist/components/ui/filter-chip.cjs"
+      },
+      "default": "./dist/components/ui/filter-chip.js"
+    },
+    "./components/ui/form": {
+      "types": "./dist/components/ui/form.d.ts",
+      "import": {
+        "types": "./dist/components/ui/form.d.ts",
+        "default": "./dist/components/ui/form.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/form.d.cts",
+        "default": "./dist/components/ui/form.cjs"
+      },
+      "default": "./dist/components/ui/form.js"
+    },
+    "./components/ui/group-section-header": {
+      "types": "./dist/components/ui/group-section-header.d.ts",
+      "import": {
+        "types": "./dist/components/ui/group-section-header.d.ts",
+        "default": "./dist/components/ui/group-section-header.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/group-section-header.d.cts",
+        "default": "./dist/components/ui/group-section-header.cjs"
+      },
+      "default": "./dist/components/ui/group-section-header.js"
+    },
+    "./components/ui/input": {
+      "types": "./dist/components/ui/input.d.ts",
+      "import": {
+        "types": "./dist/components/ui/input.d.ts",
+        "default": "./dist/components/ui/input.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/input.d.cts",
+        "default": "./dist/components/ui/input.cjs"
+      },
+      "default": "./dist/components/ui/input.js"
+    },
+    "./components/ui/label": {
+      "types": "./dist/components/ui/label.d.ts",
+      "import": {
+        "types": "./dist/components/ui/label.d.ts",
+        "default": "./dist/components/ui/label.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/label.d.cts",
+        "default": "./dist/components/ui/label.cjs"
+      },
+      "default": "./dist/components/ui/label.js"
+    },
+    "./components/ui/metadata-panel": {
+      "types": "./dist/components/ui/metadata-panel.d.ts",
+      "import": {
+        "types": "./dist/components/ui/metadata-panel.d.ts",
+        "default": "./dist/components/ui/metadata-panel.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/metadata-panel.d.cts",
+        "default": "./dist/components/ui/metadata-panel.cjs"
+      },
+      "default": "./dist/components/ui/metadata-panel.js"
+    },
+    "./components/ui/mode-toggle": {
+      "types": "./dist/components/ui/mode-toggle.d.ts",
+      "import": {
+        "types": "./dist/components/ui/mode-toggle.d.ts",
+        "default": "./dist/components/ui/mode-toggle.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/mode-toggle.d.cts",
+        "default": "./dist/components/ui/mode-toggle.cjs"
+      },
+      "default": "./dist/components/ui/mode-toggle.js"
+    },
+    "./components/ui/pagination": {
+      "import": {
+        "types": "./dist/components/ui/pagination.d.ts",
+        "default": "./dist/components/ui/pagination.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/pagination.d.cts",
+        "default": "./dist/components/ui/pagination.cjs"
+      },
+      "default": "./dist/components/ui/pagination.js"
+    },
+    "./components/ui/table-pagination": {
+      "import": {
+        "types": "./dist/components/ui/table-pagination.d.ts",
+        "default": "./dist/components/ui/table-pagination.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table-pagination.d.cts",
+        "default": "./dist/components/ui/table-pagination.cjs"
+      },
+      "default": "./dist/components/ui/table-pagination.js"
+    },
+    "./components/ui/popover": {
+      "types": "./dist/components/ui/popover.d.ts",
+      "import": {
+        "types": "./dist/components/ui/popover.d.ts",
+        "default": "./dist/components/ui/popover.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/popover.d.cts",
+        "default": "./dist/components/ui/popover.cjs"
+      },
+      "default": "./dist/components/ui/popover.js"
+    },
+    "./components/ui/priority-badge": {
+      "types": "./dist/components/ui/priority-badge.d.ts",
+      "import": {
+        "types": "./dist/components/ui/priority-badge.d.ts",
+        "default": "./dist/components/ui/priority-badge.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/priority-badge.d.cts",
+        "default": "./dist/components/ui/priority-badge.cjs"
+      },
+      "default": "./dist/components/ui/priority-badge.js"
+    },
+    "./components/ui/priority-icon": {
+      "types": "./dist/components/ui/priority-icon.d.ts",
+      "import": {
+        "types": "./dist/components/ui/priority-icon.d.ts",
+        "default": "./dist/components/ui/priority-icon.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/priority-icon.d.cts",
+        "default": "./dist/components/ui/priority-icon.cjs"
+      },
+      "default": "./dist/components/ui/priority-icon.js"
+    },
+    "./components/ui/progress": {
+      "types": "./dist/components/ui/progress.d.ts",
+      "import": {
+        "types": "./dist/components/ui/progress.d.ts",
+        "default": "./dist/components/ui/progress.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/progress.d.cts",
+        "default": "./dist/components/ui/progress.cjs"
+      },
+      "default": "./dist/components/ui/progress.js"
+    },
+    "./components/ui/radio-group": {
+      "types": "./dist/components/ui/radio-group.d.ts",
+      "import": {
+        "types": "./dist/components/ui/radio-group.d.ts",
+        "default": "./dist/components/ui/radio-group.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/radio-group.d.cts",
+        "default": "./dist/components/ui/radio-group.cjs"
+      },
+      "default": "./dist/components/ui/radio-group.js"
+    },
+    "./components/ui/resizable": {
+      "types": "./dist/components/ui/resizable.d.ts",
+      "import": {
+        "types": "./dist/components/ui/resizable.d.ts",
+        "default": "./dist/components/ui/resizable.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/resizable.d.cts",
+        "default": "./dist/components/ui/resizable.cjs"
+      },
+      "default": "./dist/components/ui/resizable.js"
+    },
+    "./components/ui/scroll-area": {
+      "types": "./dist/components/ui/scroll-area.d.ts",
+      "import": {
+        "types": "./dist/components/ui/scroll-area.d.ts",
+        "default": "./dist/components/ui/scroll-area.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/scroll-area.d.cts",
+        "default": "./dist/components/ui/scroll-area.cjs"
+      },
+      "default": "./dist/components/ui/scroll-area.js"
+    },
+    "./components/ui/select": {
+      "types": "./dist/components/ui/select.d.ts",
+      "import": {
+        "types": "./dist/components/ui/select.d.ts",
+        "default": "./dist/components/ui/select.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/select.d.cts",
+        "default": "./dist/components/ui/select.cjs"
+      },
+      "default": "./dist/components/ui/select.js"
+    },
+    "./components/ui/section-header": {
+      "types": "./dist/components/ui/section-header.d.ts",
+      "import": {
+        "types": "./dist/components/ui/section-header.d.ts",
+        "default": "./dist/components/ui/section-header.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/section-header.d.cts",
+        "default": "./dist/components/ui/section-header.cjs"
+      },
+      "default": "./dist/components/ui/section-header.js"
+    },
+    "./components/ui/separator": {
+      "types": "./dist/components/ui/separator.d.ts",
+      "import": {
+        "types": "./dist/components/ui/separator.d.ts",
+        "default": "./dist/components/ui/separator.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/separator.d.cts",
+        "default": "./dist/components/ui/separator.cjs"
+      },
+      "default": "./dist/components/ui/separator.js"
+    },
+    "./components/ui/sheet": {
+      "types": "./dist/components/ui/sheet.d.ts",
+      "import": {
+        "types": "./dist/components/ui/sheet.d.ts",
+        "default": "./dist/components/ui/sheet.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/sheet.d.cts",
+        "default": "./dist/components/ui/sheet.cjs"
+      },
+      "default": "./dist/components/ui/sheet.js"
+    },
+    "./components/ui/sidebar": {
+      "types": "./dist/components/ui/sidebar.d.ts",
+      "import": {
+        "types": "./dist/components/ui/sidebar.d.ts",
+        "default": "./dist/components/ui/sidebar.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/sidebar.d.cts",
+        "default": "./dist/components/ui/sidebar.cjs"
+      },
+      "default": "./dist/components/ui/sidebar.js"
+    },
+    "./components/ui/sidebar-collapsible-section": {
+      "types": "./dist/components/ui/sidebar-collapsible-section.d.ts",
+      "import": {
+        "types": "./dist/components/ui/sidebar-collapsible-section.d.ts",
+        "default": "./dist/components/ui/sidebar-collapsible-section.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/sidebar-collapsible-section.d.cts",
+        "default": "./dist/components/ui/sidebar-collapsible-section.cjs"
+      },
+      "default": "./dist/components/ui/sidebar-collapsible-section.js"
+    },
+    "./components/ui/sidebar-count-badge": {
+      "types": "./dist/components/ui/sidebar-count-badge.d.ts",
+      "import": {
+        "types": "./dist/components/ui/sidebar-count-badge.d.ts",
+        "default": "./dist/components/ui/sidebar-count-badge.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/sidebar-count-badge.d.cts",
+        "default": "./dist/components/ui/sidebar-count-badge.cjs"
+      },
+      "default": "./dist/components/ui/sidebar-count-badge.js"
+    },
+    "./components/ui/skeleton": {
+      "types": "./dist/components/ui/skeleton.d.ts",
+      "import": {
+        "types": "./dist/components/ui/skeleton.d.ts",
+        "default": "./dist/components/ui/skeleton.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/skeleton.d.cts",
+        "default": "./dist/components/ui/skeleton.cjs"
+      },
+      "default": "./dist/components/ui/skeleton.js"
+    },
+    "./components/ui/sortable-column-header": {
+      "types": "./dist/components/ui/sortable-column-header.d.ts",
+      "import": {
+        "types": "./dist/components/ui/sortable-column-header.d.ts",
+        "default": "./dist/components/ui/sortable-column-header.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/sortable-column-header.d.cts",
+        "default": "./dist/components/ui/sortable-column-header.cjs"
+      },
+      "default": "./dist/components/ui/sortable-column-header.js"
+    },
+    "./components/ui/sonner": {
+      "types": "./dist/components/ui/sonner.d.ts",
+      "import": {
+        "types": "./dist/components/ui/sonner.d.ts",
+        "default": "./dist/components/ui/sonner.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/sonner.d.cts",
+        "default": "./dist/components/ui/sonner.cjs"
+      },
+      "default": "./dist/components/ui/sonner.js"
+    },
+    "./components/ui/status-icon": {
+      "types": "./dist/components/ui/status-icon.d.ts",
+      "import": {
+        "types": "./dist/components/ui/status-icon.d.ts",
+        "default": "./dist/components/ui/status-icon.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/status-icon.d.cts",
+        "default": "./dist/components/ui/status-icon.cjs"
+      },
+      "default": "./dist/components/ui/status-icon.js"
+    },
+    "./components/ui/status-metadata-section": {
+      "types": "./dist/components/ui/status-metadata-section.d.ts",
+      "import": {
+        "types": "./dist/components/ui/status-metadata-section.d.ts",
+        "default": "./dist/components/ui/status-metadata-section.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/status-metadata-section.d.cts",
+        "default": "./dist/components/ui/status-metadata-section.cjs"
+      },
+      "default": "./dist/components/ui/status-metadata-section.js"
+    },
+    "./components/ui/status-percentage-icon": {
+      "types": "./dist/components/ui/status-percentage-icon.d.ts",
+      "import": {
+        "types": "./dist/components/ui/status-percentage-icon.d.ts",
+        "default": "./dist/components/ui/status-percentage-icon.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/status-percentage-icon.d.cts",
+        "default": "./dist/components/ui/status-percentage-icon.cjs"
+      },
+      "default": "./dist/components/ui/status-percentage-icon.js"
+    },
+    "./components/ui/star-rating": {
+      "types": "./dist/components/ui/star-rating.d.ts",
+      "import": {
+        "types": "./dist/components/ui/star-rating.d.ts",
+        "default": "./dist/components/ui/star-rating.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/star-rating.d.cts",
+        "default": "./dist/components/ui/star-rating.cjs"
+      },
+      "default": "./dist/components/ui/star-rating.js"
+    },
+    "./components/ui/switch": {
+      "types": "./dist/components/ui/switch.d.ts",
+      "import": {
+        "types": "./dist/components/ui/switch.d.ts",
+        "default": "./dist/components/ui/switch.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/switch.d.cts",
+        "default": "./dist/components/ui/switch.cjs"
+      },
+      "default": "./dist/components/ui/switch.js"
+    },
+    "./components/ui/table": {
+      "types": "./dist/components/ui/table.d.ts",
+      "import": {
+        "types": "./dist/components/ui/table.d.ts",
+        "default": "./dist/components/ui/table.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table.d.cts",
+        "default": "./dist/components/ui/table.cjs"
+      },
+      "default": "./dist/components/ui/table.js"
+    },
+    "./components/ui/table-grid-header": {
+      "types": "./dist/components/ui/table-grid-header.d.ts",
+      "import": {
+        "types": "./dist/components/ui/table-grid-header.d.ts",
+        "default": "./dist/components/ui/table-grid-header.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table-grid-header.d.cts",
+        "default": "./dist/components/ui/table-grid-header.cjs"
+      },
+      "default": "./dist/components/ui/table-grid-header.js"
+    },
+    "./components/ui/grid-table": {
+      "import": {
+        "types": "./dist/components/ui/grid-table.d.ts",
+        "default": "./dist/components/ui/grid-table.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/grid-table.d.cts",
+        "default": "./dist/components/ui/grid-table.cjs"
+      },
+      "default": "./dist/components/ui/grid-table.js"
+    },
+    "./components/ui/table-filter-menu": {
+      "import": {
+        "types": "./dist/components/ui/table-filter-menu.d.ts",
+        "default": "./dist/components/ui/table-filter-menu.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table-filter-menu.d.cts",
+        "default": "./dist/components/ui/table-filter-menu.cjs"
+      },
+      "default": "./dist/components/ui/table-filter-menu.js"
+    },
+    "./components/ui/table-placeholder-actions": {
+      "import": {
+        "types": "./dist/components/ui/table-placeholder-actions.d.ts",
+        "default": "./dist/components/ui/table-placeholder-actions.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table-placeholder-actions.d.cts",
+        "default": "./dist/components/ui/table-placeholder-actions.cjs"
+      },
+      "default": "./dist/components/ui/table-placeholder-actions.js"
+    },
+    "./components/ui/table-view-menu": {
+      "types": "./dist/components/ui/table-view-menu.d.ts",
+      "import": {
+        "types": "./dist/components/ui/table-view-menu.d.ts",
+        "default": "./dist/components/ui/table-view-menu.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table-view-menu.d.cts",
+        "default": "./dist/components/ui/table-view-menu.cjs"
+      },
+      "default": "./dist/components/ui/table-view-menu.js"
+    },
+    "./components/ui/table-filters": {
+      "types": "./dist/components/ui/table-filters.d.ts",
+      "import": {
+        "types": "./dist/components/ui/table-filters.d.ts",
+        "default": "./dist/components/ui/table-filters.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/table-filters.d.cts",
+        "default": "./dist/components/ui/table-filters.cjs"
+      },
+      "default": "./dist/components/ui/table-filters.js"
+    },
+    "./components/ui/tabs": {
+      "types": "./dist/components/ui/tabs.d.ts",
+      "import": {
+        "types": "./dist/components/ui/tabs.d.ts",
+        "default": "./dist/components/ui/tabs.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/tabs.d.cts",
+        "default": "./dist/components/ui/tabs.cjs"
+      },
+      "default": "./dist/components/ui/tabs.js"
+    },
+    "./components/ui/textarea": {
+      "types": "./dist/components/ui/textarea.d.ts",
+      "import": {
+        "types": "./dist/components/ui/textarea.d.ts",
+        "default": "./dist/components/ui/textarea.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/textarea.d.cts",
+        "default": "./dist/components/ui/textarea.cjs"
+      },
+      "default": "./dist/components/ui/textarea.js"
+    },
+    "./components/ui/theme-submenu": {
+      "types": "./dist/components/ui/theme-submenu.d.ts",
+      "import": {
+        "types": "./dist/components/ui/theme-submenu.d.ts",
+        "default": "./dist/components/ui/theme-submenu.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/theme-submenu.d.cts",
+        "default": "./dist/components/ui/theme-submenu.cjs"
+      },
+      "default": "./dist/components/ui/theme-submenu.js"
+    },
+    "./components/ui/toggle-group": {
+      "types": "./dist/components/ui/toggle-group.d.ts",
+      "import": {
+        "types": "./dist/components/ui/toggle-group.d.ts",
+        "default": "./dist/components/ui/toggle-group.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/toggle-group.d.cts",
+        "default": "./dist/components/ui/toggle-group.cjs"
+      },
+      "default": "./dist/components/ui/toggle-group.js"
+    },
+    "./components/ui/toggle": {
+      "types": "./dist/components/ui/toggle.d.ts",
+      "import": {
+        "types": "./dist/components/ui/toggle.d.ts",
+        "default": "./dist/components/ui/toggle.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/toggle.d.cts",
+        "default": "./dist/components/ui/toggle.cjs"
+      },
+      "default": "./dist/components/ui/toggle.js"
+    },
+    "./components/ui/tooltip": {
+      "types": "./dist/components/ui/tooltip.d.ts",
+      "import": {
+        "types": "./dist/components/ui/tooltip.d.ts",
+        "default": "./dist/components/ui/tooltip.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/tooltip.d.cts",
+        "default": "./dist/components/ui/tooltip.cjs"
+      },
+      "default": "./dist/components/ui/tooltip.js"
+    },
+    "./components/ui/user-select-popover": {
+      "types": "./dist/components/ui/user-select-popover.d.ts",
+      "import": {
+        "types": "./dist/components/ui/user-select-popover.d.ts",
+        "default": "./dist/components/ui/user-select-popover.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/user-select-popover.d.cts",
+        "default": "./dist/components/ui/user-select-popover.cjs"
+      },
+      "default": "./dist/components/ui/user-select-popover.js"
+    },
+    "./components/ui/inline-edit-editor-shell": {
+      "types": "./dist/components/ui/inline-edit-editor-shell.d.ts",
+      "import": {
+        "types": "./dist/components/ui/inline-edit-editor-shell.d.ts",
+        "default": "./dist/components/ui/inline-edit-editor-shell.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/inline-edit-editor-shell.d.cts",
+        "default": "./dist/components/ui/inline-edit-editor-shell.cjs"
+      },
+      "default": "./dist/components/ui/inline-edit-editor-shell.js"
+    },
+    "./components/ui/types": {
+      "types": "./dist/components/ui/types.d.ts",
+      "import": {
+        "types": "./dist/components/ui/types.d.ts",
+        "default": "./dist/components/ui/types.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/types.d.cts",
+        "default": "./dist/components/ui/types.cjs"
+      },
+      "default": "./dist/components/ui/types.js"
+    },
+    "./components/ui/utils": {
+      "types": "./dist/components/ui/utils.d.ts",
+      "import": {
+        "types": "./dist/components/ui/utils.d.ts",
+        "default": "./dist/components/ui/utils.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/utils.d.cts",
+        "default": "./dist/components/ui/utils.cjs"
+      },
+      "default": "./dist/components/ui/utils.js"
+    },
+    "./components/ui/primitives/underline-tabs": {
+      "types": "./dist/components/ui/primitives/underline-tabs.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/underline-tabs.d.ts",
+        "default": "./dist/components/ui/primitives/underline-tabs.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/underline-tabs.d.cts",
+        "default": "./dist/components/ui/primitives/underline-tabs.cjs"
+      },
+      "default": "./dist/components/ui/primitives/underline-tabs.js"
+    },
+    "./components/ui/primitives/activity-heatmap": {
+      "types": "./dist/components/ui/primitives/activity-heatmap.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/activity-heatmap.d.ts",
+        "default": "./dist/components/ui/primitives/activity-heatmap.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/activity-heatmap.d.cts",
+        "default": "./dist/components/ui/primitives/activity-heatmap.js"
+      },
+      "default": "./dist/components/ui/primitives/activity-heatmap.js"
+    },
+    "./components/ui/primitives/donut-chart": {
+      "types": "./dist/components/ui/primitives/donut-chart.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/donut-chart.d.ts",
+        "default": "./dist/components/ui/primitives/donut-chart.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/donut-chart.d.cts",
+        "default": "./dist/components/ui/primitives/donut-chart.js"
+      },
+      "default": "./dist/components/ui/primitives/donut-chart.js"
+    },
+    "./components/ui/primitives/line-chart": {
+      "types": "./dist/components/ui/primitives/line-chart.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/line-chart.d.ts",
+        "default": "./dist/components/ui/primitives/line-chart.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/line-chart.d.cts",
+        "default": "./dist/components/ui/primitives/line-chart.js"
+      },
+      "default": "./dist/components/ui/primitives/line-chart.js"
+    },
+    "./components/ui/primitives/metric-card": {
+      "types": "./dist/components/ui/primitives/metric-card.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/metric-card.d.ts",
+        "default": "./dist/components/ui/primitives/metric-card.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/metric-card.d.cts",
+        "default": "./dist/components/ui/primitives/metric-card.js"
+      },
+      "default": "./dist/components/ui/primitives/metric-card.js"
+    },
+    "./components/ui/primitives/status-badge": {
+      "types": "./dist/components/ui/primitives/status-badge.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/status-badge.d.ts",
+        "default": "./dist/components/ui/primitives/status-badge.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/status-badge.d.cts",
+        "default": "./dist/components/ui/primitives/status-badge.js"
+      },
+      "default": "./dist/components/ui/primitives/status-badge.js"
+    },
+    "./components/ui/primitives/ranked-bar": {
+      "types": "./dist/components/ui/primitives/ranked-bar.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/ranked-bar.d.ts",
+        "default": "./dist/components/ui/primitives/ranked-bar.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/ranked-bar.d.cts",
+        "default": "./dist/components/ui/primitives/ranked-bar.js"
+      },
+      "default": "./dist/components/ui/primitives/ranked-bar.js"
+    },
+    "./components/ui/primitives/sankey-graph": {
+      "types": "./dist/components/ui/primitives/sankey-graph.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/sankey-graph.d.ts",
+        "default": "./dist/components/ui/primitives/sankey-graph.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/sankey-graph.d.cts",
+        "default": "./dist/components/ui/primitives/sankey-graph.js"
+      },
+      "default": "./dist/components/ui/primitives/sankey-graph.js"
+    },
+    "./components/ui/primitives/segmented-bar": {
+      "types": "./dist/components/ui/primitives/segmented-bar.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/segmented-bar.d.ts",
+        "default": "./dist/components/ui/primitives/segmented-bar.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/segmented-bar.d.cts",
+        "default": "./dist/components/ui/primitives/segmented-bar.js"
+      },
+      "default": "./dist/components/ui/primitives/segmented-bar.js"
+    },
+    "./components/ui/primitives/workflow-stat-tile": {
+      "types": "./dist/components/ui/primitives/workflow-stat-tile.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/workflow-stat-tile.d.ts",
+        "default": "./dist/components/ui/primitives/workflow-stat-tile.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/workflow-stat-tile.d.cts",
+        "default": "./dist/components/ui/primitives/workflow-stat-tile.js"
+      },
+      "default": "./dist/components/ui/primitives/workflow-stat-tile.js"
+    },
+    "./components/ui/primitives/code-block": {
+      "types": "./dist/components/ui/primitives/code-block.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/code-block.d.ts",
+        "default": "./dist/components/ui/primitives/code-block.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/code-block.d.cts",
+        "default": "./dist/components/ui/primitives/code-block.js"
+      },
+      "default": "./dist/components/ui/primitives/code-block.js"
+    },
+    "./components/ui/primitives/file-list": {
+      "types": "./dist/components/ui/primitives/file-list.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/file-list.d.ts",
+        "default": "./dist/components/ui/primitives/file-list.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/file-list.d.cts",
+        "default": "./dist/components/ui/primitives/file-list.js"
+      },
+      "default": "./dist/components/ui/primitives/file-list.js"
+    },
+    "./components/ui/primitives/graph": {
+      "types": "./dist/components/ui/primitives/graph.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/graph.d.ts",
+        "default": "./dist/components/ui/primitives/graph.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/graph.d.cts",
+        "default": "./dist/components/ui/primitives/graph.js"
+      },
+      "default": "./dist/components/ui/primitives/graph.js"
+    },
+    "./components/ui/primitives/key-value-grid": {
+      "types": "./dist/components/ui/primitives/key-value-grid.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/key-value-grid.d.ts",
+        "default": "./dist/components/ui/primitives/key-value-grid.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/key-value-grid.d.cts",
+        "default": "./dist/components/ui/primitives/key-value-grid.js"
+      },
+      "default": "./dist/components/ui/primitives/key-value-grid.js"
+    },
+    "./components/ui/primitives/markdown-content": {
+      "types": "./dist/components/ui/primitives/markdown-content.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/markdown-content.d.ts",
+        "default": "./dist/components/ui/primitives/markdown-content.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/markdown-content.d.cts",
+        "default": "./dist/components/ui/primitives/markdown-content.js"
+      },
+      "default": "./dist/components/ui/primitives/markdown-content.js"
+    },
+    "./components/ui/primitives/match-list": {
+      "types": "./dist/components/ui/primitives/match-list.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/match-list.d.ts",
+        "default": "./dist/components/ui/primitives/match-list.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/match-list.d.cts",
+        "default": "./dist/components/ui/primitives/match-list.js"
+      },
+      "default": "./dist/components/ui/primitives/match-list.js"
+    },
+    "./components/ui/primitives/sparkline": {
+      "types": "./dist/components/ui/primitives/sparkline.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/sparkline.d.ts",
+        "default": "./dist/components/ui/primitives/sparkline.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/sparkline.d.cts",
+        "default": "./dist/components/ui/primitives/sparkline.js"
+      },
+      "default": "./dist/components/ui/primitives/sparkline.js"
+    },
+    "./components/ui/primitives/terminal-block": {
+      "types": "./dist/components/ui/primitives/terminal-block.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/terminal-block.d.ts",
+        "default": "./dist/components/ui/primitives/terminal-block.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/terminal-block.d.cts",
+        "default": "./dist/components/ui/primitives/terminal-block.js"
+      },
+      "default": "./dist/components/ui/primitives/terminal-block.js"
+    },
+    "./components/ui/primitives/unified-diff": {
+      "types": "./dist/components/ui/primitives/unified-diff.d.ts",
+      "import": {
+        "types": "./dist/components/ui/primitives/unified-diff.d.ts",
+        "default": "./dist/components/ui/primitives/unified-diff.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/primitives/unified-diff.d.cts",
+        "default": "./dist/components/ui/primitives/unified-diff.js"
+      },
+      "default": "./dist/components/ui/primitives/unified-diff.js"
+    },
+    "./components/ui/layout/kanban-board": {
+      "types": "./dist/components/ui/layout/kanban-board.d.ts",
+      "import": {
+        "types": "./dist/components/ui/layout/kanban-board.d.ts",
+        "default": "./dist/components/ui/layout/kanban-board.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/layout/kanban-board.d.cts",
+        "default": "./dist/components/ui/layout/kanban-board.js"
+      },
+      "default": "./dist/components/ui/layout/kanban-board.js"
+    },
+    "./components/ui/layout/section": {
+      "types": "./dist/components/ui/layout/section.d.ts",
+      "import": {
+        "types": "./dist/components/ui/layout/section.d.ts",
+        "default": "./dist/components/ui/layout/section.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/layout/section.d.cts",
+        "default": "./dist/components/ui/layout/section.js"
+      },
+      "default": "./dist/components/ui/layout/section.js"
+    },
+    "./hooks/use-copy-to-clipboard": {
+      "types": "./dist/hooks/use-copy-to-clipboard.d.ts",
+      "import": {
+        "types": "./dist/hooks/use-copy-to-clipboard.d.ts",
+        "default": "./dist/hooks/use-copy-to-clipboard.js"
+      },
+      "require": {
+        "types": "./dist/hooks/use-copy-to-clipboard.d.cts",
+        "default": "./dist/hooks/use-copy-to-clipboard.cjs"
+      },
+      "default": "./dist/hooks/use-copy-to-clipboard.js"
+    },
+    "./hooks/use-media-query": {
+      "types": "./dist/hooks/use-media-query.d.ts",
+      "import": {
+        "types": "./dist/hooks/use-media-query.d.ts",
+        "default": "./dist/hooks/use-media-query.js"
+      },
+      "require": {
+        "types": "./dist/hooks/use-media-query.d.cts",
+        "default": "./dist/hooks/use-media-query.cjs"
+      },
+      "default": "./dist/hooks/use-media-query.js"
+    },
+    "./hooks/use-mobile": {
+      "types": "./dist/hooks/use-mobile.d.ts",
+      "import": {
+        "types": "./dist/hooks/use-mobile.d.ts",
+        "default": "./dist/hooks/use-mobile.js"
+      },
+      "require": {
+        "types": "./dist/hooks/use-mobile.d.cts",
+        "default": "./dist/hooks/use-mobile.cjs"
+      },
+      "default": "./dist/hooks/use-mobile.js"
+    },
+    "./providers/theme": {
+      "types": "./dist/providers/theme.d.ts",
+      "import": {
+        "types": "./dist/providers/theme.d.ts",
+        "default": "./dist/providers/theme.js"
+      },
+      "require": {
+        "types": "./dist/providers/theme.d.cts",
+        "default": "./dist/providers/theme.cjs"
+      },
+      "default": "./dist/providers/theme.js"
+    },
+    "./lib/utils": {
+      "types": "./dist/lib/utils.d.ts",
+      "import": {
+        "types": "./dist/lib/utils.d.ts",
+        "default": "./dist/lib/utils.js"
+      },
+      "require": {
+        "types": "./dist/lib/utils.d.cts",
+        "default": "./dist/lib/utils.cjs"
+      },
+      "default": "./dist/lib/utils.js"
+    },
+    "./components/ui/empty-state": {
+      "types": "./dist/components/ui/empty-state.d.ts",
+      "import": {
+        "types": "./dist/components/ui/empty-state.d.ts",
+        "default": "./dist/components/ui/empty-state.js"
+      },
+      "require": {
+        "types": "./dist/components/ui/empty-state.d.cts",
+        "default": "./dist/components/ui/empty-state.cjs"
+      },
+      "default": "./dist/components/ui/empty-state.js"
+    }
+  },
+  "files": [
+    "dist",
+    "styles"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
+    "build": "tsup",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
     "figma:publish": "pnpm exec figma connect publish",
     "figma:typecheck": "tsc --noEmit --emitDeclarationOnly false -p tsconfig.figma.json",
     "figma:unpublish": "pnpm exec figma connect unpublish",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
+  "peerDependencies": {
+    "next-themes": "^0.4.0",
+    "react": "^19.0.0",
+    "react-day-picker": "^9.0.0",
+    "react-hook-form": "^7.0.0",
+    "react-resizable-panels": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@figma/code-connect": "^1.4.7",
+    "@repo/typescript-config": "workspace:*",
+    "@tailwindcss/postcss": "^4.1.18",
+    "@tailwindcss/typography": "^0.5.19",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.14",
+    "next-themes": "^0.4.6",
+    "postcss": "^8.5.10",
+    "react": "19.2.5",
+    "react-day-picker": "^9.13.1",
+    "react-hook-form": "^7.71.1",
+    "react-resizable-panels": "^3.0.6",
+    "tailwindcss": "^4.1.18",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-icons": "^1.3.2",
-    "@repo/auth": "workspace:*",
-    "@repo/observability": "workspace:*",
+    "@closedloop-ai/loops-api": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
+    "d3": "^7.9.0",
+    "d3-sankey": "^0.12.3",
     "embla-carousel-react": "^8.6.0",
     "geist": "^1.7.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.556.0",
-    "next-themes": "^0.4.6",
-    "radix-ui": "latest",
-    "react": "19.2.5",
-    "react-day-picker": "^9.13.1",
-    "react-hook-form": "^7.71.1",
-    "react-moveable": "^0.56.0",
-    "react-resizable-panels": "^3.0.6",
+    "radix-ui": "^1.4.0",
+    "react-markdown": "^10.1.0",
+    "react-syntax-highlighter": "^16.1.1",
     "recharts": "^3.7.0",
+    "remark-gfm": "^4.0.1",
     "server-only": "^0.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.4.0",
     "tw-animate-css": "^1.4.0",
     "vaul": "^1.1.2",
-    "zod": "^4.3.6"
-  },
-  "devDependencies": {
-    "@figma/code-connect": "^1.4.1",
-    "@repo/typescript-config": "workspace:*",
-    "@tailwindcss/postcss": "^4.1.18",
-    "@tailwindcss/typography": "^0.5.19",
-    "@types/node": "^25.3.5",
-    "@types/react": "^19.2.14",
-    "postcss": "^8.5.10",
-    "tailwindcss": "^4.1.18",
-    "typescript": "^5.9.3"
+    "zod": "^4.3.6",
+    "@repo/navigation": "workspace:*"
   }
 }

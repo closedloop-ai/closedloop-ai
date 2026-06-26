@@ -2,7 +2,7 @@
  * Route-level tests for GET /documents/[id]/pull-request.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 

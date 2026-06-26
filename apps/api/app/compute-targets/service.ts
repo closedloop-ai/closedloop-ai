@@ -1,15 +1,22 @@
 import { DESKTOP_API_NAMESPACE_CAPABILITY_KEY } from "@repo/api/src/desktop-api-namespace";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   ComputeTarget,
   ComputeTargetHealthCheckSnapshot,
   ComputeTargetSecurity,
+  ComputeTargetServerCapabilities,
   HealthCheckResponse,
   RegisterComputeTargetInput,
   UpdateComputeTargetInput,
   UpsertComputeTargetHealthCheckSnapshotInput,
 } from "@repo/api/src/types/compute-target";
-import { DesktopSecurityStatus } from "@repo/api/src/types/compute-target";
+import {
+  COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
+  DesktopSecurityStatus,
+  deriveAvailableHarnesses,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import {
   type Result as DomainResult,
   Result,
@@ -20,7 +27,12 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
+import {
+  CommandSigningEligibilityStatus,
+  loadActiveDesktopManagedGatewayIds,
+} from "@/lib/compute-target-signing-eligibility";
 import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
 import { parseJsonObject } from "@/lib/json-schema";
 
@@ -54,9 +66,14 @@ type ComputeTargetRecord = {
   isOnline: boolean;
   isSharedWithOrg: boolean;
   gatewayId?: string | null;
+  selectedHarness?: string | null;
   createdAt: Date;
   updatedAt: Date;
-  user?: { firstName: string | null; lastName: string | null } | null;
+  user?: {
+    clerkId: string | null;
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
 };
 
 type ComputeTargetHealthCheckRecord = {
@@ -66,6 +83,7 @@ type ComputeTargetHealthCheckRecord = {
   checkedAt: Date;
   expectedMcpUrl: string | null;
   latestVersion: string | null;
+  pluginAutoUpdateEnabled: boolean;
   result: unknown;
   allRequiredPassed: boolean;
   requiredFailureIds: unknown;
@@ -73,6 +91,16 @@ type ComputeTargetHealthCheckRecord = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+const VALID_HARNESS_VALUES = new Set<string>(Object.values(HarnessType));
+
+export function parseSelectedHarness(
+  value: string | null | undefined
+): HarnessType {
+  return value != null && VALID_HARNESS_VALUES.has(value)
+    ? (value as HarnessType)
+    : HarnessType.Claude;
+}
 
 function toJsonObject(value: unknown): JsonObject {
   return parseJsonObject(value) ?? {};
@@ -98,6 +126,7 @@ function toHealthCheckSnapshot(
     checkedAt: record.checkedAt,
     expectedMcpUrl: record.expectedMcpUrl,
     latestVersion: record.latestVersion,
+    pluginAutoUpdateEnabled: record.pluginAutoUpdateEnabled ?? false,
     result: record.result as HealthCheckResponse,
     allRequiredPassed: record.allRequiredPassed,
     requiredFailureIds: toStringArray(record.requiredFailureIds),
@@ -211,6 +240,12 @@ function buildCapabilitiesPayload(
     !Object.hasOwn(payloadCapabilities, DESKTOP_API_NAMESPACE_CAPABILITY_KEY)
   ) {
     delete capabilities[DESKTOP_API_NAMESPACE_CAPABILITY_KEY];
+  }
+  if (
+    payload.capabilities !== undefined &&
+    !Object.hasOwn(payloadCapabilities, COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY)
+  ) {
+    delete capabilities[COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY];
   }
 
   if ("allowedDirectories" in payload && payload.allowedDirectories) {
@@ -342,7 +377,8 @@ function toComputeTarget(
   target: ComputeTargetRecord | null,
   /** When set, ownerName is populated for targets not owned by this user. */
   viewerUserId?: string,
-  security?: ComputeTargetSecurity
+  security?: ComputeTargetSecurity,
+  serverCapabilities?: ComputeTargetServerCapabilities
 ): ComputeTarget | null {
   if (!target) {
     return null;
@@ -362,9 +398,11 @@ function toComputeTarget(
     lastSeenAt: target.lastSeenAt,
     isOnline: target.isOnline,
     isSharedWithOrg: target.isSharedWithOrg,
+    serverCapabilities,
     security:
       security ?? buildSecurity(target, viewerUserId, new Set(), false, false),
     ownerName: isOwnedByViewer ? undefined : formatOwnerName(target.user),
+    selectedHarness: parseSelectedHarness(target.selectedHarness),
     createdAt: target.createdAt,
     updatedAt: target.updatedAt,
   };
@@ -409,8 +447,65 @@ async function toComputeTargetList(
           viewerOwnedGateways
         )
       : { protectedGateways: new Set<string>(), lookupFailed: false };
+  const ownerCapabilityEntries = await Promise.all(
+    Array.from(new Set(targets.map((target) => target.userId))).map(
+      async (ownerUserId) => {
+        const ownerTargets = targets.filter(
+          (target) => target.userId === ownerUserId
+        );
+        const ownerTarget = ownerTargets[0];
+        const ownerClerkUserId =
+          ownerUserId === viewerUserId
+            ? viewerClerkUserId
+            : ownerTarget?.user?.clerkId;
+        const ownerGatewayIds = ownerTargets.flatMap((target) =>
+          target.gatewayId ? [target.gatewayId] : []
+        );
+        const [signingGatewayResult, agentSessionSync] = await Promise.all([
+          ownerTarget
+            ? loadActiveDesktopManagedGatewayIds({
+                organizationId: ownerTarget.organizationId,
+                userId: ownerUserId,
+                clerkUserId: ownerClerkUserId,
+                gatewayIds: ownerGatewayIds,
+              })
+            : Promise.resolve({
+                status: CommandSigningEligibilityStatus.Ineligible,
+                gatewayIds: new Set<string>(),
+                reason: "owner_not_found" as const,
+              }),
+          isAgentSessionSyncSupportedForUser({
+            userId: ownerUserId,
+            clerkUserId: ownerClerkUserId,
+          }),
+        ]);
+        return [
+          ownerUserId,
+          { signingGatewayResult, agentSessionSync },
+        ] as const;
+      }
+    )
+  );
+  const serverCapabilitiesByOwner = new Map(ownerCapabilityEntries);
 
   return targets.flatMap((target) => {
+    const ownerCapabilities = serverCapabilitiesByOwner.get(target.userId);
+    const computeTargetSigning =
+      ownerCapabilities?.signingGatewayResult.status ===
+        CommandSigningEligibilityStatus.Eligible &&
+      target.gatewayId !== null &&
+      target.gatewayId !== undefined &&
+      ownerCapabilities.signingGatewayResult.gatewayIds.has(target.gatewayId);
+    const serverCapabilities =
+      ownerCapabilities &&
+      (computeTargetSigning || ownerCapabilities.agentSessionSync)
+        ? {
+            ...(computeTargetSigning ? { computeTargetSigning: true } : {}),
+            ...(ownerCapabilities.agentSessionSync
+              ? { agentSessionSync: true }
+              : {}),
+          }
+        : undefined;
     const mapped = toComputeTarget(
       target,
       viewerUserId,
@@ -420,7 +515,8 @@ async function toComputeTargetList(
         protectedGateways,
         lookupFailed,
         desktopSecurityEnabled
-      )
+      ),
+      serverCapabilities
     );
     return mapped ? [mapped] : [];
   });
@@ -488,6 +584,9 @@ function buildComputeTargetUpdateData(
       ? { supportedOperations: payload.supportedOperations }
       : {}),
     ...(payload.gatewayId ? { gatewayId: payload.gatewayId } : {}),
+    ...(payload.selectedHarness
+      ? { selectedHarness: payload.selectedHarness }
+      : {}),
   };
 }
 
@@ -790,6 +889,11 @@ export const computeTargetsService = {
     return withDb((db) =>
       db.computeTarget.findUnique({
         where: { id },
+        include: {
+          user: {
+            select: { clerkId: true, firstName: true, lastName: true },
+          },
+        },
       })
     );
   },
@@ -902,17 +1006,37 @@ export const computeTargetsService = {
     }
   },
 
-  async deleteOwned(
+  deleteOwned(
     id: string,
     organizationId: string,
     userId: string
   ): Promise<boolean> {
-    const deleted = await withDb((db) =>
-      db.computeTarget.deleteMany({
+    return withDb.tx(async (tx) => {
+      const target = await tx.computeTarget.findFirst({
         where: { id, organizationId, userId },
-      })
-    );
-    return deleted.count > 0;
+        select: { id: true },
+      });
+      if (!target) {
+        return false;
+      }
+      // SESSION artifacts reference the compute target with onDelete: Restrict
+      // (FEA-1699), so the parent artifacts must be removed first — that cascades
+      // to session_detail and its event/token-usage children. Deleting the
+      // artifacts here also removes the user-facing session records, which is the
+      // intended behavior when a compute target is deleted.
+      await tx.artifact.deleteMany({
+        where: {
+          organizationId,
+          type: ArtifactType.Session,
+          session: { is: { computeTargetId: id } },
+        },
+      });
+      // deleteMany keeps deletion idempotent under concurrency: a parallel
+      // delete that wins the race yields count 0 here (-> 404) instead of the
+      // P2025 a singular delete would throw.
+      const deleted = await tx.computeTarget.deleteMany({ where: { id } });
+      return deleted.count > 0;
+    });
   },
 
   async heartbeat(
@@ -1020,7 +1144,7 @@ export const computeTargetsService = {
           OR: [{ userId }, { isSharedWithOrg: true }],
         },
         include: {
-          user: { select: { firstName: true, lastName: true } },
+          user: { select: { clerkId: true, firstName: true, lastName: true } },
         },
         orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }],
       })
@@ -1078,6 +1202,7 @@ export const computeTargetsService = {
     const requiredFailureIds = getRequiredFailureIds(payload.result);
     const allRequiredPassed = requiredFailureIds.length === 0;
     const checkedAt = new Date();
+    const availableHarnesses = deriveAvailableHarnesses(payload.result);
     const snapshot = await withDb.tx(async (tx) => {
       const target = await findAccessibleTargetRecord(
         tx,
@@ -1088,7 +1213,27 @@ export const computeTargetsService = {
       if (!target) {
         return null;
       }
+      const pluginAutoUpdateEnabled =
+        (payload.pluginAutoUpdateEnabled ?? false) && target.userId === userId;
+      const selectedHarness = parseSelectedHarness(target.selectedHarness);
 
+      if (
+        target.userId === userId &&
+        availableHarnesses.length > 0 &&
+        !availableHarnesses.includes(selectedHarness)
+      ) {
+        const nextHarness = availableHarnesses.includes(HarnessType.Claude)
+          ? HarnessType.Claude
+          : availableHarnesses[0];
+        await tx.computeTarget.update({
+          where: { id: targetId },
+          data: { selectedHarness: nextHarness },
+        });
+      }
+
+      // payload.result is already shape-validated by healthCheckSnapshotValidator
+      // (no top-level passthrough), so the casts below only bridge the Zod-typed
+      // value into Prisma's JSON column type — they don't widen an unvalidated shape.
       return tx.computeTargetHealthCheck.upsert({
         where: { computeTargetId: targetId },
         create: {
@@ -1097,6 +1242,7 @@ export const computeTargetsService = {
           checkedAt,
           expectedMcpUrl: payload.expectedMcpUrl ?? null,
           latestVersion: payload.latestVersion ?? null,
+          pluginAutoUpdateEnabled,
           result: payload.result as unknown as Prisma.InputJsonValue,
           allRequiredPassed,
           requiredFailureIds:
@@ -1107,6 +1253,7 @@ export const computeTargetsService = {
           checkedAt,
           expectedMcpUrl: payload.expectedMcpUrl ?? null,
           latestVersion: payload.latestVersion ?? null,
+          pluginAutoUpdateEnabled,
           result: payload.result as unknown as Prisma.InputJsonValue,
           allRequiredPassed,
           requiredFailureIds:

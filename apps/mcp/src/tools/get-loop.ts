@@ -1,7 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  asRecord,
+  buildLoopUrl,
+  encodePathSegment,
+  readString,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
   server.registerTool(
@@ -18,11 +24,14 @@ export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
         const loop = await apiClient.get<unknown>(
           `/loops/${encodePathSegment(loopId)}`
         );
+        const record = asRecord(loop);
+        const resolvedId = readString(record.id) ?? loopId;
+        const webUrl = buildLoopUrl(resolvedId);
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(loop, null, 2),
+              text: JSON.stringify({ ...record, webUrl }, null, 2),
             },
           ],
         };

@@ -1,5 +1,6 @@
 "use client";
 
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
@@ -78,14 +79,13 @@ export function AutomatedProvisioningCard({
       >
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-semibold text-base">Automated setup</span>
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary text-xs">
-            Recommended
-          </span>
+          <Badge variant="accent">Recommended</Badge>
         </div>
         <p className="text-muted-foreground text-sm">
           Generate a command that installs or updates Desktop, prepares required
-          command-line tools and ClosedLoop plugins, provisions your account,
-          and opens the app with the right configuration.
+          command-line tools, installs or repairs user-scoped Closedloop
+          plugins, verifies they are enabled, provisions your account, and opens
+          the app with the right configuration.
         </p>
       </button>
       {open ? (
@@ -104,7 +104,7 @@ export function AutomatedProvisioningCard({
               value={sandboxBaseDirectory}
             />
             <p className="text-muted-foreground text-xs">
-              ClosedLoop Desktop will look for your cloned repositories in this
+              Closedloop Desktop will look for your cloned repositories in this
               directory, using the repository name exactly. Desktop commands can
               only run inside this directory.
             </p>
@@ -135,10 +135,10 @@ export function AutomatedProvisioningCard({
               <Label htmlFor="desktop-install-command">Install command</Label>
               <p className="text-muted-foreground text-xs">
                 Copy this command, paste it into macOS Terminal, and press
-                Return. It may install CLI tooling and ClosedLoop plugins, and
-                may ask you to complete GitHub CLI authentication. Keep this
-                page open; it will continue automatically after Desktop
-                completes setup.
+                Return. It may install CLI tooling and user-scoped Closedloop
+                plugins, verify those plugins are enabled, and ask you to
+                complete GitHub CLI authentication. Keep this page open; it will
+                continue automatically after Desktop completes setup.
               </p>
               <div className="flex gap-2">
                 <Textarea
@@ -147,7 +147,12 @@ export function AutomatedProvisioningCard({
                   readOnly
                   value={provisioningCommand}
                 />
-                <Button onClick={onCopyCommand} size="icon" variant="outline">
+                <Button
+                  aria-label="Copy install command"
+                  onClick={onCopyCommand}
+                  size="icon"
+                  variant="outline"
+                >
                   {commandCopied ? (
                     <CheckIcon className="h-4 w-4" />
                   ) : (
@@ -245,7 +250,12 @@ export function ManualSetupSection({
                       readOnly
                       value={generatedKey}
                     />
-                    <Button onClick={onCopy} size="icon" variant="outline">
+                    <Button
+                      aria-label="Copy API key"
+                      onClick={onCopy}
+                      size="icon"
+                      variant="outline"
+                    >
                       {copied ? (
                         <CheckIcon className="h-4 w-4" />
                       ) : (
@@ -254,7 +264,7 @@ export function ManualSetupSection({
                     </Button>
                   </div>
                   <p className="text-muted-foreground text-xs">
-                    Copy this key and paste it into ClosedLoop Desktop settings.
+                    Copy this key and paste it into Closedloop Desktop settings.
                     This key will not be shown again.
                   </p>
                 </div>
@@ -307,18 +317,18 @@ export function DesktopStatusPanel({
           <MonitorIcon className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="font-medium text-sm">ClosedLoop Desktop</p>
+          <p className="font-medium text-sm">Closedloop Desktop</p>
           <p className="text-muted-foreground text-xs">{versionLabel}</p>
         </div>
         {electronDetected ? (
           <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
             {isElectronOutdated ? (
-              <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+              <div className="flex items-center gap-1 text-warning-foreground">
                 <AlertTriangleIcon className="h-4 w-4" />
                 Update available
               </div>
             ) : null}
-            <div className="flex items-center gap-1 text-green-600 dark:text-green-400">
+            <div className="flex items-center gap-1 text-success">
               <CheckCircleIcon className="h-4 w-4" />
               Running
             </div>
@@ -351,9 +361,9 @@ function DesktopStatusMessage({
 }) {
   if (electronDetected && setupStatus === DesktopSetupStatus.Complete) {
     return (
-      <div className="mt-4 flex items-center gap-2 rounded-md bg-green-500/10 px-3 py-2 text-green-700 text-sm dark:text-green-300">
+      <div className="mt-4 flex items-center gap-2 rounded-md bg-success/12 px-3 py-2 text-sm text-success">
         <CheckCircleIcon className="h-4 w-4" />
-        <span>ClosedLoop Desktop setup is complete.</span>
+        <span>Closedloop Desktop setup is complete.</span>
       </div>
     );
   }
@@ -362,9 +372,9 @@ function DesktopStatusMessage({
     if (setupStatus === DesktopSetupStatus.Unknown) {
       return (
         <div className="mt-4 flex items-start gap-2 rounded-md bg-muted/50 px-3 py-2 text-muted-foreground text-sm">
-          <CheckCircleIcon className="mt-0.5 h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+          <CheckCircleIcon className="mt-0.5 h-4 w-4 shrink-0 text-success" />
           <span>
-            ClosedLoop Desktop is running. This version does not report setup
+            Closedloop Desktop is running. This version does not report setup
             status, so continue after you confirm Desktop is connected to your
             account.
           </span>
@@ -374,9 +384,9 @@ function DesktopStatusMessage({
 
     return (
       <div className="mt-4 flex items-start gap-2 rounded-md bg-muted/50 px-3 py-2 text-muted-foreground text-sm">
-        <AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
         <span>
-          ClosedLoop Desktop is running, but setup is not complete yet. Finish
+          Closedloop Desktop is running, but setup is not complete yet. Finish
           the prompt in the Desktop app to continue.
         </span>
       </div>
@@ -387,7 +397,7 @@ function DesktopStatusMessage({
     return (
       <div className="mt-4 flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-muted-foreground text-sm">
         <Loader2Icon className="h-4 w-4 animate-spin" />
-        <span>Waiting for ClosedLoop Desktop to start&hellip;</span>
+        <span>Waiting for Closedloop Desktop to start&hellip;</span>
       </div>
     );
   }
@@ -396,11 +406,11 @@ function DesktopStatusMessage({
     <div className="mt-4 rounded-md bg-muted/50 px-3 py-2 text-muted-foreground text-sm">
       {latestVersion ? (
         <span>
-          ClosedLoop Desktop version {latestVersion} is available. Automated
+          Closedloop Desktop version {latestVersion} is available. Automated
           setup will install it for you.
         </span>
       ) : (
-        <span>ClosedLoop Desktop has not been detected yet.</span>
+        <span>Closedloop Desktop has not been detected yet.</span>
       )}
       {runningVersion ? (
         <span className="sr-only">{runningVersion}</span>
@@ -429,17 +439,17 @@ function DownloadAction({
   if (electronDetected) {
     if (isElectronOutdated && runningVersion && latestVersion) {
       return (
-        <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-950 text-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+        <div className="space-y-3 rounded-md border border-warning/40 bg-warning/12 px-3 py-2 text-sm text-warning-foreground">
           <div className="flex items-start gap-2">
-            <AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+            <AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
             <span>
-              ClosedLoop Desktop version {runningVersion} is running. Version{" "}
+              Closedloop Desktop version {runningVersion} is running. Version{" "}
               {latestVersion} is available.
             </span>
           </div>
           <Button
             asChild
-            className="w-full border-amber-300 bg-background text-foreground hover:bg-amber-100 hover:text-foreground dark:border-amber-500/40 dark:bg-background dark:hover:bg-amber-500/10"
+            className="w-full border-warning/40 bg-background text-foreground hover:bg-warning/12 hover:text-foreground"
             size="sm"
             variant="outline"
           >
@@ -462,8 +472,8 @@ function DownloadAction({
 
     return (
       <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm">
-        <CheckCircleIcon className="h-4 w-4 text-green-500" />
-        <span>ClosedLoop Desktop detected and running</span>
+        <CheckCircleIcon className="h-4 w-4 text-success" />
+        <span>Closedloop Desktop detected and running</span>
       </div>
     );
   }
@@ -472,7 +482,7 @@ function DownloadAction({
     return (
       <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-muted-foreground text-sm">
         <Loader2Icon className="h-4 w-4 animate-spin" />
-        <span>Waiting for ClosedLoop Desktop to start&hellip;</span>
+        <span>Waiting for Closedloop Desktop to start&hellip;</span>
       </div>
     );
   }

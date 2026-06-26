@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/compute-targets/local-auth/verify/route";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {

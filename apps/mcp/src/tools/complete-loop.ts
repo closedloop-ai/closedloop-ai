@@ -2,7 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LoopStatus } from "@repo/api/src/types/loop.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  buildLoopUrl,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 /**
  * Register the complete-loop tool on the given MCP server.
@@ -17,8 +21,11 @@ export function registerCompleteLoop(
     {
       description:
         "Mark a manual loop as COMPLETED. Call when you've finished implementing the feature.\n\n" +
-        "This sends a completed event and updates the loop with final metadata (PR URL, branch, summary). " +
-        "After completing the loop, consider updating the workstream status via update-workstream.",
+        "This sends a completed event and updates the loop with final metadata (PR URL, branch, summary). Always provide:\n" +
+        "- summary: what was accomplished in 1-2 sentences\n" +
+        "- prUrl: the pull request URL (if one was created)\n" +
+        "- branchName: the git branch used\n\n" +
+        "After completing the loop, update the linked document's status via update-document (IN_REVIEW if a PR is open, DONE if merged).",
       inputSchema: {
         loopId: z.string().describe("Loop UUID returned by create-loop"),
         prUrl: z
@@ -93,6 +100,7 @@ export function registerCompleteLoop(
                 {
                   loopId,
                   status: LoopStatus.Completed,
+                  webUrl: buildLoopUrl(loopId),
                   prUrl,
                   branchName,
                   summary,

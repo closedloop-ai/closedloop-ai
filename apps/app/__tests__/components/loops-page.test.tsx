@@ -18,7 +18,7 @@ vi.mock("@repo/analytics/components/feature-flagged", () => ({
   }) => (featureFlagEnabled ? children : null),
 }));
 
-vi.mock("@/app/(authenticated)/loops/components/loops-table", () => ({
+vi.mock("@/app/(authenticated)/[orgSlug]/loops/components/loops-table", () => ({
   LoopsTable: () => <div data-testid="loops-table" />,
 }));
 
@@ -26,25 +26,27 @@ vi.mock("@/app/(authenticated)/components/header", () => ({
   Header: () => <div data-testid="header" />,
 }));
 
-import LoopsPage from "@/app/(authenticated)/loops/page";
+import LoopsPage from "@/app/(authenticated)/[orgSlug]/loops/page";
+
+const defaultParams = Promise.resolve({ orgSlug: "test-org" });
 
 describe("LoopsPage — Usage link feature flag", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("renders the Usage link when the loops-usage-page flag is enabled", () => {
+  it("renders the Usage link when the loops-usage-page flag is enabled", async () => {
     featureFlagEnabled = true;
 
-    render(<LoopsPage />);
+    render(await LoopsPage({ params: defaultParams }));
 
     expect(screen.getByRole("link", { name: "Usage" })).toBeInTheDocument();
   });
 
-  it("does not render the Usage link when the loops-usage-page flag is disabled", () => {
+  it("does not render the Usage link when the loops-usage-page flag is disabled", async () => {
     featureFlagEnabled = false;
 
-    render(<LoopsPage />);
+    render(await LoopsPage({ params: defaultParams }));
 
     expect(
       screen.queryByRole("link", { name: "Usage" })

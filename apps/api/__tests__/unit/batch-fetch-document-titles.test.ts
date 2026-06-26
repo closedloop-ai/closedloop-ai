@@ -1,16 +1,18 @@
 /**
- * Unit tests for documentService.batchFetchDocumentTitles method.
+ * Unit tests for documentService.batchFetchDocumentMeta method.
  *
- * Tests org-scoped slug-to-title lookups with mocked database.
+ * Tests org-scoped slug-to-metadata lookups with mocked database.
  */
-import { vi } from "vitest";
+
+import { DocumentType } from "@repo/api/src/types/document";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -18,7 +20,7 @@ vi.mock("@repo/database", () => ({
 import { withDb } from "@repo/database";
 import { documentService } from "@/app/documents/document-service";
 
-describe("documentService.batchFetchDocumentTitles", () => {
+describe("documentService.batchFetchDocumentMeta", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -27,21 +29,25 @@ describe("documentService.batchFetchDocumentTitles", () => {
     const mockDb = {
       artifact: {
         findMany: vi.fn().mockResolvedValue([
-          { slug: "prd-abc", name: "My PRD" },
-          { slug: "plan-xyz", name: "My Plan" },
+          { slug: "prd-abc", name: "My PRD", subtype: DocumentType.Prd },
+          {
+            slug: "plan-xyz",
+            name: "My Plan",
+            subtype: DocumentType.ImplementationPlan,
+          },
         ]),
       },
     };
     mockWithDbCall(mockDb);
 
-    const result = await documentService.batchFetchDocumentTitles("org-1", [
+    const result = await documentService.batchFetchDocumentMeta("org-1", [
       "prd-abc",
       "plan-xyz",
     ]);
 
     expect(result).toEqual({
-      "prd-abc": "My PRD",
-      "plan-xyz": "My Plan",
+      "prd-abc": { title: "My PRD", type: DocumentType.Prd },
+      "plan-xyz": { title: "My Plan", type: DocumentType.ImplementationPlan },
     });
     expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
       where: {
@@ -49,7 +55,7 @@ describe("documentService.batchFetchDocumentTitles", () => {
         slug: { in: ["prd-abc", "plan-xyz"] },
         type: "DOCUMENT",
       },
-      select: { slug: true, name: true },
+      select: { slug: true, name: true, subtype: true },
     });
   });
 
@@ -58,22 +64,26 @@ describe("documentService.batchFetchDocumentTitles", () => {
       artifact: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ slug: "prd-abc", name: "My PRD" }]),
+          .mockResolvedValue([
+            { slug: "prd-abc", name: "My PRD", subtype: DocumentType.Prd },
+          ]),
       },
     };
     mockWithDbCall(mockDb);
 
-    const result = await documentService.batchFetchDocumentTitles("org-1", [
+    const result = await documentService.batchFetchDocumentMeta("org-1", [
       "prd-abc",
       "does-not-exist",
     ]);
 
-    expect(result).toEqual({ "prd-abc": "My PRD" });
+    expect(result).toEqual({
+      "prd-abc": { title: "My PRD", type: DocumentType.Prd },
+    });
     expect(result).not.toHaveProperty("does-not-exist");
   });
 
   it("empty input returns empty object without DB query", async () => {
-    const result = await documentService.batchFetchDocumentTitles("org-1", []);
+    const result = await documentService.batchFetchDocumentMeta("org-1", []);
 
     expect(result).toEqual({});
     expect(withDb).not.toHaveBeenCalled();
@@ -89,8 +99,8 @@ describe("documentService.batchFetchDocumentTitles", () => {
     mockWithDbCall(mockDb);
 
     await expect(
-      documentService.batchFetchDocumentTitles("org-1", slugs)
-    ).rejects.toThrow("batchFetchDocumentTitles: too many slugs");
+      documentService.batchFetchDocumentMeta("org-1", slugs)
+    ).rejects.toThrow("batchFetchDocumentMeta: too many slugs");
     expect(mockDb.artifact.findMany).not.toHaveBeenCalled();
   });
 
@@ -101,18 +111,22 @@ describe("documentService.batchFetchDocumentTitles", () => {
       artifact: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ slug: "prd-abc", name: "Org 1 PRD" }]),
+          .mockResolvedValue([
+            { slug: "prd-abc", name: "Org 1 PRD", subtype: DocumentType.Prd },
+          ]),
       },
     };
     mockWithDbCall(mockDb);
 
-    const result = await documentService.batchFetchDocumentTitles("org-1", [
+    const result = await documentService.batchFetchDocumentMeta("org-1", [
       "prd-abc",
       "other-org-slug",
     ]);
 
     // other-org-slug was not returned by DB (scoped to org-1), so it's absent
-    expect(result).toEqual({ "prd-abc": "Org 1 PRD" });
+    expect(result).toEqual({
+      "prd-abc": { title: "Org 1 PRD", type: DocumentType.Prd },
+    });
     expect(result).not.toHaveProperty("other-org-slug");
     // Verify the query was org-scoped
     expect(mockDb.artifact.findMany).toHaveBeenCalledWith(

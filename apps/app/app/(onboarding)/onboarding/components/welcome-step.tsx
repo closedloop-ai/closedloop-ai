@@ -14,7 +14,7 @@ export function WelcomeStep({ onNext }: WelcomeStepProps) {
         <Rocket className="h-8 w-8 text-primary" />
       </div>
       <div className="space-y-2">
-        <h1 className="font-bold text-2xl">Welcome to ClosedLoop</h1>
+        <h1 className="font-bold text-2xl">Welcome to Closedloop</h1>
         <p className="mx-auto max-w-sm text-muted-foreground">
           Let&apos;s get your workspace set up. We&apos;ll create a team and
           your first project so you can hit the ground running.

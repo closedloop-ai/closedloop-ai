@@ -1,0 +1,25 @@
+{
+  "extends": "@repo/typescript-config/node-next.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "declarationMap": false,
+    "verbatimModuleSyntax": true,
+    // Main/preload are bundled by electron-vite (electron.vite.config.ts), so
+    // module resolution is the bundler's job, not Node's. Override the inherited
+    // NodeNext resolution with Bundler so `@repo/api/src/...` source imports
+    // (no `.js`, no `dist/`) typecheck — matching the renderer and the rest of
+    // the repo (PLN-999).
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // Emission is electron-vite's job now (build:main); tsc -p tsconfig.json is
+    // typecheck-only. noEmit lets Bundler resolution pull `@repo/api` source —
+    // which uses `.ts` import extensions its own build rewrites — into the
+    // program without `tsc` rejecting those extensions.
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/renderer"]
+}

@@ -1,11 +1,11 @@
 "use client";
 
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import type { TeamWithCounts } from "@repo/api/src/types/teams";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@repo/design-system/components/ui/collapsible";
+import { useFavoriteProjects } from "@repo/app/projects/hooks/use-projects";
+import { DeleteConfirmationDialog } from "@repo/app/shared/components/delete-confirmation-dialog";
+import { useIsMounted } from "@repo/app/shared/hooks/use-is-mounted";
+import { useDeleteTeam, useTeams } from "@repo/app/teams/hooks/use-teams";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,8 +13,6 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  SidebarGroup,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuAction,
   SidebarMenuButton,
@@ -23,149 +21,145 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@repo/design-system/components/ui/sidebar";
+import { SidebarCollapsibleSection } from "@repo/design-system/components/ui/sidebar-collapsible-section";
+import { Link } from "@repo/navigation/link";
+import { usePath } from "@repo/navigation/use-path";
 import {
   ArchiveIcon,
-  BoxIcon,
   EllipsisIcon,
-  FileCodeIcon,
-  FileIcon,
   Layers2Icon,
   PlusIcon,
   SettingsIcon,
   Trash2Icon,
   UsersIcon,
 } from "lucide-react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
-import { TeamModal } from "@/app/(authenticated)/teams/components/team-modal";
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import { useDeleteTeam, useTeams } from "@/hooks/queries/use-teams";
-import { useIsMounted } from "@/hooks/use-is-mounted";
+import { useMemo, useState } from "react";
+import { TeamModal } from "@/app/(authenticated)/[orgSlug]/teams/components/team-modal";
+import { useOrgSlug } from "@/hooks/use-org-slug";
 
-const TEAM_PATTERN = /^\/teams\/([^/]+)/;
+function groupFavoritesByTeam(
+  favorites: ProjectWithDetails[]
+): Map<string, ProjectWithDetails[]> {
+  const grouped = new Map<string, ProjectWithDetails[]>();
+  for (const project of favorites) {
+    const teamId = project.teams[0]?.id;
+    if (!teamId) {
+      continue;
+    }
+    const existing = grouped.get(teamId);
+    if (existing) {
+      existing.push(project);
+    } else {
+      grouped.set(teamId, [project]);
+    }
+  }
+  return grouped;
+}
 
-type NavItem = {
-  label: string;
-  href: (teamId: string) => string;
-  icon: React.ComponentType<{ className?: string }>;
-};
-
-const TEAM_NAV_ITEMS: NavItem[] = [
-  {
-    label: "Projects",
-    href: (id) => `/teams/${id}/projects`,
-    icon: Layers2Icon,
-  },
-  { label: "PRDs", href: (id) => `/teams/${id}/prds`, icon: FileIcon },
-  { label: "Features", href: (id) => `/teams/${id}/features`, icon: BoxIcon },
-  { label: "Plans", href: (id) => `/teams/${id}/plans`, icon: FileCodeIcon },
-];
-
-type TeamCollapsibleProps = {
+type TeamRowProps = {
   team: TeamWithCounts;
+  orgSlug: string;
   pathname: string;
-  openTeamIds: Set<string>;
-  setOpenTeamIds: React.Dispatch<React.SetStateAction<Set<string>>>;
+  favorites: ProjectWithDetails[];
 };
 
-function TeamCollapsible({
-  team,
-  pathname,
-  openTeamIds,
-  setOpenTeamIds,
-}: TeamCollapsibleProps) {
+function TeamRow({ team, orgSlug, pathname, favorites }: TeamRowProps) {
   const mounted = useIsMounted();
-  const [deleteOpen, setDeleteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const deleteTeam = useDeleteTeam();
+  const teamHref = `/${orgSlug}/teams/${team.id}/projects`;
+  const hasFavorites = favorites.length > 0;
 
   async function handleConfirmDelete(): Promise<boolean> {
-    const result = await deleteTeam.mutateAsync(team.id);
-    return result.deleted ?? false;
+    // Return false (rather than rejecting) on failure so the dialog stays open
+    // and DeleteConfirmationDialog.handleDelete doesn't see an unhandled
+    // rejection; the global mutation onError still surfaces the error toast.
+    try {
+      const result = await deleteTeam.mutateAsync(team.id);
+      return result.deleted ?? false;
+    } catch {
+      return false;
+    }
   }
 
   return (
-    <>
-      <Collapsible
+    <SidebarMenuItem>
+      <SidebarMenuButton
         asChild
-        onOpenChange={(isOpen) => {
-          setOpenTeamIds((prev) => {
-            const next = new Set(prev);
-            if (isOpen) {
-              next.add(team.id);
-            } else {
-              next.delete(team.id);
-            }
-            return next;
-          });
-        }}
-        open={openTeamIds.has(team.id)}
+        className="text-sm"
+        isActive={
+          pathname === teamHref ||
+          pathname.startsWith(`${teamHref}/`) ||
+          pathname.startsWith(`/${orgSlug}/teams/${team.id}/`)
+        }
+        tooltip={team.name}
       >
-        <SidebarMenuItem>
-          <CollapsibleTrigger asChild>
-            <SidebarMenuButton tooltip={team.name}>
-              <UsersIcon />
-              <span>{team.name}</span>
-            </SidebarMenuButton>
-          </CollapsibleTrigger>
-          {mounted ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuAction showOnHover>
-                  <EllipsisIcon />
-                  <span className="sr-only">Team options</span>
-                </SidebarMenuAction>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="right">
-                <DropdownMenuItem asChild>
-                  <Link href={`/teams/${team.id}/projects/archived`}>
-                    <ArchiveIcon className="h-4 w-4" />
-                    Archived Projects
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
-                  <SettingsIcon className="h-4 w-4" />
-                  Settings
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setDeleteOpen(true)}
-                  variant="destructive"
+        <Link href={teamHref}>
+          <UsersIcon />
+          <span className="truncate">{team.name}</span>
+        </Link>
+      </SidebarMenuButton>
+      {mounted && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuAction
+              aria-label="Team options"
+              className="[&>svg]:size-3.5"
+              showOnHover
+            >
+              <EllipsisIcon />
+            </SidebarMenuAction>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="right">
+            <DropdownMenuItem asChild>
+              <Link href={`/${orgSlug}/teams/${team.id}/projects/archived`}>
+                <ArchiveIcon className="h-4 w-4" />
+                Archived Projects
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+              <SettingsIcon className="h-4 w-4" />
+              Settings
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => setDeleteOpen(true)}
+              variant="destructive"
+            >
+              <Trash2Icon className="h-4 w-4 text-destructive" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {hasFavorites && (
+        <SidebarMenuSub className="mr-0 gap-0 pr-0">
+          {favorites.map((project) => {
+            const projectHref = `/${orgSlug}/teams/${team.id}/projects/${project.id}`;
+            return (
+              <SidebarMenuSubItem key={project.id}>
+                <SidebarMenuSubButton
+                  asChild
+                  className="pr-0"
+                  isActive={pathname === projectHref}
                 >
-                  <Trash2Icon className="h-4 w-4 text-destructive" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-          <CollapsibleContent>
-            <SidebarMenuSub>
-              {TEAM_NAV_ITEMS.map(({ label, href, icon: Icon }) => (
-                <SidebarMenuSubItem key={label}>
-                  <SidebarMenuSubButton
-                    asChild
-                    isActive={pathname.startsWith(href(team.id))}
-                  >
-                    <Link href={href(team.id)}>
-                      <Icon className="h-4 w-4" />
-                      <span>{label}</span>
-                    </Link>
-                  </SidebarMenuSubButton>
-                </SidebarMenuSubItem>
-              ))}
-            </SidebarMenuSub>
-          </CollapsibleContent>
-        </SidebarMenuItem>
-      </Collapsible>
-
-      {mounted ? (
+                  <Link href={projectHref}>
+                    <Layers2Icon />
+                    <span>{project.name}</span>
+                  </Link>
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
+            );
+          })}
+        </SidebarMenuSub>
+      )}
+      {mounted && (
         <TeamModal
           onOpenChange={setSettingsOpen}
           open={settingsOpen}
           team={team}
         />
-      ) : null}
-
+      )}
       <DeleteConfirmationDialog
         isPending={deleteTeam.isPending}
         itemName={team.name}
@@ -174,38 +168,26 @@ function TeamCollapsible({
         open={deleteOpen}
         title="Team"
       />
-    </>
+    </SidebarMenuItem>
   );
 }
 
 export function SidebarTeams() {
-  const { data: teams = [] } = useTeams();
+  const { data: teams = [], isError: teamsError } = useTeams();
+  const { data: favorites = [] } = useFavoriteProjects();
   const mounted = useIsMounted();
-  const pathname = usePathname();
-  const [openTeamIds, setOpenTeamIds] = useState<Set<string>>(new Set());
+  const pathname = usePath();
+  const orgSlug = useOrgSlug();
 
-  // Auto-expand the team matching the current route
-  const activeTeamId = useMemo(() => {
-    const match = TEAM_PATTERN.exec(pathname);
-    return match?.[1];
-  }, [pathname]);
-
-  useEffect(() => {
-    if (activeTeamId) {
-      setOpenTeamIds((prev) => {
-        if (prev.has(activeTeamId)) {
-          return prev;
-        }
-        return new Set(prev).add(activeTeamId);
-      });
-    }
-  }, [activeTeamId]);
+  const favoritesByTeam = useMemo(
+    () => groupFavoritesByTeam(favorites),
+    [favorites]
+  );
 
   return (
-    <SidebarGroup>
-      <SidebarGroupLabel className="flex items-center justify-between">
-        <span>Your Teams</span>
-        {mounted ? (
+    <SidebarCollapsibleSection
+      action={
+        mounted ? (
           <TeamModal
             trigger={
               <button
@@ -219,19 +201,28 @@ export function SidebarTeams() {
           />
         ) : (
           <div className="h-5 w-5" />
+        )
+      }
+      title="Your Teams"
+    >
+      <SidebarMenu className="gap-0">
+        {teamsError && (
+          <SidebarMenuItem>
+            <div className="px-2 py-1.5 text-muted-foreground text-xs">
+              Teams unavailable
+            </div>
+          </SidebarMenuItem>
         )}
-      </SidebarGroupLabel>
-      <SidebarMenu>
         {teams.map((team) => (
-          <TeamCollapsible
+          <TeamRow
+            favorites={favoritesByTeam.get(team.id) ?? []}
             key={team.id}
-            openTeamIds={openTeamIds}
+            orgSlug={orgSlug}
             pathname={pathname}
-            setOpenTeamIds={setOpenTeamIds}
             team={team}
           />
         ))}
       </SidebarMenu>
-    </SidebarGroup>
+    </SidebarCollapsibleSection>
   );
 }

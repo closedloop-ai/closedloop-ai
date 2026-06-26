@@ -4,17 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@closedloop-ai/loops-api": "workspace:*",
+    "@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@octokit/webhooks-types": "^7.6.1",
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "^25.3.5",
-    "typescript": "^5.9.3"
+    "@types/node": "^25.9.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

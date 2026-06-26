@@ -1,7 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  asRecord,
+  buildLoopUrl,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 /**
  * Register the fail-loop tool on the given MCP server.
@@ -16,7 +21,8 @@ export function registerFailLoop(
     {
       description:
         "Mark a manual loop as FAILED. Call if implementation fails or you're abandoning the work.\n\n" +
-        "Provide a clear error message explaining why the work failed so your team has context.",
+        "Provide a clear error message explaining why the work failed so your team has context.\n\n" +
+        "After failing a loop, update the linked document's status back to DRAFT via update-document so it's clear the work hasn't been completed.",
       inputSchema: {
         loopId: z.string().describe("Loop UUID returned by create-loop"),
         errorMessage: z
@@ -39,11 +45,13 @@ export function registerFailLoop(
             },
           }
         );
+        const record = asRecord(result);
+        const webUrl = buildLoopUrl(loopId);
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify({ ...record, webUrl }, null, 2),
             },
           ],
         };

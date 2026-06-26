@@ -5,8 +5,8 @@
  * single-document path (`documentGenerationStatusService`) and the batch
  * path (`documentService.findAll`):
  *
- *  - `fetchBestGenerationStatusForDocument` — combines GH Actions + Loop
- *    sources via `pickBestStatus`.
+ *  - `fetchBestGenerationStatusForDocument` — resolves the best Loop status
+ *    via `pickBestStatus`.
  *  - `getDismissedFailureRunKey` — reads the dismissal row.
  *  - `suppressDismissedFailure` — replaces a dismissed FAILURE with NONE.
  *  - `suppressDismissedFailuresForDocumentMap` — batch variant; mutates the
@@ -15,7 +15,8 @@
  */
 
 import type { GenerationStatus } from "@repo/api/src/types/document";
-import { type Mock, vi } from "vitest";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
@@ -49,7 +50,7 @@ function makeFailureStatus(
     startedAt: new Date("2026-01-01T00:00:00Z"),
     completedAt: new Date("2026-01-01T00:01:00Z"),
     correlationId: "corr-1",
-    source: "github_actions",
+    source: "loop",
     ...overrides,
   });
 }
@@ -75,7 +76,7 @@ describe("suppressDismissedFailure", () => {
       startedAt: new Date(),
       completedAt: new Date(),
       correlationId: "corr-1",
-      source: "github_actions",
+      source: "loop",
     });
     expect(suppressDismissedFailure(success, success.runKey ?? null)).toBe(
       success
@@ -115,121 +116,62 @@ describe("getDismissedFailureRunKey", () => {
 describe("fetchBestGenerationStatusForDocument", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("returns NONE_STATUS when no GH Actions run and no Loop record exists", async () => {
-    // sequence of withDb calls: ghActionRun.findFirst (null), loop.findMany ([])
-    mockWithDb
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ gitHubActionRun: { findFirst: vi.fn().mockResolvedValue(null) } })
-      )
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ loop: { findMany: vi.fn().mockResolvedValue([]) } })
-      );
+  it("returns NONE_STATUS when no Loop record exists", async () => {
+    mockDb({ loop: { findMany: vi.fn().mockResolvedValue([]) } });
 
-    const result = await fetchBestGenerationStatusForDocument("doc-1", "ws-1");
+    const result = await fetchBestGenerationStatusForDocument("doc-1");
     expect(result.status).toBe("NONE");
   });
 
-  it("returns the GH Actions status when only GH Actions has a run", async () => {
-    mockWithDb
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({
-          gitHubActionRun: {
-            findFirst: vi.fn().mockResolvedValue({
-              status: "SUCCESS",
-              triggerData: {
-                documentId: "doc-1",
-                command: "plan",
-                correlationId: "corr-1",
-              },
-              htmlUrl: "https://github.com/run",
-              startedAt: new Date(),
-              completedAt: new Date(),
-            }),
+  it("returns the Loop status when a Loop record exists", async () => {
+    mockDb({
+      loop: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "loop-1",
+            status: LoopStatus.Completed,
+            command: LoopCommand.Plan,
+            startedAt: new Date(),
+            completedAt: new Date(),
+            user: null,
           },
-        })
-      )
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ loop: { findMany: vi.fn().mockResolvedValue([]) } })
-      );
+        ]),
+      },
+    });
 
-    const result = await fetchBestGenerationStatusForDocument("doc-1", "ws-1");
+    const result = await fetchBestGenerationStatusForDocument("doc-1");
     expect(result.status).toBe("SUCCESS");
-    expect(result.source).toBe("github_actions");
-  });
-
-  it("filters out GH Actions runs whose triggerData.documentId doesn't match", async () => {
-    mockWithDb
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({
-          gitHubActionRun: {
-            findFirst: vi.fn().mockResolvedValue({
-              status: "RUNNING",
-              triggerData: { documentId: "different-doc" },
-              htmlUrl: null,
-              startedAt: new Date(),
-              completedAt: null,
-            }),
-          },
-        })
-      )
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({ loop: { findMany: vi.fn().mockResolvedValue([]) } })
-      );
-
-    const result = await fetchBestGenerationStatusForDocument("doc-1", "ws-1");
-    expect(result.status).toBe("NONE");
-  });
-
-  it("prefers an active loop status over a terminal GH Actions status", async () => {
-    mockWithDb
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({
-          gitHubActionRun: {
-            findFirst: vi.fn().mockResolvedValue({
-              status: "SUCCESS",
-              triggerData: { documentId: "doc-1", command: "plan" },
-              htmlUrl: null,
-              startedAt: new Date("2026-01-01"),
-              completedAt: new Date("2026-01-01"),
-            }),
-          },
-        })
-      )
-      .mockImplementationOnce((fn: (db: object) => unknown) =>
-        fn({
-          loop: {
-            findMany: vi.fn().mockResolvedValue([
-              {
-                id: "loop-1",
-                status: "RUNNING",
-                command: "PLAN",
-                startedAt: new Date("2025-12-01"),
-                completedAt: null,
-                user: null,
-              },
-            ]),
-          },
-        })
-      );
-
-    const result = await fetchBestGenerationStatusForDocument("doc-1", "ws-1");
-    // Active (RUNNING) should win even though GH SUCCESS is more recent.
-    expect(result.status).toBe("RUNNING");
     expect(result.source).toBe("loop");
   });
 
-  it("skips GH Actions lookup when workstreamId is null", async () => {
-    const ghFindFirst = vi.fn();
+  it("prefers an active loop status over a terminal one", async () => {
     mockDb({
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
-      gitHubActionRun: { findFirst: ghFindFirst },
+      loop: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "loop-terminal",
+            status: LoopStatus.Completed,
+            command: LoopCommand.Plan,
+            startedAt: new Date("2026-01-01"),
+            completedAt: new Date("2026-01-01"),
+            user: null,
+          },
+          {
+            id: "loop-active",
+            status: LoopStatus.Running,
+            command: LoopCommand.Plan,
+            startedAt: new Date("2025-12-01"),
+            completedAt: null,
+            user: null,
+          },
+        ]),
+      },
     });
 
-    const result = await fetchBestGenerationStatusForDocument("doc-1", null);
-    expect(result.status).toBe("NONE");
-    // The helper short-circuits with Promise.resolve(null) when workstreamId is null —
-    // it should never reach gitHubActionRun.findFirst.
-    expect(ghFindFirst).not.toHaveBeenCalled();
+    const result = await fetchBestGenerationStatusForDocument("doc-1");
+    // Active (RUNNING) should win even though the terminal one is more recent.
+    expect(result.status).toBe("RUNNING");
+    expect(result.source).toBe("loop");
   });
 });
 
@@ -297,8 +239,8 @@ describe("mergeLoopStatuses", () => {
           {
             id: "loop-1",
             artifactId: "doc-1",
-            status: "RUNNING",
-            command: "PLAN",
+            status: LoopStatus.Running,
+            command: LoopCommand.Plan,
             startedAt: new Date(),
             completedAt: null,
             user: null,
@@ -321,8 +263,8 @@ describe("mergeLoopStatuses", () => {
           {
             id: "loop-1",
             artifactId: null,
-            status: "RUNNING",
-            command: "PLAN",
+            status: LoopStatus.Running,
+            command: LoopCommand.Plan,
             startedAt: new Date(),
             completedAt: null,
             user: null,
@@ -330,8 +272,10 @@ describe("mergeLoopStatuses", () => {
           {
             id: "loop-2",
             artifactId: "doc-2",
+            // Intentionally not a valid LoopStatus — exercises the
+            // unmappable-status skip path.
             status: "UNKNOWN_STATUS",
-            command: "PLAN",
+            command: LoopCommand.Plan,
             startedAt: new Date(),
             completedAt: null,
             user: null,

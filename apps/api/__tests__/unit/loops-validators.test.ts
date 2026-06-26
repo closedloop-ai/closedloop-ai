@@ -1,4 +1,5 @@
 import { LoopEventType } from "@closedloop-ai/loops-api/events";
+import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { describe, expect, it } from "vitest";
 import {
@@ -36,6 +37,22 @@ describe("loop event payload validator", () => {
     const result = loopEventPayloadValidator.safeParse({
       type: "output",
       chunk: big,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects runner-submitted tokens_cleared events (system-internal)", () => {
+    const result = loopEventPayloadValidator.safeParse({
+      type: LoopEventType.TokensCleared,
+      data: { status: "COMPLETED" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects runner-submitted token_refreshed events (system-internal)", () => {
+    const result = loopEventPayloadValidator.safeParse({
+      type: LoopEventType.TokenRefreshed,
+      data: { prevJti: "x", newJti: "y" },
     });
     expect(result.success).toBe(false);
   });
@@ -564,9 +581,9 @@ describe("loopMetadataUpdateValidator", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a branchName longer than 256 characters", () => {
+  it("rejects a branchName longer than the shared branch-name limit", () => {
     const result = loopMetadataUpdateValidator.safeParse({
-      branchName: "a".repeat(257),
+      branchName: "a".repeat(BRANCH_NAME_MAX_LENGTH + 1),
     });
     expect(result.success).toBe(false);
   });

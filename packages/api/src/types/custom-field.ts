@@ -1,7 +1,7 @@
 // Custom Field types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
-import type { BasicUser } from "./user";
+import type { BasicUser } from "./user.js";
 
 /**
  * The types of values a custom field can hold.
@@ -17,7 +17,6 @@ export const CustomFieldType = {
 } as const;
 export type CustomFieldType =
   (typeof CustomFieldType)[keyof typeof CustomFieldType];
-export const CUSTOM_FIELD_TYPE_OPTIONS = Object.values(CustomFieldType);
 
 /**
  * The entity types that custom fields can be attached to.
@@ -25,19 +24,15 @@ export const CUSTOM_FIELD_TYPE_OPTIONS = Object.values(CustomFieldType);
  * NOTE: This is intentionally distinct from `EntityType` in `entity-link.ts`.
  * `EntityType` (DOCUMENT, EXTERNAL_LINK) models polymorphic *link* relationships
  * between entities. `CustomFieldEntityType` models which domain entities can have custom
- * field definitions attached — it includes PROJECT and WORKSTREAM (which are not link
- * targets) and omits EXTERNAL_LINK (which cannot hold custom field values).
+ * field definitions attached — it includes PROJECT (which is not a link target)
+ * and omits EXTERNAL_LINK (which cannot hold custom field values).
  */
 export const CustomFieldEntityType = {
   Project: "PROJECT",
-  Workstream: "WORKSTREAM",
   Document: "DOCUMENT",
 } as const;
 export type CustomFieldEntityType =
   (typeof CustomFieldEntityType)[keyof typeof CustomFieldEntityType];
-export const CUSTOM_FIELD_ENTITY_TYPE_OPTIONS = Object.values(
-  CustomFieldEntityType
-);
 
 /**
  * Display format for NUMBER type custom fields.
@@ -50,7 +45,6 @@ export const NumberFormat = {
   Custom: "CUSTOM",
 } as const;
 export type NumberFormat = (typeof NumberFormat)[keyof typeof NumberFormat];
-export const NUMBER_FORMAT_OPTIONS = Object.values(NumberFormat);
 
 /**
  * Position of a custom label relative to the number value for CUSTOM number format.
@@ -61,7 +55,6 @@ export const LabelPosition = {
   Suffix: "SUFFIX",
 } as const;
 export type LabelPosition = (typeof LabelPosition)[keyof typeof LabelPosition];
-export const LABEL_POSITION_OPTIONS = Object.values(LabelPosition);
 
 // Enum option types
 
@@ -85,11 +78,6 @@ export type UpdateEnumOptionInput = {
   name?: string;
   color?: string;
   enabled?: boolean;
-};
-
-export type ReorderEnumOptionsInput = {
-  /** Ordered list of enum option IDs reflecting the new sort order. */
-  optionIds: string[];
 };
 
 // Custom field definition types
@@ -190,12 +178,6 @@ export type AttachCustomFieldInput = {
   sortOrder?: number;
 };
 
-export type UpdateCustomFieldSettingInput = {
-  isImportant?: boolean;
-  isRequired?: boolean;
-  sortOrder?: number;
-};
-
 // Custom field value types
 
 /**
@@ -230,27 +212,4 @@ export type CustomFieldValueDetail = {
   multiEnumValues: CustomFieldEnumOption[];
   /** Resolved users for PEOPLE fields. */
   peopleValues: BasicUser[];
-};
-
-export type SetCustomFieldValueInput = {
-  /** The custom field ID to update. */
-  customFieldId: string;
-  /**
-   * Type-specific value. Pass null to clear.
-   * - TEXT: string
-   * - NUMBER: number
-   * - ENUM: enum option ID (string)
-   * - MULTI_ENUM: array of enum option IDs (string[])
-   * - DATE: ISO 8601 date string
-   * - PEOPLE: array of user IDs (string[])
-   */
-  value: string | number | string[] | null;
-};
-
-export type BulkSetCustomFieldValuesInput = {
-  /**
-   * Map of customFieldId → raw value.
-   * Passing null for a field clears its value on this entity.
-   */
-  customFields: Record<string, string | number | string[] | null>;
 };

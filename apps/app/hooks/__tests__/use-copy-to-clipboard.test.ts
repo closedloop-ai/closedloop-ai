@@ -1,6 +1,6 @@
+import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useCopyToClipboard } from "../use-copy-to-clipboard";
 
 describe("useCopyToClipboard", () => {
   beforeEach(() => {

@@ -14,7 +14,7 @@ export const CommunitySection = () => {
           built.
         </h2>
         <p className="mt-6 text-balance text-lg text-muted-foreground">
-          ClosedLoop.ai is built on an open source core so teams control how
+          Closedloop.ai is built on an open source core so teams control how
           they build with AI. Workflows, patterns, and systems evolve through
           the community, not vendor lock-in or model constraints.
         </p>

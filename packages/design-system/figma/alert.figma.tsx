@@ -6,7 +6,7 @@ import {
 } from "@repo/design-system/components/ui/alert";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=152-2375";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=152-2375";
 
 figma.connect(Alert, FIGMA_URL, {
   props: {

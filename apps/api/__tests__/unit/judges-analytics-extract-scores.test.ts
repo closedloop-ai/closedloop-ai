@@ -6,7 +6,7 @@
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
 import { DocumentType } from "@repo/api/src/types/document";
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMock } = await import("../fixtures/database-mock");

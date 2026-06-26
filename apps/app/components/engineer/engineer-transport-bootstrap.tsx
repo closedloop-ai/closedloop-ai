@@ -8,10 +8,12 @@ import {
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useAuth } from "@repo/auth/client";
+import { usePath } from "@repo/navigation/use-path";
 import { useEffect } from "react";
 import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useApiClient } from "@/hooks/use-api-client";
+import { shouldRunAmbientDesktopBootstrap } from "@/lib/engineer/ambient-desktop-routes";
 import {
   CLOUD_RELAY_ENABLED,
   COMPUTE_TARGETS_QUERY_OPTIONS,
@@ -45,7 +47,9 @@ function findOwnedLocalTarget(
 export function EngineerTransportBootstrap() {
   const { getToken, userId } = useAuth();
   const apiClient = useApiClient();
-  const detection = useElectronDetection(true);
+  const pathname = usePath();
+  const ambientDesktopEnabled = shouldRunAmbientDesktopBootstrap(pathname);
+  const detection = useElectronDetection(ambientDesktopEnabled);
   useComputeTargetStatusStream(CLOUD_RELAY_ENABLED);
   // Always fetch compute targets so we can resolve the local electron's
   // compute target ID for loop dispatch, even when CLOUD_RELAY_ENABLED=false.
@@ -57,6 +61,9 @@ export function EngineerTransportBootstrap() {
   }, [getToken]);
 
   useEffect(() => {
+    if (!ambientDesktopEnabled) {
+      return;
+    }
     if (detection.loading) {
       return;
     }
@@ -106,12 +113,20 @@ export function EngineerTransportBootstrap() {
     detection.detected,
     detection.loading,
     detection.machineName,
+    ambientDesktopEnabled,
     targets,
     userId,
   ]);
 
   useEffect(() => {
-    if (!(detection.detected && detection.port && detection.machineName)) {
+    if (
+      !(
+        ambientDesktopEnabled &&
+        detection.detected &&
+        detection.port &&
+        detection.machineName
+      )
+    ) {
       return;
     }
 
@@ -167,6 +182,7 @@ export function EngineerTransportBootstrap() {
     };
   }, [
     apiClient,
+    ambientDesktopEnabled,
     detection.detected,
     detection.machineName,
     detection.port,

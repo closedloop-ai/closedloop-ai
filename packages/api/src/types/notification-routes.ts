@@ -6,7 +6,6 @@ import { getRoutePrefixForType } from "./document";
 
 export const NotificationEntityKind = {
   Artifact: "artifact",
-  Workstream: "workstream",
   Project: "project",
 } as const;
 export type NotificationEntityKind =
@@ -19,10 +18,6 @@ export type NotificationEntityRouteParams =
       // Document subtype (PRD | IMPLEMENTATION_PLAN | FEATURE | TEMPLATE).
       // Accepts a raw string so callers don't have to narrow before passing.
       subtype: string;
-    }
-  | {
-      kind: typeof NotificationEntityKind.Workstream;
-      workstreamId: string;
     }
   | {
       kind: typeof NotificationEntityKind.Project;
@@ -41,8 +36,6 @@ export function getNotificationEntityPath(
         getRoutePrefixForType(params.subtype) ?? ARTIFACT_FALLBACK_PREFIX;
       return `/${prefix}/${params.slug}`;
     }
-    case NotificationEntityKind.Workstream:
-      return `/workstreams/${params.workstreamId}`;
     case NotificationEntityKind.Project:
       return `/teams/${params.teamId}/projects/${params.projectId}`;
     default: {

@@ -51,6 +51,10 @@ vi.mock("@/lib/desktop-relay-event-bridge", () => ({
   publishLegacyRelayEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/loops/rejected-command-loop-failure", () => ({
+  failLoopFromRejectedCommand: vi.fn().mockResolvedValue({ failed: false }),
+}));
+
 beforeAll(() => {
   process.env.INTERNAL_API_SECRET = INTERNAL_SECRET;
 });
@@ -99,6 +103,9 @@ describe("POST /internal/relay/socket-event — desktop.command.ack", () => {
         computeTargetId: "target-1",
       })
     );
+    const ingestInput = vi.mocked(desktopCommandStore.ingestCommandEvent).mock
+      .calls[0]?.[0];
+    expect(ingestInput).not.toHaveProperty("context");
   });
 });
 

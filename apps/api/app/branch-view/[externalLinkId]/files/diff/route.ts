@@ -1,6 +1,9 @@
 import type { BranchViewFileDiff } from "@repo/api/src/types/branch-view";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { resolvePrContext } from "@/lib/resolve-pr-context";
+import {
+  BranchViewContextCredentialMode,
+  resolvePrContext,
+} from "@/lib/resolve-pr-context";
 import {
   badRequestResponse,
   errorResponse,
@@ -22,7 +25,9 @@ export const GET = withAnyAuth<
       return badRequestResponse("path query parameter is required");
     }
 
-    const ctx = await resolvePrContext(externalLinkId, user.organizationId);
+    const ctx = await resolvePrContext(externalLinkId, user.organizationId, {
+      credentialMode: BranchViewContextCredentialMode.RenderRead,
+    });
     if (!ctx) {
       return notFoundResponse("Branch view");
     }

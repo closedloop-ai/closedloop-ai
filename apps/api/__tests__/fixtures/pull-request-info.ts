@@ -21,5 +21,6 @@ export function buildPullRequestInfo(
     externalLinkId: "pr-art-1",
     repoFullName: "owner/repo",
     ...overrides,
+    isDraft: overrides.isDraft ?? false,
   };
 }

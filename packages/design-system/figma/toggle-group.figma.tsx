@@ -5,7 +5,7 @@ import {
 } from "@repo/design-system/components/ui/toggle-group";
 
 const FIGMA_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2769-30628";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2769-30628";
 
 figma.connect(ToggleGroup, FIGMA_URL, {
   props: {
@@ -28,7 +28,7 @@ figma.connect(ToggleGroup, FIGMA_URL, {
 });
 
 const ITEM_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2769-30370";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2769-30370";
 
 figma.connect(ToggleGroupItem, ITEM_URL, {
   props: {

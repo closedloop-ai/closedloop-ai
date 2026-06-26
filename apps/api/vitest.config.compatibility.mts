@@ -20,6 +20,14 @@ export default defineConfig({
     alias: {
       "@": path.resolve(import.meta.dirname, "./"),
       "@repo": path.resolve(import.meta.dirname, "../../packages"),
+      "@closedloop-ai/loops-api": path.resolve(
+        import.meta.dirname,
+        "../../packages/loops-api/src"
+      ),
+      "@closedloop-ai/telemetry-contract": path.resolve(
+        import.meta.dirname,
+        "../../packages/telemetry-contract/src"
+      ),
       // Mock server-only package to prevent errors in tests
       "server-only": path.resolve(
         import.meta.dirname,

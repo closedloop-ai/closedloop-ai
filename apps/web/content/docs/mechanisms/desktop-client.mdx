@@ -53,6 +53,20 @@ Plus:
 - `<userData>/gateway-identity.json` — stable `gatewayId` UUID.
 - Auto-generated `src/shared/build-info.ts` stamped at prebuild.
 
+## Persistent logs and Diagnostics
+
+Desktop writes a durable `main.log` through `electron-log` with the file transport only. The renderer console is not duplicated by `electron-log`; gateway-visible messages continue to flow through the allowlisted GatewayLogger transport.
+
+Typical log locations:
+
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Logs/Closedloop/main.log` |
+| Windows | `%APPDATA%/Closedloop/logs/main.log` |
+| Linux | `~/.config/Closedloop/logs/main.log` |
+
+The Diagnostics tab renders the in-memory gateway log and seeds a bounded previous-session tail from `main.log` during boot. First-run or unreadable log tails return an empty list and do not block startup. Diagnostics supports pausing live rendering while entries continue to queue, preserves active text selection during refresh, and exposes an **Open log file** action for support handoff.
+
 ## IPC surface for the renderer
 
 The preload script exposes `window.desktopApi` with over 35 methods including:
@@ -65,14 +79,16 @@ The preload script exposes `window.desktopApi` with over 35 methods including:
 - Onboarding: `getOnboardingState`, `completeOnboarding`, `pickSandboxDirectory`
 - Debug: `getDangerousAutoApprove` / `setDangerousAutoApprove`, `isDebugAuthEnabled`, `mintDebugToken`
 - Updates: `checkForUpdate`, `applyUpdate`
+- Diagnostics: `getLogFilePath`, `openLogFile`
 - Jobs: `listRunningJobs`, `listCompletedJobs`, `getJob`, `getJobLogTail`
 - Binary paths: `getBinaryPaths`, `patchBinaryPaths`, `detectCliTools`
 - Saved configs: `saveConfig`, `listConfigs`, `deleteConfig`, `renameConfig`, `applyConfig`, `findMatchingConfig`
 
-Two push events to the renderer:
+Push events to the renderer:
 
 - `desktop:navigate-tab` — programmatic tab change.
-- `desktop:update-available` — emitted when `electron-updater` finds a new build.
+- `desktop:update-status` — packaged updater status changes, including `available`, `downloading`, `downloaded`, `error`, and `not-available`.
+- `desktop:update-available` — legacy compatibility event. The update banner only becomes actionable when the downloaded status reports `readyToInstall: true`.
 
 ## Composition root
 
@@ -80,17 +96,19 @@ Everything wires together in `src/main/app.ts` — the `DesktopApplication` clas
 
 ## Auto-update
 
-Packaged builds use `electron-updater` against GitHub Releases:
+Packaged builds use `electron-updater` against the Desktop-specific `closedloop-ai/symphony-alpha` feed:
 
 - `autoDownload = true`, `autoInstallOnAppQuit = true`
 - Initial check on boot, then every 5 minutes
-- In-app `desktop:update-available` event surfaces in the renderer
+- `update-available` and `download-progress` are logged but do not show the restart banner.
+- The renderer shows **Update & restart** only after `update-downloaded`, so `applyUpdate` can call `quitAndInstall` immediately.
+- Critical packaged updater and shutdown failures emit bounded `desktop.telemetry` records for Datadog through the existing relay path: `electron_update.initiated`, `electron_update.failed`, and `desktop.shutdown_failed`. These records include sanitized diagnostics only; raw log contents are not uploaded.
 
 Dev builds (`!app.isPackaged`) compare `origin/main` commit hashes via `git fetch` and offer to pull and rebuild.
 
 ## Packaging
 
-`electron-builder.yml` targets macOS only — universal DMG and zip, hardened runtime, notarized, signed, published to GitHub Releases owned by `closedloop-ai/closedloop-electron`. Output goes to `dist-dmg/`. Release builds trigger from CI when a PR bumps `apps/desktop/package.json`.
+`electron-builder.yml` targets macOS only — universal DMG and zip, hardened runtime, notarized, signed, and updater metadata. The manually invoked release workflow publishes versioned `desktop-v<version>` releases and promotes the `desktop-latest` updater feed in `closedloop-ai/symphony-alpha`. Output goes to `dist-dmg/`.
 
 ## Breaking change policy
 

@@ -27,6 +27,34 @@ type ChatBubbleProps = {
 };
 
 /**
+ * Lightweight equality check for two suggested-action arrays. Compares length
+ * and the relevant fields of each item by value, avoiding the cost of
+ * JSON.stringify on every parent render.
+ */
+function areActionsEqual(
+  prev: SuggestedAction[] | undefined,
+  next: SuggestedAction[] | undefined
+): boolean {
+  if (prev === next) {
+    return true;
+  }
+  if (prev == null || next == null) {
+    return prev == null && next == null;
+  }
+  if (prev.length !== next.length) {
+    return false;
+  }
+  for (let i = 0; i < prev.length; i++) {
+    const a = prev[i];
+    const b = next[i];
+    if (a.label !== b.label || a.message !== b.message || a.type !== b.type) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Shared message bubble wrapper for chat interfaces.
  * Uses standardized iMessage-style colors by default, with overrides via bubbleClassName/roleClassName.
  */
@@ -63,7 +91,7 @@ export const ChatBubble = memo(
       if (isUser) {
         return "you";
       }
-      return "ClosedLoop";
+      return "Closedloop";
     }
     const displayLabel = roleLabel ?? defaultLabel();
 
@@ -209,7 +237,7 @@ export const ChatBubble = memo(
     (prev.onForward == null) === (next.onForward == null) &&
     (prev.onAction == null) === (next.onAction == null) &&
     prev.contextPercent === next.contextPercent &&
-    JSON.stringify(prev.actions) === JSON.stringify(next.actions)
+    areActionsEqual(prev.actions, next.actions)
 );
 
 /**

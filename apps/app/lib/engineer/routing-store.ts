@@ -1,176 +1,24 @@
 "use client";
 
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
-import { useSyncExternalStore } from "react";
-import {
-  getStorageItem,
-  removeStorageItem,
-  setStorageItem,
-} from "@/lib/engineer/storage";
-
-const STORAGE_KEY = "engineer-routing-selection:v1";
-
-type EngineerRoutingSource = "auto" | "manual";
-
-export type EngineerRoutingSelection = {
-  mode: EngineerRoutingMode;
-  computeTargetId: string | null;
-  source: EngineerRoutingSource;
-  updatedAt: number;
-};
-
-const DEFAULT_SELECTION: EngineerRoutingSelection = {
-  mode: EngineerRoutingMode.CloudRelay,
-  computeTargetId: null,
-  source: "auto",
-  updatedAt: 0,
-};
-
-let snapshot: EngineerRoutingSelection = {
-  ...DEFAULT_SELECTION,
-};
-
-let hydrated = false;
-const listeners = new Set<() => void>();
-
-const ROUTING_MODE_VALUES: Set<string> = new Set(
-  Object.values(EngineerRoutingMode)
-);
-
-function isRoutingMode(value: unknown): value is EngineerRoutingMode {
-  return typeof value === "string" && ROUTING_MODE_VALUES.has(value);
-}
-
-function hydrateFromStorage(): void {
-  if (hydrated || globalThis.window === undefined) {
-    return;
-  }
-  hydrated = true;
-
-  const raw = getStorageItem(STORAGE_KEY);
-  if (!raw) {
-    return;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<EngineerRoutingSelection>;
-    if (!isRoutingMode(parsed.mode)) {
-      return;
-    }
-
-    snapshot = {
-      mode: parsed.mode,
-      computeTargetId:
-        typeof parsed.computeTargetId === "string"
-          ? parsed.computeTargetId
-          : null,
-      source: parsed.source === "manual" ? "manual" : "auto",
-      updatedAt:
-        typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
-    };
-  } catch {
-    // Ignore corrupted local storage and keep defaults.
-  }
-}
-
-function persistSelection(next: EngineerRoutingSelection): void {
-  if (globalThis.window === undefined) {
-    return;
-  }
-  setStorageItem(STORAGE_KEY, JSON.stringify(next));
-}
-
-function emitChange(): void {
-  for (const listener of listeners) {
-    listener();
-  }
-}
-
-function normalizeSelection(
-  mode: EngineerRoutingMode,
-  computeTargetId: string | null,
-  source: EngineerRoutingSource
-): EngineerRoutingSelection {
-  return {
-    mode,
-    // Preserve computeTargetId for both CloudRelay and LocalElectron modes.
-    // LocalElectron still needs a compute target ID for loop dispatch
-    // (loops go through the API → desktop gateway, not localhost proxy).
-    computeTargetId:
-      mode === EngineerRoutingMode.CloudRelay ||
-      mode === EngineerRoutingMode.LocalElectron
-        ? computeTargetId
-        : null,
-    source,
-    updatedAt: Date.now(),
-  };
-}
-
-function setSnapshot(next: EngineerRoutingSelection): EngineerRoutingSelection {
-  hydrateFromStorage();
-
-  const unchanged =
-    snapshot.mode === next.mode &&
-    snapshot.computeTargetId === next.computeTargetId &&
-    snapshot.source === next.source;
-
-  if (unchanged) {
-    return snapshot;
-  }
-
-  snapshot = next;
-  persistSelection(snapshot);
-  emitChange();
-  return snapshot;
-}
-
-export function getEngineerRoutingSelection(): EngineerRoutingSelection {
-  hydrateFromStorage();
-  return snapshot;
-}
-
-export function subscribeEngineerRoutingSelection(
-  listener: () => void
-): () => void {
-  hydrateFromStorage();
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-export function setEngineerRoutingManualSelection(
-  mode: EngineerRoutingMode,
-  computeTargetId: string | null = null
-): EngineerRoutingSelection {
-  return setSnapshot(normalizeSelection(mode, computeTargetId, "manual"));
-}
-
-export function setEngineerRoutingAutoSelection(
-  mode: EngineerRoutingMode,
-  computeTargetId: string | null = null,
-  options?: { force?: boolean }
-): EngineerRoutingSelection {
-  hydrateFromStorage();
-
-  if (!options?.force && snapshot.source === "manual") {
-    return snapshot;
-  }
-
-  return setSnapshot(normalizeSelection(mode, computeTargetId, "auto"));
-}
-
-export function useEngineerRoutingSelection(): EngineerRoutingSelection {
-  return useSyncExternalStore(
-    subscribeEngineerRoutingSelection,
-    getEngineerRoutingSelection,
-    () => DEFAULT_SELECTION
-  );
-}
-
-export function resetEngineerRoutingSelectionForTests(): void {
-  snapshot = { ...DEFAULT_SELECTION };
-  hydrated = false;
-  listeners.clear();
-  removeStorageItem(STORAGE_KEY);
-}
+/**
+ * Engineer routing-selection store (web entry point).
+ *
+ * The implementation is the single source of truth in
+ * `@repo/shared-platform/routing-store`; this module only re-exports it under
+ * the historical `Engineer*`-prefixed names so existing app consumers keep
+ * their import path (`@/lib/engineer/routing-store`). Do NOT reimplement the
+ * store here -- that would fork the module-level selection singleton and break
+ * mode coherence across the shared dispatch router and the web surface.
+ *
+ * The shared store persists under the same `engineer-routing-selection:v1`
+ * storage key, so previously stored selections remain compatible.
+ */
+export {
+  getRoutingSelection as getEngineerRoutingSelection,
+  resetRoutingSelectionForTests as resetEngineerRoutingSelectionForTests,
+  setRoutingAutoSelection as setEngineerRoutingAutoSelection,
+  setRoutingManualSelection as setEngineerRoutingManualSelection,
+  subscribeRoutingSelection as subscribeEngineerRoutingSelection,
+  useRoutingSelection as useEngineerRoutingSelection,
+} from "@repo/shared-platform/routing-store";
+export type { RoutingSelection as EngineerRoutingSelection } from "@repo/shared-platform/types";

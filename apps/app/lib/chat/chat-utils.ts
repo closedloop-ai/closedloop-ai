@@ -2,7 +2,9 @@
  * Shared utilities for chat components
  */
 
-import { readNdjsonLines } from "@/lib/chat/stream-utils";
+import { formatToolResultContent } from "@closedloop-ai/loops-api/stream-types";
+import { readNdjsonLines } from "@repo/app/chat/lib/stream-utils";
+import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { getWorktreePath as getWorktreePathBase } from "@/lib/git/worktree";
 
 export const getWorktreePath = getWorktreePathBase;
@@ -26,15 +28,11 @@ export function isTerminalOutput(text: string): boolean {
 }
 
 /**
- * Format timestamp for display in chat messages
+ * Format an untrusted persisted chat timestamp for display in chat messages.
+ * Malformed values are shown as-is instead of throwing during render.
  */
 export function formatTime(timestamp: string): string {
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
+  return formatTimeOrFallback(timestamp);
 }
 
 /**
@@ -463,22 +461,9 @@ export function stripLearningsUsed(content: string): string {
 
 /**
  * Format tool result content for display.
- * Handles strings, arrays, objects, and primitives.
+ * Re-exported from the canonical SSOT in @closedloop-ai/loops-api/stream-types.
  */
-export function formatToolResultContent(content: unknown): string {
-  if (content === null || content === undefined) {
-    return "";
-  }
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((c) => (typeof c === "string" ? c : JSON.stringify(c, null, 2)))
-      .join("\n");
-  }
-  return JSON.stringify(content, null, 2);
-}
+export { formatToolResultContent } from "@closedloop-ai/loops-api/stream-types";
 
 export const MAX_CONFERRAL_DEPTH = 3;
 

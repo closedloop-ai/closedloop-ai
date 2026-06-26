@@ -9,13 +9,13 @@
  *    auto-creates one when none exists.
  */
 
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
   DocumentStatus: {
@@ -79,8 +79,6 @@ describe("documentTemplatesService", () => {
               fileName: null,
               approverId: null,
               approver: null,
-              targetRepo: null,
-              targetBranch: null,
             },
           }),
         },

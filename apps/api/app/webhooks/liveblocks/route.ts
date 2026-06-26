@@ -1,7 +1,7 @@
 import {
   createWebhookHandler,
   type WebhookEvent,
-} from "@repo/collaboration/webhook";
+} from "@repo/collaboration/server/webhook";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";

@@ -1,14 +1,14 @@
 "use client";
 
+import {
+  useClaudeApiKeyInfo,
+  useSetOrgClaudeApiKey,
+} from "@repo/app/api-keys/hooks/use-claude-api-keys";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
 import { CheckCircleIcon, KeyIcon, Loader2Icon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import {
-  useClaudeApiKeyInfo,
-  useSetOrgClaudeApiKey,
-} from "@/hooks/queries/use-claude-api-keys";
 
 type AddAnthropicKeyStepProps = {
   readonly onNext: () => void;
@@ -54,7 +54,7 @@ export function AddAnthropicKeyStep({ onNext }: AddAnthropicKeyStepProps) {
             </p>
           </div>
           {isKeySet && (
-            <div className="flex items-center gap-1 text-green-500 text-sm">
+            <div className="flex items-center gap-1 text-sm text-success">
               <CheckCircleIcon className="h-4 w-4" />
               Set
             </div>
@@ -118,7 +118,7 @@ function ApiKeyContent({
   if (isKeySet) {
     return (
       <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm">
-        <CheckCircleIcon className="h-4 w-4 text-green-500" />
+        <CheckCircleIcon className="h-4 w-4 text-success" />
         <span>
           API key configured{" "}
           <span className="font-mono text-muted-foreground text-xs">
@@ -133,6 +133,7 @@ function ApiKeyContent({
     <div className="space-y-2">
       <div className="flex gap-2">
         <Input
+          aria-label="Anthropic API key"
           id="anthropic-key"
           onChange={(e) => onKeyInputChange(e.target.value)}
           onKeyDown={(e) => {

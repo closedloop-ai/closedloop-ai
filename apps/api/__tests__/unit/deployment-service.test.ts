@@ -6,7 +6,7 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
   },
 }));
@@ -40,6 +40,15 @@ describe("deploymentService", () => {
   });
 
   describe("recordDeployment", () => {
+    it("rejects a null projectId — only SESSION artifacts may be projectless", async () => {
+      // No DB mock on purpose: the guard must fail before any query runs.
+      const result = await deploymentService.recordDeployment(
+        baseInput({ projectId: null })
+      );
+
+      expect(result).toEqual({ ok: false, error: Status.BadRequest });
+    });
+
     it("creates a new artifact + detail when no row exists for externalUrl", async () => {
       const created = { id: "dep-1", deployment: { artifactId: "dep-1" } };
       const mockDb = {
@@ -74,7 +83,6 @@ describe("deploymentService", () => {
           type: ArtifactType.DEPLOYMENT,
           organizationId: ORG_ID,
           projectId: PROJECT_ID,
-          workstreamId: null,
           name: "Preview for feature branch",
           status: "success",
           externalUrl: PREVIEW_URL,
@@ -91,7 +99,7 @@ describe("deploymentService", () => {
         include: { deployment: true },
       });
       expect(mockDb.artifact.update).not.toHaveBeenCalled();
-      expect(result).toBe(created);
+      expect(result).toEqual({ ok: true, value: created });
     });
 
     it("updates the existing artifact when one matches externalUrl", async () => {
@@ -122,10 +130,10 @@ describe("deploymentService", () => {
         }),
         include: { deployment: true },
       });
-      expect(result).toBe(updated);
+      expect(result).toEqual({ ok: true, value: updated });
     });
 
-    it("connects pullRequestArtifact when pullRequestArtifactId is supplied", async () => {
+    it("connects branchArtifact when branchArtifactId is supplied", async () => {
       const mockDb = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -135,16 +143,16 @@ describe("deploymentService", () => {
       mockWithDbTx(mockDb);
 
       await deploymentService.recordDeployment(
-        baseInput({ pullRequestArtifactId: "pr-1" })
+        baseInput({ branchArtifactId: "pr-1" })
       );
 
       const data = mockDb.artifact.create.mock.calls[0][0].data;
-      expect(data.deployment.create.pullRequestArtifact).toEqual({
+      expect(data.deployment.create.branchArtifact).toEqual({
         connect: { id: "pr-1" },
       });
     });
 
-    it("disconnects pullRequestArtifact on update when set to null", async () => {
+    it("disconnects branchArtifact on update when set to null", async () => {
       const mockDb = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue({ id: "dep-99" }),
@@ -154,16 +162,16 @@ describe("deploymentService", () => {
       mockWithDbTx(mockDb);
 
       await deploymentService.recordDeployment(
-        baseInput({ pullRequestArtifactId: null })
+        baseInput({ branchArtifactId: null })
       );
 
       const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.deployment.update.pullRequestArtifact).toEqual({
+      expect(data.deployment.update.branchArtifact).toEqual({
         disconnect: true,
       });
     });
 
-    it("omits pullRequestArtifact on update when field is undefined", async () => {
+    it("omits branchArtifact on update when field is undefined", async () => {
       const mockDb = {
         artifact: {
           findFirst: vi.fn().mockResolvedValue({ id: "dep-99" }),
@@ -175,41 +183,7 @@ describe("deploymentService", () => {
       await deploymentService.recordDeployment(baseInput());
 
       const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.deployment.update).not.toHaveProperty("pullRequestArtifact");
-    });
-
-    it("disconnects workstream on update when workstreamId is null", async () => {
-      const mockDb = {
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue({ id: "dep-99" }),
-          update: vi.fn().mockResolvedValue({ id: "dep-99", deployment: null }),
-        },
-      };
-      mockWithDbTx(mockDb);
-
-      await deploymentService.recordDeployment(
-        baseInput({ workstreamId: null })
-      );
-
-      const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.workstream).toEqual({ disconnect: true });
-    });
-
-    it("connects workstream on update when workstreamId is set", async () => {
-      const mockDb = {
-        artifact: {
-          findFirst: vi.fn().mockResolvedValue({ id: "dep-99" }),
-          update: vi.fn().mockResolvedValue({ id: "dep-99", deployment: null }),
-        },
-      };
-      mockWithDbTx(mockDb);
-
-      await deploymentService.recordDeployment(
-        baseInput({ workstreamId: "ws-1" })
-      );
-
-      const data = mockDb.artifact.update.mock.calls[0][0].data;
-      expect(data.workstream).toEqual({ connect: { id: "ws-1" } });
+      expect(data.deployment.update).not.toHaveProperty("branchArtifact");
     });
   });
 
@@ -271,7 +245,6 @@ describe("deploymentService", () => {
       await deploymentService.list({
         organizationId: ORG_ID,
         projectId: PROJECT_ID,
-        workstreamId: "ws-1",
         state: "success",
       });
 
@@ -280,7 +253,6 @@ describe("deploymentService", () => {
           organizationId: ORG_ID,
           type: ArtifactType.DEPLOYMENT,
           projectId: PROJECT_ID,
-          workstreamId: "ws-1",
           status: "success",
         },
         include: { deployment: true },

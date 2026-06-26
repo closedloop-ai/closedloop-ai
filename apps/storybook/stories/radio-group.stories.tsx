@@ -8,8 +8,8 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A set of checkable buttons—known as radio buttons—where no more than one of
  * the buttons can be checked at a time.
  */
-const meta = {
-  title: "ui/RadioGroup",
+const meta: Meta<typeof RadioGroup> = {
+  title: "Design System/Primitives/Radio Group",
   component: RadioGroup,
   tags: ["autodocs"],
   argTypes: {},
@@ -27,7 +27,7 @@ const meta = {
       <label htmlFor="r3">Compact</label>
     </RadioGroup>
   ),
-} satisfies Meta<typeof RadioGroup>;
+};
 
 export default meta;
 

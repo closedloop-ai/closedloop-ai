@@ -15,13 +15,19 @@ const mockUseSidebar = vi.fn();
 const mockUseComputeTargets = vi.fn();
 const mockUseComputePreference = vi.fn();
 const mockUseSetComputePreference = vi.fn();
+const mockUseFeatureFlagEnabled = vi.fn();
 const mockMutate = vi.fn();
 const mockUseComputeTargetStatusStream = vi.fn();
+const mockUseComputeTargetHealthCheckSnapshot = vi.fn();
+const mockUseUpdateComputeTargetHarness = vi.fn();
+const mockUpdateHarnessMutate = vi.fn();
 
 // Regex patterns at top level to avoid performance issues
 const SELECT_NEWER_MAC_PATTERN = /Select newer-mac compute target/i;
 const SELECT_OLDER_MAC_PATTERN = /Select older-mac compute target/i;
 const AVAILABLE_TARGETS_PATTERN = /Available compute targets/i;
+const LAUNCH_DESKTOP_APP_PATTERN = /Launch Desktop App/i;
+const RE_CHANGE_HARNESS = /change-harness/i;
 
 vi.mock("@repo/auth/client", () => ({
   useUser: () => mockUseUser(),
@@ -81,7 +87,7 @@ vi.mock("@repo/design-system/components/ui/popover", () => ({
   ),
 }));
 
-vi.mock("@/hooks/queries/use-compute-preference", () => ({
+vi.mock("@repo/app/compute/hooks/use-compute-preference", () => ({
   useComputePreference: (...args: unknown[]) =>
     mockUseComputePreference(...args),
   useSetComputePreference: (...args: unknown[]) =>
@@ -90,13 +96,64 @@ vi.mock("@/hooks/queries/use-compute-preference", () => ({
 
 vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useComputeTargets: (...args: unknown[]) => mockUseComputeTargets(...args),
+  useComputeTargetHealthCheckSnapshot: (...args: unknown[]) =>
+    mockUseComputeTargetHealthCheckSnapshot(...args),
+  useUpdateComputeTargetHarness: (...args: unknown[]) =>
+    mockUseUpdateComputeTargetHarness(...args),
 }));
+
+// Stand-in HarnessSelector: surfaces the props the popover computes and lets a
+// test trigger a harness change deterministically (no Radix internals). The
+// real pure helpers (deriveAvailableHarnessesFromSnapshot, resolveDefaultHarness)
+// are kept so the popover's availability/selection logic is exercised for real.
+vi.mock("@/components/engineer/harness-selector", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("@/components/engineer/harness-selector")
+    >();
+  return {
+    ...original,
+    HarnessSelector: ({
+      availableHarnesses,
+      selectedHarness,
+      onHarnessChange,
+    }: {
+      availableHarnesses: HarnessType[];
+      selectedHarness: HarnessType;
+      onHarnessChange: (harness: HarnessType) => void;
+    }) => (
+      <div
+        data-available={availableHarnesses.join(",")}
+        data-selected={selectedHarness}
+        data-testid="harness-selector"
+      >
+        <button
+          onClick={() => onHarnessChange(HarnessType.Codex)}
+          type="button"
+        >
+          change-harness
+        </button>
+      </div>
+    ),
+  };
+});
 
 vi.mock("@/hooks/queries/use-compute-target-status-stream", () => ({
   useComputeTargetStatusStream: (...args: unknown[]) =>
     mockUseComputeTargetStatusStream(...args),
 }));
 
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (...args: unknown[]) =>
+    mockUseFeatureFlagEnabled(...args),
+}));
+
+import {
+  type ComputeTargetHealthCheckSnapshot,
+  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+  HARNESS_SELECTION_FEATURE_FLAG_KEY,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import type React from "react";
 import { ComputeTargetPopover } from "../compute-target-popover";
 
@@ -105,7 +162,7 @@ const RE_SELECT_LOCAL = /Select Local compute target/i;
 const RE_SELECT_MY_MAC = /Select my-mac compute target/i;
 const RE_INSTALL_DESKTOP = /Install Desktop App/i;
 const RE_LOCAL_COMPUTE_REQUIRES =
-  /Local compute requires the ClosedLoop Desktop app/i;
+  /Local compute requires the Closedloop Desktop app/i;
 const RE_DESKTOP_OFFLINE = /Desktop app is offline/i;
 const RE_NOT_REACHABLE = /Your local compute target is not reachable/i;
 const RE_LIVE_UNAVAILABLE = /Live status updates unavailable/i;
@@ -143,13 +200,52 @@ describe("ComputeTargetPopover", () => {
       data: { preferredComputeMode: "CLOUD" },
       isLoading: false,
     });
+    mockUseFeatureFlagEnabled.mockReturnValue(false);
     mockMutate.mockReset();
     mockUseSetComputePreference.mockReturnValue({
       mutate: mockMutate,
       isPending: false,
     });
     mockUseComputeTargetStatusStream.mockReturnValue(undefined);
+    mockUpdateHarnessMutate.mockReset();
+    mockUseUpdateComputeTargetHarness.mockReturnValue({
+      mutate: mockUpdateHarnessMutate,
+    });
+    mockUseComputeTargetHealthCheckSnapshot.mockReturnValue({ data: null });
   });
+
+  // Enable the explicit-selection and harness-selection flags independently.
+  function setFlags({
+    explicit,
+    harness,
+  }: {
+    explicit: boolean;
+    harness: boolean;
+  }) {
+    mockUseFeatureFlagEnabled.mockImplementation((key: string) => {
+      if (key === EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY) {
+        return explicit;
+      }
+      if (key === HARNESS_SELECTION_FEATURE_FLAG_KEY) {
+        return harness;
+      }
+      return false;
+    });
+  }
+
+  function snapshotWith(harnesses: HarnessType[]): {
+    data: ComputeTargetHealthCheckSnapshot;
+  } {
+    const mcpServers: Record<string, { available: boolean }> = {};
+    for (const harness of harnesses) {
+      mcpServers[harness] = { available: true };
+    }
+    // Partial fixture — deriveAvailableHarnessesFromSnapshot only reads
+    // result.mcpServers.
+    return {
+      data: { result: { mcpServers } } as ComputeTargetHealthCheckSnapshot,
+    };
+  }
 
   describe("default render", () => {
     it("shows Cloud option", () => {
@@ -297,8 +393,18 @@ describe("ComputeTargetPopover", () => {
 
       render(<ComputeTargetPopover />);
 
+      expect(screen.getByTestId("sidebar-menu-button")).toHaveAttribute(
+        "aria-label",
+        "Compute: Local offline"
+      );
       expect(screen.getByText(RE_DESKTOP_OFFLINE)).toBeInTheDocument();
       expect(screen.getByText(RE_NOT_REACHABLE)).toBeInTheDocument();
+      expect(screen.getByTestId("offline-remediation-actions")).toHaveClass(
+        "flex-col"
+      );
+      expect(
+        screen.getByRole("button", { name: LAUNCH_DESKTOP_APP_PATTERN })
+      ).toHaveClass("w-full");
 
       // Popover content still present
       expect(screen.getByTestId("popover-content")).toBeInTheDocument();
@@ -317,6 +423,28 @@ describe("ComputeTargetPopover", () => {
       render(<ComputeTargetPopover />);
 
       expect(screen.queryByText(RE_DESKTOP_OFFLINE)).toBeNull();
+    });
+
+    it("does not render inferred Cloud as selected when explicit selection is required", () => {
+      mockUseFeatureFlagEnabled.mockReturnValue(true);
+      mockUseComputeTargets.mockReturnValue({
+        data: [offlineTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: { preferredComputeMode: "CLOUD", isExplicit: false },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      expect(screen.getByTestId("sidebar-menu-button")).toHaveAttribute(
+        "aria-label",
+        "Select target"
+      );
+      expect(
+        screen.getByRole("button", { name: RE_SELECT_CLOUD })
+      ).toHaveAttribute("aria-pressed", "false");
     });
   });
 
@@ -480,6 +608,135 @@ describe("ComputeTargetPopover", () => {
       // Now shows degraded grey indicator — NOT green Online
       expect(screen.getByText(RE_LIVE_UNAVAILABLE)).toBeInTheDocument();
       expect(screen.getByLabelText("SSE stream degraded")).toBeInTheDocument();
+    });
+  });
+
+  describe("AI harness section", () => {
+    const localTarget = {
+      ...onlineTarget,
+      id: "ct-local",
+      selectedHarness: HarnessType.Claude,
+    };
+
+    it("Cloud selection renders a Claude/Codex picker and routes change to setComputePreference", async () => {
+      const user = userEvent.setup();
+      setFlags({ explicit: true, harness: true });
+      mockUseComputeTargets.mockReturnValue({ data: [], isLoading: false });
+      mockUseComputePreference.mockReturnValue({
+        data: {
+          preferredComputeMode: "CLOUD",
+          isExplicit: true,
+          selectedHarness: HarnessType.Claude,
+        },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      const selector = screen.getByTestId("harness-selector");
+      expect(selector).toHaveAttribute(
+        "data-available",
+        `${HarnessType.Claude},${HarnessType.Codex}`
+      );
+      expect(selector).toHaveAttribute("data-selected", HarnessType.Claude);
+
+      await user.click(screen.getByRole("button", { name: RE_CHANGE_HARNESS }));
+
+      expect(mockMutate).toHaveBeenCalledWith({
+        mode: "CLOUD",
+        selectedHarness: HarnessType.Codex,
+      });
+      expect(mockUpdateHarnessMutate).not.toHaveBeenCalled();
+    });
+
+    it("Local target with a two-harness snapshot routes change to updateComputeTargetHarness", async () => {
+      const user = userEvent.setup();
+      setFlags({ explicit: true, harness: true });
+      mockUseComputeTargets.mockReturnValue({
+        data: [localTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: {
+          preferredComputeMode: "LOCAL",
+          isExplicit: true,
+          computeTargetId: "ct-local",
+        },
+        isLoading: false,
+      });
+      mockUseComputeTargetHealthCheckSnapshot.mockReturnValue(
+        snapshotWith([HarnessType.Claude, HarnessType.Codex])
+      );
+
+      render(<ComputeTargetPopover />);
+
+      const selector = screen.getByTestId("harness-selector");
+      expect(selector).toHaveAttribute(
+        "data-available",
+        `${HarnessType.Claude},${HarnessType.Codex}`
+      );
+
+      await user.click(screen.getByRole("button", { name: RE_CHANGE_HARNESS }));
+
+      expect(mockUpdateHarnessMutate).toHaveBeenCalledWith({
+        id: "ct-local",
+        harness: HarnessType.Codex,
+      });
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
+
+    it("Local target with a single-harness snapshot offers only that harness", () => {
+      setFlags({ explicit: true, harness: true });
+      mockUseComputeTargets.mockReturnValue({
+        data: [localTarget],
+        isLoading: false,
+      });
+      mockUseComputePreference.mockReturnValue({
+        data: {
+          preferredComputeMode: "LOCAL",
+          isExplicit: true,
+          computeTargetId: "ct-local",
+        },
+        isLoading: false,
+      });
+      mockUseComputeTargetHealthCheckSnapshot.mockReturnValue(
+        snapshotWith([HarnessType.Claude])
+      );
+
+      render(<ComputeTargetPopover />);
+
+      expect(screen.getByTestId("harness-selector")).toHaveAttribute(
+        "data-available",
+        HarnessType.Claude
+      );
+    });
+
+    it("hides the harness section when harness-selection is OFF", () => {
+      setFlags({ explicit: true, harness: false });
+      mockUseComputePreference.mockReturnValue({
+        data: { preferredComputeMode: "CLOUD", isExplicit: true },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      expect(screen.queryByTestId("harness-selector")).toBeNull();
+    });
+
+    it("hides the harness section when explicit-compute-selection is OFF (existing behavior unchanged)", () => {
+      setFlags({ explicit: false, harness: true });
+      mockUseComputePreference.mockReturnValue({
+        data: { preferredComputeMode: "CLOUD", isExplicit: true },
+        isLoading: false,
+      });
+
+      render(<ComputeTargetPopover />);
+
+      expect(screen.queryByTestId("harness-selector")).toBeNull();
+      // Existing Cloud control still rendered.
+      expect(
+        screen.getByRole("button", { name: RE_SELECT_CLOUD })
+      ).toBeInTheDocument();
     });
   });
 });

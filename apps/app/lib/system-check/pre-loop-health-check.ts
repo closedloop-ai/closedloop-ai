@@ -16,10 +16,13 @@ import {
 
 /** Maximum time a pre-loop health-check fetch may block a command before fail-open. */
 export const PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS = 5000;
+/** Maximum pre-loop health-check wait when plugin auto-update may run. */
+export const PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS = 45_000;
 
 /** Launch commands currently protected by the pre-loop system-check gate. */
 export const PreLoopCommand = {
   GeneratePlan: "generate_plan",
+  GeneratePrd: "generate_prd",
   ExecutePlan: "execute_plan",
 } as const;
 export type PreLoopCommand =
@@ -33,6 +36,7 @@ export const PreLoopAnalyticsEvent = {
   SystemCheckResolved: "pre_loop_system_check_resolved",
   SystemCheckCancelled: "pre_loop_system_check_cancelled",
   SystemCheckUnavailable: "pre_loop_system_check_unavailable",
+  ComputeSelectionBlocked: "pre_loop_compute_selection_blocked",
 } as const;
 export type PreLoopAnalyticsEvent =
   (typeof PreLoopAnalyticsEvent)[keyof typeof PreLoopAnalyticsEvent];
@@ -43,6 +47,7 @@ export type PreLoopTarget = {
   computeTargetId: string;
   label: string;
   isOnline: boolean;
+  isOwnedByCurrentUser: boolean;
   mode: "local_compute_target";
 };
 
@@ -50,10 +55,15 @@ export type PreLoopTarget = {
 export type PreLoopHealthCheckOutcome =
   | { status: "executed"; attemptId: string }
   | { status: "blocked"; attemptId: string }
+  | { status: "blocked_missing_compute_selection"; attemptId: string }
   | { status: "duplicate_ignored"; attemptId: null }
   | { status: "skipped_no_local_target"; attemptId: string }
   | { status: "blocked_unavailable"; attemptId: string }
   | { status: "cancelled"; attemptId: string };
+
+export type PreLoopExecutionContext = {
+  computeTargetId?: string | null;
+};
 
 /** Command metadata supplied by Generate Plan and Execute Plan callers. */
 export type PreLoopMetadata = {
@@ -95,20 +105,32 @@ export function isPreLoopHealthCheckFresh({
   entry,
   expectedMcpUrl,
   latestVersion = null,
+  pluginAutoUpdateEnabled = false,
   now = Date.now(),
 }: {
   entry: HealthCheckCacheEntry;
   expectedMcpUrl: string | null;
   latestVersion?: string | null;
+  pluginAutoUpdateEnabled?: boolean;
   now?: number;
 }): boolean {
   return isHealthCheckCacheEntryFresh({
     entry,
     expectedMcpUrl,
     latestVersion,
+    pluginAutoUpdateEnabled,
     now,
     requiredOnly: true,
   });
+}
+
+/** Selects the pre-loop health-check timeout for the request mutation mode. */
+export function getPreLoopHealthCheckTimeoutMs(
+  pluginAutoUpdateEnabled = false
+): number {
+  return pluginAutoUpdateEnabled
+    ? PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS
+    : PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS;
 }
 
 /** Extracts required renderable checks that currently fail. */

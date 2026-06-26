@@ -1,20 +1,20 @@
-import { timingSafeEqual } from "node:crypto";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { LoopStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { clearLoopTokens } from "@/app/loops/loop-token-cleanup";
 import { loopsService } from "@/app/loops/service";
+import { validateCronSecret } from "@/lib/auth/cron-secret";
 import { stopLoopTask } from "@/lib/loops/loop-ecs";
 import { scrubContextPackSecrets } from "@/lib/loops/loop-state";
+import { emitReapTransition } from "@/lib/observability/loop-runner-metrics";
 import { scheduleLogFlush } from "@/lib/route-utils";
-
-type StuckLoop = {
-  id: string;
-  organizationId: string;
-  status: string;
-  containerId: string | null;
-  s3StateKey: string | null;
-  computeTargetId: string | null;
-};
+import {
+  buildTimeoutEventData,
+  classifyDesktopReaperContext,
+  HEARTBEAT_STALE_THRESHOLD_MS,
+  type ReaperContext,
+  type StuckLoop,
+} from "./reaper-helpers";
 
 /**
  * Attempt to time out a single stuck loop:
@@ -24,12 +24,19 @@ type StuckLoop = {
  *
  * Returns true if the loop was actually timed out.
  *
+ * When `reaper` is provided, the audit event carries a `data.reaper` payload
+ * and the `loop.runner.reap.transition` metric is emitted.
+ *
  * NOTE: If stopLoopTask fails, the loop is still marked TIMED_OUT in the DB
  * but the ECS task may continue running as an orphan. This is acceptable —
  * ECS tasks self-terminate via the harness timeout (24h) and are bounded by
  * ECS task-level stopTimeout configuration.
  */
-async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
+async function timeoutLoop(
+  loop: StuckLoop,
+  now: Date,
+  reaper?: ReaperContext
+): Promise<boolean> {
   // Only stop ECS tasks. Desktop loops store a command ID in containerId
   // which must NOT be passed to the ECS stop API. Desktop loops are only
   // marked TIMED_OUT; the desktop client handles its own process cleanup.
@@ -47,8 +54,8 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
 
   const timeoutMessage = `Loop timed out in ${loop.status} status (cron safety net)`;
 
-  const result = await withDb((db) =>
-    db.loop.updateMany({
+  const result = await withDb.tx(async (db) => {
+    const cas = await db.loop.updateMany({
       where: {
         id: loop.id,
         organizationId: loop.organizationId,
@@ -61,8 +68,19 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
         completedAt: now,
         error: { code: "TIMED_OUT", message: timeoutMessage },
       },
-    })
-  );
+    });
+
+    if (cas.count > 0) {
+      await clearLoopTokens(
+        db,
+        loop.id,
+        loop.organizationId,
+        LoopStatus.TIMED_OUT
+      );
+    }
+
+    return cas;
+  });
 
   if (result.count === 0) {
     log.warn(
@@ -89,17 +107,18 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
   try {
     await loopsService.addEvent(loop.id, loop.organizationId, {
       type: "error",
-      data: {
-        code: "TIMED_OUT",
-        message: timeoutMessage,
-        timestamp: now.toISOString(),
-      },
+      data: buildTimeoutEventData(timeoutMessage, now, reaper),
     });
   } catch (eventErr) {
     log.warn("[timeout-loops] Failed to record timeout event", {
       loopId: loop.id,
       error: eventErr instanceof Error ? eventErr.message : String(eventErr),
     });
+  }
+
+  // Emit reap-transition metric when reaper context is provided
+  if (reaper) {
+    emitReapTransition(loop.id, reaper.reason);
   }
 
   log.info("[timeout-loops] Timed out stuck loop", {
@@ -178,32 +197,50 @@ async function warnGhostLoopAnomalies(now: Date): Promise<void> {
  * passed via `Authorization: Bearer <secret>` header (e.g., Vercel Cron).
  *
  * Detection strategy:
- * - RUNNING: Activity-based — only reap if the loop has had NO events in the
- *   last 75 minutes. The harness reports output events every ~5s, so 75
+ * - ECS RUNNING: Activity-based — only reap if the loop has had NO events in
+ *   the last 75 minutes. The harness reports output events every ~5s, so 75
  *   minutes of silence means the container is dead. Active loops are never
  *   reaped regardless of how long they've been running (6+ hours is normal).
  *   A single recent event = alive, don't touch it.
+ * - Desktop RUNNING (heartbeat-eligible): Heartbeat-staleness — loops that
+ *   advertise heartbeat support (lastRunnerHeartbeatAt IS NOT NULL or
+ *   runnerCapabilities.loopRunnerHeartbeatSupported=true) are reaped when
+ *   the heartbeat (or startedAt if no heartbeat received yet) exceeds 2h.
+ * - Desktop RUNNING (legacy): Age-based — created > 24h ago. Applies only
+ *   to Desktop clients that do NOT advertise heartbeat capability.
+ * - Manual RUNNING: 7-day inactivity — created > 7 days ago AND no events in
+ *   7 days. Manual loops are long-lived user-initiated loops with no automated
+ *   heartbeat; they stay alive as long as events keep flowing.
  * - CLAIMED: createdAt > 90 minutes ago (container never reported "started")
  * - PENDING: createdAt > 30 minutes ago (never picked up by a container)
  */
 export const GET = async (request: Request): Promise<Response> => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    log.error("[timeout-loops] CRON_SECRET is not configured");
-    scheduleLogFlush();
-    return new Response("Internal Server Error", { status: 500 });
-  }
-
-  const authHeader = request.headers.get("authorization") ?? "";
-  const expected = `Bearer ${cronSecret}`;
-  const isValid =
-    authHeader.length === expected.length &&
-    timingSafeEqual(Buffer.from(authHeader), Buffer.from(expected));
-  if (!isValid) {
-    return new Response("Unauthorized", { status: 401 });
+  const denied = validateCronSecret(request, "[timeout-loops]");
+  if (denied) {
+    return denied;
   }
 
   const now = new Date();
+
+  // Release deferred (BLOCKED) loops whose dependency blockers have all reached
+  // a terminal status, then force-cancel any BLOCKED loop whose blocker was
+  // abandoned and left it stranded past the staleness threshold. Both are
+  // isolated from the timeout sweep below so a reconcile failure never blocks
+  // reaping stuck loops.
+  try {
+    await loopsService.reconcileBlockedLoops();
+  } catch (e) {
+    log.error("[timeout-loops] Blocked-loop reconciliation failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+  try {
+    await loopsService.reapStaleBlockedLoops();
+  } catch (e) {
+    log.error("[timeout-loops] Stale blocked-loop reaping failed", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
 
   // RUNNING ECS loops: activity-based detection.
   // The harness reports output events every ~5s. If a RUNNING loop has had
@@ -213,11 +250,23 @@ export const GET = async (request: Request): Promise<Response> => {
   // be reaped.
   const activityCutoff = new Date(now.getTime() - 75 * 60 * 1000);
 
-  // RUNNING desktop loops: use createdAt-based detection (24h).
-  // Desktop loops don't write to the LoopEvent table -- their progress
-  // events flow through the desktop command channel -- so the activity-based
-  // "events.none" check would always match. Use a generous 24h age cutoff.
+  // RUNNING desktop loops (legacy): use createdAt-based detection (24h).
+  // Applies only to Desktop clients that do NOT advertise heartbeat
+  // capability. Heartbeat-capable Desktop loops are reaped via the
+  // heartbeat-staleness branch below.
   const desktopRunningCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  // RUNNING manual loops: 7-day inactivity window.
+  // Manual loops are long-lived user-initiated loops (via MCP/Claude Code)
+  // with no automated heartbeat. They stay alive as long as events flow.
+  const manualRunningCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  // Heartbeat-capable Desktop RUNNING loops: 2h stale threshold.
+  // Applies when lastRunnerHeartbeatAt is stale, or when it is NULL but
+  // startedAt is older than the threshold (desktop_no_heartbeat case).
+  const heartbeatStaleCutoff = new Date(
+    now.getTime() - HEARTBEAT_STALE_THRESHOLD_MS
+  );
 
   // 90 minutes for CLAIMED loops (container may have never reported started)
   const claimedCutoff = new Date(now.getTime() - 90 * 60 * 1000);
@@ -226,26 +275,74 @@ export const GET = async (request: Request): Promise<Response> => {
 
   // Find stuck loops across all categories.
   // ECS RUNNING: activity-based (no events in 75 min = dead container).
-  // Desktop RUNNING: age-based (created > 24h ago).
+  // Manual RUNNING: inactivity-based (no events in 7 days).
+  // Desktop RUNNING (heartbeat): heartbeat/startedAt stale > 2h.
+  // Desktop RUNNING (legacy): createdAt > 24h (no heartbeat capability).
   // CLAIMED/PENDING: both ECS and desktop are reaped at standard thresholds.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {
         OR: [
-          // ECS RUNNING: no events in 75 min
+          // ECS RUNNING: no events in 75 min (excludes manual loops)
           {
             status: LoopStatus.RUNNING,
             computeTargetId: null,
+            command: { not: LoopCommand.Manual },
             events: {
               none: {
                 createdAt: { gte: activityCutoff },
               },
             },
           },
-          // Desktop RUNNING: created > 24h ago
+          // Manual RUNNING: no events in 7 days
+          {
+            status: LoopStatus.RUNNING,
+            command: LoopCommand.Manual,
+            createdAt: { lt: manualRunningCutoff },
+            events: {
+              none: {
+                createdAt: { gte: manualRunningCutoff },
+              },
+            },
+          },
+          // Desktop RUNNING (heartbeat-eligible): loop advertises heartbeat
+          // support (lastRunnerHeartbeatAt IS NOT NULL or
+          // runnerCapabilities.loopRunnerHeartbeatSupported=true) and its
+          // heartbeat (or startedAt when no heartbeat yet received) is stale.
           {
             status: LoopStatus.RUNNING,
             computeTargetId: { not: null },
+            OR: [
+              // lastRunnerHeartbeatAt IS NOT NULL and stale
+              {
+                lastRunnerHeartbeatAt: { not: null, lt: heartbeatStaleCutoff },
+              },
+              // No heartbeat yet received, capability advertised, and
+              // startedAt is stale — mutually exclusive with the
+              // stale-heartbeat branch above
+              {
+                lastRunnerHeartbeatAt: null,
+                runnerCapabilities: {
+                  path: ["loopRunnerHeartbeatSupported"],
+                  equals: true,
+                },
+                startedAt: { not: null, lt: heartbeatStaleCutoff },
+              },
+            ],
+          },
+          // Desktop RUNNING (legacy safety net): no heartbeat ever received
+          // and created > 24h ago. Loops that advertise heartbeat support but
+          // never sent one are already caught by the second sub-clause of the
+          // heartbeat-eligible branch above (overlap is benign — Prisma OR
+          // returns each row once). A previous NOT-path predicate on
+          // runnerCapabilities was removed because PostgreSQL 3-valued logic
+          // makes `NOT (jsonb_path = 'true')` evaluate to NULL when the key
+          // is missing or the column is NULL, silently excluding the exact
+          // population this safety net is meant to catch.
+          {
+            status: LoopStatus.RUNNING,
+            computeTargetId: { not: null },
+            lastRunnerHeartbeatAt: null,
             createdAt: { lt: desktopRunningCutoff },
           },
           // CLAIMED: both ECS and desktop
@@ -267,6 +364,10 @@ export const GET = async (request: Request): Promise<Response> => {
         containerId: true,
         s3StateKey: true,
         computeTargetId: true,
+        lastRunnerHeartbeatAt: true,
+        runnerCapabilities: true,
+        tokenExpiresAt: true,
+        startedAt: true,
       },
     })
   );
@@ -294,7 +395,8 @@ export const GET = async (request: Request): Promise<Response> => {
 
   let timedOutCount = 0;
   for (const loop of stuckLoops) {
-    if (await timeoutLoop(loop, now)) {
+    const reaper = classifyDesktopReaperContext(loop, heartbeatStaleCutoff);
+    if (await timeoutLoop(loop, now, reaper)) {
       timedOutCount++;
     }
   }

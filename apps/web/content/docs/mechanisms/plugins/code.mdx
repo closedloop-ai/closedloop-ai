@@ -1,15 +1,15 @@
 ---
 title: code plugin
-description: The hub plugin that implements the full ClosedLoop.ai autonomous SDLC.
+description: The hub plugin that implements the full Closedloop.ai autonomous SDLC.
 ---
 
-The `code` plugin is the hub of ClosedLoop.ai. It implements the full autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation — through an orchestrator prompt and a roughly 1,351-line shell loop runner.
+The `code` plugin is the hub of Closedloop.ai. It implements the full autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation — through an orchestrator prompt and a roughly 1,351-line shell loop runner.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `/code:code` | Begin a ClosedLoop coding session. Flags: `[working-directory]`, `--prompt <name>`, `--prd <file>`, `--plan <file>`. |
+| `/code:code` | Begin a Closedloop coding session. Flags: `[working-directory]`, `--prompt <name>`, `--prd <file>`, `--plan <file>`. |
 | `/code:amend-plan` | Interactively amend a running plan. Flags: `--workdir <path>`, `--message "<text>"`, `--state-file <path>`. |
 | `/code:cancel-code` | Stop a running loop by removing the state file. |
 | `/code:plan-with-codex` | Run a Claude-vs-Codex debate loop to refine a plan. Flags: `--max-rounds N` (default 15), `--plan-file PATH`, `--codex-model MODEL` (default `gpt-5.4`), then a `<prompt>`. |
@@ -93,7 +93,7 @@ All prefixed `CLOSEDLOOP_*` unless noted. Written to `{WORKDIR}/.closedloop-ai/c
 
 Plus:
 
-- `CLAUDE_BIN` — claude executable path (set by closedloop-electron when launching)
+- `CLAUDE_BIN` — claude executable path (set by the Desktop app when launching)
 - `POST_LOOP_REVIEW_CYCLES` — default 2 post-loop review cycles
 
 ## Artifacts produced

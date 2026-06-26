@@ -14,8 +14,8 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A window overlaid on either the primary window or another dialog window,
  * rendering the content underneath inert.
  */
-const meta = {
-  title: "ui/Dialog",
+const meta: Meta<typeof Dialog> = {
+  title: "Design System/Primitives/Dialog",
   component: Dialog,
   tags: ["autodocs"],
   argTypes: {},
@@ -49,7 +49,7 @@ const meta = {
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof Dialog>;
+};
 
 export default meta;
 

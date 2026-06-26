@@ -7,6 +7,7 @@ import {
   INTERNAL_SECRET,
   makeEnvelope,
   makeSocketEventRequest,
+  mockGatewayOwnerAuthContext,
 } from "./utils/test-fixtures";
 
 vi.mock("@/lib/desktop-command-store", async (importOriginal) => {
@@ -69,7 +70,7 @@ describe("POST /internal/relay/socket-event — desktop.command.event accepted c
         eventType: "chunk",
         data: { text: "hello" },
       },
-      { targetId: "target-1" }
+      { targetId: "target-1", auth: mockGatewayOwnerAuthContext }
     );
 
     const response = await POST(request);
@@ -100,7 +101,7 @@ describe("POST /internal/relay/socket-event — desktop.command.event sequence_g
         eventType: "chunk",
         data: { text: "out-of-order" },
       },
-      { targetId: "target-1" }
+      { targetId: "target-1", auth: mockGatewayOwnerAuthContext }
     );
 
     const response = await POST(request);
@@ -109,6 +110,44 @@ describe("POST /internal/relay/socket-event — desktop.command.event sequence_g
     const body = await response.json();
     expect(body.emit).toHaveLength(1);
     expect(body.emit[0].event).toBe("desktop.hello.ack");
+    expect(body.emit[0].payload).toEqual(
+      makeEnvelope({
+        computeTargetId: "target-1",
+        sessionId: expect.any(String),
+        serverTime: expect.any(String),
+        resumeFromSequence: { "cmd-1": 0 },
+      })
+    );
+    expect(body.emit[0].payload.clerkUserId).toBeUndefined();
+    expect(body.emit[0].payload.organizationId).toBeUndefined();
+    expect(body.emit[0].payload.userId).toBeUndefined();
+  });
+
+  it("omits gateway-owner identity on sequence_gap when Clerk id is missing", async () => {
+    vi.mocked(desktopCommandStore.ingestCommandEvent).mockResolvedValue({
+      accepted: false,
+      reason: "sequence_gap",
+      expected: 2,
+    });
+
+    const request = makeSocketEventRequest(
+      "desktop.command.event",
+      {
+        commandId: "cmd-1",
+        sequence: 5,
+        eventType: "chunk",
+        data: { text: "out-of-order" },
+      },
+      {
+        targetId: "target-1",
+        auth: { organizationId: "org-1", userId: "user_db_1" },
+      }
+    );
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
     expect(body.emit[0].payload).toEqual(
       makeEnvelope({
         computeTargetId: "target-1",

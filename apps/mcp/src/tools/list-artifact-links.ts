@@ -3,7 +3,9 @@ import { LinkType } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  ARTIFACT_LINK_DIRECTION_HELP,
   ARTIFACT_LINK_SLUG_HELP,
+  ARTIFACT_LINK_TYPE_HELP,
   asRecord,
   buildPaginatedPayload,
   MAX_PAGE_LIMIT,
@@ -27,18 +29,20 @@ export function registerListArtifactLinks(
   server.registerTool(
     "list-artifact-links",
     {
-      description:
-        "List typed relationships for an artifact (e.g. PRD-to-plan, plan-to-feature). Pass the artifact id (UUID) or supported slug (PRD-*, PLN-*, FEA-*) verbatim for artifactId.",
+      description: `List typed, directional relationships for an artifact (e.g. PRD-to-plan, feature-to-plan). Pass the artifact id (UUID) or supported slug (PRD-*, PLN-*, FEA-*) verbatim for artifactId. ${ARTIFACT_LINK_DIRECTION_HELP} ${ARTIFACT_LINK_TYPE_HELP}`,
       inputSchema: {
         artifactId: z
           .string()
           .describe(`Artifact ID. ${ARTIFACT_LINK_SLUG_HELP}`),
-        linkType: z.enum(LinkType).optional().describe("Filter by link type"),
+        linkType: z
+          .enum(LinkType)
+          .optional()
+          .describe(`Filter by link type. ${ARTIFACT_LINK_TYPE_HELP}`),
         direction: z
           .enum(["source", "target", "both"])
           .optional()
           .describe(
-            "Filter by link direction: 'source' for incoming links, 'target' for outgoing links, 'both' for all"
+            "Which links to return relative to artifactId (the param value names the OTHER endpoint's role). 'target' = outgoing links where artifactId is the source: its downstream/produced children (e.g. the plans a feature produces). 'source' = incoming links where artifactId is the target: its upstream producers (e.g. the feature that produced this plan). 'both' = all (default)."
           ),
         mode: z
           .enum(["direct", "tree"])

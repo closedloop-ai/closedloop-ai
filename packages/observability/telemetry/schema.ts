@@ -1,3 +1,4 @@
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -31,15 +32,19 @@ export const TelemetryCategory = {
   CommandCancelled: "command.cancelled",
   CommandGatewayError: "command.gateway_error",
   DesktopOutboundNetworkDecision: "desktop.outbound_network_decision",
+  DesktopShutdownFailed: "desktop.shutdown_failed",
   DesktopSupportUpload: "desktop.support_upload",
   PreflightBinaryNotFound: "preflight.binary_not_found",
   PreflightScriptNotFound: "preflight.script_not_found",
   PreflightSpawnFailed: "preflight.spawn_failed",
   ElectronUpdateInitiated: "electron_update.initiated",
-  // Q-001: ElectronUpdateSucceeded requires cross-repo coordination with closedloop-electron
+  // ElectronUpdateSucceeded is emitted by Desktop update producers in apps/desktop.
   ElectronUpdateSucceeded: "electron_update.succeeded",
-  // Q-001: ElectronUpdateFailed requires cross-repo coordination with closedloop-electron
+  // ElectronUpdateFailed is emitted by Desktop update producers in apps/desktop.
   ElectronUpdateFailed: "electron_update.failed",
+  PluginUpdateAttempted: "plugin_update.attempted",
+  PluginUpdateSucceeded: "plugin_update.succeeded",
+  PluginUpdateFailed: "plugin_update.failed",
   // Desktop onboarding popup events (AC-001)
   OnboardingPopupShown: "onboarding.popup_shown",
   OnboardingPopupCtaClicked: "onboarding.popup_cta_clicked",
@@ -58,6 +63,8 @@ export const TelemetryCategory = {
   LoopPerfSpawn: "loop.perf.spawn",
   LoopPerfParseFailure: "loop.perf.parse_failure",
   LoopPerfUnknownEventVariant: "loop.perf.unknown_event_variant",
+  // FEA-1969 — desktop genai-prices could not price a model's token usage.
+  TokenCostPricingMiss: "token_cost.pricing_miss",
 } as const;
 
 export type TelemetryCategory =
@@ -148,16 +155,41 @@ export const SupportUploadReason = {
 export type SupportUploadReason =
   (typeof SupportUploadReason)[keyof typeof SupportUploadReason];
 
+export const DesktopUpdateTrigger = {
+  Unknown: "unknown",
+  UpdaterError: "updater-error",
+  CheckForUpdates: "check-for-updates",
+  ManualCheck: "manual-check",
+  ApplyBeforeDownloaded: "apply-before-downloaded",
+  RendererApplyUpdate: "renderer-apply-update",
+} as const;
+
+export type DesktopUpdateTrigger =
+  (typeof DesktopUpdateTrigger)[keyof typeof DesktopUpdateTrigger];
+
+export const DesktopShutdownTrigger = {
+  Unknown: "unknown",
+  BeforeQuit: "before-quit",
+  ShutdownSequence: "shutdown-sequence",
+  ShutdownRejected: "shutdown-rejected",
+  OuterHardExit: "outer-hard-exit",
+} as const;
+
+export type DesktopShutdownTrigger =
+  (typeof DesktopShutdownTrigger)[keyof typeof DesktopShutdownTrigger];
+
 function objectValues<T extends Record<string, string>>(values: T) {
   return new Set(Object.values(values));
 }
 
 /**
- * Preserve desktop-originated outbound telemetry across version skew by mapping
- * newer classification strings to a bounded generic value instead of rejecting
- * the whole event. Non-string values remain invalid.
+ * Preserve desktop-originated telemetry across version skew by mapping newer
+ * wire strings to a bounded generic value instead of rejecting the whole event.
+ * Non-string values remain invalid.
  */
-function tolerantOutboundValue<T extends Record<string, string>>(values: T) {
+function tolerantDesktopTelemetryValue<
+  T extends { Unknown: string } & Record<string, string>,
+>(values: T) {
   const knownValues = objectValues(values);
   return z.preprocess((value) => {
     if (typeof value !== "string") {
@@ -258,10 +290,12 @@ const decisionTableVerificationDiagnosticsSchema = z.discriminatedUnion(
 );
 
 const outboundNetworkDiagnosticsSchema = z.object({
-  surface: tolerantOutboundValue(OutboundNetworkSurface),
-  decision: tolerantOutboundValue(OutboundNetworkDecision),
-  reason: tolerantOutboundValue(OutboundNetworkDecisionReason),
-  destinationClass: tolerantOutboundValue(OutboundNetworkDestinationClass),
+  surface: tolerantDesktopTelemetryValue(OutboundNetworkSurface),
+  decision: tolerantDesktopTelemetryValue(OutboundNetworkDecision),
+  reason: tolerantDesktopTelemetryValue(OutboundNetworkDecisionReason),
+  destinationClass: tolerantDesktopTelemetryValue(
+    OutboundNetworkDestinationClass
+  ),
   protocol: z.string().optional(),
   hostname: z.string().optional(),
   port: z.string().optional(),
@@ -274,9 +308,29 @@ const supportUploadDiagnosticsSchema = z.object({
   s3StateKeySuffix: z.string().optional(),
   attemptedLogicalNames: z.array(z.string()).max(4).optional(),
   attemptedUploadedNames: z.array(z.string()).max(4).optional(),
-  reason: tolerantOutboundValue(SupportUploadReason).optional(),
+  reason: tolerantDesktopTelemetryValue(SupportUploadReason).optional(),
   uploadedCount: z.number().int().nonnegative().optional(),
   durationMs: z.number().int().nonnegative().optional(),
+});
+
+const desktopUpdateDiagnosticsSchema = z.object({
+  trigger: tolerantDesktopTelemetryValue(DesktopUpdateTrigger),
+  status: z.string().max(64).optional(),
+  version: z.string().max(64).optional(),
+  percent: z.number().min(0).max(100).optional(),
+  error: z.string().max(512).optional(),
+  downloaded: z.boolean().optional(),
+  readyToInstall: z.boolean().optional(),
+});
+
+const desktopShutdownDiagnosticsSchema = z.object({
+  trigger: tolerantDesktopTelemetryValue(DesktopShutdownTrigger),
+  result: z.enum(["timed_out", "failed"]).optional(),
+  phase: z.string().max(128).optional(),
+  duringUpdate: z.boolean().optional(),
+  outerHardExit: z.boolean().optional(),
+  elapsedMs: z.number().int().nonnegative().optional(),
+  error: z.string().max(512).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -285,7 +339,7 @@ const supportUploadDiagnosticsSchema = z.object({
 // The relay forwards `loopPerf` payloads to Datadog opaquely so version skew
 // between desktop producers and the relay never drops observability data
 // (PRD-254 §FR-6 fail-open, producer-additivity rollout property). Field-level
-// validation is owned by the producer schema in closedloop-electron.
+// validation is owned by the producer schema in apps/desktop.
 //
 // Drift detection: the handler emits a `loop.perf.unknown_event_variant`
 // warning when the inner `event` value falls outside `KNOWN_LOOP_PERF_EVENTS`
@@ -317,6 +371,26 @@ export const KNOWN_LOOP_PERF_EVENTS: ReadonlySet<string> = new Set([
   "parse_failure",
 ]);
 
+export const KNOWN_LOOP_COMMANDS: ReadonlySet<string> = new Set(
+  Object.values(LoopCommand)
+);
+
+export const LOOP_PERF_RATE_LIMIT_BYPASS_EVENTS: ReadonlyMap<string, string> =
+  new Map([
+    // Relay rate-limit bypass uses this map as its cheap category precheck.
+    // Add future loop.perf.* categories here with KNOWN_LOOP_PERF_EVENTS so
+    // they use the loopPerf-specific cap instead of the generic relay limiter.
+    [TelemetryCategory.LoopPerfRun, "run"],
+    [TelemetryCategory.LoopPerfPhase, "phase"],
+    [TelemetryCategory.LoopPerfIteration, "iteration"],
+    [TelemetryCategory.LoopPerfPipelineStep, "pipeline_step"],
+    [TelemetryCategory.LoopPerfAgent, "agent"],
+    [TelemetryCategory.LoopPerfTool, "tool"],
+    [TelemetryCategory.LoopPerfSkill, "skill"],
+    [TelemetryCategory.LoopPerfSpawn, "spawn"],
+    [TelemetryCategory.LoopPerfParseFailure, "parse_failure"],
+  ]);
+
 export const loopPerfEventDiagnosticsSchema = z
   .object({ event: z.string().optional() })
   .passthrough();
@@ -324,6 +398,23 @@ export const loopPerfEventDiagnosticsSchema = z
 export type LoopPerfEventDiagnostics = z.infer<
   typeof loopPerfEventDiagnosticsSchema
 >;
+
+// ---------------------------------------------------------------------------
+// LifecycleDiagnostics — permissive passthrough for job.* lifecycle attribution
+// ---------------------------------------------------------------------------
+// Accepts `diagnostics.lifecycle.command` from desktop producers on `job.*`
+// events. Known values are enumerated in `KNOWN_LOOP_COMMANDS`; unknown strings
+// are accepted via `.passthrough()` to preserve producer-additivity across
+// version skew (AC-002, AC-003). Field-level validation of canonical values is
+// owned by the producer schema in apps/desktop.
+//
+// `command` is `.optional()` so payloads without the field also validate
+// (back-compat, AC-001). Unknown sibling fields under `lifecycle` survive
+// parsing and reach Datadog via `.passthrough()` (AC-003).
+
+export const lifecycleDiagnosticsSchema = z
+  .object({ command: z.string().optional() })
+  .passthrough();
 
 const desktopTelemetryDiagnosticsSchema = z.object({
   logTail: z.string().optional(),
@@ -363,9 +454,56 @@ const desktopTelemetryDiagnosticsSchema = z.object({
   diagnosticsVersion: z.number().optional(),
   decisionTableVerification:
     decisionTableVerificationDiagnosticsSchema.optional(),
+  desktopUpdate: desktopUpdateDiagnosticsSchema.optional(),
+  desktopShutdown: desktopShutdownDiagnosticsSchema.optional(),
+  pluginUpdate: z
+    .object({
+      pluginIds: z.array(z.string().max(80)).max(6),
+      versionsBefore: z.record(z.string().max(80), z.string().max(64)),
+      versionsAfter: z.record(z.string().max(80), z.string().max(64)),
+      outcomes: z.record(
+        z.string().max(80),
+        z.enum(["success", "failed", "timeout", "skipped"])
+      ),
+      durationMs: z.number().nonnegative(),
+      command: z.literal("claude plugin update"),
+      scope: z.literal("user"),
+      exitCode: z.number().optional(),
+      failureReason: z
+        .enum([
+          "command_failed",
+          "timeout",
+          "still_outdated",
+          "cli_unavailable",
+          "manifest_unavailable",
+          "unknown",
+        ])
+        .optional(),
+      stderrTail: z.string().max(512).optional(),
+    })
+    .strip()
+    .optional(),
   outboundNetwork: outboundNetworkDiagnosticsSchema.optional(),
   supportUpload: supportUploadDiagnosticsSchema.optional(),
   loopPerf: loopPerfEventDiagnosticsSchema.optional(),
+  lifecycle: lifecycleDiagnosticsSchema.optional(),
+  // FEA-1969 — token-cost pricing miss. Typed (not `extra`) so the fields
+  // survive validation: the top-level diagnostics object strips unknown keys,
+  // so only declared fields reach Datadog.
+  tokenCostPricingMiss: z
+    .object({
+      model: z.string().max(120),
+      reason: z.enum(["unknown_model", "no_match", "compute_error"]),
+      surface: z.enum([
+        "synced_session",
+        "sync_resolver",
+        "branch_projection",
+        "trace_activity",
+        "imported_token_costs",
+      ]),
+      sessionId: z.string().max(200).optional(),
+    })
+    .optional(),
   spawnMeta: z
     .object({
       command: z.string(),
@@ -442,3 +580,38 @@ export const desktopTelemetryEventSchema =
   );
 
 export type DesktopTelemetryEvent = z.infer<typeof desktopTelemetryEventSchema>;
+
+export function isLoopPerfTelemetryRateLimitBypass(
+  payload: unknown,
+  expectedComputeTargetId: string
+): boolean {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+
+  const category = (payload as { category?: unknown }).category;
+  if (
+    typeof category !== "string" ||
+    !LOOP_PERF_RATE_LIMIT_BYPASS_EVENTS.has(category)
+  ) {
+    return false;
+  }
+
+  const parsed = desktopTelemetryEventInputSchema.safeParse(payload);
+  if (!parsed.success) {
+    return false;
+  }
+
+  if (parsed.data.trace.computeTargetId !== expectedComputeTargetId) {
+    return false;
+  }
+
+  const expectedEvent = LOOP_PERF_RATE_LIMIT_BYPASS_EVENTS.get(
+    parsed.data.category
+  );
+  if (expectedEvent === undefined) {
+    return false;
+  }
+
+  return parsed.data.diagnostics?.loopPerf?.event === expectedEvent;
+}

@@ -7,7 +7,7 @@ import {
   XmlElement,
   XmlText,
 } from "yjs";
-import { anchorThreadToText, hashOfJSON } from "../yjs-anchor";
+import { anchorThreadToText, hashOfJSON } from "../server/yjs-anchor";
 
 const MARK_KEY_PATTERN = /^liveblocksCommentMark--[A-Za-z0-9+/=]{8}$/;
 
@@ -22,11 +22,13 @@ function buildDoc(...blocks: { tag: string; textSegments: string[] }[]): Doc {
   ydoc.transact(() => {
     for (const block of blocks) {
       const el = new XmlElement(block.tag);
+      const textNodes: XmlText[] = [];
       for (const segment of block.textSegments) {
         const txt = new XmlText();
         txt.insert(0, segment);
-        el.insert(el.length, [txt]);
+        textNodes.push(txt);
       }
+      el.insert(0, textNodes);
       frag.insert(frag.length, [el]);
     }
   });

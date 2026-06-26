@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
+import { nodeAnalytics } from "@repo/analytics/node";
+import {
+  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+  type DesktopAgentSessionsAck,
+  DesktopAgentSessionsAckReason,
+} from "@repo/api/src/types/agent-session";
+import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { Server, type Socket } from "socket.io";
@@ -9,12 +16,32 @@ import {
   isComputeTargetGatewayConflictResult,
 } from "../app/compute-targets/service";
 import { usersService } from "../app/users/service";
+import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
 import { getDesktopManagedPopRequestFailure } from "./auth/desktop-managed-pop";
+import {
+  CommandSigningEligibilityStatus,
+  isDirectDesktopAuthSigningEligible,
+} from "./compute-target-signing-eligibility";
+import { handleDesktopAgentSessionsEvent } from "./desktop-agent-sessions-handler";
+import {
+  type DesktopAnalyticsCaptureInput,
+  handleDesktopAnalyticsEvent,
+} from "./desktop-analytics-handler";
+import {
+  DESKTOP_ANALYTICS_SOCKET_EVENT,
+  type DesktopAnalyticsAck,
+  DesktopAnalyticsAckReason,
+} from "./desktop-analytics-schema";
+import { acknowledgeDesktopCommand } from "./desktop-command-ack-handler";
 import { desktopCommandStore } from "./desktop-command-store";
+import { getRealDesktopCommandTelemetryContext } from "./desktop-command-telemetry-context";
+import { partitionPendingCommandsForReconnect } from "./desktop-gateway-reconnect";
 import {
   type DesktopAuthContext,
   type DesktopGatewaySocketServer,
+  type DesktopHelloNackPayload,
   type GatewaySocketData,
+  HELLO_OPERATION_TIMEOUT_MS,
   PROTOCOL_VERSION,
   type SocketConnectionContext,
 } from "./desktop-gateway-types";
@@ -30,6 +57,13 @@ import {
 import { publishLegacyRelayEvent } from "./desktop-relay-event-bridge";
 import { handleTelemetryEvent } from "./desktop-telemetry-handler";
 import { relayEventBus } from "./relay-event-bus";
+import { isTrustedOrigin } from "./trusted-origins";
+import {
+  isTimeoutError,
+  runStage,
+  timeStage,
+  withTimeout,
+} from "./with-timeout";
 
 const SOCKET_NAMESPACE = "/desktop-gateway";
 const SOCKET_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -40,6 +74,10 @@ const contextsBySocketId = new Map<string, SocketConnectionContext>();
 const socketIdsByTargetId = new Map<string, Set<string>>();
 const helloInFlight = new Set<string>();
 
+type CommandEventPayload = NonNullable<
+  ReturnType<typeof parseCommandEventPayload>
+>;
+
 /**
  * Per-command promise chain to serialize event ingestion.
  * Without this, rapid socket events for the same command trigger concurrent
@@ -47,6 +85,10 @@ const helloInFlight = new Set<string>();
  * rejections and expensive retry loops (O(n²) for n events).
  */
 const eventIngestionChains = new Map<string, Promise<void>>();
+
+function captureDesktopAnalytics(input: DesktopAnalyticsCaptureInput): void {
+  nodeAnalytics.capture(input);
+}
 
 function enqueueEventIngestion(
   commandId: string,
@@ -61,6 +103,71 @@ function enqueueEventIngestion(
       eventIngestionChains.delete(commandId);
     }
   });
+}
+
+async function ingestDesktopCommandEventForSocket(input: {
+  socket: Socket;
+  context: SocketConnectionContext;
+  payload: CommandEventPayload;
+}): Promise<void> {
+  const { socket, context, payload } = input;
+  try {
+    const eventCtx = buildTelemetryTraceContext({
+      gatewaySessionId: context.sessionId,
+      computeTargetId: context.targetId,
+      commandId: payload.commandId,
+    });
+    const commandContext = getRealDesktopCommandTelemetryContext(eventCtx);
+    const result = await desktopCommandStore.ingestCommandEvent({
+      commandId: payload.commandId,
+      eventType: payload.eventType,
+      data: payload.data,
+      sequence: payload.sequence,
+      computeTargetId: context.targetId,
+      ...(commandContext ? { context: commandContext } : {}),
+    });
+
+    if (result.accepted) {
+      socket.emit(
+        "desktop.command.event.ack",
+        toEnvelope({
+          commandId: payload.commandId,
+          sequence: result.sequence,
+        })
+      );
+      if (!result.duplicate) {
+        await publishLegacyRelayEvent(payload.commandId, payload);
+      }
+      return;
+    }
+
+    if (result.reason === "sequence_gap") {
+      const command = await desktopCommandStore.getCommandById(
+        payload.commandId
+      );
+      if (command) {
+        socket.emit(
+          "desktop.hello.ack",
+          toEnvelope({
+            computeTargetId: command.computeTargetId,
+            sessionId:
+              contextsBySocketId.get(socket.id)?.sessionId ?? randomUUID(),
+            serverTime: new Date().toISOString(),
+            resumeFromSequence: {
+              [payload.commandId]: command.lastSequenceAcked,
+            },
+          })
+        );
+      }
+    }
+  } catch (error) {
+    log.error("Failed handling desktop.command.event", {
+      socketId: socket.id,
+      commandId: payload.commandId,
+      computeTargetId: context.targetId,
+      error,
+    });
+  }
 }
 
 function getSocketData(socket: Socket): GatewaySocketData {
@@ -141,6 +248,10 @@ async function resolveDesktopAuthContext(
   return {
     organizationId: keyContext.organizationId,
     userId: keyContext.userId,
+    clerkUserId: user.clerkId,
+    apiKeySource: keyContext.source,
+    apiKeyGatewayId: keyContext.gatewayId,
+    apiKeyBoundPublicKey: keyContext.boundPublicKey,
   };
 }
 
@@ -183,7 +294,8 @@ function removeSocketFromTarget(targetId: string, socketId: string): boolean {
   return false;
 }
 
-async function handleSocketHello(
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the socket hello flow intentionally owns target registration, resubscription, and handshake ack emission
+export async function handleSocketHello(
   socket: Socket,
   authContext: DesktopAuthContext,
   payload: ReturnType<typeof parseHelloPayload> & object,
@@ -203,23 +315,68 @@ async function handleSocketHello(
       payload.desktopSecurityUpgradeProtocolVersion ?? null,
   };
 
+  const stageTimings: {
+    updateOwnedMs?: number;
+    registerMs?: number;
+    pendingCommandsMs?: number;
+    onlineStateMs?: number;
+    featureFlagSigningMs?: number;
+    featureFlagSyncMs?: number;
+    ackEmitMs?: number;
+  } = {};
+
   let targetId = payload.computeTargetId;
   let targetCreated = false;
   if (targetId) {
-    const updated = await computeTargetsService.updateOwned(
-      targetId,
-      authContext.organizationId,
-      authContext.userId,
-      {
-        machineName: payload.machineName,
-        platform: payload.platform,
-        capabilities: mergedCapabilities,
-        supportedOperations: payload.supportedOperations,
-        gatewayId: payload.gatewayId,
-        desktopSecurityUpgradeProtocolVersion:
-          payload.desktopSecurityUpgradeProtocolVersion,
-      }
-    );
+    const existingTargetId = targetId;
+    let updated: Awaited<ReturnType<typeof computeTargetsService.updateOwned>>;
+    try {
+      updated = await timeStage(stageTimings, "updateOwnedMs", () =>
+        withTimeout(
+          computeTargetsService.updateOwned(
+            existingTargetId,
+            authContext.organizationId,
+            authContext.userId,
+            {
+              machineName: payload.machineName,
+              platform: payload.platform,
+              capabilities: mergedCapabilities,
+              supportedOperations: payload.supportedOperations,
+              gatewayId: payload.gatewayId,
+              desktopSecurityUpgradeProtocolVersion:
+                payload.desktopSecurityUpgradeProtocolVersion,
+            }
+          ),
+          HELLO_OPERATION_TIMEOUT_MS,
+          "computeTargetsService.updateOwned"
+        )
+      );
+    } catch (error) {
+      const errorKind = isTimeoutError(
+        error,
+        "computeTargetsService.updateOwned"
+      )
+        ? "timeout"
+        : "failure";
+      log.error(
+        `Desktop gateway hello failed: compute target update ${errorKind === "timeout" ? "timed out" : "failed"}`,
+        {
+          socketId: socket.id,
+          targetId,
+          computeTargetId: targetId,
+          errorKind,
+          error,
+        }
+      );
+      socket.emit(
+        "desktop.hello.nack",
+        toEnvelope<DesktopHelloNackPayload>({
+          reason: DesktopHelloNackReason.ComputeTargetUpdateFailed,
+        })
+      );
+      socket.disconnect(true);
+      return;
+    }
     if (isComputeTargetGatewayConflictResult(updated)) {
       socket.disconnect(true);
       return;
@@ -230,20 +387,49 @@ async function handleSocketHello(
   }
 
   if (!targetId) {
-    const target = await computeTargetsService.register(
-      authContext.organizationId,
-      authContext.userId,
-      {
-        machineName: payload.machineName,
-        platform: payload.platform,
-        capabilities: mergedCapabilities,
-        supportedOperations: payload.supportedOperations,
-        pluginVersion: payload.pluginVersion,
-        gatewayId: payload.gatewayId,
-        desktopSecurityUpgradeProtocolVersion:
-          payload.desktopSecurityUpgradeProtocolVersion,
-      }
-    );
+    let target: Awaited<ReturnType<typeof computeTargetsService.register>>;
+    try {
+      target = await timeStage(stageTimings, "registerMs", () =>
+        withTimeout(
+          computeTargetsService.register(
+            authContext.organizationId,
+            authContext.userId,
+            {
+              machineName: payload.machineName,
+              platform: payload.platform,
+              capabilities: mergedCapabilities,
+              supportedOperations: payload.supportedOperations,
+              pluginVersion: payload.pluginVersion,
+              gatewayId: payload.gatewayId,
+              desktopSecurityUpgradeProtocolVersion:
+                payload.desktopSecurityUpgradeProtocolVersion,
+            }
+          ),
+          HELLO_OPERATION_TIMEOUT_MS,
+          "computeTargetsService.register"
+        )
+      );
+    } catch (error) {
+      const errorKind = isTimeoutError(error, "computeTargetsService.register")
+        ? "timeout"
+        : "failure";
+      log.error(
+        `Desktop gateway hello failed: compute target register ${errorKind === "timeout" ? "timed out" : "failed"}`,
+        {
+          socketId: socket.id,
+          errorKind,
+          error,
+        }
+      );
+      socket.emit(
+        "desktop.hello.nack",
+        toEnvelope<DesktopHelloNackPayload>({
+          reason: DesktopHelloNackReason.ComputeTargetRegisterFailed,
+        })
+      );
+      socket.disconnect(true);
+      return;
+    }
     if (isComputeTargetGatewayConflictResult(target)) {
       socket.disconnect(true);
       return;
@@ -300,6 +486,7 @@ async function handleSocketHello(
     targetId,
     organizationId: authContext.organizationId,
     userId: authContext.userId,
+    clerkUserId: authContext.clerkUserId,
     sessionId,
     pluginVersion: payload.pluginVersion,
     unsubscribeOperations,
@@ -311,20 +498,123 @@ async function handleSocketHello(
   socketIds.add(socket.id);
   socketIdsByTargetId.set(targetId, socketIds);
 
-  const pendingCommandsPromise =
-    desktopCommandStore.listNonTerminalDispatchCommands(targetId);
-  const onlineUpdatePromise = targetCreated
-    ? Promise.resolve(true)
-    : computeTargetsService.setOnlineState(
+  // Run all four post-target-resolution stages concurrently. Each stage
+  // returns a typed result so per-stage nack reasons (and the timeout-vs-
+  // failure distinction) are preserved without try/catch fan-out. Mirrors
+  // the relay-path parallelism in `service.ts`.
+  const [pendingCommandsResult, onlineStateResult, signingResult, syncResult] =
+    await Promise.all([
+      timeStage(stageTimings, "pendingCommandsMs", () =>
+        runStage(
+          desktopCommandStore.listNonTerminalDispatchCommands(targetId),
+          HELLO_OPERATION_TIMEOUT_MS,
+          "listNonTerminalDispatchCommands",
+          DesktopHelloNackReason.PendingCommandsLookupFailed
+        )
+      ),
+      timeStage(stageTimings, "onlineStateMs", () =>
+        targetCreated
+          ? Promise.resolve({ ok: true as const, value: true })
+          : runStage(
+              computeTargetsService.setOnlineState(
+                targetId,
+                authContext.organizationId,
+                authContext.userId,
+                true
+              ),
+              HELLO_OPERATION_TIMEOUT_MS,
+              "setOnlineState",
+              DesktopHelloNackReason.OnlineStateUpdateFailed
+            )
+      ),
+      timeStage(stageTimings, "featureFlagSigningMs", () =>
+        runStage(
+          isDirectDesktopAuthSigningEligible({
+            organizationId: authContext.organizationId,
+            userId: authContext.userId,
+            clerkUserId: authContext.clerkUserId,
+            apiKeySource: authContext.apiKeySource,
+            apiKeyGatewayId: authContext.apiKeyGatewayId,
+            apiKeyBoundPublicKey: authContext.apiKeyBoundPublicKey,
+            targetGatewayId: payload.gatewayId ?? authContext.apiKeyGatewayId,
+          }),
+          HELLO_OPERATION_TIMEOUT_MS,
+          "isDirectDesktopAuthSigningEligible",
+          DesktopHelloNackReason.InternalError
+        )
+      ),
+      timeStage(stageTimings, "featureFlagSyncMs", () =>
+        runStage(
+          isAgentSessionSyncSupportedForUser({
+            userId: authContext.userId,
+            clerkUserId: authContext.clerkUserId,
+          }),
+          HELLO_OPERATION_TIMEOUT_MS,
+          "isAgentSessionSyncSupportedForUser",
+          DesktopHelloNackReason.InternalError
+        )
+      ),
+    ]);
+
+  if (!pendingCommandsResult.ok) {
+    const errorKind = isTimeoutError(
+      pendingCommandsResult.cause,
+      "listNonTerminalDispatchCommands"
+    )
+      ? "timeout"
+      : "failure";
+    log.error(
+      `Desktop gateway hello failed: pending commands lookup ${errorKind === "timeout" ? "timed out" : "failed"}`,
+      {
+        socketId: socket.id,
         targetId,
-        authContext.organizationId,
-        authContext.userId,
-        true
-      );
-  const [pendingCommands, onlineUpdated] = await Promise.all([
-    pendingCommandsPromise,
-    onlineUpdatePromise,
-  ]);
+        computeTargetId: targetId,
+        errorKind,
+        error: pendingCommandsResult.cause,
+      }
+    );
+    socket.emit(
+      "desktop.hello.nack",
+      toEnvelope<DesktopHelloNackPayload>({
+        reason: pendingCommandsResult.reason,
+      })
+    );
+    socket.disconnect(true);
+    return;
+  }
+  const pendingCommands = pendingCommandsResult.value;
+
+  if (!onlineStateResult.ok) {
+    const errorKind = isTimeoutError(onlineStateResult.cause, "setOnlineState")
+      ? "timeout"
+      : "failure";
+    log.error(
+      `Desktop gateway hello failed: online state update ${errorKind === "timeout" ? "timed out" : "failed"}`,
+      {
+        socketId: socket.id,
+        targetId,
+        computeTargetId: targetId,
+        errorKind,
+        error: onlineStateResult.cause,
+      }
+    );
+    socket.emit(
+      "desktop.hello.nack",
+      toEnvelope<DesktopHelloNackPayload>({
+        reason: onlineStateResult.reason,
+      })
+    );
+    socket.disconnect(true);
+    return;
+  }
+  const onlineUpdated = onlineStateResult.value;
+
+  // Feature flags soft-fail to `false` so a slow or broken feature-flag SDK
+  // cannot prevent the hello handshake from completing.
+  const commandSigningSupported =
+    signingResult.ok &&
+    signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
+  const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
 
   // Guard: if the socket disconnected during the async work above,
   // compensate by marking the target offline and cleaning up resources.
@@ -378,19 +668,43 @@ async function handleSocketHello(
   );
 
   const ackSentAt = Date.now();
+  const ackEmitStart = performance.now();
   socket.emit(
     "desktop.hello.ack",
     toEnvelope({
       computeTargetId: targetId,
       sessionId,
       serverTime: new Date().toISOString(),
+      ...(commandSigningSupported || agentSessionSyncSupported
+        ? {
+            serverCapabilities: {
+              ...(commandSigningSupported
+                ? { computeTargetSigning: true }
+                : {}),
+              ...(agentSessionSyncSupported ? { agentSessionSync: true } : {}),
+            },
+          }
+        : {}),
       ...(Object.keys(resumeFromSequence).length > 0
         ? { resumeFromSequence }
         : {}),
     })
   );
+  stageTimings.ackEmitMs = Math.round(performance.now() - ackEmitStart);
 
-  for (const command of pendingCommands) {
+  const { emit: emittablePendingCommands, skipped: skippedPendingCommands } =
+    partitionPendingCommandsForReconnect(pendingCommands);
+  for (const command of skippedPendingCommands) {
+    log.warn(
+      "Pending command has non-gateway path — possible legacy command in store",
+      {
+        commandId: command.commandId,
+        computeTargetId: command.computeTargetId,
+        path: command.path,
+      }
+    );
+  }
+  for (const command of emittablePendingCommands) {
     emitCommand(socket, toWireCommandFromStore(command));
   }
 
@@ -406,6 +720,7 @@ async function handleSocketHello(
       ? ackSentAt - timing.connectStartedAt
       : undefined,
     pendingCommandCount: pendingCommands.length,
+    timings: stageTimings,
   });
 }
 
@@ -435,7 +750,7 @@ async function handleSocketDisconnect(socketId: string): Promise<void> {
   }
 }
 
-function handleSocketConnection(socket: Socket): void {
+export function handleSocketConnection(socket: Socket): void {
   const authContext = getSocketData(socket).authContext;
   if (!authContext) {
     log.warn("Desktop gateway socket missing auth context after middleware", {
@@ -517,24 +832,24 @@ function handleSocketConnection(socket: Socket): void {
     const ackCtx = buildTelemetryTraceContext({
       gatewaySessionId: context.sessionId,
       computeTargetId: context.targetId,
+      commandId: payload.commandId,
     });
+    const commandContext = getRealDesktopCommandTelemetryContext(ackCtx);
 
-    desktopCommandStore
-      .acknowledgeCommand(
-        payload.commandId,
-        payload.accepted,
-        payload.reason,
-        context.targetId,
-        ackCtx
-      )
-      .catch((error) => {
-        log.error("Failed handling desktop.command.ack", {
-          socketId: socket.id,
-          commandId: payload.commandId,
-          computeTargetId: context.targetId,
-          error,
-        });
+    acknowledgeDesktopCommand({
+      commandId: payload.commandId,
+      accepted: payload.accepted,
+      reason: payload.reason,
+      targetId: context.targetId,
+      ...(commandContext ? { context: commandContext } : {}),
+    }).catch((error) => {
+      log.error("Failed handling desktop.command.ack", {
+        socketId: socket.id,
+        commandId: payload.commandId,
+        computeTargetId: context.targetId,
+        error,
       });
+    });
   });
 
   socket.on("desktop.command.event", (rawPayload: unknown) => {
@@ -547,58 +862,9 @@ function handleSocketConnection(socket: Socket): void {
       return;
     }
 
-    enqueueEventIngestion(payload.commandId, async () => {
-      try {
-        const result = await desktopCommandStore.ingestCommandEvent({
-          commandId: payload.commandId,
-          eventType: payload.eventType,
-          data: payload.data,
-          sequence: payload.sequence,
-          computeTargetId: context.targetId,
-        });
-
-        if (result.accepted) {
-          socket.emit(
-            "desktop.command.event.ack",
-            toEnvelope({
-              commandId: payload.commandId,
-              sequence: result.sequence,
-            })
-          );
-          if (!result.duplicate) {
-            await publishLegacyRelayEvent(payload.commandId, payload);
-          }
-          return;
-        }
-
-        if (result.reason === "sequence_gap") {
-          const command = await desktopCommandStore.getCommandById(
-            payload.commandId
-          );
-          if (command) {
-            socket.emit(
-              "desktop.hello.ack",
-              toEnvelope({
-                computeTargetId: command.computeTargetId,
-                sessionId:
-                  contextsBySocketId.get(socket.id)?.sessionId ?? randomUUID(),
-                serverTime: new Date().toISOString(),
-                resumeFromSequence: {
-                  [payload.commandId]: command.lastSequenceAcked,
-                },
-              })
-            );
-          }
-        }
-      } catch (error) {
-        log.error("Failed handling desktop.command.event", {
-          socketId: socket.id,
-          commandId: payload.commandId,
-          computeTargetId: context.targetId,
-          error,
-        });
-      }
-    });
+    enqueueEventIngestion(payload.commandId, () =>
+      ingestDesktopCommandEventForSocket({ socket, context, payload })
+    );
   });
 
   socket.on("desktop.telemetry", (rawPayload: unknown) => {
@@ -630,6 +896,90 @@ function handleSocketConnection(socket: Socket): void {
     }
   });
 
+  socket.on(
+    DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+    (
+      rawPayload: unknown,
+      ack?: (response: DesktopAgentSessionsAck) => void
+    ) => {
+      const context = contextsBySocketId.get(socket.id);
+      if (!context) {
+        ack?.({
+          accepted: false,
+          reason: DesktopAgentSessionsAckReason.ValidationFailed,
+        });
+        return;
+      }
+
+      handleDesktopAgentSessionsEvent(rawPayload, {
+        organizationId: context.organizationId,
+        userId: context.userId,
+        clerkUserId: context.clerkUserId,
+        targetId: context.targetId,
+        gatewaySessionId: context.sessionId,
+      })
+        .then((response) => {
+          ack?.(response);
+        })
+        .catch((error) => {
+          log.error("Failed handling desktop.agent-sessions", {
+            socketId: socket.id,
+            targetId: context.targetId,
+            computeTargetId: context.targetId,
+            error,
+          });
+          ack?.({
+            accepted: false,
+            reason: DesktopAgentSessionsAckReason.ValidationFailed,
+          });
+        });
+    }
+  );
+
+  socket.on(
+    DESKTOP_ANALYTICS_SOCKET_EVENT,
+    (rawPayload: unknown, ack?: (response: DesktopAnalyticsAck) => void) => {
+      const context = contextsBySocketId.get(socket.id);
+      if (!context) {
+        ack?.({
+          accepted: false,
+          reason: DesktopAnalyticsAckReason.ValidationFailed,
+        });
+        return;
+      }
+
+      handleDesktopAnalyticsEvent(
+        rawPayload,
+        {
+          organizationId: context.organizationId,
+          userId: context.userId,
+          clerkUserId: context.clerkUserId,
+          targetId: context.targetId,
+          gatewaySessionId: context.sessionId,
+          pluginVersion: context.pluginVersion,
+        },
+        {
+          capture: captureDesktopAnalytics,
+        }
+      )
+        .then((response) => {
+          ack?.(response);
+        })
+        .catch((error) => {
+          log.error("Failed handling desktop.analytics", {
+            socketId: socket.id,
+            targetId: context.targetId,
+            computeTargetId: context.targetId,
+            error,
+          });
+          ack?.({
+            accepted: false,
+            reason: DesktopAnalyticsAckReason.ValidationFailed,
+          });
+        });
+    }
+  );
+
   socket.on("disconnect", () => {
     handleSocketDisconnect(socket.id).catch((error) => {
       log.error("Failed handling desktop socket disconnect", {
@@ -652,7 +1002,14 @@ export function initDesktopGatewaySocketServer(
     transports: ["websocket"],
     maxHttpBufferSize: 10 * 1024 * 1024, // 10MB for large loop artifacts
     cors: {
-      origin: true,
+      // Desktop gateway workers connect via Node socket.io-client and send no
+      // browser Origin header — allow those. Any request that does carry an
+      // Origin is a browser and must match the HTTP API's trusted-origin
+      // allowlist, so a future transport broadening (e.g. re-adding HTTP
+      // long-polling) cannot expose this credentialed namespace to arbitrary
+      // sites.
+      origin: (origin, callback) =>
+        callback(null, !origin || isTrustedOrigin(origin)),
       credentials: true,
     },
   });

@@ -22,25 +22,22 @@ export const artifactService = {
 
   /**
    * List artifacts within an organization, optionally scoped to a project,
-   * workstream, type, or assignee. Sentinel projects are filtered out so
-   * templates don't leak into user-facing listings.
+   * type, or assignee. Sentinel projects are filtered out so templates don't
+   * leak into user-facing listings.
    */
   list(options: {
     organizationId: string;
     projectId?: string;
-    workstreamId?: string;
     type?: ArtifactType;
     assigneeId?: string;
   }): Promise<Artifact[]> {
-    const { organizationId, projectId, workstreamId, type, assigneeId } =
-      options;
+    const { organizationId, projectId, type, assigneeId } = options;
 
     return withDb((db) =>
       db.artifact.findMany({
         where: {
           organizationId,
           ...(projectId ? { projectId } : {}),
-          ...(workstreamId ? { workstreamId } : {}),
           ...(type ? { type } : {}),
           ...(assigneeId ? { assigneeId } : {}),
           subtype: { not: ArtifactSubtype.Template },

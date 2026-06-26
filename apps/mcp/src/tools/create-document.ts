@@ -3,6 +3,8 @@ import { DocumentType } from "@repo/api/src/types/document.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  asRecord,
+  buildDocumentUrlFromRecord,
   DOCUMENT_DOC_HELP,
   describeIdOrSlug,
   withErrorHandling,
@@ -20,7 +22,7 @@ export function registerCreateDocument(
     "create-document",
     {
       description:
-        "Create a document — a PRD, implementation plan, feature, or template — and attach it to a project or workstream. The assigned slug (PRD-*, PLN-*, FEA-*) is returned in the response and is the preferred handle for future calls.",
+        "Create a document — a PRD, implementation plan, feature, or template — and attach it to a project. The assigned slug (PRD-*, PLN-*, FEA-*) is returned in the response and is the preferred handle for future calls.",
       inputSchema: {
         title: z.string().describe("Title of the document"),
         type: z
@@ -30,14 +32,10 @@ export function registerCreateDocument(
           .string()
           .optional()
           .describe(describeIdOrSlug("Project", "PRO-7")),
-        workstreamId: z
-          .string()
-          .optional()
-          .describe(describeIdOrSlug("Workstream", "WRK-3")),
         content: z.string().describe("Initial document content/body"),
       },
     },
-    ({ title, type, projectId, workstreamId, content }) =>
+    ({ title, type, projectId, content }) =>
       withErrorHandling(async () => {
         const body: Record<string, string> = {
           title,
@@ -47,15 +45,16 @@ export function registerCreateDocument(
         if (projectId !== undefined) {
           body.projectId = projectId;
         }
-        if (workstreamId !== undefined) {
-          body.workstreamId = workstreamId;
-        }
-        const document = await apiClient.post<unknown>("/documents", body);
+        const response = await apiClient.post<unknown>("/documents", body);
+        const envelope = asRecord(response);
+        const row = asRecord(envelope.data ?? response);
+        const webUrl = buildDocumentUrlFromRecord(row);
+
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(document, null, 2),
+              text: JSON.stringify({ ...row, webUrl }, null, 2),
             },
           ],
         };

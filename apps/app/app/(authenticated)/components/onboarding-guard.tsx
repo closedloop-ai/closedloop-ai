@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useOnboardingStatus } from "@repo/app/onboarding/hooks/use-onboarding";
+import { useNavigation } from "@repo/navigation/use-navigation";
 import type { ReactNode } from "react";
 import { useEffect } from "react";
-import { useOnboardingStatus } from "@/hooks/queries/use-onboarding";
 
 type OnboardingGuardProps = {
   readonly children: ReactNode;
@@ -14,7 +14,7 @@ type OnboardingGuardProps = {
  * Renders nothing while the status is loading to avoid flash of content.
  */
 export function OnboardingGuard({ children }: OnboardingGuardProps) {
-  const router = useRouter();
+  const navigation = useNavigation();
   // Also check isFetching to avoid redirecting on stale cache during refetch
   // (e.g. after completing the wizard, invalidateQueries triggers a refetch)
   // TODO: Convert to server component guard for SSR — tracked for follow-up
@@ -24,9 +24,9 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
 
   useEffect(() => {
     if (!(isLoading || isFetching) && shouldRedirect) {
-      router.replace("/onboarding");
+      navigation.replace("/onboarding");
     }
-  }, [isLoading, isFetching, shouldRedirect, router]);
+  }, [isLoading, isFetching, shouldRedirect, navigation]);
 
   if (isLoading || isFetching) {
     return null;

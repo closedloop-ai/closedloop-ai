@@ -21,16 +21,16 @@ const OnboardingLayout = async ({ children }: OnboardingLayoutProps) => {
     <div className="relative flex h-dvh flex-col items-center overflow-y-auto bg-background px-4 pt-24 pb-8">
       <div className="absolute top-4 left-6">
         <Image
-          alt="ClosedLoop logo"
+          alt="Closedloop logo"
           className="dark:hidden"
-          height={60}
+          height={30}
           src="/logo.svg"
           width={200}
         />
         <Image
-          alt="ClosedLoop logo"
+          alt="Closedloop logo"
           className="hidden dark:block"
-          height={60}
+          height={30}
           src="/logo-dark.svg"
           width={200}
         />

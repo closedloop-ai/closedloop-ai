@@ -1,108 +1,50 @@
 "use client";
 
+import { useFeatureFlag } from "@repo/analytics/client";
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import { INSIGHTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/insights";
+import { useScrollFade } from "@repo/app/shared/hooks/use-scroll-fade";
 import {
-  OrganizationSwitcher,
-  UserButton,
-  useOrganization,
-} from "@repo/auth/client";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
-import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
+  AGENTS_FEATURE_FLAG_KEY,
+  ArtifactFlag,
+  JUDGES_FEATURE_FLAG_KEY,
+  SESSIONS_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
+import { useOrganization } from "@repo/auth/client";
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
-  useSidebar,
+  SidebarNavLinkItem,
 } from "@repo/design-system/components/ui/sidebar";
+import { SidebarCollapsibleSection } from "@repo/design-system/components/ui/sidebar-collapsible-section";
 import { cn } from "@repo/design-system/lib/utils";
+import { usePath } from "@repo/navigation/use-path";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   BotIcon,
-  Boxes,
-  CodeIcon,
+  CopyCheckIcon,
+  FileIcon,
+  GitBranchIcon,
+  HistoryIcon,
   InboxIcon,
+  LayoutDashboardIcon,
   RotateCcwIcon,
+  SquareCheckIcon,
 } from "lucide-react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ComputeTargetPopover } from "@/components/compute-target-popover";
-import { useIsMounted } from "@/hooks/use-is-mounted";
-import { EngineerBadge } from "./engineer-badge";
+import { useOrgSlug } from "@/hooks/use-org-slug";
+import { AccountMenu } from "./account-menu";
 import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
-import { SidebarFavorites } from "./sidebar-favorites";
 import { SidebarTeams } from "./sidebar-teams";
-
-const orgSwitcherAppearance = {
-  elements: {
-    rootBox: {
-      display: "flex",
-      overflow: "hidden",
-      width: "100%",
-    },
-    organizationSwitcherTrigger: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "flex-start",
-      gap: "0.5rem",
-      width: "100%",
-      padding: "0.5rem",
-      borderRadius: "0.375rem",
-      color: "var(--sidebar-foreground)",
-      backgroundColor: "transparent",
-      "&:hover": {
-        backgroundColor: "var(--sidebar-accent)",
-        color: "var(--sidebar-accent-foreground)",
-      },
-      "&:focus-visible": {
-        outline: "2px solid var(--sidebar-ring)",
-        outlineOffset: "2px",
-      },
-    },
-    organizationSwitcherTriggerIcon: {
-      color: "var(--sidebar-foreground)",
-      opacity: "0.7",
-      marginLeft: "auto",
-      flexShrink: "0",
-    },
-    organizationPreview: {
-      minWidth: "0",
-      overflow: "hidden",
-    },
-    organizationPreviewMainIdentifier: {
-      fontSize: "0.875rem",
-      fontWeight: "500",
-      color: "var(--sidebar-foreground)",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    },
-    organizationPreviewAvatarContainer: {
-      width: "1.75rem",
-      height: "1.75rem",
-      flexShrink: "0",
-    },
-    organizationPreviewAvatarBox: {
-      width: "1.75rem",
-      height: "1.75rem",
-    },
-  },
-} as const;
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
@@ -117,59 +59,115 @@ type NavItem = {
   featureFlag?: string;
 };
 
-const baseWorkspaceItems: NavItem[] = [
-  {
-    title: "My Tasks",
-    url: "/my-tasks",
-    icon: Boxes,
-    disabled: false,
-  },
-  {
-    title: "Notifications",
-    url: "/inbox",
-    icon: InboxIcon,
-    disabled: false,
-  },
-  {
-    title: "Loops",
-    url: "/loops",
-    icon: RotateCcwIcon,
-    disabled: false,
-  },
-  {
-    title: "Agents",
-    url: "/agents",
-    icon: BotIcon,
-    disabled: false,
-    featureFlag: "agents",
-  },
-];
+// Per-item feature flags for the Artifacts nav section. Every item is gated
+// individually; the Artifacts header is hidden when none are enabled.
+// Documents/Issues/Branches share their flags with the page routes (see
+// @repo/app/shared/lib/feature-flags); Sessions/Agents reuse flags that gate
+// them elsewhere.
+const ArtifactNavFlag = {
+  Documents: ArtifactFlag.Documents,
+  Issues: ArtifactFlag.Issues,
+  Branches: ArtifactFlag.Branches,
+  Sessions: SESSIONS_FEATURE_FLAG_KEY,
+  Agents: AGENTS_FEATURE_FLAG_KEY,
+} as const;
 
-const engineerNavItem: NavItem = {
-  title: "Engineer",
-  url: "/engineer",
-  icon: CodeIcon,
-  disabled: false,
-  featureFlag: "engineer-view",
-};
-
-const workspaceItems: NavItem[] = [...baseWorkspaceItems, engineerNavItem];
-
-const data: {
-  workspace: NavItem[];
-  navSecondary: NavItem[];
-} = {
-  workspace: workspaceItems,
-  navSecondary: [
+function buildNavData(orgSlug: string) {
+  const topLevel: NavItem[] = [
     {
-      title: "Judges",
-      url: "/judges-analytics",
+      title: "Dashboard",
+      url: `/${orgSlug}/dashboard`,
+      icon: LayoutDashboardIcon,
+      disabled: false,
+    },
+    {
+      title: "Inbox",
+      url: `/${orgSlug}/inbox`,
+      icon: InboxIcon,
+      disabled: false,
+    },
+    {
+      title: "My Issues",
+      url: `/${orgSlug}/my-tasks`,
+      icon: CopyCheckIcon,
+      disabled: false,
+    },
+  ];
+
+  const artifacts: NavItem[] = [
+    {
+      title: "Documents",
+      url: `/${orgSlug}/documents`,
+      icon: FileIcon,
+      disabled: false,
+      featureFlag: ArtifactNavFlag.Documents,
+    },
+    {
+      title: "Issues",
+      url: `/${orgSlug}/issues`,
+      icon: SquareCheckIcon,
+      disabled: false,
+      featureFlag: ArtifactNavFlag.Issues,
+    },
+    {
+      title: "Sessions",
+      url: `/${orgSlug}/sessions`,
+      icon: HistoryIcon,
+      disabled: false,
+      featureFlag: ArtifactNavFlag.Sessions,
+    },
+    {
+      title: "Branches",
+      url: `/${orgSlug}/branches`,
+      icon: GitBranchIcon,
+      disabled: false,
+      featureFlag: ArtifactNavFlag.Branches,
+    },
+    {
+      title: "Agents",
+      url: `/${orgSlug}/agents`,
+      icon: BotIcon,
+      disabled: false,
+      featureFlag: ArtifactNavFlag.Agents,
+    },
+  ];
+
+  const labs: NavItem[] = [
+    {
+      title: "Insights",
+      url: `/${orgSlug}/insights`,
       icon: BarChart3,
       disabled: false,
-      featureFlag: "the-one-flag",
+      featureFlag: INSIGHTS_FEATURE_FLAG_KEY,
     },
-  ],
-};
+    {
+      title: "Loops",
+      url: `/${orgSlug}/loops`,
+      icon: RotateCcwIcon,
+      disabled: false,
+    },
+    {
+      title: "Agent Monitoring",
+      url: `/${orgSlug}/loops/monitoring`,
+      icon: BarChart3,
+      disabled: false,
+      featureFlag: SESSIONS_FEATURE_FLAG_KEY,
+    },
+    {
+      title: "Judges",
+      url: `/${orgSlug}/judges-analytics`,
+      icon: BarChart3,
+      disabled: false,
+      featureFlag: JUDGES_FEATURE_FLAG_KEY,
+    },
+  ];
+
+  return {
+    topLevel,
+    artifacts,
+    labs,
+  };
+}
 
 function isNavItemActive(pathname: string, url: string): boolean {
   return pathname === url || (url !== "/" && pathname.startsWith(`${url}/`));
@@ -179,12 +177,13 @@ export function GlobalSidebar({
   children,
   envBadge = null,
 }: GlobalSidebarProperties) {
-  const pathname = usePathname();
-  const sidebar = useSidebar();
+  const pathname = usePath();
+  const orgSlug = useOrgSlug();
   const { organization } = useOrganization();
   const queryClient = useQueryClient();
   const prevOrgIdRef = useRef<string | undefined>(undefined);
-  const mounted = useIsMounted();
+  const data = buildNavData(orgSlug);
+  const { ref: scrollRef, showTopFade, showBottomFade } = useScrollFade();
 
   // Clear cache when organization changes
   useEffect(() => {
@@ -206,176 +205,111 @@ export function GlobalSidebar({
   return (
     <>
       <Sidebar variant="inset">
-        <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <div
-                className={cn(
-                  "flex overflow-hidden transition-all",
-                  sidebar.open && envBadge
-                    ? "flex-col items-start gap-1 py-1"
-                    : "h-[36px] items-center gap-2",
-                  !sidebar.open && "justify-center"
-                )}
-              >
-                {sidebar.open && (
-                  <>
-                    {mounted ? (
-                      <OrganizationSwitcher
-                        appearance={orgSwitcherAppearance}
-                      />
-                    ) : (
-                      <div className="h-8 w-full animate-pulse rounded bg-muted" />
-                    )}
-                    {envBadge && (
-                      <div className="w-full rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 dark:border-amber-500/20 dark:bg-amber-500/10">
-                        <div className="mb-0.5 flex items-center gap-1.5">
-                          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
-                          <span className="font-bold font-mono text-[9px] text-amber-700 uppercase tracking-wider dark:text-amber-400">
-                            local
-                          </span>
-                        </div>
-                        <p
-                          className="truncate font-mono text-[9px] text-amber-700/60 leading-tight dark:text-amber-400/60"
-                          title={envBadge}
-                        >
-                          {envBadge}
-                        </p>
-                      </div>
-                    )}
-                  </>
-                )}
-                {mounted && !sidebar.open && (
-                  <Avatar className="size-7">
-                    <AvatarImage
-                      alt={organization?.name || "Organization"}
-                      src={organization?.imageUrl}
-                    />
-                    <AvatarFallback className="text-xs">
-                      {organization?.name?.charAt(0)?.toUpperCase() || "O"}
-                    </AvatarFallback>
-                  </Avatar>
-                )}
-              </div>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarHeader>
         <Search />
-        <SidebarContent>
-          <SidebarGroup>
-            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
-            <SidebarMenu>
-              {data.workspace.map((item) =>
-                maybeFeatureFlagged(
-                  item,
-                  <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton
-                      asChild={!item.disabled}
-                      className={cn(
-                        item.disabled
-                          ? "pointer-events-none cursor-not-allowed opacity-50"
-                          : ""
-                      )}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute inset-x-0 top-0 z-10 h-4 bg-gradient-to-b from-sidebar to-transparent transition-opacity duration-200",
+              showTopFade ? "opacity-100" : "opacity-0"
+            )}
+          />
+          <SidebarContent
+            className="scrollbar-overlay gap-1 pt-2"
+            ref={scrollRef}
+          >
+            <SidebarGroup className="p-1">
+              <SidebarMenu className="gap-0">
+                {data.topLevel.map((item) =>
+                  maybeFeatureFlagged(
+                    item,
+                    <SidebarNavLinkItem
+                      className="text-sm"
+                      disabled={item.disabled}
+                      href={item.disabled ? undefined : item.url}
+                      icon={<item.icon />}
                       isActive={
                         !item.disabled &&
                         isNavItemActive(pathname ?? "", item.url)
                       }
+                      key={item.title}
+                      title={item.title}
                       tooltip={item.title}
-                    >
-                      {item.disabled ? (
-                        <span className="flex items-center gap-2">
-                          <item.icon className="size-4" />
-                          <span>{item.title}</span>
-                        </span>
-                      ) : (
-                        <Link href={item.url}>
-                          <item.icon />
-                          <span>{item.title}</span>
-                          {item.title === "Notifications" && <InboxBadge />}
-                          {item.title === engineerNavItem.title && (
-                            <EngineerBadge />
-                          )}
-                        </Link>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )
-              )}
-            </SidebarMenu>
-          </SidebarGroup>
-
-          <SidebarFavorites />
-
-          <SidebarTeams />
-
-          <SidebarGroup className="mt-auto">
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {data.navSecondary.map((item) =>
-                  maybeFeatureFlagged(
-                    item,
-                    <SidebarMenuItem key={item.title}>
-                      <SidebarMenuButton
-                        asChild={!item.disabled}
-                        className={cn(
-                          item.disabled
-                            ? "pointer-events-none cursor-not-allowed opacity-50"
-                            : ""
-                        )}
-                        isActive={
-                          !item.disabled &&
-                          isNavItemActive(pathname ?? "", item.url)
-                        }
-                      >
-                        {item.disabled ? (
-                          <span className="flex items-center gap-2">
-                            <item.icon className="size-4" />
-                            <span>{item.title}</span>
-                          </span>
-                        ) : (
-                          <Link href={item.url}>
-                            <item.icon />
-                            <span>{item.title}</span>
-                          </Link>
-                        )}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
+                      trailing={
+                        item.title === "Inbox" ? <InboxBadge /> : undefined
+                      }
+                    />
                   )
                 )}
               </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        </SidebarContent>
+            </SidebarGroup>
+
+            <ArtifactsNavSection
+              items={data.artifacts}
+              pathname={pathname ?? ""}
+            />
+
+            <SidebarTeams />
+
+            <SidebarCollapsibleSection
+              persistenceKey={LABS_NAV_SECTION_STORAGE_KEY}
+              title="Labs"
+            >
+              <SidebarMenu className="gap-0">
+                {data.labs.map((item) =>
+                  maybeFeatureFlagged(
+                    item,
+                    <SidebarNavLinkItem
+                      className="text-sm"
+                      disabled={item.disabled}
+                      href={item.disabled ? undefined : item.url}
+                      icon={<item.icon />}
+                      isActive={
+                        !item.disabled &&
+                        isNavItemActive(pathname ?? "", item.url)
+                      }
+                      key={item.title}
+                      title={item.title}
+                      tooltip={item.title}
+                    />
+                  )
+                )}
+              </SidebarMenu>
+            </SidebarCollapsibleSection>
+          </SidebarContent>
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-sidebar to-transparent transition-opacity duration-200",
+              showBottomFade ? "opacity-100" : "opacity-0"
+            )}
+          />
+        </div>
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem>
               <ComputeTargetPopover />
             </SidebarMenuItem>
-            <SidebarMenuItem className="flex items-center gap-2">
-              <div className="h-8 w-full">
-                {mounted && (
-                  <UserButton
-                    appearance={{
-                      elements: {
-                        rootBox:
-                          "flex overflow-hidden w-full text-sidebar-foreground",
-                        userButtonBox:
-                          "flex-row-reverse text-sidebar-foreground",
-                        userButtonOuterIdentifier:
-                          "truncate pl-0 text-sidebar-foreground",
-                        userButtonTrigger:
-                          "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground rounded-md",
-                      },
-                    }}
-                    showName
-                    userProfileMode="navigation"
-                    userProfileUrl="/settings"
-                  />
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-px">
-                <ModeToggle className="text-sidebar-foreground" />
-              </div>
+            {envBadge && (
+              <SidebarMenuItem>
+                <div className="w-full rounded border border-warning/30 bg-warning/12 px-2 py-1.5">
+                  <div className="mb-0.5 flex items-center gap-1.5">
+                    <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-warning" />
+                    <span className="font-bold font-mono text-[9px] text-warning-foreground uppercase tracking-wider">
+                      local
+                    </span>
+                  </div>
+                  <p
+                    className="truncate font-mono text-[9px] text-warning-foreground/60 leading-tight"
+                    title={envBadge}
+                  >
+                    {envBadge}
+                  </p>
+                </div>
+              </SidebarMenuItem>
+            )}
+            <SidebarMenuItem>
+              <AccountMenu />
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarFooter>
@@ -395,3 +329,71 @@ function maybeFeatureFlagged(item: NavItem, children: ReactNode): ReactNode {
   }
   return children;
 }
+
+function ArtifactsNavSection({
+  items,
+  pathname,
+}: {
+  items: NavItem[];
+  pathname: string;
+}) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Resolve every flag used by the artifact items up front so the hook call
+  // order stays stable across renders (rules-of-hooks). The header below is
+  // only rendered when at least one item survives flag filtering.
+  const documentsEnabled =
+    useFeatureFlag(ArtifactNavFlag.Documents)?.enabled === true;
+  const issuesEnabled =
+    useFeatureFlag(ArtifactNavFlag.Issues)?.enabled === true;
+  const branchesEnabled =
+    useFeatureFlag(ArtifactNavFlag.Branches)?.enabled === true;
+  const sessionsEnabled =
+    useFeatureFlag(ArtifactNavFlag.Sessions)?.enabled === true;
+  const agentsEnabled =
+    useFeatureFlag(ArtifactNavFlag.Agents)?.enabled === true;
+
+  if (!mounted) {
+    return null;
+  }
+
+  const enabledByFlag: Record<string, boolean> = {
+    [ArtifactNavFlag.Documents]: documentsEnabled,
+    [ArtifactNavFlag.Issues]: issuesEnabled,
+    [ArtifactNavFlag.Branches]: branchesEnabled,
+    [ArtifactNavFlag.Sessions]: sessionsEnabled,
+    [ArtifactNavFlag.Agents]: agentsEnabled,
+  };
+
+  const visibleItems = items.filter(
+    (item) => item.featureFlag === undefined || enabledByFlag[item.featureFlag]
+  );
+
+  if (visibleItems.length === 0) {
+    return null;
+  }
+
+  return (
+    <SidebarCollapsibleSection title="Artifacts">
+      <SidebarMenu className="gap-0">
+        {visibleItems.map((item) => (
+          <SidebarNavLinkItem
+            className="text-sm"
+            disabled={item.disabled}
+            href={item.disabled ? undefined : item.url}
+            icon={<item.icon />}
+            isActive={!item.disabled && isNavItemActive(pathname, item.url)}
+            key={item.title}
+            title={item.title}
+            tooltip={item.title}
+          />
+        ))}
+      </SidebarMenu>
+    </SidebarCollapsibleSection>
+  );
+}
+
+const LABS_NAV_SECTION_STORAGE_KEY = "closedloop.app.sidebar.labs.open";

@@ -1,13 +1,18 @@
+// SSOT: the gateway path prefix lives in the lightweight (zero-import)
+// `@repo/shared-platform/gateway-constants` so the shim and this file (which is
+// imported by both the gateway-relay server route and "use client" components)
+// share one definition without dragging the dispatch router into those bundles.
+import { GATEWAY_PATH_PREFIX } from "@repo/shared-platform/gateway-constants";
+
 export const DESKTOP_SETUP_URL =
-  "https://github.com/closedloop-ai/closedloop-ai/blob/main/docs/runbook-symphony-desktop-client-llm.md";
+  "https://github.com/closedloop-ai/symphony-alpha/blob/main/docs/runbook-symphony-desktop-client-llm.md";
 
 export const VALID_PROVIDERS = new Set(["claude", "codex"]);
 
-export const GATEWAY_PATH_PREFIX = "/api/gateway/";
+export { GATEWAY_PATH_PREFIX } from "@repo/shared-platform/gateway-constants";
 export const GATEWAY_RELAY_PATH_PREFIX = "/api/gateway-relay/";
 export const GATEWAY_HEALTH_CHECK_PATH = `${GATEWAY_PATH_PREFIX}health-check`;
 export const GATEWAY_RELAY_HEALTH_CHECK_PATH = `${GATEWAY_RELAY_PATH_PREFIX}health-check`;
-export const COMPUTE_TARGET_HEADER = "x-compute-target";
 
 /**
  * Gates the /engineer fetch routing UI (ComputeTargetSelector dropdown in

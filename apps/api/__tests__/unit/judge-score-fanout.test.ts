@@ -4,7 +4,7 @@
  * Verifies that JudgeScore rows are constructed correctly and written via
  * tx.judgeScore.createMany, including promptId lookup from prompt_registry.
  */
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockLog = vi.hoisted(() => ({
   warn: vi.fn(),

@@ -2,6 +2,10 @@
 
 import { useFeatureFlag } from "@repo/analytics/client";
 import { ChecklistItemId } from "@repo/api/src/types/onboarding";
+import {
+  useDismissChecklist,
+  useOnboardingStatus,
+} from "@repo/app/onboarding/hooks/use-onboarding";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -12,12 +16,8 @@ import {
   CardTitle,
 } from "@repo/design-system/components/ui/card";
 import { Progress } from "@repo/design-system/components/ui/progress";
+import { Link } from "@repo/navigation/link";
 import { Check, Circle, X } from "lucide-react";
-import Link from "next/link";
-import {
-  useDismissChecklist,
-  useOnboardingStatus,
-} from "@/hooks/queries/use-onboarding";
 
 export function OnboardingChecklist() {
   const { data: status } = useOnboardingStatus();
@@ -104,7 +104,7 @@ function ChecklistItem({
   const content = (
     <div className="flex items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-muted/50">
       {completed ? (
-        <Check className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+        <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
       ) : (
         <Circle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/40" />
       )}

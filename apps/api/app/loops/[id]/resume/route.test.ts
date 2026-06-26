@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -11,6 +11,10 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 
 vi.mock("@/lib/loops/compute-target-route-helpers", () => ({
   resolveComputeTargetForRoute: vi.fn(),
+}));
+
+vi.mock("@/lib/loops/explicit-compute-selection", () => ({
+  isExplicitComputeSelectionRequired: vi.fn(),
 }));
 
 vi.mock("../../service", async () => {
@@ -47,8 +51,8 @@ vi.mock("@repo/observability/log", () => ({
 
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { NextResponse } from "next/server";
-import { beforeEach, describe, expect, it } from "vitest";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
+import { isExplicitComputeSelectionRequired } from "@/lib/loops/explicit-compute-selection";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import {
   createMockRequest,
@@ -78,6 +82,7 @@ beforeEach(() => {
   vi.mocked(resolveComputeTargetForRoute).mockResolvedValue({
     computeTargetId: undefined,
   });
+  vi.mocked(isExplicitComputeSelectionRequired).mockResolvedValue(false);
 
   // Default: loopsService.findById returns a parent loop (no desktop target)
   vi.mocked(loopsService.findById).mockResolvedValue({
@@ -149,7 +154,7 @@ describe("POST /loops/[id]/resume", () => {
     );
   });
 
-  it("falls back to cloud when inherited compute target is no longer accessible", async () => {
+  it("falls back to cloud when inherited compute target is inaccessible and explicit selection is disabled", async () => {
     vi.mocked(loopsService.findById).mockResolvedValue({
       id: LOOP_ID,
       computeTargetId: VALID_COMPUTE_TARGET_UUID,
@@ -170,8 +175,11 @@ describe("POST /loops/[id]/resume", () => {
       createMockRouteContext({ id: LOOP_ID })
     );
 
-    // Should succeed with cloud fallback, not return the 400
     expect(response.status).toBe(200);
+    expect(isExplicitComputeSelectionRequired).toHaveBeenCalledWith({
+      clerkUserId: mockAuthContext.user.clerkId,
+      userId: USER_ID,
+    });
     expect(loopsService.resume).toHaveBeenCalledWith(
       LOOP_ID,
       ORG_ID,
@@ -179,6 +187,69 @@ describe("POST /loops/[id]/resume", () => {
       {},
       undefined
     );
+    expect(launchLoop).toHaveBeenCalledWith("new-id", ORG_ID);
+  });
+
+  it("returns the resolver error when inherited compute target is inaccessible and explicit selection is enabled", async () => {
+    vi.mocked(isExplicitComputeSelectionRequired).mockResolvedValue(true);
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: LOOP_ID,
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    } as any);
+    vi.mocked(resolveComputeTargetForRoute).mockResolvedValue({
+      errorResponse: NextResponse.json(
+        { success: false, error: "Compute target is offline" },
+        { status: 400 }
+      ),
+    });
+
+    const response = await POST(
+      createMockRequest({
+        url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
+        method: "POST",
+        body: {},
+      }),
+      createMockRouteContext({ id: LOOP_ID })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: "Compute target is offline",
+    });
+    expect(loopsService.resume).not.toHaveBeenCalled();
+    expect(launchLoop).not.toHaveBeenCalled();
+  });
+
+  it("returns the no-online-targets resolver error when explicit selection is enabled", async () => {
+    vi.mocked(isExplicitComputeSelectionRequired).mockResolvedValue(true);
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: LOOP_ID,
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    } as any);
+    vi.mocked(resolveComputeTargetForRoute).mockResolvedValue({
+      errorResponse: NextResponse.json(
+        { success: false, error: "No compute targets are online" },
+        { status: 400 }
+      ),
+    });
+
+    const response = await POST(
+      createMockRequest({
+        url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
+        method: "POST",
+        body: {},
+      }),
+      createMockRouteContext({ id: LOOP_ID })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: "No compute targets are online",
+    });
+    expect(loopsService.resume).not.toHaveBeenCalled();
+    expect(launchLoop).not.toHaveBeenCalled();
   });
 
   it("returns HTTP 400 when computeTargetId is not a valid UUID", async () => {

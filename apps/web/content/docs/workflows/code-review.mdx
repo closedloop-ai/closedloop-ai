@@ -3,7 +3,7 @@ title: Code review
 description: How to run multi-agent code review locally and in CI, including GitHub PR integration.
 ---
 
-ClosedLoop.ai's `/code-review:start` runs multi-agent, partitioned code review with deterministic hygiene, risk-based routing, and caching. It works on the current branch, on staged changes, on specific files, or on a GitHub PR.
+Closedloop.ai's `/code-review:start` runs multi-agent, partitioned code review with deterministic hygiene, risk-based routing, and caching. It works on the current branch, on staged changes, on specific files, or on a GitHub PR.
 
 ## Local branch review
 
@@ -74,7 +74,7 @@ With `--github`:
 - run: claude /code-review:start ${{ github.event.pull_request.number }} --github
 ```
 
-Couple this with ClosedLoop.ai's `judges` reports on the plan and code, and you have a full grading pipeline for every PR.
+Couple this with Closedloop.ai's `judges` reports on the plan and code, and you have a full grading pipeline for every PR.
 
 ## When to run
 

@@ -8,30 +8,29 @@ import type {
   PullRequestReopenedEvent,
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
-import { LinkType } from "@repo/api/src/types/artifact";
 import {
-  type Document,
-  DocumentStatus,
-  DocumentType,
-} from "@repo/api/src/types/document";
+  BranchBaseBranchSource,
+  BranchHeadShaSource,
+  LinkType,
+} from "@repo/api/src/types/artifact";
+import type { Document } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import type { TransactionClient } from "@repo/database";
 import {
   ArtifactType,
   ChecksStatus,
-  WorkstreamType,
+  GitHubInstallationStatus,
   withDb,
 } from "@repo/database";
-import {
-  type ArtifactReference,
-  parseArtifactReferences,
-} from "@repo/github/artifact-reference-parser";
+import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { pullRequestService } from "@/app/pull-requests/pull-request-service";
-import { documentWhere } from "@/lib/artifact-adapters";
-import { generateSlug } from "@/lib/slug-generator";
+import {
+  branchService,
+  bumpBranchActivity,
+} from "@/app/branches/branch-service";
+import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
+import { pickPrimaryArtifactReference } from "./artifact-reference";
 
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
@@ -74,7 +73,7 @@ function parseDateOrNow(value: string | null): Date {
  * Supported lifecycle actions:
  * - opened: Parse plan references from title/body, link PR to plan artifact
  * - edited: Parse plan references from title/body, link PR to plan artifact (if not already linked)
- * - closed: Updates state to MERGED (if merged) or CLOSED, creates corresponding workstream event
+ * - closed: Updates state to MERGED (if merged) or CLOSED
  * - reopened: Updates state to OPEN, clears closedAt; also re-checks plan references
  * - synchronize: Updates head SHA when PR is updated with new commits
  * - converted_to_draft: Sets isDraft to true
@@ -93,6 +92,7 @@ export async function handlePullRequest(
   event: HandledPullRequestEvent
 ): Promise<Response> {
   const { action, pull_request, repository } = event;
+  const installationId = event.installation?.id;
 
   // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
@@ -106,6 +106,17 @@ export async function handlePullRequest(
       ok: true,
     });
   }
+  if (!installationId) {
+    log.warn("[handlePullRequest] Missing installation on event", {
+      action,
+      prNumber: pull_request.number,
+      repositoryFullName: repository.full_name,
+    });
+    return NextResponse.json(
+      { message: "Missing installation", ok: false },
+      { status: 400 }
+    );
+  }
 
   log.info("[handlePullRequest] Processing pull_request event", {
     action,
@@ -115,93 +126,12 @@ export async function handlePullRequest(
     isDraft: pull_request.draft,
     merged: "merged" in pull_request ? pull_request.merged : undefined,
     repositoryId: repository.id,
+    installationId,
   });
 
-  await withDb.tx(async (tx) => {
-    // Step 1: Find GitHubInstallationRepository by githubRepoId
-    const repo = await tx.gitHubInstallationRepository.findFirst({
-      where: { githubRepoId: String(repository.id) },
-      select: {
-        id: true,
-        installation: {
-          select: { organizationId: true },
-        },
-      },
-    });
-
-    if (!repo) {
-      log.warn("[handlePullRequest] Repository not found in database", {
-        githubRepoId: repository.id,
-        repositoryFullName: repository.full_name,
-        action,
-        prNumber: pull_request.number,
-      });
-      return;
-    }
-
-    // Step 2: Find PullRequestDetail (PR artifact) by repositoryId + number
-    const prDetail = await tx.pullRequestDetail.findUnique({
-      where: {
-        repositoryId_number: {
-          repositoryId: repo.id,
-          number: pull_request.number,
-        },
-      },
-      select: {
-        artifactId: true,
-        checksStatus: true,
-        artifact: {
-          select: {
-            organizationId: true,
-            workstreamId: true,
-            // PR is the TARGET of a DOCUMENT → produces → PR link.
-            targetLinks: {
-              where: {
-                linkType: LinkType.Produces,
-                source: { type: ArtifactType.DOCUMENT },
-              },
-              select: {
-                source: { select: { id: true, slug: true } },
-              },
-              orderBy: { createdAt: "asc" },
-              take: 1,
-            },
-          },
-        },
-      },
-    });
-
-    const linkedDocForPr = prDetail?.artifact.targetLinks[0]?.source ?? null;
-    const existingPr: ExistingPr | null = prDetail
-      ? {
-          id: prDetail.artifactId,
-          workstreamId: prDetail.artifact.workstreamId,
-          organizationId: prDetail.artifact.organizationId,
-          documentId: linkedDocForPr?.id ?? null,
-          checksStatus: prDetail.checksStatus,
-          document: linkedDocForPr ? { slug: linkedDocForPr.slug ?? "" } : null,
-        }
-      : null;
-
-    // For linkage actions, attempt artifact reference linking even if PR doesn't exist yet
-    if (LINKAGE_ACTIONS.has(action)) {
-      await attemptArtifactLinkage(tx, pull_request, repo, existingPr);
-    }
-
-    if (!existingPr) {
-      if (!LINKAGE_ACTIONS.has(action)) {
-        log.warn("[handlePullRequest] Pull request not found in database", {
-          repositoryId: repo.id,
-          prNumber: pull_request.number,
-          action,
-          reason: "PR may have been created outside Symphony workflow",
-        });
-      }
-      return;
-    }
-
-    await applyPrAction(tx, action, event, existingPr, pull_request);
-  });
+  await withDb.tx((tx) =>
+    processPullRequestTransaction(tx, event, installationId)
+  );
 
   log.info("[handlePullRequest] Successfully processed pull_request event", {
     action,
@@ -215,37 +145,455 @@ export async function handlePullRequest(
   });
 }
 
+async function processPullRequestTransaction(
+  tx: TransactionClient,
+  event: HandledPullRequestEvent,
+  installationId: number
+) {
+  const { action, pull_request, repository } = event;
+  const repo = await findActivePullRequestRepository(
+    tx,
+    repository,
+    installationId
+  );
+  if (!repo) {
+    log.warn("[handlePullRequest] Repository not found in database", {
+      githubRepoId: repository.id,
+      repositoryFullName: repository.full_name,
+      action,
+      prNumber: pull_request.number,
+    });
+    return;
+  }
+
+  const prDetail = await findPullRequestDetail(
+    tx,
+    repo.id,
+    pull_request.number
+  );
+  const existingPr = prDetail
+    ? buildExistingPr(prDetail)
+    : await findExistingBranchPr(tx, repo.id, pull_request.head.ref);
+
+  await processExistingPullRequest(tx, event, repo, existingPr);
+}
+
+function findActivePullRequestRepository(
+  tx: TransactionClient,
+  repository: HandledPullRequestEvent["repository"],
+  installationId: number
+): Promise<RepoWithInstallation | null> {
+  return tx.gitHubInstallationRepository.findFirst({
+    where: {
+      githubRepoId: String(repository.id),
+      fullName: repository.full_name,
+      installation: {
+        installationId: String(installationId),
+        status: GitHubInstallationStatus.ACTIVE,
+      },
+    },
+    select: {
+      id: true,
+      fullName: true,
+      installation: {
+        select: { organizationId: true, installationId: true },
+      },
+    },
+  });
+}
+
+function findPullRequestDetail(
+  tx: TransactionClient,
+  repositoryId: string,
+  number: number
+): Promise<ExistingPrDetail | null> {
+  return tx.pullRequestDetail.findUnique({
+    where: {
+      repositoryId_number: {
+        repositoryId,
+        number,
+      },
+    },
+    select: {
+      artifactId: true,
+      branchArtifactId: true,
+      id: true,
+      githubId: true,
+      prState: true,
+      isDraft: true,
+      closedAt: true,
+      mergedAt: true,
+      artifact: {
+        select: {
+          organizationId: true,
+          projectId: true,
+          // PR is the TARGET of a DOCUMENT -> produces -> PR link.
+          targetLinks: {
+            where: {
+              linkType: LinkType.Produces,
+              source: { type: ArtifactType.DOCUMENT },
+            },
+            select: {
+              source: { select: { id: true, slug: true } },
+            },
+            orderBy: { createdAt: "asc" },
+            take: 1,
+          },
+        },
+      },
+      branchArtifact: {
+        select: {
+          organizationId: true,
+          projectId: true,
+          branch: {
+            select: {
+              checksStatus: true,
+              currentPullRequestDetailId: true,
+              headSha: true,
+            },
+          },
+          targetLinks: {
+            where: {
+              linkType: LinkType.Produces,
+              source: { type: ArtifactType.DOCUMENT },
+            },
+            select: {
+              source: { select: { id: true, slug: true } },
+            },
+            orderBy: { createdAt: "asc" },
+            take: 1,
+          },
+        },
+      },
+    },
+  });
+}
+
+async function processExistingPullRequest(
+  tx: TransactionClient,
+  event: HandledPullRequestEvent,
+  repo: RepoWithInstallation,
+  existingPr: ExistingPr | null
+) {
+  const { action, pull_request } = event;
+
+  if (!existingPr) {
+    await processMissingPullRequest(tx, action, pull_request, repo);
+    return;
+  }
+
+  const lifecycleSubject = getLifecycleSubject(
+    existingPr,
+    pull_request,
+    action
+  );
+  const lifecycleDecision = shouldApplyPullRequestLifecycleUpdate(
+    lifecycleSubject,
+    pull_request,
+    action
+  );
+
+  if (!shouldApplyCurrentBranchPrEvent(existingPr)) {
+    log.info("[handlePullRequest] Skipping non-current branch PR event", {
+      action,
+      branchArtifactId: existingPr.id,
+      currentPullRequestDetailId: existingPr.currentPullRequestDetailId,
+      incomingPullRequestDetailId: existingPr.pullRequestDetailId,
+      lifecycleReason: lifecycleDecision.apply
+        ? "applicable"
+        : lifecycleDecision.reason,
+      prNumber: pull_request.number,
+    });
+    return;
+  }
+
+  if (!lifecycleDecision.apply) {
+    log.info("[handlePullRequest] Skipping stale pull_request lifecycle", {
+      action,
+      prNumber: pull_request.number,
+      branchArtifactId: existingPr.id,
+      reason: lifecycleDecision.reason,
+    });
+    return;
+  }
+
+  if (existingPr.hasBranchArtifact) {
+    await ensureCurrentPullRequestForExistingBranch(
+      tx,
+      repo,
+      existingPr,
+      pull_request,
+      action
+    );
+  }
+
+  // For existing PRs, attempt artifact linkage only after replay/order
+  // validation so stale terminal events cannot mutate links.
+  if (LINKAGE_ACTIONS.has(action)) {
+    await attemptArtifactLinkage(tx, pull_request, repo, existingPr);
+  }
+
+  await applyPrAction(tx, action, event, existingPr, pull_request);
+}
+
+async function processMissingPullRequest(
+  tx: TransactionClient,
+  action: string,
+  pullRequest: PullRequest,
+  repo: RepoWithInstallation
+) {
+  if (LINKAGE_ACTIONS.has(action)) {
+    await attemptArtifactLinkage(tx, pullRequest, repo, null);
+    return;
+  }
+
+  log.warn("[handlePullRequest] Pull request not found in database", {
+    repositoryId: repo.id,
+    prNumber: pullRequest.number,
+    action,
+    reason: "PR may have been created outside Symphony workflow",
+  });
+}
+
+function getLifecycleSubject(
+  existingPr: ExistingPr,
+  pullRequest: PullRequest,
+  action: string
+): ExistingPr | null {
+  if (
+    existingPr.hasBranchArtifact &&
+    existingPr.githubId &&
+    existingPr.githubId !== String(pullRequest.id) &&
+    LINKAGE_ACTIONS.has(action)
+  ) {
+    return null;
+  }
+  return existingPr;
+}
+
 type RepoWithInstallation = {
   id: string;
-  installation: { organizationId: string | null };
+  fullName: string;
+  installation: { organizationId: string | null; installationId: string };
 };
 
 type ExistingPr = {
   id: string;
-  workstreamId: string | null;
+  currentPullRequestDetailId: string | null;
+  pullRequestDetailId: string | null;
+  projectId: string | null;
   organizationId: string;
   documentId: string | null;
+  githubId: string | null;
   checksStatus: string;
+  prState: GitHubPRState | null;
+  isDraft: boolean | null;
+  closedAt: Date | null;
+  mergedAt: Date | null;
+  headSha: string | null;
   document: { slug: string } | null;
+  hasBranchArtifact: boolean;
 };
 
-/**
- * Pick the winning artifact reference for linkage:
- * - First ImplementationPlan ref if any — plans always win when mixed with features.
- * - Otherwise the first Feature ref.
- * Rationale: the plan semantically produces the PR; features linked to that
- * plan already cascade to Done via markLinkedArtifactsOnMerge.
- */
-function pickPrimaryRef(
-  refs: ArtifactReference[]
-): ArtifactReference | undefined {
-  const planRef = refs.find(
-    (ref) => ref.docType === DocumentType.ImplementationPlan
-  );
-  if (planRef) {
-    return planRef;
+type ExistingPrDetail = {
+  artifactId: string | null;
+  branchArtifactId: string | null;
+  id: string;
+  githubId: string;
+  prState: GitHubPRState;
+  isDraft: boolean;
+  closedAt: Date | null;
+  mergedAt: Date | null;
+  artifact: ExistingPrOwnerArtifact | null;
+  branchArtifact: ExistingPrOwnerArtifact | null;
+};
+
+type ExistingPrOwnerArtifact = {
+  projectId: string | null;
+  organizationId: string;
+  branch?: {
+    checksStatus: string;
+    currentPullRequestDetailId: string | null;
+    headSha: string | null;
+  } | null;
+  targetLinks: Array<{ source: { id: string; slug: string | null } }>;
+};
+
+function buildExistingPr(prDetail: ExistingPrDetail): ExistingPr | null {
+  const ownerArtifact = prDetail.branchArtifact ?? prDetail.artifact;
+  const existingArtifactId = prDetail.branchArtifactId ?? prDetail.artifactId;
+  if (!(ownerArtifact && existingArtifactId)) {
+    return null;
   }
-  return refs.find((ref) => ref.docType === DocumentType.Feature);
+
+  const linkedDoc = ownerArtifact.targetLinks[0]?.source ?? null;
+  return {
+    id: existingArtifactId,
+    currentPullRequestDetailId:
+      ownerArtifact.branch?.currentPullRequestDetailId ?? null,
+    pullRequestDetailId: prDetail.id,
+    projectId: ownerArtifact.projectId,
+    organizationId: ownerArtifact.organizationId,
+    documentId: linkedDoc?.id ?? null,
+    githubId: prDetail.githubId,
+    checksStatus: ownerArtifact.branch?.checksStatus ?? ChecksStatus.UNKNOWN,
+    prState: prDetail.prState,
+    isDraft: prDetail.isDraft,
+    closedAt: prDetail.closedAt,
+    mergedAt: prDetail.mergedAt,
+    headSha: ownerArtifact.branch?.headSha ?? null,
+    document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
+    hasBranchArtifact: !!prDetail.branchArtifactId,
+  };
+}
+
+async function findExistingBranchPr(
+  tx: TransactionClient,
+  repositoryId: string,
+  branchName: string
+): Promise<ExistingPr | null> {
+  const branch = await tx.branchDetail.findUnique({
+    where: {
+      repositoryId_branchName: {
+        repositoryId,
+        branchName,
+      },
+    },
+    select: {
+      artifactId: true,
+      currentPullRequestDetailId: true,
+      checksStatus: true,
+      headSha: true,
+      artifact: {
+        select: {
+          organizationId: true,
+          projectId: true,
+          targetLinks: {
+            where: {
+              linkType: LinkType.Produces,
+              source: { type: ArtifactType.DOCUMENT },
+            },
+            select: {
+              source: { select: { id: true, slug: true } },
+            },
+            orderBy: { createdAt: "asc" },
+            take: 1,
+          },
+        },
+      },
+      currentPullRequestDetail: {
+        select: {
+          id: true,
+          branchArtifactId: true,
+          repositoryId: true,
+          githubId: true,
+          prState: true,
+          isDraft: true,
+          closedAt: true,
+          mergedAt: true,
+        },
+      },
+    },
+  });
+  if (!branch) {
+    return null;
+  }
+
+  const currentPullRequestDetail =
+    branch.currentPullRequestDetail?.repositoryId === repositoryId &&
+    branch.currentPullRequestDetail.branchArtifactId === branch.artifactId
+      ? branch.currentPullRequestDetail
+      : null;
+  const linkedDoc = branch.artifact.targetLinks[0]?.source ?? null;
+  return {
+    id: branch.artifactId,
+    currentPullRequestDetailId: branch.currentPullRequestDetailId,
+    pullRequestDetailId: currentPullRequestDetail?.id ?? null,
+    projectId: branch.artifact.projectId,
+    organizationId: branch.artifact.organizationId,
+    documentId: linkedDoc?.id ?? null,
+    githubId: currentPullRequestDetail?.githubId ?? null,
+    checksStatus: branch.checksStatus,
+    prState: currentPullRequestDetail?.prState ?? null,
+    isDraft: currentPullRequestDetail?.isDraft ?? null,
+    closedAt: currentPullRequestDetail?.closedAt ?? null,
+    mergedAt: currentPullRequestDetail?.mergedAt ?? null,
+    headSha: branch.headSha,
+    document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
+    hasBranchArtifact: true,
+  };
+}
+
+function shouldApplyCurrentBranchPrEvent(existingPr: ExistingPr): boolean {
+  if (!existingPr.hasBranchArtifact) {
+    return true;
+  }
+  if (
+    !(existingPr.currentPullRequestDetailId && existingPr.pullRequestDetailId)
+  ) {
+    return true;
+  }
+  return (
+    existingPr.currentPullRequestDetailId === existingPr.pullRequestDetailId
+  );
+}
+
+type LifecycleDecision = { apply: true } | { apply: false; reason: string };
+
+/**
+ * Protect current PR lifecycle state from duplicate webhook delivery and
+ * stale open-ish events. GitHub webhooks are at-least-once; the DB row remains
+ * authoritative when a terminal merge or newer close is already persisted.
+ */
+export function shouldApplyPullRequestLifecycleUpdate(
+  current: ExistingPr | null,
+  incoming: PullRequest,
+  action: string
+): LifecycleDecision {
+  if (!current) {
+    return { apply: true };
+  }
+
+  const incomingState = pullRequestState(incoming);
+  if (
+    action !== "edited" &&
+    action !== "synchronize" &&
+    current.prState === incomingState &&
+    current.isDraft === (incoming.draft ?? false) &&
+    current.headSha === incoming.head.sha
+  ) {
+    return { apply: false, reason: "duplicate" };
+  }
+  if (current.prState === GitHubPRState.Merged) {
+    return { apply: false, reason: "merged_terminal" };
+  }
+
+  const terminalObservedAt = current.mergedAt ?? current.closedAt;
+  const incomingUpdatedAt = new Date(incoming.updated_at);
+  const opensLifecycle =
+    action === "opened" ||
+    action === "edited" ||
+    action === "synchronize" ||
+    action === "converted_to_draft" ||
+    action === "ready_for_review" ||
+    action === "reopened";
+  if (
+    terminalObservedAt &&
+    opensLifecycle &&
+    incomingUpdatedAt.getTime() <= terminalObservedAt.getTime()
+  ) {
+    return { apply: false, reason: "stale_open_event" };
+  }
+
+  if (
+    current.prState === GitHubPRState.Closed &&
+    action !== "reopened" &&
+    opensLifecycle
+  ) {
+    return { apply: false, reason: "closed_terminal_for_action" };
+  }
+
+  return { apply: true };
 }
 
 /**
@@ -292,7 +640,7 @@ async function attemptArtifactLinkage(
     return;
   }
 
-  const primaryRef = pickPrimaryRef(refs);
+  const primaryRef = pickPrimaryArtifactReference(refs);
   if (!primaryRef) {
     return;
   }
@@ -320,7 +668,6 @@ async function attemptArtifactLinkage(
       name: true,
       organizationId: true,
       projectId: true,
-      workstreamId: true,
       assigneeId: true,
       createdById: true,
       slug: true,
@@ -351,113 +698,21 @@ async function attemptArtifactLinkage(
     return;
   }
 
-  // createdById is nullable on Artifact but the legacy Document Pick shape
-  // expects string. Use Omit + intersection so we can preserve the true
-  // nullable type here and let autoCreateWorkstream short-circuit when
-  // neither assigneeId nor createdById is present.
   const artifact = {
     id: artifactRow.id,
     title: artifactRow.name,
     organizationId: artifactRow.organizationId,
     projectId: artifactRow.projectId,
-    workstreamId: artifactRow.workstreamId,
     assigneeId: artifactRow.assigneeId,
     createdById: artifactRow.createdById,
     slug: artifactRow.slug ?? "",
   };
 
-  let workstreamId: string | null | undefined =
-    artifact.workstreamId ?? existingPr?.workstreamId;
-  if (!workstreamId) {
-    workstreamId = await autoCreateWorkstream(tx, artifact, organizationId);
-    if (!workstreamId) {
-      log.warn(
-        "[handlePullRequest] Cannot link PR — no workstreamId and cannot auto-create (missing projectId)",
-        {
-          prNumber: pull_request.number,
-          slug: primaryRef.slug,
-          documentId: artifact.id,
-        }
-      );
-      return;
-    }
-  }
-
   if (existingPr) {
-    await linkExistingPrToDocument(
-      tx,
-      existingPr,
-      artifact,
-      workstreamId,
-      pull_request
-    );
+    await linkExistingPrToDocument(tx, existingPr, artifact, pull_request);
   } else {
-    await createAndLinkPr(
-      tx,
-      repo,
-      artifact,
-      organizationId,
-      workstreamId,
-      pull_request
-    );
+    await createAndLinkPr(tx, repo, artifact, organizationId, pull_request);
   }
-}
-
-/**
- * Auto-create a workstream for an artifact that lacks one.
- * Follows the same pattern as documentWorkstreamService.findOrCreateWorkstream.
- * Returns the new workstreamId, or null if the artifact has no projectId.
- */
-async function autoCreateWorkstream(
-  tx: TransactionClient,
-  artifact: Pick<
-    Document,
-    "id" | "title" | "organizationId" | "projectId" | "assigneeId" | "slug"
-  > & { createdById: string | null },
-  organizationId: string
-): Promise<string | null> {
-  if (!artifact.projectId) {
-    return null;
-  }
-
-  const createdById = artifact.assigneeId ?? artifact.createdById;
-  if (!createdById) {
-    // No valid user to own the new workstream. Skip auto-creation rather
-    // than FK-fail on workstream.createdById.
-    log.warn(
-      "[handlePullRequest] Cannot auto-create workstream — artifact has no assignee or creator",
-      { documentId: artifact.id, slug: artifact.slug }
-    );
-    return null;
-  }
-
-  const slug = await generateSlug(organizationId, SlugPrefix.Workstream);
-
-  const workstream = await tx.workstream.create({
-    data: {
-      organizationId,
-      projectId: artifact.projectId,
-      title: artifact.title,
-      description: `Auto-created for PR linkage: ${artifact.title}`,
-      type: WorkstreamType.FEATURE_DELIVERY,
-      createdById,
-      slug,
-    },
-  });
-
-  // Attach the artifact to the new workstream
-  await tx.artifact.update({
-    where: { id: artifact.id, organizationId },
-    data: { workstreamId: workstream.id },
-  });
-
-  log.info("[handlePullRequest] Auto-created workstream for artifact", {
-    workstreamId: workstream.id,
-    documentId: artifact.id,
-    slug: artifact.slug,
-  });
-
-  return workstream.id;
 }
 
 /**
@@ -473,16 +728,82 @@ async function linkExistingPrToDocument(
     projectId: string | null;
     slug: string;
   },
-  workstreamId: string,
   pull_request: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
-  await createLinkageRecords(tx, artifact, workstreamId, pull_request);
+  await createLinkageRecords(tx, artifact, pull_request);
 
   log.info("[handlePullRequest] Linked existing PR to artifact", {
     prId: existingPr.id,
     documentId: artifact.id,
     slug: artifact.slug,
   });
+}
+
+/**
+ * Ensure an existing branch artifact points at the PR detail for this GitHub
+ * PR. Lifecycle/status mutations are intentionally left to `applyPrAction`
+ * so each webhook action has a single owner for state transitions.
+ */
+async function ensureCurrentPullRequestForExistingBranch(
+  tx: TransactionClient,
+  repo: RepoWithInstallation,
+  existingPr: ExistingPr,
+  pullRequest: HandledPullRequestEvent["pull_request"],
+  action: string
+): Promise<void> {
+  const githubId = String(pullRequest.id);
+  const detail = await tx.pullRequestDetail.upsert({
+    where: { githubId },
+    create: {
+      branchArtifactId: existingPr.id,
+      repositoryId: repo.id,
+      githubId,
+      number: pullRequest.number,
+      title: pullRequest.title,
+      htmlUrl: pullRequest.html_url,
+      body: pullRequest.body ?? null,
+      isCurrent: true,
+    },
+    update: {
+      branchArtifactId: existingPr.id,
+      repositoryId: repo.id,
+      title: pullRequest.title,
+      htmlUrl: pullRequest.html_url,
+      body: pullRequest.body ?? null,
+      isCurrent: true,
+    },
+    select: { id: true },
+  });
+
+  await tx.pullRequestDetail.updateMany({
+    where: {
+      branchArtifactId: existingPr.id,
+      isCurrent: true,
+      githubId: { not: githubId },
+    },
+    data: { isCurrent: false },
+  });
+
+  const branchData =
+    action === "synchronize"
+      ? { currentPullRequestDetailId: detail.id }
+      : {
+          baseBranch: pullRequest.base.ref,
+          baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+          headSha: pullRequest.head.sha,
+          headShaSource: BranchHeadShaSource.PullRequestWebhook,
+          headShaObservedAt: new Date(),
+          lastPushBeforeSha: null,
+          currentPullRequestDetailId: detail.id,
+        };
+
+  await tx.branchDetail.update({
+    where: { artifactId: existingPr.id },
+    data: branchData,
+  });
+  if (action !== "synchronize" && existingPr.headSha !== pullRequest.head.sha) {
+    await invalidateBranchStatusChecksForHeadChange(tx, existingPr.id);
+  }
 }
 
 /**
@@ -494,7 +815,6 @@ async function createAndLinkPr(
   repo: RepoWithInstallation,
   artifact: Pick<Document, "id" | "organizationId" | "projectId" | "slug">,
   organizationId: string,
-  workstreamId: string,
   pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
   let state: GitHubPRState = GitHubPRState.Open;
@@ -513,30 +833,36 @@ async function createAndLinkPr(
     return;
   }
 
-  const upsertResult = await pullRequestService.upsertPullRequestArtifact({
+  const upsertResult = await branchService.upsertBranchArtifact({
     organizationId,
+    repositoryFullName: repo.fullName,
     projectId: artifact.projectId,
-    workstreamId,
     repositoryId: repo.id,
-    githubId: String(pullRequest.id),
-    number: pullRequest.number,
-    title: pullRequest.title,
-    body: pullRequest.body ?? null,
-    htmlUrl: pullRequest.html_url,
-    headBranch: pullRequest.head.ref,
     baseBranch: pullRequest.base.ref,
+    baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+    branchName: pullRequest.head.ref,
+    defaultBranch: pullRequest.base.repo?.default_branch ?? null,
     headSha: pullRequest.head.sha,
-    prState: state,
-    isDraft: pullRequest.draft ?? false,
+    headShaSource: BranchHeadShaSource.PullRequestWebhook,
+    headShaObservedAt: new Date(),
+    sourceArtifactId: artifact.id,
+    pullRequest: {
+      githubId: String(pullRequest.id),
+      number: pullRequest.number,
+      title: pullRequest.title,
+      body: pullRequest.body ?? null,
+      htmlUrl: pullRequest.html_url,
+      state,
+      isDraft: pullRequest.draft ?? false,
+      closedAt: pullRequest.closed_at ? new Date(pullRequest.closed_at) : null,
+      mergedAt: pullRequest.merged_at ? new Date(pullRequest.merged_at) : null,
+      mergeCommitSha: pullRequest.merge_commit_sha ?? null,
+    },
   });
 
   if (!upsertResult.ok) {
-    // PullRequestDetail.githubId is globally unique; an existing row owned
-    // by another organization (e.g. reinstalled GitHub App with a reused id)
-    // would surface here. We skip the linkage rather than corrupt the
-    // foreign org's row.
     log.warn(
-      "[handlePullRequest] Skipping linkage — PR artifact not in this org",
+      "[handlePullRequest] Skipping linkage — branch artifact rejected",
       {
         prNumber: pullRequest.number,
         organizationId,
@@ -546,7 +872,7 @@ async function createAndLinkPr(
     return;
   }
 
-  await createLinkageRecords(tx, artifact, workstreamId, pullRequest);
+  await createLinkageRecords(tx, artifact, pullRequest, upsertResult.value.id);
 
   log.info("[handlePullRequest] Created and linked new PR to artifact", {
     prNumber: pullRequest.number,
@@ -556,95 +882,68 @@ async function createAndLinkPr(
 }
 
 /**
- * Create ArtifactLink and WorkstreamEvent records for a PR-to-plan link.
- * The PR artifact itself carries title/url/state — we update it in-place
- * when it already exists (idempotent replay), then link DOCUMENT -> produces -> PR.
+ * Create the ArtifactLink row for a PR-to-plan link. Lifecycle/status mutations
+ * are intentionally owned by `applyPrAction` or the branch service create path
+ * so linkage cannot double-write PR state.
  */
 async function createLinkageRecords(
   tx: TransactionClient,
   artifact: Pick<Document, "id" | "organizationId" | "projectId" | "slug">,
-  workstreamId: string,
-  pullRequest: HandledPullRequestEvent["pull_request"]
+  pullRequest: HandledPullRequestEvent["pull_request"],
+  knownBranchArtifactId?: string
 ): Promise<void> {
-  // Find the PR artifact by github id (unique on PullRequestDetail)
+  // Find the branch artifact by current PR detail github id.
   const existingPrDetail = await tx.pullRequestDetail.findUnique({
     where: { githubId: String(pullRequest.id) },
-    select: { artifactId: true },
+    select: { artifactId: true, branchArtifactId: true },
   });
 
-  let prArtifactId: string | null = existingPrDetail?.artifactId ?? null;
-
-  // Fall back to looking up by externalUrl on artifact
-  if (!prArtifactId) {
-    const existingByUrl = await tx.artifact.findFirst({
-      where: {
-        organizationId: artifact.organizationId,
-        type: ArtifactType.PULL_REQUEST,
-        externalUrl: pullRequest.html_url,
-      },
-      select: { id: true },
-    });
-    prArtifactId = existingByUrl?.id ?? null;
+  const branchArtifactId =
+    knownBranchArtifactId ?? existingPrDetail?.branchArtifactId ?? null;
+  const legacyArtifactId = branchArtifactId
+    ? null
+    : (existingPrDetail?.artifactId ?? null);
+  const targetArtifactId = branchArtifactId ?? legacyArtifactId;
+  if (!targetArtifactId) {
+    return;
   }
-
-  if (prArtifactId) {
-    await tx.artifact.update({
-      where: { id: prArtifactId },
-      data: {
-        name: pullRequest.title,
-        status: pullRequestState(pullRequest),
-        pullRequest: {
-          update: pullRequestToDetailUpdate(pullRequest),
-        },
-      },
-    });
-  }
-  // If no PR artifact exists yet, createAndLinkPr handles the create path;
-  // this helper is only responsible for wiring links + events.
 
   // Dedup ArtifactLink — enforced by the unique constraint but we check first
   // to avoid the round-trip when it already exists.
-  if (prArtifactId) {
-    const existingLink = await tx.artifactLink.findFirst({
-      where: {
+  const existingLink = await tx.artifactLink.findFirst({
+    where: {
+      organizationId: artifact.organizationId,
+      sourceId: artifact.id,
+      targetId: targetArtifactId,
+      linkType: LinkType.Produces,
+    },
+    select: { id: true },
+  });
+
+  if (!existingLink) {
+    await tx.artifactLink.create({
+      data: {
         organizationId: artifact.organizationId,
         sourceId: artifact.id,
-        targetId: prArtifactId,
+        targetId: targetArtifactId,
         linkType: LinkType.Produces,
       },
-      select: { id: true },
     });
-
-    if (!existingLink) {
-      await tx.artifactLink.create({
-        data: {
-          organizationId: artifact.organizationId,
-          sourceId: artifact.id,
-          targetId: prArtifactId,
-          linkType: LinkType.Produces,
-        },
-      });
-    }
   }
-
-  // Create WorkstreamEvent — use GITHUB_PR_LINKED for all linkage actions
-  // (opened/edited/reopened all represent a PR being linked to a plan, not a comment)
-  await tx.workstreamEvent.create({
-    data: {
-      workstreamId,
-      type: "GITHUB_PR_LINKED",
-      actorType: "system",
-      data: {
-        prNumber: pullRequest.number,
-        prUrl: pullRequest.html_url,
-        prTitle: pullRequest.title,
-        branch: pullRequest.head.ref,
-        documentId: artifact.id,
-        slug: artifact.slug,
-      },
-    },
-  });
 }
+
+// PLN-1034: PR-lifecycle actions that count as genuine branch activity. Excludes
+// label/assignment/review-request churn (handled by the switch's `default`),
+// which is not code or review activity.
+const PR_ACTIVITY_ACTIONS = new Set<string>([
+  "opened",
+  "edited",
+  "closed",
+  "reopened",
+  "synchronize",
+  "ready_for_review",
+  "converted_to_draft",
+]);
 
 async function applyPrAction(
   tx: TransactionClient,
@@ -654,49 +953,42 @@ async function applyPrAction(
   pullRequest: HandledPullRequestEvent["pull_request"]
 ): Promise<void> {
   switch (action) {
+    case "opened":
+    case "edited": {
+      await tx.artifact.update({
+        where: { id: existingPr.id },
+        data: { status: pullRequestState(pullRequest) },
+      });
+      await tx.pullRequestDetail.update({
+        where: { githubId: String(pullRequest.id) },
+        data: pullRequestToDetailUpdate(pullRequest),
+      });
+
+      log.info("[handlePullRequest] PR metadata refreshed", {
+        action,
+        prNumber: pullRequest.number,
+      });
+      break;
+    }
+
     case "closed": {
       const isMerged = (event as PullRequestClosedEvent).pull_request.merged;
       const newState = isMerged ? GitHubPRState.Merged : GitHubPRState.Closed;
 
-      await pullRequestService.updateReviewState(
-        existingPr.id,
-        existingPr.organizationId,
-        {
+      await tx.artifact.update({
+        where: { id: existingPr.id },
+        data: {
+          status: newState,
+        },
+      });
+      await tx.pullRequestDetail.update({
+        where: { githubId: String(pullRequest.id) },
+        data: {
+          ...pullRequestToDetailUpdate(pullRequest),
           prState: newState,
           closedAt: parseDateOrNow(pullRequest.closed_at),
-          mergedAt: pullRequest.merged_at
-            ? new Date(pullRequest.merged_at)
-            : null,
-          mergeCommitSha: pullRequest.merge_commit_sha,
-        }
-      );
-
-      if (existingPr.workstreamId) {
-        await tx.workstreamEvent.create({
-          data: {
-            workstreamId: existingPr.workstreamId,
-            type: isMerged ? "GITHUB_PR_MERGED" : "GITHUB_PR_CLOSED",
-            actorType: "system",
-            data: {
-              prNumber: pullRequest.number,
-              prTitle: pullRequest.title,
-              prUrl: pullRequest.html_url,
-              documentId: existingPr.documentId,
-              slug: existingPr.document?.slug,
-              ...(isMerged
-                ? {
-                    mergedAt: pullRequest.merged_at,
-                    mergeCommitSha: pullRequest.merge_commit_sha,
-                  }
-                : {}),
-            },
-          },
-        });
-      }
-
-      if (isMerged) {
-        await markLinkedArtifactsOnMerge(tx, existingPr.id);
-      }
+        },
+      });
 
       log.info("[handlePullRequest] PR closed", {
         prNumber: pullRequest.number,
@@ -707,14 +999,14 @@ async function applyPrAction(
     }
 
     case "reopened": {
-      await pullRequestService.updateReviewState(
-        existingPr.id,
-        existingPr.organizationId,
-        {
-          prState: GitHubPRState.Open,
-          closedAt: null,
-        }
-      );
+      await tx.artifact.update({
+        where: { id: existingPr.id },
+        data: { status: GitHubPRState.Open },
+      });
+      await tx.pullRequestDetail.update({
+        where: { githubId: String(pullRequest.id) },
+        data: pullRequestToDetailUpdate(pullRequest),
+      });
 
       log.info("[handlePullRequest] PR reopened", {
         prNumber: pullRequest.number,
@@ -725,34 +1017,27 @@ async function applyPrAction(
     case "synchronize": {
       await tx.artifact.update({
         where: { id: existingPr.id },
+        data: { status: GitHubPRState.Open },
+      });
+      await tx.pullRequestDetail.update({
+        where: { githubId: String(pullRequest.id) },
+        data: pullRequestToDetailUpdate(pullRequest),
+      });
+      const branchUpdate = await tx.branchDetail.updateMany({
+        where: { artifactId: existingPr.id },
         data: {
-          pullRequest: {
-            update: {
-              headSha: pullRequest.head.sha,
-              checksStatus: ChecksStatus.PENDING,
-            },
-          },
+          headSha: pullRequest.head.sha,
+          headShaSource: BranchHeadShaSource.PullRequestWebhook,
+          headShaObservedAt: new Date(),
+          lastPushBeforeSha: null,
+          checksStatus: ChecksStatus.PENDING,
         },
       });
-
-      if (existingPr.workstreamId) {
-        await tx.workstreamEvent.create({
-          data: {
-            workstreamId: existingPr.workstreamId,
-            type: "GITHUB_CI_STATUS_CHANGED",
-            actorType: "system",
-            data: {
-              prNumber: pullRequest.number,
-              prTitle: pullRequest.title,
-              prUrl: pullRequest.html_url,
-              documentId: existingPr.documentId,
-              slug: existingPr.document?.slug,
-              checksStatus: ChecksStatus.PENDING,
-              previousChecksStatus: existingPr.checksStatus,
-              headSha: pullRequest.head.sha,
-            },
-          },
-        });
+      if (
+        branchUpdate.count > 0 &&
+        existingPr.headSha !== pullRequest.head.sha
+      ) {
+        await invalidateBranchStatusChecksForHeadChange(tx, existingPr.id);
       }
 
       log.info("[handlePullRequest] PR synchronized", {
@@ -767,7 +1052,11 @@ async function applyPrAction(
     case "converted_to_draft": {
       await tx.artifact.update({
         where: { id: existingPr.id },
-        data: { pullRequest: { update: { isDraft: true } } },
+        data: { status: GitHubPRState.Open },
+      });
+      await tx.pullRequestDetail.update({
+        where: { githubId: String(pullRequest.id) },
+        data: pullRequestToDetailUpdate(pullRequest),
       });
 
       log.info("[handlePullRequest] PR converted to draft", {
@@ -779,7 +1068,11 @@ async function applyPrAction(
     case "ready_for_review": {
       await tx.artifact.update({
         where: { id: existingPr.id },
-        data: { pullRequest: { update: { isDraft: false } } },
+        data: { status: GitHubPRState.Open },
+      });
+      await tx.pullRequestDetail.update({
+        where: { githubId: String(pullRequest.id) },
+        data: pullRequestToDetailUpdate(pullRequest),
       });
 
       log.info("[handlePullRequest] PR ready for review", {
@@ -791,112 +1084,15 @@ async function applyPrAction(
     default:
       break;
   }
-}
 
-/**
- * On PR merge, apply terminal status to every document artifact linked
- * upstream of the merged PR artifact:
- *  - ImplementationPlan: set to EXECUTED, then cascade Feature documents
- *    linked upstream of the plan to DONE (unless already DONE or OBSOLETE).
- *  - Feature: set to DONE (unless already DONE or OBSOLETE).
- *
- * Since PRD-177 a PR can be directly linked to a Feature document (not just
- * a Plan). This helper walks the ArtifactLink graph so it works regardless
- * of which docType owns the link.
- */
-async function markLinkedArtifactsOnMerge(
-  tx: TransactionClient,
-  prArtifactId: string
-): Promise<void> {
-  const links = await tx.artifactLink.findMany({
-    where: {
-      targetId: prArtifactId,
-      target: { type: ArtifactType.PULL_REQUEST },
-      source: { type: ArtifactType.DOCUMENT },
-      linkType: LinkType.Produces,
-    },
-    select: { sourceId: true },
-  });
-
-  if (links.length === 0) {
-    return;
-  }
-
-  const documents = await tx.artifact.findMany({
-    where: documentWhere({ id: { in: links.map((link) => link.sourceId) } }),
-    select: { id: true, subtype: true, status: true },
-  });
-
-  for (const document of documents) {
-    if (document.subtype === DocumentType.ImplementationPlan) {
-      await tx.artifact.update({
-        where: { id: document.id },
-        data: { status: DocumentStatus.Executed },
-      });
-      log.info("[handlePullRequest] Marked plan as EXECUTED", {
-        documentId: document.id,
-      });
-      await cascadeFeaturesLinkedToPlan(tx, document.id);
-      continue;
-    }
-
-    if (document.subtype === DocumentType.Feature) {
-      if (
-        document.status === DocumentStatus.Done ||
-        document.status === DocumentStatus.Obsolete
-      ) {
-        continue;
-      }
-      await tx.artifact.update({
-        where: { id: document.id },
-        data: { status: DocumentStatus.Done },
-      });
-      log.info("[handlePullRequest] Marked feature as DONE", {
-        documentId: document.id,
-      });
-    }
-  }
-}
-
-/**
- * Cascade: mark Feature documents linked upstream of a merged plan as DONE
- * (unless already DONE or OBSOLETE). Preserves the pre-PRD-177 behaviour
- * where a plan merge transitively completes its linked features.
- */
-async function cascadeFeaturesLinkedToPlan(
-  tx: TransactionClient,
-  planId: string
-): Promise<void> {
-  const links = await tx.artifactLink.findMany({
-    where: {
-      source: { type: ArtifactType.DOCUMENT },
-      targetId: planId,
-      target: { type: ArtifactType.DOCUMENT },
-      linkType: LinkType.Produces,
-    },
-    select: { sourceId: true },
-  });
-
-  const featureIds = links.map((link) => link.sourceId);
-  if (featureIds.length === 0) {
-    return;
-  }
-
-  const { count } = await tx.artifact.updateMany({
-    where: documentWhere({
-      id: { in: featureIds },
-      subtype: DocumentType.Feature,
-      status: { notIn: [DocumentStatus.Done, DocumentStatus.Obsolete] },
-    }),
-    data: { status: DocumentStatus.Done },
-  });
-
-  if (count > 0) {
-    log.info("[handlePullRequest] Marked linked features as DONE", {
-      planId,
-      featureIds,
-      updatedCount: count,
-    });
+  // PLN-1034: record genuine branch activity for PR-lifecycle events. `existingPr.id`
+  // is the branch artifact; the monotonic bump is a no-op when it has no branch row.
+  if (PR_ACTIVITY_ACTIONS.has(action)) {
+    await bumpBranchActivity(
+      tx,
+      existingPr.id,
+      parseDateOrNow(pullRequest.updated_at)
+    );
   }
 }
 
@@ -915,10 +1111,13 @@ function pullRequestState(pullRequest: PullRequest): GitHubPRState {
 function pullRequestToDetailUpdate(pullRequest: PullRequest) {
   return {
     number: pullRequest.number,
-    headBranch: pullRequest.head.ref,
-    baseBranch: pullRequest.base.ref,
-    headSha: pullRequest.head.sha,
+    title: pullRequest.title,
+    htmlUrl: pullRequest.html_url,
+    body: pullRequest.body ?? null,
     prState: pullRequestState(pullRequest),
     isDraft: pullRequest.draft ?? false,
+    closedAt: pullRequest.closed_at ? new Date(pullRequest.closed_at) : null,
+    mergedAt: pullRequest.merged_at ? new Date(pullRequest.merged_at) : null,
+    mergeCommitSha: pullRequest.merge_commit_sha ?? null,
   };
 }

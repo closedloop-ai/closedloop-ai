@@ -5,7 +5,12 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "outDir": "dist",
-    "noEmit": false
+    "noEmit": false,
+    "paths": {
+      "@/*": ["./apps/app/*", "./apps/web/*", "./apps/api/*"],
+      "@closedloop-ai/loops-api/*": ["./packages/loops-api/src/*"],
+      "@repo/*": ["./packages/*"]
+    }
   },
   "include": ["src"],
   "exclude": ["src/__tests__"]

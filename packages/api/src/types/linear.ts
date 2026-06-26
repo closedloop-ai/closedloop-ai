@@ -23,11 +23,6 @@ export type LinearIntegrationStatus = {
   teams?: LinearTeam[];
 };
 
-export type ExportToLinearInput = {
-  artifactId: string;
-  teamId: string;
-};
-
 export type ExportedLinearIssue = {
   linearId: string;
   identifier: string;
@@ -47,11 +42,6 @@ export type LinearOAuthUrlResponse = {
 
 export type LinearDisconnectResponse = {
   disconnected: true;
-};
-
-export type ConnectLinearInput = {
-  code: string;
-  codeVerifier: string;
 };
 
 export type ConnectLinearResponse = {

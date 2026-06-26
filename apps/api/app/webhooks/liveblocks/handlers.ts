@@ -1,4 +1,3 @@
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import type {
   CommentCreatedEvent,
   CommentDeletedEvent,
@@ -9,8 +8,9 @@ import type {
   ThreadDeletedEvent,
   ThreadMarkedAsResolvedEvent,
   ThreadMarkedAsUnresolvedEvent,
-} from "@repo/collaboration/webhook";
-import { getLiveblocksApiClient } from "@repo/collaboration/webhook";
+} from "@repo/collaboration/server/webhook";
+import { getLiveblocksApiClient } from "@repo/collaboration/server/webhook";
+import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
 import { log } from "@repo/observability/log";
 import { commentsService } from "../../comments/service";
 

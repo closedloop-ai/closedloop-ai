@@ -2,15 +2,40 @@ import { z } from "zod";
 import { LoopArtifactType } from "./artifacts";
 import type { LoopCommand } from "./commands";
 import { LoopCommandSchema } from "./commands";
-import type { ContextPackAttachment } from "./context-pack";
-import { ContextPackAttachmentSchema } from "./context-pack";
+import type {
+  CodeEvaluationContext,
+  ContextPackAgent,
+  ContextPackAttachment,
+  ContextPackRepoConfig,
+  ContextPackSupportingArtifact,
+} from "./context-pack";
+import {
+  CodeEvaluationContextSchema,
+  ContextPackAgentSchema,
+  ContextPackAttachmentSchema,
+  ContextPackRepoConfigSchema,
+  ContextPackSupportingArtifactSchema,
+} from "./context-pack";
+
+/**
+ * The AI agent harness to use when executing a loop on the Desktop gateway.
+ * Defaults to "claude" at runtime when not provided.
+ */
+export const LoopHarness = {
+  Claude: "claude",
+  Codex: "codex",
+  Cursor: "cursor",
+  OpenCode: "opencode",
+} as const;
+export type LoopHarness = (typeof LoopHarness)[keyof typeof LoopHarness];
+export const LoopHarnessSchema = z.enum(LoopHarness).catch(LoopHarness.Claude);
 
 /**
  * Request body sent from the backend API to the desktop gateway (Electron)
  * via the relay WebSocket. This is a flattened version of context pack +
  * loop metadata — NOT the same shape as ContextPack (S3 transport).
  *
- * Canonical source: closedloop-electron/apps/desktop/src/server/operations/symphony-loop.ts
+ * Canonical source: apps/desktop/src/server/operations/symphony-loop.ts
  */
 export type LoopRequestBody = {
   loopId: string;
@@ -44,7 +69,16 @@ export type LoopRequestBody = {
   >;
   userContext?: string;
   attachments?: ContextPackAttachment[];
+  supportingArtifacts?: ContextPackSupportingArtifact[];
+  codeEvaluationContext?: CodeEvaluationContext | null;
   primaryArtifactId?: string;
+  agents?: ContextPackAgent[];
+  repoConfigs?: ContextPackRepoConfig[];
+  /**
+   * AI agent harness to use for this loop execution.
+   * Defaults to "claude" at runtime when not provided.
+   */
+  harness?: LoopHarness;
 };
 
 export const LoopRequestBodySchema = z.object({
@@ -100,5 +134,10 @@ export const LoopRequestBodySchema = z.object({
     )
     .optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
+  supportingArtifacts: z.array(ContextPackSupportingArtifactSchema).optional(),
+  codeEvaluationContext: CodeEvaluationContextSchema.nullable().optional(),
   primaryArtifactId: z.string().optional(),
+  agents: z.array(ContextPackAgentSchema).optional(),
+  repoConfigs: z.array(ContextPackRepoConfigSchema).optional(),
+  harness: LoopHarnessSchema.optional(),
 });

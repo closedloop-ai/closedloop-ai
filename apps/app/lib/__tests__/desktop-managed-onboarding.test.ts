@@ -52,6 +52,241 @@ function runBashScript(
   });
 }
 
+async function writeDesktopInstallerVerifierJq(binDir: string) {
+  await writeExecutable(
+    join(binDir, "jq"),
+    `#!${process.execPath}
+const fs = require("node:fs");
+
+const args = process.argv.slice(2);
+const argValues = {};
+let filter = "";
+let filePath = "";
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === "-r" || arg === "-e") {
+    continue;
+  }
+  if (arg === "--arg") {
+    argValues[args[index + 1]] = args[index + 2];
+    index += 2;
+    continue;
+  }
+  if (!filter) {
+    filter = arg;
+    continue;
+  }
+  if (!filePath) {
+    filePath = arg;
+  }
+}
+
+const raw = filePath ? fs.readFileSync(filePath, "utf-8") : fs.readFileSync(0, "utf-8");
+const data = JSON.parse(raw || "null");
+const key = argValues.key;
+
+if (filter.includes('.plugins[$key][]?') && filter.includes('select(.scope == "user")')) {
+  for (const entry of data.plugins?.[key] ?? []) {
+    if (entry.scope === "user" && entry.installPath) {
+      console.log(entry.installPath);
+    }
+  }
+  process.exit(0);
+}
+
+if (filter.includes('select(.id == $key and .scope == "user")')) {
+  const matches = data.filter((entry) => entry.id === key && entry.scope === "user");
+  if (matches.length === 0) {
+    console.log("missing");
+  } else if (matches.some((entry) => entry.enabled === false)) {
+    console.log("disabled");
+  } else {
+    console.log("enabled");
+  }
+  process.exit(0);
+}
+
+throw new Error(\`Unsupported jq filter: \${filter}\`);
+`
+  );
+}
+
+async function writeDesktopInstallerVerifierClaude(binDir: string) {
+  await writeExecutable(
+    join(binDir, "claude"),
+    `#!${process.execPath}
+const fs = require("node:fs");
+
+const args = process.argv.slice(2);
+const listPath = process.env.PLUGIN_LIST_FILE;
+const logPath = process.env.CALL_LOG;
+const scenario = process.env.PLUGIN_VERIFY_SCENARIO || "";
+
+fs.appendFileSync(logPath, \`claude \${args.join(" ")}\\n\`);
+
+if (args.join(" ") === "plugin list --json") {
+  process.stdout.write(fs.readFileSync(listPath, "utf-8"));
+  process.exit(0);
+}
+
+if (args.length === 5 && args[0] === "plugin" && args[1] === "enable" && args[3] === "--scope" && args[4] === "user") {
+  const ref = args[2];
+  if (scenario === "enable-fails" && ref === "code@closedloop-ai") {
+    process.exit(1);
+  }
+  if (scenario !== "enable-still-disabled") {
+    const entries = JSON.parse(fs.readFileSync(listPath, "utf-8"));
+    for (const entry of entries) {
+      if (entry.id === ref && entry.scope === "user") {
+        entry.enabled = true;
+      }
+    }
+    fs.writeFileSync(listPath, JSON.stringify(entries));
+  }
+  process.exit(0);
+}
+
+throw new Error(\`Unexpected claude call: \${args.join(" ")}\`);
+`
+  );
+}
+
+async function writeClosedloopPluginVerifierState(
+  homeDir: string,
+  listPath: string,
+  options: {
+    readonly codeScope?: "project" | "user";
+    readonly codeEnabled?: boolean;
+  } = {}
+) {
+  const registryPath = join(
+    homeDir,
+    ".claude",
+    "plugins",
+    "installed_plugins.json"
+  );
+  const registry: Record<string, Record<string, string>[]> = {};
+  const listEntries: Record<string, string | boolean>[] = [];
+
+  await mkdir(join(homeDir, ".claude", "plugins"), { recursive: true });
+  for (const plugin of [
+    "bootstrap",
+    "code",
+    "code-review",
+    "judges",
+    "platform",
+    "self-learning",
+  ]) {
+    const scope = plugin === "code" ? (options.codeScope ?? "user") : "user";
+    const pluginPath = join(
+      homeDir,
+      ".claude",
+      "plugins",
+      "cache",
+      "closedloop-ai",
+      plugin,
+      scope,
+      "1.0.0"
+    );
+    await mkdir(pluginPath, { recursive: true });
+    registry[`${plugin}@closedloop-ai`] = [
+      {
+        installPath: pluginPath,
+        scope,
+        version: "1.0.0",
+      },
+    ];
+    listEntries.push({
+      enabled: plugin === "code" ? (options.codeEnabled ?? true) : true,
+      id: `${plugin}@closedloop-ai`,
+      scope,
+      version: "1.0.0",
+    });
+  }
+
+  await writeFile(registryPath, JSON.stringify({ plugins: registry }));
+  await writeFile(listPath, JSON.stringify(listEntries));
+}
+
+async function runClosedloopPluginVerifier(
+  options: {
+    readonly codeScope?: "project" | "user";
+    readonly codeEnabled?: boolean;
+    readonly scenario?: string;
+  } = {}
+) {
+  const tempDir = await mkdtemp(join(tmpdir(), "closedloop-plugin-verify-"));
+  const binDir = join(tempDir, "bin");
+  const homeDir = join(tempDir, "home");
+  const listPath = join(tempDir, "plugin-list.json");
+  const logPath = join(tempDir, "calls.log");
+  const scriptPath = join(tempDir, "verify-plugins.sh");
+  await mkdir(binDir, { recursive: true });
+  await mkdir(homeDir, { recursive: true });
+  await writeFile(logPath, "");
+  await writeDesktopInstallerVerifierJq(binDir);
+  await writeDesktopInstallerVerifierClaude(binDir);
+  await writeClosedloopPluginVerifierState(homeDir, listPath, options);
+  await writeFile(
+    scriptPath,
+    DESKTOP_INSTALLER_SCRIPT.replace('main "$@"', "verify_closedloop_plugins")
+  );
+  await chmod(scriptPath, 0o755);
+
+  const result = await runBashScript(scriptPath, {
+    ...process.env,
+    CALL_LOG: logPath,
+    HOME: homeDir,
+    PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
+    PLUGIN_LIST_FILE: listPath,
+    PLUGIN_VERIFY_SCENARIO: options.scenario ?? "",
+  });
+
+  return {
+    ...result,
+    log: await readFile(logPath, "utf-8"),
+  };
+}
+
+async function runDesktopDownloadUrlValidation(downloadUrl: string) {
+  const tempDir = await mkdtemp(join(tmpdir(), "closedloop-desktop-url-"));
+  const binDir = join(tempDir, "bin");
+  const logPath = join(tempDir, "calls.log");
+  const scriptPath = join(tempDir, "validate-download-url.sh");
+  await mkdir(binDir, { recursive: true });
+  await writeFile(logPath, "");
+  for (const command of ["curl", "hdiutil"]) {
+    await writeExecutable(
+      join(binDir, command),
+      `#!/usr/bin/env bash
+printf '${command} %s\\n' "$*" >> "$CALL_LOG"
+exit 1
+`
+    );
+  }
+  await writeFile(
+    scriptPath,
+    DESKTOP_INSTALLER_SCRIPT.replace(
+      'main "$@"',
+      "validate_desktop_download_url"
+    )
+  );
+  await chmod(scriptPath, 0o755);
+
+  const result = await runBashScript(scriptPath, {
+    ...process.env,
+    CALL_LOG: logPath,
+    CL_DESKTOP_DOWNLOAD_URL: downloadUrl,
+    HOME: tempDir,
+    PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
+  });
+
+  return {
+    ...result,
+    log: await readFile(logPath, "utf-8"),
+  };
+}
+
 describe("buildDesktopOnboardingCommand", () => {
   it("includes only installer handoff values and excludes trusted origins/secrets", () => {
     const command = buildDesktopOnboardingCommand({
@@ -92,10 +327,60 @@ describe("DESKTOP_INSTALLER_SCRIPT", () => {
     expect(dependencyCheckIndex).toBeGreaterThan(platformCheckIndex);
   });
 
+  it("handles the pre-rename ClosedLoop app during the brand transition (FEA-2101)", () => {
+    // Quit wait must probe BOTH the new and legacy process names, otherwise a
+    // still-running legacy ClosedLoop process blocks the replace undetected.
+    expect(DESKTOP_INSTALLER_SCRIPT).toContain('OLD_APP_NAME="ClosedLoop"');
+    expect(DESKTOP_INSTALLER_SCRIPT).toContain(
+      `OLD_APP_PATH="/Applications/\${OLD_APP_NAME}.app"`
+    );
+    expect(DESKTOP_INSTALLER_SCRIPT).toContain(
+      'while pgrep -x "$APP_NAME" >/dev/null 2>&1 || pgrep -x "$OLD_APP_NAME" >/dev/null 2>&1; do'
+    );
+
+    // The stale-bundle removal MUST keep its -ef same-file guard: on the default
+    // case-insensitive macOS volume OLD_APP_PATH and APP_PATH resolve to the same
+    // directory, so without -ef the rm -rf would delete the app just installed.
+    const installBody = DESKTOP_INSTALLER_SCRIPT.slice(
+      DESKTOP_INSTALLER_SCRIPT.indexOf("install_desktop_app()")
+    );
+    expect(installBody).toContain(
+      '[ "$OLD_APP_PATH" != "$APP_PATH" ] && [ -d "$OLD_APP_PATH" ] && [ -d "$APP_PATH" ] && ! [ "$OLD_APP_PATH" -ef "$APP_PATH" ]'
+    );
+    expect(installBody).toContain('rm -rf "$OLD_APP_PATH"');
+    // The removal must run only AFTER the new bundle is moved into place.
+    expect(installBody.indexOf('mv "$staged_app" "$APP_PATH"')).toBeLessThan(
+      installBody.indexOf('rm -rf "$OLD_APP_PATH"')
+    );
+  });
+
+  it("accepts a legacy ClosedLoop-* download URL and bundle during the transition (FEA-2101)", () => {
+    // The server's release-resolution path now surfaces legacy DMG URLs, so the
+    // download-URL validation must accept both casings, not just Closedloop-*.
+    expect(DESKTOP_INSTALLER_SCRIPT).toContain(
+      "/Closed[Ll]oop-([0-9]+\\.[0-9]+\\.[0-9]+)-universal\\.dmg$"
+    );
+    expect(DESKTOP_INSTALLER_SCRIPT).not.toContain(
+      "/Closedloop-([0-9]+\\.[0-9]+\\.[0-9]+)-universal\\.dmg$"
+    );
+
+    // A legacy DMG mounts as ClosedLoop.app; the search must find either bundle
+    // name (the staged copy normalizes to Closedloop.app on install).
+    const installBody = DESKTOP_INSTALLER_SCRIPT.slice(
+      DESKTOP_INSTALLER_SCRIPT.indexOf("install_desktop_app()")
+    );
+    expect(installBody).toContain(
+      `\\( -name "\${APP_NAME}.app" -o -name "\${OLD_APP_NAME}.app" \\) -type d`
+    );
+    expect(installBody).toContain(
+      `staged_app="$DESKTOP_INSTALL_STAGING_ROOT/\${APP_NAME}.app"`
+    );
+  });
+
   it("writes the exact handoff file contract with 0600 permissions", () => {
     expect(DESKTOP_INSTALLER_SCRIPT).toContain("HANDOFF_DIR=");
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
-      "Library/Application Support/ClosedLoop Desktop"
+      "Library/Application Support/Closedloop Desktop"
     );
     expect(DESKTOP_INSTALLER_SCRIPT).toContain("HANDOFF_FILE=");
     expect(DESKTOP_INSTALLER_SCRIPT).toContain("pending-onboarding.json");
@@ -183,44 +468,6 @@ describe("DESKTOP_INSTALLER_SCRIPT", () => {
     expect(DESKTOP_INSTALLER_SCRIPT).toContain("alarm $timeout");
   });
 
-  it(
-    "treats a hung command probe as unusable",
-    async () => {
-      const tempDir = await mkdtemp(
-        join(tmpdir(), "closedloop-installer-timeout-")
-      );
-      const binDir = join(tempDir, "bin");
-      const scriptPath = join(tempDir, "timeout-check.sh");
-      const timeoutScript = DESKTOP_INSTALLER_SCRIPT.replace(
-        "COMMAND_CHECK_TIMEOUT_SECONDS=15",
-        "COMMAND_CHECK_TIMEOUT_SECONDS=1"
-      ).replace(
-        'main "$@"',
-        "ensure_usable_command slowtool slowtool --version"
-      );
-      await mkdir(binDir, { recursive: true });
-      await writeFile(scriptPath, timeoutScript);
-      await chmod(scriptPath, 0o755);
-      await writeExecutable(
-        join(binDir, "slowtool"),
-        `#!/usr/bin/env bash
-sleep 5
-`
-      );
-
-      const startedAt = Date.now();
-      const result = await runBashScript(scriptPath, {
-        ...process.env,
-        HOME: tempDir,
-        PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
-      });
-
-      expect(Date.now() - startedAt).toBeLessThan(3000);
-      expect(result.code).toBe(1);
-    },
-    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
-  );
-
   it("covers Desktop health-check CLI prerequisites in automated setup", () => {
     const mainBody = DESKTOP_INSTALLER_SCRIPT.slice(
       DESKTOP_INSTALLER_SCRIPT.indexOf("main()")
@@ -245,7 +492,7 @@ sleep 5
     expect(DESKTOP_INSTALLER_SCRIPT).toContain("refresh_npm_global_path");
   });
 
-  it("downloads the ClosedLoop plugin installer before running it", () => {
+  it("downloads the Closedloop plugin installer before running it", () => {
     const pluginsBody = DESKTOP_INSTALLER_SCRIPT.slice(
       DESKTOP_INSTALLER_SCRIPT.indexOf("ensure_closedloop_plugins()"),
       DESKTOP_INSTALLER_SCRIPT.indexOf("quit_running_desktop()")
@@ -270,7 +517,7 @@ sleep 5
     );
   });
 
-  it("verifies required ClosedLoop plugins before continuing", () => {
+  it("verifies required Closedloop plugins before continuing", () => {
     const pluginsBody = DESKTOP_INSTALLER_SCRIPT.slice(
       DESKTOP_INSTALLER_SCRIPT.indexOf("ensure_closedloop_plugins()"),
       DESKTOP_INSTALLER_SCRIPT.indexOf("quit_running_desktop()")
@@ -281,20 +528,103 @@ sleep 5
     const verifyIndex = pluginsBody.indexOf("verify_closedloop_plugins");
 
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
-      "REQUIRED_CLOSEDLOOP_PLUGINS=(code platform judges code-review self-learning)"
+      "REQUIRED_CLOSEDLOOP_PLUGINS=(code code-review judges platform self-learning)"
     );
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
-      "Missing required ClosedLoop plugins after install"
+      "Closedloop plugins must be installed at user scope"
     );
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
       "$HOME/.claude/plugins/installed_plugins.json"
     );
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
-      ".plugins[$key][]?.installPath // empty"
+      'select(.scope == "user") | .installPath // empty'
+    );
+    expect(DESKTOP_INSTALLER_SCRIPT).toContain(
+      'claude plugin enable "$key" --scope user'
     );
     expect(installIndex).toBeGreaterThanOrEqual(0);
     expect(verifyIndex).toBeGreaterThan(installIndex);
   });
+
+  it(
+    "fails verifier when code plugin is project-scope-only",
+    async () => {
+      const result = await runClosedloopPluginVerifier({
+        codeScope: "project",
+      });
+      const combinedOutput = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.code).toBe(1);
+      expect(combinedOutput).toContain(
+        "Closedloop plugins must be installed at user scope with enabled state verified"
+      );
+      expect(combinedOutput).toContain(
+        "Missing or invalid: code@closedloop-ai"
+      );
+      expect(combinedOutput).toContain(
+        'claude plugin install "$p@closedloop-ai" --scope user'
+      );
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
+
+  it(
+    "enables a disabled user-scoped plugin and passes after re-read",
+    async () => {
+      const result = await runClosedloopPluginVerifier({
+        codeEnabled: false,
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.log).toContain(
+        "claude plugin enable code@closedloop-ai --scope user"
+      );
+      expect(result.stderr).not.toContain("plugins_verify");
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
+
+  it(
+    "fails verifier when enabling a disabled plugin exits nonzero",
+    async () => {
+      const result = await runClosedloopPluginVerifier({
+        codeEnabled: false,
+        scenario: "enable-fails",
+      });
+      const combinedOutput = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.code).toBe(1);
+      expect(result.log).toContain(
+        "claude plugin enable code@closedloop-ai --scope user"
+      );
+      expect(combinedOutput).toContain("disabled: code@closedloop-ai");
+      expect(combinedOutput).toContain(
+        'claude plugin enable "$p@closedloop-ai" --scope user'
+      );
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
+
+  it(
+    "fails verifier when post-enable re-read still reports disabled",
+    async () => {
+      const result = await runClosedloopPluginVerifier({
+        codeEnabled: false,
+        scenario: "enable-still-disabled",
+      });
+      const combinedOutput = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.code).toBe(1);
+      expect(result.log).toContain(
+        "claude plugin enable code@closedloop-ai --scope user"
+      );
+      expect(combinedOutput).toContain("disabled: code@closedloop-ai");
+      expect(combinedOutput).toContain(
+        'claude plugin enable "$p@closedloop-ai" --scope user'
+      );
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
 
   it(
     "checks remaining required prerequisites after one prerequisite fails",
@@ -372,6 +702,7 @@ exit 1
         join(binDir, "jq"),
         `#!/usr/bin/env bash
 printf 'jq %s\\n' "$*" >> "$CALL_LOG"
+args="$*"
 key=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--arg" ] && [ "$2" = "key" ]; then
@@ -383,6 +714,17 @@ while [ "$#" -gt 0 ]; do
 done
 plugin="$(printf '%s' "$key" | sed 's/@closedloop-ai$//')"
 plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
+case "$args" in
+  *enabled*)
+    cat >/dev/null
+    if [ -d "$plugin_path" ]; then
+      echo enabled
+    else
+      echo missing
+    fi
+    exit 0
+    ;;
+esac
 if [ -d "$plugin_path" ]; then
   echo "$plugin_path"
 fi
@@ -405,7 +747,7 @@ cat > "$output" <<'PLUGIN_INSTALLER'
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p "$HOME/.claude/plugins"
-for plugin in code platform judges code-review self-learning; do
+for plugin in bootstrap code code-review judges platform self-learning; do
   mkdir -p "$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
 done
 cat > "$HOME/.claude/plugins/installed_plugins.json" <<'JSON'
@@ -432,20 +774,20 @@ chmod +x "$output"
       expect((await stat(workspaceDir)).isDirectory()).toBe(true);
       expect(combinedOutput).toContain("Workspace directory is ready:");
       expect(combinedOutput).toContain(
-        "ClosedLoop Desktop prerequisite check failed at"
+        "Closedloop Desktop prerequisite check failed at"
       );
       expect(combinedOutput).toContain(
         "Continuing to check remaining required prerequisites."
       );
       expect(combinedOutput).toContain(
-        "ClosedLoop Desktop automated setup could not finish because"
+        "Closedloop Desktop automated setup could not finish because"
       );
       expect(combinedOutput).toContain("GitHub CLI");
       expect(combinedOutput).toContain(
         "GitHub CLI authentication - skipped because GitHub CLI is unavailable"
       );
       expect(combinedOutput).not.toContain(
-        "ClosedLoop Desktop installer failed at"
+        "Closedloop Desktop installer failed at"
       );
       expect(callLog).toContain("brew install gh");
       expect(callLog).toContain("python3 -c");
@@ -540,6 +882,7 @@ if [ "$1" = "--version" ]; then
   echo 'jq-1.7'
   exit 0
 fi
+args="$*"
 key=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--arg" ] && [ "$2" = "key" ]; then
@@ -551,6 +894,17 @@ while [ "$#" -gt 0 ]; do
 done
 plugin="$(printf '%s' "$key" | sed 's/@closedloop-ai$//')"
 plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
+case "$args" in
+  *enabled*)
+    cat >/dev/null
+    if [ -d "$plugin_path" ]; then
+      echo enabled
+    else
+      echo missing
+    fi
+    exit 0
+    ;;
+esac
 if [ -d "$plugin_path" ]; then
   echo "$plugin_path"
 fi
@@ -576,14 +930,14 @@ mkdir -p "$HOME/.claude/plugins"
 registry="$HOME/.claude/plugins/installed_plugins.json"
 printf '{"plugins":{' > "$registry"
 first=1
-for plugin in code platform judges code-review self-learning; do
+for plugin in bootstrap code code-review judges platform self-learning; do
   plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
   mkdir -p "$plugin_path"
   if [ "$first" -eq 0 ]; then
     printf ',' >> "$registry"
   fi
   first=0
-  printf '"%s@closedloop-ai":[{"installPath":"%s"}]' "$plugin" "$plugin_path" >> "$registry"
+  printf '"%s@closedloop-ai":[{"installPath":"%s","scope":"user"}]' "$plugin" "$plugin_path" >> "$registry"
 done
 printf '}}\\n' >> "$registry"
 PLUGIN_INSTALLER
@@ -607,10 +961,10 @@ chmod +x "$output"
       expect(combinedOutput).toContain("Workspace directory");
       expect(combinedOutput).toContain("Could not create workspace directory");
       expect(combinedOutput).toContain(
-        "ClosedLoop Desktop prerequisite check failed at"
+        "Closedloop Desktop prerequisite check failed at"
       );
       expect(combinedOutput).not.toContain(
-        "ClosedLoop Desktop installer failed at"
+        "Closedloop Desktop installer failed at"
       );
       expect(callLog).toContain("git --version");
       expect(callLog).toContain("claude --version");
@@ -685,6 +1039,7 @@ if [ "$1" = "--version" ]; then
   echo 'jq-1.7'
   exit 0
 fi
+args="$*"
 key=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--arg" ] && [ "$2" = "key" ]; then
@@ -696,6 +1051,17 @@ while [ "$#" -gt 0 ]; do
 done
 plugin="$(printf '%s' "$key" | sed 's/@closedloop-ai$//')"
 plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
+case "$args" in
+  *enabled*)
+    cat >/dev/null
+    if [ -d "$plugin_path" ]; then
+      echo enabled
+    else
+      echo missing
+    fi
+    exit 0
+    ;;
+esac
 if [ -d "$plugin_path" ]; then
   echo "$plugin_path"
 fi
@@ -795,14 +1161,14 @@ mkdir -p "$HOME/.claude/plugins"
 registry="$HOME/.claude/plugins/installed_plugins.json"
 printf '{"plugins":{' > "$registry"
 first=1
-for plugin in code platform judges code-review self-learning; do
+for plugin in bootstrap code code-review judges platform self-learning; do
   plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
   mkdir -p "$plugin_path"
   if [ "$first" -eq 0 ]; then
     printf ',' >> "$registry"
   fi
   first=0
-  printf '"%s@closedloop-ai":[{"installPath":"%s"}]' "$plugin" "$plugin_path" >> "$registry"
+  printf '"%s@closedloop-ai":[{"installPath":"%s","scope":"user"}]' "$plugin" "$plugin_path" >> "$registry"
 done
 printf '}}\\n' >> "$registry"
 PLUGIN_INSTALLER
@@ -845,7 +1211,7 @@ exit 1
       expect((await stat(workspaceDir)).isDirectory()).toBe(true);
       expect(combinedOutput).toContain("desktop_download");
       expect(combinedOutput).not.toContain(
-        "ClosedLoop Desktop automated setup could not finish"
+        "Closedloop Desktop automated setup could not finish"
       );
       expect(callLog).toContain("brew shellenv bash");
       expect(callLog).toContain("brew install python@3.13");
@@ -861,7 +1227,7 @@ exit 1
       expect(callLog).toContain(
         'osascript -e quit app id "ai.closedloop.desktop"'
       );
-      expect(callLog).toContain("pgrep -x ClosedLoop");
+      expect(callLog).toContain("pgrep -x Closedloop");
     },
     INSTALLER_SCRIPT_TEST_TIMEOUT_MS
   );
@@ -873,13 +1239,74 @@ exit 1
     );
 
     expect(installBody).toContain(
-      "https://github.com/closedloop-ai/closedloop-electron/releases/download/*/*.dmg*"
+      "closedloop-ai/symphony-alpha/releases/download/desktop-v"
     );
+    // Dual-casing during the brand-rename transition (FEA-2101): accepts both
+    // Closedloop-* and legacy ClosedLoop-* DMG URLs.
+    expect(installBody).toContain("Closed[Ll]oop-([0-9]+");
+    expect(installBody).toContain("BASH_REMATCH[1]");
+    expect(installBody).toContain("BASH_REMATCH[2]");
     expect(installBody).not.toContain("https://objects.githubusercontent.com");
+    expect(installBody).not.toContain("closedloop-electron release");
     expect(installBody).toContain(
-      "must be an HTTPS ClosedLoop Desktop release asset"
+      "must be an HTTPS Closedloop Desktop release asset"
     );
   });
+
+  it.each([
+    [
+      "old repo",
+      "https://github.com/closedloop-ai/closedloop-electron/releases/download/v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "non-HTTPS",
+      "http://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "userinfo",
+      "https://token@github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "query string",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg?download=1",
+    ],
+    [
+      "hash",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg#asset",
+    ],
+    [
+      "encoded traversal",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-..%2F0.15.115-universal.dmg",
+    ],
+    [
+      "extra path segment",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg/extra",
+    ],
+    [
+      "wrong asset suffix",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal-mac.zip",
+    ],
+    [
+      "mismatched asset version",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-9.9.9-universal.dmg",
+    ],
+    [
+      "non-Desktop symphony-alpha release",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+  ])(
+    "fails before download side effects for invalid Desktop URL: %s",
+    async (_name, downloadUrl) => {
+      const result = await runDesktopDownloadUrlValidation(downloadUrl);
+      const combinedOutput = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.code).toBe(1);
+      expect(combinedOutput).toContain("desktop_download");
+      expect(result.log).not.toContain("curl ");
+      expect(result.log).not.toContain("hdiutil ");
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
 
   it("stages and verifies the downloaded Desktop app before replacing an existing app", () => {
     const installBody = DESKTOP_INSTALLER_SCRIPT.slice(
@@ -903,7 +1330,7 @@ exit 1
     const replaceIndex = installBody.indexOf('mv "$staged_app" "$APP_PATH"');
 
     expect(installBody).not.toContain(
-      "ClosedLoop Desktop already installed; skipping Desktop install."
+      "Closedloop Desktop already installed; skipping Desktop install."
     );
     expect(installBody).not.toContain('rm -rf "$APP_PATH"');
     expect(installBody).toContain(
@@ -1030,8 +1457,8 @@ if [ "$1" = "attach" ]; then
       shift
     fi
   done
-  mkdir -p "$mountpoint/ClosedLoop.app/Contents"
-  printf 'not a plist' > "$mountpoint/ClosedLoop.app/Contents/Info.plist"
+  mkdir -p "$mountpoint/Closedloop.app/Contents"
+  printf 'not a plist' > "$mountpoint/Closedloop.app/Contents/Info.plist"
   exit 0
 fi
 if [ "$1" = "detach" ]; then
@@ -1046,7 +1473,7 @@ exit 1
         ...process.env,
         CALL_LOG: logPath,
         CL_DESKTOP_DOWNLOAD_URL:
-          "https://github.com/closedloop-ai/closedloop-electron/releases/download/v0.14.4/ClosedLoop-0.14.4-universal.dmg",
+          "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
         DMG_PATH_FILE: dmgPathFile,
         HOME: tempDir,
         PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin`,
@@ -1181,7 +1608,7 @@ exit 1
             homeDir,
             "Library",
             "Application Support",
-            "ClosedLoop Desktop",
+            "Closedloop Desktop",
             "pending-onboarding.json"
           ),
           "utf-8"

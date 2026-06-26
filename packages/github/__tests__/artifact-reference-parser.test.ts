@@ -178,6 +178,51 @@ describe("parseArtifactReferences", () => {
       expect(results[0].matchType).toBe(MatchType.Url);
       expect(results[0].slug).toBe("PLN-42");
     });
+
+    it("extracts plan from org-scoped URL", () => {
+      const body =
+        "See https://app.closedloop.dev/acme/implementation-plans/PLN-42";
+      const results = parseArtifactReferences("PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "PLN-42",
+        docType: DocumentType.ImplementationPlan,
+        matchType: MatchType.Url,
+        source: MatchSource.Body,
+      });
+    });
+
+    it("extracts feature from org-scoped URL", () => {
+      const body =
+        "See https://app.closedloop.dev/closedloop/features/FEA-17 for details";
+      const results = parseArtifactReferences("PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "FEA-17",
+        docType: DocumentType.Feature,
+        matchType: MatchType.Url,
+        source: MatchSource.Body,
+      });
+    });
+
+    it("matches both org-scoped and legacy URLs in the same body", () => {
+      const body = [
+        "New: https://app.closedloop.dev/acme/features/FEA-1",
+        "Old: https://app.closedloop.dev/features/FEA-2",
+      ].join("\n");
+      const results = parseArtifactReferences("PR", body, appBaseUrl);
+      expect(results).toHaveLength(2);
+      expect(results.map((r) => r.slug)).toEqual(["FEA-1", "FEA-2"]);
+      expect(results.every((r) => r.matchType === MatchType.Url)).toBe(true);
+    });
+
+    it("org-scoped URL takes precedence over slug match", () => {
+      const body =
+        "PLN-42 at https://app.closedloop.dev/acme/implementation-plans/PLN-42";
+      const results = parseArtifactReferences("PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0].matchType).toBe(MatchType.Url);
+    });
   });
 
   describe("mixed references", () => {

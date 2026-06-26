@@ -10,12 +10,12 @@
 import { Priority } from "@repo/api/src/types/common";
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { useDocumentActions } from "@repo/app/documents/hooks/use-document-actions";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { useSearchParams } from "next/navigation";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
-import { useDocumentActions } from "../use-document-actions";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -24,7 +24,7 @@ import { useDocumentActions } from "../use-document-actions";
 const mockDeleteMutate = vi.fn();
 const mockUpdateMutate = vi.fn();
 
-vi.mock("@/hooks/queries/use-documents", () => ({
+vi.mock("@repo/app/documents/hooks/use-documents", () => ({
   useDeleteDocument: () => ({
     mutate: mockDeleteMutate,
     isPending: false,
@@ -52,11 +52,11 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   },
 }));
 
-vi.mock("@/lib/clipboard-utils", () => ({
+vi.mock("@repo/app/shared/lib/clipboard-utils", () => ({
   copyToClipboard: vi.fn(),
 }));
 
-vi.mock("@/lib/download-utils", () => ({
+vi.mock("@repo/app/shared/lib/download-utils", () => ({
   downloadAsMarkdown: vi.fn(),
 }));
 

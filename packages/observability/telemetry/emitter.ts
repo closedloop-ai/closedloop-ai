@@ -18,8 +18,19 @@ import {
 // ---------------------------------------------------------------------------
 
 const LOG_TAIL_MAX_BYTES = 4096; // 4 KiB
+const LOOP_PERF_COMMAND_MAX_BYTES = 64;
+const LOOP_PERF_PARSE_FAILURE_RAW_BYTES_MAX_BYTES = 1024;
 
-const CREDENTIAL_PATTERNS = ["sk_", "token=", "password=", "authorization:"];
+const CREDENTIAL_PATTERNS = [
+  "sk_",
+  "sk-",
+  "token=",
+  "password=",
+  "authorization:",
+  "bearer ",
+  "api_key=",
+  "secret=",
+];
 
 const SAFE_CATEGORY_RE = /^[a-zA-Z0-9._]{1,64}$/;
 
@@ -28,6 +39,13 @@ const ANSI_RE = new RegExp(
   String.raw`[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]`,
   "g"
 );
+// biome-ignore lint/complexity/useRegexLiterals: Control character ranges are built from escapes for loopPerf control stripping
+const CONTROL_CHARS_RE = new RegExp(
+  String.raw`[\u0000-\u001f\u007f-\u009f]`,
+  "g"
+);
+const CREDENTIAL_RE =
+  /(?:["']?\b(?:authorization|password|(?:[a-z0-9]+[_-])*token|(?:[a-z0-9]+[_-])*api[_-]?key|(?:[a-z0-9]+[_-])*secret)\b["']?\s*(?::|=|\s+)\s*["']?\S+|\bbearer\s+\S+|\bsk[-_][a-z0-9]+|\bgh[pousr]_[a-z0-9_]+|\bxox[abprs]-[a-z0-9-]+)/i;
 
 // ---------------------------------------------------------------------------
 // Sanitization
@@ -49,9 +67,40 @@ function sanitizeTextTail(value: string): string {
   return truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
 }
 
+function sanitizeLoopPerfText(value: string, maxBytes: number): string {
+  const stripped = value
+    .replaceAll(ANSI_RE, "")
+    .replaceAll(CONTROL_CHARS_RE, "");
+  const sanitized = CREDENTIAL_RE.test(stripped) ? "[redacted]" : stripped;
+  return truncateUtf8(sanitized, maxBytes);
+}
+
+function sanitizeLoopPerfDiagnostics(
+  loopPerf: NonNullable<TelemetryDiagnostics["loopPerf"]>
+): NonNullable<TelemetryDiagnostics["loopPerf"]> {
+  const sanitizedLoopPerf = { ...loopPerf };
+
+  if (typeof sanitizedLoopPerf.command === "string") {
+    sanitizedLoopPerf.command = sanitizeLoopPerfText(
+      sanitizedLoopPerf.command,
+      LOOP_PERF_COMMAND_MAX_BYTES
+    );
+  }
+
+  if (typeof sanitizedLoopPerf.rawBytes === "string") {
+    sanitizedLoopPerf.rawBytes = sanitizeLoopPerfText(
+      sanitizedLoopPerf.rawBytes,
+      LOOP_PERF_PARSE_FAILURE_RAW_BYTES_MAX_BYTES
+    );
+  }
+
+  return sanitizedLoopPerf;
+}
+
 /**
  * Sanitize diagnostics from a desktop-originated event:
  * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
+ * - Truncate diagnostics.pluginUpdate.stderrTail with the same credential scrubber
  * - Strip lines containing credential patterns
  * - Allowlist spawnMeta.envSnapshot to only safe env var keys
  * - Keep only descriptor fields for outbound-network diagnostics
@@ -71,6 +120,13 @@ export function sanitizeDesktopTelemetryDiagnostics(
 
   if (typeof sanitized.stderrTail === "string") {
     sanitized.stderrTail = sanitizeTextTail(sanitized.stderrTail);
+  }
+
+  if (typeof sanitized.pluginUpdate?.stderrTail === "string") {
+    sanitized.pluginUpdate = {
+      ...sanitized.pluginUpdate,
+      stderrTail: sanitizeTextTail(sanitized.pluginUpdate.stderrTail),
+    };
   }
 
   if (sanitized.spawnMeta?.envSnapshot) {
@@ -106,6 +162,10 @@ export function sanitizeDesktopTelemetryDiagnostics(
         statusCode: outboundNetwork.statusCode,
       }),
     };
+  }
+
+  if (sanitized.loopPerf) {
+    sanitized.loopPerf = sanitizeLoopPerfDiagnostics(sanitized.loopPerf);
   }
 
   return sanitized;
@@ -273,41 +333,6 @@ export function emitConnectionStateEvent(
   trace: Partial<TelemetryTraceContext>,
   options?: {
     severity?: string;
-    message?: string;
-  }
-): void {
-  emitValidatedServerEvent(category, trace, TelemetrySeverity.Info, options);
-}
-
-/**
- * Emit an error telemetry event (server-originated).
- * Validates the trace context before emitting. On failure, emits
- * telemetry.validation_failed with sanitized ZodIssue fields only.
- */
-export function emitErrorEvent(
-  category: string,
-  trace: Partial<TelemetryTraceContext>,
-  options?: {
-    severity?: string;
-    diagnostics?: TelemetryDiagnostics;
-    message?: string;
-    errorClass?: string;
-  }
-): void {
-  emitValidatedServerEvent(category, trace, TelemetrySeverity.Error, options);
-}
-
-/**
- * Emit a metric telemetry event (server-originated).
- * Validates the trace context before emitting. On failure, emits
- * telemetry.validation_failed with sanitized ZodIssue fields only.
- */
-export function emitMetricEvent(
-  category: string,
-  trace: Partial<TelemetryTraceContext>,
-  options?: {
-    severity?: string;
-    diagnostics?: TelemetryDiagnostics;
     message?: string;
   }
 ): void {

@@ -7,7 +7,7 @@
  * - Backward compatibility: completed event without results[] is valid and degrades gracefully
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -64,9 +64,12 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
-vi.mock("@repo/auth/loop-runner-jwt", () => ({
-  issueLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
+  const { createLoopRunnerJwtMockModule } = await import(
+    "../fixtures/mock-modules"
+  );
+  return createLoopRunnerJwtMockModule(importOriginal);
+});
 
 vi.mock("@/lib/aws-credentials", () => ({
   getAwsCredentials: vi.fn(),
@@ -92,7 +95,6 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 // --- Imports (after mocks) ---
 
 import { LoopEventCompletedSchema } from "@closedloop-ai/loops-api/events";
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";

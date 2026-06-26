@@ -1,23 +1,36 @@
 # Prisma Database Workflow
 
+> **Agents:** also read `AGENTS.md` in this directory for coding patterns, security rules, and domain conventions.
+
 Explicit migration files for all schema changes. **Never use `prisma db push` for production.**
 
 ## Quick Reference
 
-Commands below use `pnpm exec` to pass flags directly to Prisma. From repo root, prefix with `pnpm --filter database`.
+Commands below are explicit about their working directory. Use root commands for daily local setup and direct Prisma commands when authoring migrations.
 
-| Command (from `packages/database`) | Use Case |
+| Command | Use Case |
 |---------|----------|
-| `pnpm migrate` | Apply pending migrations + regenerate client |
-| `pnpm migrate:status` | Check pending migrations |
-| `pnpm exec prisma migrate dev --name <name>` | Create + apply new migration |
-| `pnpm exec prisma migrate dev --name <name> --create-only` | Create migration file only (for custom SQL edits) |
-| `pnpm prisma migrate resolve --applied <name>` | Mark as applied without running (baselining) |
-| `pnpm prisma migrate deploy` | Production (CI/CD) — applies pending without prompts |
-| `pnpm prisma generate` | Regenerate client after schema changes |
-| `pnpm prisma studio` | GUI for browsing/editing data |
+| `pnpm migrate` or `just migrate` from repo root | Apply pending migrations + regenerate client |
+| `pnpm migrate:status` from repo root | Check pending migrations |
+| `just db-migrate <name>` from repo root | Create + apply new migration |
+| `pnpm exec prisma migrate dev --name <name>` from `packages/database` | Create + apply new migration |
+| `pnpm exec prisma migrate dev --name <name> --create-only` from `packages/database` | Create migration file only (for custom SQL edits) |
+| `pnpm prisma migrate resolve --applied <name>` from `packages/database` | Mark as applied without running (baselining) |
+| `pnpm prisma migrate deploy` from `packages/database` | Production (CI/CD) — applies pending without prompts |
+| `pnpm prisma generate` from `packages/database` | Regenerate client after schema changes |
+| `pnpm prisma studio` from `packages/database` | GUI for browsing/editing data |
 
-**From repo root:** `pnpm --filter database exec prisma migrate dev --name <name> [--create-only]`
+Root `pnpm migrate` runs Prisma's standard local `migrate dev` workflow.
+
+If non-preview deploy recovery first resolves a failed migration as rolled back
+and the retry then reports PostgreSQL SQLSTATE `42P07` (relation already
+exists), `42701` (column already exists), or `42710` (object already exists,
+e.g. a constraint, type/enum, or trigger), the runner diagnoses a
+`partial_committed_ddl_artifact` and stops. It does not reset schemas, retry
+again, or mark the migration applied automatically. Preserve the original
+deploy output, verify that existing database objects match the migration, then
+either run `prisma migrate resolve --applied <migration>` after verification or
+create a corrective forward-only migration.
 
 **Migration naming:** `add_user_preferences_table`, `add_index_on_artifact_status`, `rename_foo_to_bar`
 
@@ -25,17 +38,6 @@ Commands below use `pnpm exec` to pass flags directly to Prisma. From repo root,
 - Commit both schema changes AND generated migration files
 - Generated client: `packages/database/generated/` (configured in `prisma.config.ts`)
 - `prisma generate` must run after any schema change to update TypeScript types
-- **Never hand-write migration SQL files** — always let `prisma migrate dev` generate them. Hand-written migrations miss Prisma's drift detection, FK cleanup, and standard formatting. First update the schema, then run the migrate command and let Prisma diff the schema against the database. Hand-written migration files cause schema drift.
+- **Never hand-write migration SQL files** — let `prisma migrate dev` generate the schema DDL. Hand-write only the data migration, drift repair, or Prisma-inexpressible SQL that Prisma cannot generate, and include comments explaining why manual SQL is required. Validate the repair against a throwaway database.
 - **Foreign key mode** — DB-level FK constraints enforce referential integrity. Cascade deletes work both through Prisma client and direct SQL.
-
-## Learned Patterns
-- **[mistake]**: Typecheck "Property does not exist" on Prisma fields: run `pnpm install` + `just db-generate`. Verify fields exist in schema first — generated client may be stale.
-- **[convention]**: Verify Prisma enum values in `schema.prisma` — don't assume (e.g., `SUCCESS` not `COMPLETED`).
-- **[pattern]**: Filter Json fields: `{ path: ['key'], equals: value }` syntax, not dot notation.
-- **[pattern]**: Json field filters: scope through indexed fields first (workstreamId + status) before JSON path. JSON path = sequential scan.
-- **[pattern]**: Adding taxonomy to enum: prefer new category field with default over renaming existing enum.
-- **[convention]**: `Document.type` is non-nullable in DB and API. All creation paths require type.
-- **[pattern]**: Renaming Prisma enums: `@repo/database` re-exports via `export *`. Both `@repo/database` and `@repo/api/src/types/` imports must update in sync.
-- **[resolved]**: `validateOwnerInOrg` uses `withDb` (non-tx) but called from `withDb.tx`. Nested `withDb` now participates in the parent transaction via AsyncLocalStorage propagation — resolved by AsyncLocalStorage implementation.
-- **[pattern]**: Multi-org user profile updates: `updateMany({ where: { clerkId } })` to sync across all organizations.
-- **[pattern]**: To test AsyncLocalStorage propagation in withDb/withDb.tx without mocking ALS itself, inject a mock PrismaClient via the globalForPrisma global cache in beforeEach and clear it in afterEach — this lets real ALS run while avoiding real DB connections. (context: database|AsyncLocalStorage|testing|withDb)
+- **After every migration, verify seed compatibility** — run `pnpm seed` (or `pnpm exec ts-node scripts/seed.ts`) against the updated schema and confirm it completes without errors. The seed exercises model shapes at runtime; a breaking schema change that the seed doesn't account for will surface here before it reaches CI.

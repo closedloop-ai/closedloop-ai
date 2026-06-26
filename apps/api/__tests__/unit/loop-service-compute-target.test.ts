@@ -7,7 +7,7 @@
  * Uses vi.mock to replace withDb with a fake that captures Prisma query args.
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -64,7 +64,6 @@ vi.mock("@/lib/db-utils", () => ({
 
 // --- Imports (after mocks) ---
 
-import { beforeEach, describe, expect, it } from "vitest";
 import { loopsService } from "@/app/loops/service";
 
 // ---------------------------------------------------------------------------

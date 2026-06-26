@@ -1,0 +1,144 @@
+@import "../../../../packages/app/styles.css";
+
+@source "./**/*.{ts,tsx}";
+
+:root {
+  --font-sans:
+    "Geist", "Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono:
+    "Geist Mono", "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, monospace;
+}
+
+/* Frameless-window drag regions (macOS hidden title bar). Elements marked
+   `app-region-drag` let the user move the window; interactive children inside a
+   drag region must opt back out with `app-region-no-drag` to stay clickable. */
+.app-region-drag {
+  -webkit-app-region: drag;
+}
+
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Desktop window chrome overrides for the shared inset Sidebar. Unlayered, so
+   they win over the design-system's Tailwind utilities (which live in
+   @layer utilities) without !important.
+   1. Snap the sidebar open/closed instead of running the shared 200ms slide.
+   2. App-wide inset is 4px on all sides (the main content card); the sidebar
+      panel gets an extra 4px (the shared 8px inset) so it sits at 8px total.
+      The content card's left margin is 8px so the gap on the sidebar's right
+      matches the 8px around its other three sides. */
+[data-slot="sidebar-gap"],
+[data-slot="sidebar-container"] {
+  transition-duration: 0s;
+}
+
+/* Gated to md+ to mirror the design-system's `md:peer-data-[variant=inset]:m-2`.
+   Below 768px the sidebar becomes a mobile Sheet overlay (no inline panel), so
+   the content card must stay full-bleed — applying the inset there leaves a
+   doubled/asymmetric left gap with nothing beside it, and the collapse override
+   below can't correct it (the Sheet doesn't render a sibling
+   [data-slot="sidebar"]). */
+@media (width >= 48rem) {
+  [data-slot="sidebar-inset"] {
+    margin: 4px;
+    margin-left: 8px;
+  }
+
+  /* When the sidebar is collapsed (offcanvas) there is no panel to the content
+     card's left, so the 8px sidebar gap would read as a doubled left inset.
+     Drop it back to the app-wide 4px. */
+  [data-slot="sidebar"][data-state="collapsed"] ~ [data-slot="sidebar-inset"] {
+    margin-left: 4px;
+  }
+}
+
+.insights-dashboard-grid {
+  isolation: isolate;
+  position: relative;
+  z-index: 0;
+}
+
+.insights-dashboard-grid .react-grid-item {
+  overflow: visible;
+  z-index: 0;
+}
+
+.insights-dashboard-grid .react-grid-item:hover,
+.insights-dashboard-grid .react-grid-item:focus-within,
+.insights-dashboard-grid .react-grid-item.react-draggable-dragging,
+.insights-dashboard-grid .react-grid-item.resizing {
+  z-index: 30 !important;
+}
+
+.insights-dashboard-grid .react-resizable-handle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 20;
+}
+
+.insights-dashboard-grid .react-grid-item:hover .react-resizable-handle,
+.insights-dashboard-grid .react-grid-item:focus-within .react-resizable-handle {
+  opacity: 1;
+}
+
+/* Animations ported from the sidecar Tailwind config — candidates for
+   upstream contribution to @closedloop-ai/design-system. */
+@theme inline {
+  --animate-fade-in: fadeIn 0.3s ease-out;
+  --animate-slide-up: slideUp 0.3s ease-out;
+  --animate-pulse-slow: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* First-launch dashboard reveal + guided-tour primitives: `ob-rise` (cards
+   rising in as the scan reaches them) and a soft `ob-pulse` (the live scan
+   dot / indeterminate progress bar / tour-hint ring). Kept renderer-local
+   since they are specific to the desktop onboarding surface. */
+@keyframes ob-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes ob-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The reveal/tour gate their own auto-start on this query in JS; this is the
+     belt-and-suspenders for any element that still sets an ob-* animation. */
+  [data-ob-motion] {
+    animation: none !important;
+  }
+}

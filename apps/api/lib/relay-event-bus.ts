@@ -1,6 +1,7 @@
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { RelayOperationDispatchRequest } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
 import {
   emitProtocolMetric,
   emitQueueMetric,
@@ -160,6 +161,7 @@ export const relayEventBus = {
           origin: ORIGIN,
           count: 1,
           value: replay.events.length,
+          filterToken: FilterToken.CommandReplay,
         })
       );
     }

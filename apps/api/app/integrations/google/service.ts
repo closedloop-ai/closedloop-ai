@@ -1,3 +1,4 @@
+import { DocumentStatus } from "@repo/api/src/types/document";
 import type { GoogleIntegration } from "@repo/database";
 import { withDb } from "@repo/database";
 import {
@@ -83,16 +84,32 @@ export async function ensureValidAccessToken(
       });
       accessToken = integration.accessToken;
     }
-    return { success: true, accessToken: accessToken as string };
+    if (!accessToken) {
+      log.warn(`${logPrefix} Missing access token`, { organizationId });
+      return {
+        success: false,
+        error:
+          "Google access token is unavailable. Please reconnect Google Drive.",
+      };
+    }
+    return { success: true, accessToken };
   }
 
   try {
     const rawRefreshToken = await resolveIntegrationToken(
       integration.refreshTokenEncrypted,
-      integration.refreshToken as string
+      integration.refreshToken
     );
+    if (!rawRefreshToken) {
+      log.warn(`${logPrefix} Missing refresh token`, { organizationId });
+      return {
+        success: false,
+        error:
+          "Google refresh token is unavailable. Please reconnect Google Drive.",
+      };
+    }
 
-    const tokens = await refreshAccessToken(rawRefreshToken as string);
+    const tokens = await refreshAccessToken(rawRefreshToken);
 
     const tokenExpiresAt = tokens.expiresIn
       ? new Date(Date.now() + tokens.expiresIn * 1000)
@@ -520,7 +537,7 @@ export const googleService = {
           const MAX_SIZE = 1024 * 1024; // 1MB
           let content = markdown;
           if (content.length > MAX_SIZE) {
-            content = content.substring(0, MAX_SIZE);
+            content = content.slice(0, MAX_SIZE);
             log.warn("[google/import] Truncated doc to 1MB", {
               organizationId,
               docId: doc.id,
@@ -537,7 +554,7 @@ export const googleService = {
             {
               projectId,
               type: "PRD",
-              status: "DRAFT",
+              status: DocumentStatus.Draft,
               title: doc.name,
               content,
               fileName: `${doc.name}.md`,

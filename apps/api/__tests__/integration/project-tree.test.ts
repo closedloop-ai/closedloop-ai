@@ -2,6 +2,7 @@ import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { describe, expect, it } from "vitest";
 import { projectTreeService } from "@/app/artifacts/project-tree-service";
 import { documentService } from "@/app/documents/document-service";
 import {
@@ -71,42 +72,114 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
     });
   });
 
-  it("returns orphan entities as standalone roots sorted lexicographically", async () => {
+  it("returns orphan roots ordered by stack rank (sortOrder ASC) per PRD-421", async () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
       const projectId = await createTestProject(orgId, user.id);
 
-      await documentService.create(orgId, user.id, {
+      const zebra = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Prd,
         title: "Zebra PRD",
         content: "content",
       });
-      await documentService.create(orgId, user.id, {
+      const alpha = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.ImplementationPlan,
         title: "Alpha Plan",
         content: "content",
       });
-      await documentService.create(orgId, user.id, {
+      const middle = await documentService.create(orgId, user.id, {
         projectId,
         type: DocumentType.Feature,
         title: "Middle Feature",
         content: "",
       });
 
+      // Assign explicit stack-rank values to exercise the new sort path.
+      // Lower sortOrder = higher in the list.
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: zebra!.id },
+          data: { sortOrder: 1000 },
+        })
+      );
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: middle!.id },
+          data: { sortOrder: 2000 },
+        })
+      );
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: alpha!.id },
+          data: { sortOrder: 3000 },
+        })
+      );
+
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toHaveLength(3);
-      // Lexicographic sort
-      expect(result.nodes[0]!.root.name).toBe("Alpha Plan");
+      expect(result.nodes[0]!.root.name).toBe("Zebra PRD");
       expect(result.nodes[1]!.root.name).toBe("Middle Feature");
-      expect(result.nodes[2]!.root.name).toBe("Zebra PRD");
+      expect(result.nodes[2]!.root.name).toBe("Alpha Plan");
       // All orphans have empty children
       for (const node of result.nodes) {
         expect(node.children).toEqual([]);
       }
+    });
+  });
+
+  it("places roots with null sortOrder last and tiebreaks by createdAt DESC", async () => {
+    await autoRollbackTransaction(async () => {
+      const orgId = await createTestOrganization();
+      const user = await createTestUser(orgId);
+      const projectId = await createTestProject(orgId, user.id);
+
+      const ranked = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.Prd,
+        title: "Ranked PRD",
+        content: "content",
+      });
+      const olderUnranked = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.Feature,
+        title: "Older Unranked",
+        content: "",
+      });
+      const newerUnranked = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.Feature,
+        title: "Newer Unranked",
+        content: "",
+      });
+
+      // documentService.create assigns a non-null sortOrder via T-A.6, so we
+      // explicitly null out two of the rows to exercise the NULLS LAST +
+      // createdAt DESC tiebreak path that the migration window can produce.
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: ranked!.id },
+          data: { sortOrder: 500 },
+        })
+      );
+      await withDb((db) =>
+        db.artifact.updateMany({
+          where: { id: { in: [olderUnranked!.id, newerUnranked!.id] } },
+          data: { sortOrder: null },
+        })
+      );
+
+      const result = await projectTreeService.getProjectTree(projectId, orgId);
+
+      expect(result.nodes).toHaveLength(3);
+      // Ranked row first (lower sortOrder = top).
+      expect(result.nodes[0]!.root.name).toBe("Ranked PRD");
+      // Then null-sortOrder rows, newer createdAt first.
+      expect(result.nodes[1]!.root.name).toBe("Newer Unranked");
+      expect(result.nodes[2]!.root.name).toBe("Older Unranked");
     });
   });
 
@@ -196,7 +269,7 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
     });
   });
 
-  it("produces separate nodes for independent chains, sorted lexicographically", async () => {
+  it("produces separate nodes for independent chains, ordered by root sortOrder (PRD-421)", async () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
@@ -235,8 +308,11 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       const result = await projectTreeService.getProjectTree(projectId, orgId);
 
       expect(result.nodes).toHaveLength(2);
-      expect(result.nodes[0]!.root.name).toBe("A-Root");
-      expect(result.nodes[1]!.root.name).toBe("Z-Root");
+      // New default: stack rank ascending. createDocument assigns sortOrder
+      // in creation order via MAX + STACK_RANK_GAP, so Z-Root (created first)
+      // has a lower sortOrder than A-Root and lands at the top.
+      expect(result.nodes[0]!.root.name).toBe("Z-Root");
+      expect(result.nodes[1]!.root.name).toBe("A-Root");
     });
   });
 
@@ -472,6 +548,132 @@ describe.skipIf(!hasDatabase)("Project Tree Service Integration", () => {
       for (const entry of result.externalParents) {
         expect(entry.parent.id).toBe(externalParent!.id);
       }
+    });
+  });
+
+  it("does not nest artifacts joined only by BLOCKS/RELATES_TO links", async () => {
+    await autoRollbackTransaction(async () => {
+      const orgId = await createTestOrganization();
+      const user = await createTestUser(orgId);
+      const projectId = await createTestProject(orgId, user.id);
+
+      const a = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.Prd,
+        title: "A",
+        content: "content",
+      });
+      const b = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.ImplementationPlan,
+        title: "B",
+        content: "content",
+      });
+
+      // A blocks B — a peer relationship, NOT parent-child. Both must remain
+      // independent (sibling) roots rather than nesting B under A.
+      await createArtifactLink(orgId, a!.id, b!.id, LinkType.Blocks);
+
+      const result = await projectTreeService.getProjectTree(projectId, orgId);
+
+      expect(result.nodes).toHaveLength(2);
+      for (const node of result.nodes) {
+        expect(node.children).toEqual([]);
+      }
+      const rootIds = result.nodes.map((n) => n.root.id).sort();
+      expect(rootIds).toEqual([a!.id, b!.id].sort());
+    });
+  });
+
+  it("nests only along PRODUCES when mixed link types share a chain", async () => {
+    await autoRollbackTransaction(async () => {
+      const orgId = await createTestOrganization();
+      const user = await createTestUser(orgId);
+      const projectId = await createTestProject(orgId, user.id);
+
+      const root = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.Prd,
+        title: "Root PRD",
+        content: "content",
+      });
+      const child = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.ImplementationPlan,
+        title: "Produced Plan",
+        content: "content",
+      });
+      const related = await documentService.create(orgId, user.id, {
+        projectId,
+        type: DocumentType.Prd,
+        title: "Related PRD",
+        content: "content",
+      });
+
+      // root PRODUCES child (nests), root RELATES_TO related (sibling).
+      await createArtifactLink(orgId, root!.id, child!.id, LinkType.Produces);
+      await createArtifactLink(
+        orgId,
+        root!.id,
+        related!.id,
+        LinkType.RelatesTo
+      );
+
+      const result = await projectTreeService.getProjectTree(projectId, orgId);
+
+      expect(result.nodes).toHaveLength(2);
+
+      const rootNode = result.nodes.find((n) => n.root.id === root!.id);
+      expect(rootNode).toBeDefined();
+      expect(rootNode!.children).toHaveLength(1);
+      expect(rootNode!.children[0]!.id).toBe(child!.id);
+      expect(rootNode!.children[0]!.linkType).toBe(LinkType.Produces);
+
+      // `related` is a standalone sibling root, not nested anywhere.
+      const relatedNode = result.nodes.find((n) => n.root.id === related!.id);
+      expect(relatedNode).toBeDefined();
+      expect(relatedNode!.children).toEqual([]);
+    });
+  });
+
+  it("does not surface non-PRODUCES cross-project links as external parents", async () => {
+    await autoRollbackTransaction(async () => {
+      const orgId = await createTestOrganization();
+      const user = await createTestUser(orgId);
+      const projectA = await createTestProject(orgId, user.id, {
+        name: "Project A",
+      });
+      const projectB = await createTestProject(orgId, user.id, {
+        name: "Project B",
+      });
+
+      const externalPeer = await documentService.create(orgId, user.id, {
+        projectId: projectB,
+        type: DocumentType.Prd,
+        title: "External Peer PRD",
+        content: "content",
+      });
+      const inProjectChild = await documentService.create(orgId, user.id, {
+        projectId: projectA,
+        type: DocumentType.ImplementationPlan,
+        title: "In-project Plan",
+        content: "content",
+      });
+
+      // Cross-project BLOCKS link — a peer relationship, not a parent.
+      await createArtifactLink(
+        orgId,
+        externalPeer!.id,
+        inProjectChild!.id,
+        LinkType.Blocks
+      );
+
+      const result = await projectTreeService.getProjectTree(projectA, orgId);
+
+      // Child remains an orphan root; the blocking peer is not a parent.
+      expect(result.nodes).toHaveLength(1);
+      expect(result.nodes[0]!.root.id).toBe(inProjectChild!.id);
+      expect(result.externalParents).toEqual([]);
     });
   });
 

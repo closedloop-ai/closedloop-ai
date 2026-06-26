@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { pullRequestArtifactToInfo } from "@/lib/artifact-adapters";
+import { branchArtifactToInfo } from "@/lib/artifact-adapters";
 
 /**
  * Build the shared Artifact scalar fields that every fixture needs.
- * `pullRequestArtifactToInfo` only reads the fields included here;
+ * `branchArtifactToInfo` only reads the fields included here;
  * relation fields (organization, project, etc.) are omitted.
  */
 function makeBaseArtifact(externalUrl?: string | null) {
@@ -12,7 +12,7 @@ function makeBaseArtifact(externalUrl?: string | null) {
     organizationId: "org-1",
     projectId: "proj-1",
     workstreamId: null,
-    type: "PULL_REQUEST" as const,
+    type: "BRANCH" as const,
     subtype: null,
     name: "feat: add feature",
     slug: null,
@@ -51,11 +51,22 @@ function makeDetailRow(repository: { fullName: string } | null) {
   };
 }
 
-describe("pullRequestArtifactToInfo", () => {
-  it("returns null when pullRequest detail is absent", () => {
-    const artifact = { ...makeBaseArtifact(), pullRequest: null } as any;
+function makeBranchDetail(repository: { fullName: string } | null) {
+  return {
+    branchName: "feat/add-feature",
+    baseBranch: "main",
+    headSha: null,
+    checksStatus: "UNKNOWN" as const,
+    repository,
+    currentPullRequestDetail: makeDetailRow(repository),
+  };
+}
 
-    const result = pullRequestArtifactToInfo(artifact);
+describe("branchArtifactToInfo", () => {
+  it("returns null when pullRequest detail is absent", () => {
+    const artifact = { ...makeBaseArtifact(), branch: null } as any;
+
+    const result = branchArtifactToInfo(artifact);
 
     expect(result).toBeNull();
   });
@@ -63,10 +74,10 @@ describe("pullRequestArtifactToInfo", () => {
   it("returns repoFullName from detail.repository.fullName when present", () => {
     const artifact = {
       ...makeBaseArtifact(),
-      pullRequest: makeDetailRow({ fullName: "owner/repo" }),
+      branch: makeBranchDetail({ fullName: "owner/repo" }),
     } as any;
 
-    const result = pullRequestArtifactToInfo(artifact);
+    const result = branchArtifactToInfo(artifact);
 
     expect(result).not.toBeNull();
     expect(result?.repoFullName).toBe("owner/repo");
@@ -75,10 +86,10 @@ describe("pullRequestArtifactToInfo", () => {
   it("returns repoFullName from options.repoFullName when detail.repository is null", () => {
     const artifact = {
       ...makeBaseArtifact(),
-      pullRequest: makeDetailRow(null),
+      branch: makeBranchDetail(null),
     } as any;
 
-    const result = pullRequestArtifactToInfo(artifact, {
+    const result = branchArtifactToInfo(artifact, {
       repoFullName: "owner/fallback-repo",
     });
 
@@ -89,10 +100,10 @@ describe("pullRequestArtifactToInfo", () => {
   it("returns repoFullName as null when options.repoFullName is undefined and detail.repository is null", () => {
     const artifact = {
       ...makeBaseArtifact(),
-      pullRequest: makeDetailRow(null),
+      branch: makeBranchDetail(null),
     } as any;
 
-    const result = pullRequestArtifactToInfo(artifact);
+    const result = branchArtifactToInfo(artifact);
 
     expect(result).not.toBeNull();
     expect(result?.repoFullName).toBeNull();
@@ -101,10 +112,10 @@ describe("pullRequestArtifactToInfo", () => {
   it("prefers detail.repository.fullName over options.repoFullName", () => {
     const artifact = {
       ...makeBaseArtifact(),
-      pullRequest: makeDetailRow({ fullName: "owner/repo-from-detail" }),
+      branch: makeBranchDetail({ fullName: "owner/repo-from-detail" }),
     } as any;
 
-    const result = pullRequestArtifactToInfo(artifact, {
+    const result = branchArtifactToInfo(artifact, {
       repoFullName: "owner/repo-from-options",
     });
 
@@ -114,16 +125,16 @@ describe("pullRequestArtifactToInfo", () => {
   it("maps artifact scalar fields onto the returned PullRequestInfo", () => {
     const artifact = {
       ...makeBaseArtifact(),
-      pullRequest: makeDetailRow({ fullName: "owner/repo" }),
+      branch: makeBranchDetail({ fullName: "owner/repo" }),
     } as any;
 
-    const result = pullRequestArtifactToInfo(artifact, {
+    const result = branchArtifactToInfo(artifact, {
       externalLinkId: "link-99",
     });
 
     expect(result).not.toBeNull();
     expect(result?.id).toBe("art-1");
-    expect(result?.title).toBe("feat: add feature");
+    expect(result?.name).toBe("feat: add feature");
     expect(result?.htmlUrl).toBe("https://github.com/owner/repo/pull/1");
     expect(result?.externalLinkId).toBe("link-99");
   });

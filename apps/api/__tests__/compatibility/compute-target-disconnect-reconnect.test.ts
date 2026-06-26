@@ -8,6 +8,7 @@ import {
   INTERNAL_SECRET,
   makeEnvelope,
   makeSocketEventRequest,
+  mockGatewayOwnerAuthContext,
   mockTarget,
 } from "./utils/test-fixtures";
 
@@ -127,7 +128,7 @@ describe("POST /internal/relay/socket-event — reconnect (re-hello with existin
         supportedOperations: [],
         maxInFlightCommands: 1,
       },
-      { auth: { organizationId: "org-1", userId: "user-1" } }
+      { auth: mockGatewayOwnerAuthContext }
     );
 
     const response = await POST(request);
@@ -143,5 +144,41 @@ describe("POST /internal/relay/socket-event — reconnect (re-hello with existin
         resumeFromSequence: { "cmd-old": 5 },
       })
     );
+    expect(result.emit[0].payload.clerkUserId).toBeUndefined();
+    expect(result.emit[0].payload.organizationId).toBeUndefined();
+    expect(result.emit[0].payload.userId).toBeUndefined();
+  });
+
+  it("omits gateway-owner identity on reconnect when Clerk id is missing", async () => {
+    vi.mocked(computeTargetsService.updateOwned).mockResolvedValue(
+      Result.ok({
+        ...mockTarget,
+        id: "target-1",
+      })
+    );
+    vi.mocked(
+      desktopCommandStore.listNonTerminalDispatchCommands
+    ).mockResolvedValue([]);
+
+    const request = makeSocketEventRequest(
+      "desktop.hello",
+      {
+        computeTargetId: "target-1",
+        machineName: "test",
+        platform: "darwin",
+        pluginVersion: "1.0.0",
+        supportedOperations: [],
+        maxInFlightCommands: 1,
+      },
+      { auth: { organizationId: "org-1", userId: "user_db_1" } }
+    );
+
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+
+    const result = await response.json();
+    expect(result.emit[0].payload.clerkUserId).toBeUndefined();
+    expect(result.emit[0].payload.organizationId).toBeUndefined();
+    expect(result.emit[0].payload.userId).toBeUndefined();
   });
 });

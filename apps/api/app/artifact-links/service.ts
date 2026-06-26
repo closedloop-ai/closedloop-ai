@@ -1,16 +1,19 @@
 import type {
   ArtifactLink,
+  ArtifactLinkEndpoint,
   ArtifactLinkWithEndpoints,
+  ArtifactParentProjection,
   BatchMoveArtifactsInput,
   BatchMoveArtifactsResult,
   CreateArtifactLinkInput,
 } from "@repo/api/src/types/artifact";
-import {
-  type ArtifactType,
-  LinkDirection,
-  LinkType,
-} from "@repo/api/src/types/artifact";
+import { LinkDirection, LinkType } from "@repo/api/src/types/artifact";
+import type {
+  ChecksStatus,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-view";
 import type { JsonObject } from "@repo/api/src/types/common";
+import type { GitHubPRState } from "@repo/api/src/types/github";
 import { Result, Status } from "@repo/api/src/types/result";
 import {
   Prisma,
@@ -159,6 +162,65 @@ export const artifactLinksService = {
     );
 
     return links.map(toArtifactLinkWithEndpoints);
+  },
+
+  /**
+   * Return one selected direct parent projection per requested target artifact.
+   * This is a convenience view over ArtifactLink lineage; full lineage
+   * traversal remains owned by the direct/tree artifact-link APIs.
+   */
+  async findSelectedParentProjections(
+    organizationId: string,
+    targetIds: string[],
+    options: { linkType?: LinkType } = {}
+  ): Promise<ArtifactParentProjection[]> {
+    if (targetIds.length === 0) {
+      return [];
+    }
+
+    const projectionsByTargetId = new Map<string, ArtifactParentProjection>();
+    for (const targetId of targetIds) {
+      projectionsByTargetId.set(targetId, {
+        targetId,
+        linkId: null,
+        linkType: null,
+        linkCreatedAt: null,
+        parentArtifact: null,
+      });
+    }
+
+    const rows = await withDb((db) =>
+      db.artifactLink.findMany({
+        where: {
+          organizationId,
+          targetId: { in: targetIds },
+          linkType: options.linkType ?? LinkType.Produces,
+        },
+        include: artifactLinkInclude,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      })
+    );
+
+    for (const row of rows) {
+      const projection = projectionsByTargetId.get(row.targetId);
+      if (!projection || projection.parentArtifact !== null) {
+        continue;
+      }
+      projection.linkId = row.id;
+      projection.linkType = row.linkType;
+      projection.linkCreatedAt = row.createdAt;
+      projection.parentArtifact = toArtifactLinkEndpoint(row.source);
+    }
+
+    return targetIds.map((targetId) => ({
+      ...(projectionsByTargetId.get(targetId) ?? {
+        targetId,
+        linkId: null,
+        linkType: null,
+        linkCreatedAt: null,
+        parentArtifact: null,
+      }),
+    }));
   },
 
   /**
@@ -328,7 +390,7 @@ export const artifactLinksService = {
         });
         const moved = rows.map((r) => ({
           id: r.id,
-          type: r.type as ArtifactType,
+          type: r.type,
         }));
 
         if (moved.length === 0) {
@@ -375,8 +437,36 @@ export const artifactLinksService = {
 };
 
 type PrismaArtifactLinkWithArtifacts = PrismaArtifactLink & {
-  source: PrismaArtifact;
-  target: PrismaArtifact;
+  source: PrismaArtifactWithEndpointDetail;
+  target: PrismaArtifactWithEndpointDetail;
+};
+
+type PrismaArtifactWithEndpointDetail = PrismaArtifact & {
+  branch?: {
+    branchName: string;
+    baseBranch: string | null;
+    headSha: string | null;
+    checksStatus: ChecksStatus | null;
+    currentPullRequestDetail: {
+      id: string;
+      branchArtifactId: string | null;
+      repositoryId: string;
+      githubId: string;
+      number: number;
+      title: string | null;
+      htmlUrl: string | null;
+      body: string | null;
+      prState: GitHubPRState;
+      isDraft: boolean;
+      reviewDecision: ReviewDecision | null;
+      closedAt: Date | null;
+      mergedAt: Date | null;
+      mergeCommitSha: string | null;
+      lastVerifiedAt: Date | null;
+      lastRefreshAttemptAt: Date | null;
+      isCurrent: boolean;
+    } | null;
+  } | null;
 };
 
 function toArtifactLink(link: PrismaArtifactLink): ArtifactLink {
@@ -396,15 +486,45 @@ function toArtifactLinkWithEndpoints(
 ): ArtifactLinkWithEndpoints {
   return {
     ...toArtifactLink(link),
-    source: link.source,
-    target: link.target,
+    source: toArtifactLinkEndpoint(link.source),
+    target: toArtifactLinkEndpoint(link.target),
   };
 }
 
-const artifactLinkInclude = {
-  source: true,
-  target: true,
+const branchEndpointInclude = {
+  branch: {
+    include: {
+      currentPullRequestDetail: true,
+    },
+  },
 } as const;
+
+const artifactLinkInclude = {
+  source: { include: branchEndpointInclude },
+  target: { include: branchEndpointInclude },
+} as const;
+
+function toArtifactLinkEndpoint(
+  artifact: PrismaArtifactWithEndpointDetail
+): ArtifactLinkEndpoint {
+  return {
+    ...artifact,
+    branch: artifact.branch
+      ? {
+          branchName: artifact.branch.branchName,
+          currentPullRequest: artifact.branch.currentPullRequestDetail
+            ? {
+                ...artifact.branch.currentPullRequestDetail,
+                headBranch: artifact.branch.branchName,
+                baseBranch: artifact.branch.baseBranch ?? "",
+                headSha: artifact.branch.headSha,
+                checksStatus: artifact.branch.checksStatus,
+              }
+            : null,
+        }
+      : null,
+  };
+}
 
 async function assertArtifactInOrg(
   organizationId: string,

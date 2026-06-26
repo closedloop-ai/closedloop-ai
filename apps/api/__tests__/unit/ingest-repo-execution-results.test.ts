@@ -9,8 +9,8 @@
  * relative call ordering).
  */
 
-import type { RepoExecutionResult } from "@closedloop-ai/loops-api/execution-result";
-import { vi } from "vitest";
+import type { RepoExecutionResult } from "@repo/api/src/types/loop";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { getMockWithDb } from "../utils/db-helpers";
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,6 @@ vi.mock("@/lib/prompts-service", async () => {
 // Imports — after mocks
 // ---------------------------------------------------------------------------
 
-import type { Mock } from "vitest";
 import {
   type IngestionContext,
   ingestRepoExecutionResults,
@@ -96,8 +95,6 @@ type ScenarioExpect = {
   evaluationCalls?: number;
   evaluationArgs?: Record<string, unknown>;
   promptsSnapshotArgs?: [string, unknown];
-  /** Assert upsertEvaluation ran before the per-repo workstreamEvent.create. */
-  assertEvalBeforeWorkstreamEvent?: boolean;
 };
 
 type Scenario = {
@@ -112,9 +109,7 @@ type Scenario = {
   expect: ScenarioExpect;
 };
 
-type HarnessResult = { callOrder: readonly string[] };
-
-async function invokeScenario(s: Scenario): Promise<HarnessResult> {
+async function invokeScenario(s: Scenario): Promise<void> {
   const ctx = s.ctx ?? makeIngestionCtx();
 
   const lookups =
@@ -132,7 +127,6 @@ async function invokeScenario(s: Scenario): Promise<HarnessResult> {
   );
 
   const behaviors = s.txBehaviors ?? [];
-  const callOrder: string[] = [];
   let txIdx = 0;
 
   mockWithDb.tx = vi
@@ -146,25 +140,10 @@ async function invokeScenario(s: Scenario): Promise<HarnessResult> {
       if (behavior.kind === "missingArtifact") {
         tx.artifact.findUnique.mockResolvedValue(null);
       }
-      if (s.expect.assertEvalBeforeWorkstreamEvent) {
-        const originalCreate = tx.workstreamEvent.create;
-        tx.workstreamEvent.create = vi.fn((...args: unknown[]) => {
-          callOrder.push("workstreamEvent.create");
-          return originalCreate(...args);
-        });
-      }
       return callback(tx);
     });
 
-  if (s.expect.assertEvalBeforeWorkstreamEvent) {
-    mockUpsertEvaluationWithJudgeScores.mockImplementation(() => {
-      callOrder.push("upsertEvaluation");
-      return Promise.resolve(undefined);
-    });
-  }
-
   await ingestRepoExecutionResults(ctx, s.results, s.options);
-  return { callOrder };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +176,6 @@ const scenarios: Scenario[] = [
       linkageArgs: [
         {
           organizationId: "org-1",
-          workstreamId: "ws-1",
           documentId: "doc-1",
           prUrl: "https://github.com/org/repo/pull/42",
           prNumber: 42,
@@ -324,7 +302,6 @@ const scenarios: Scenario[] = [
         artifactId: "doc-1",
         organizationId: "org-1",
         loopId: "loop-1",
-        actionRunId: "action-run-1",
         report: codeJudgesReport,
       },
     },
@@ -333,10 +310,8 @@ const scenarios: Scenario[] = [
     name: "code judges report without loopId → persisted without loop linkage",
     ctx: {
       organizationId: "org-1",
-      workstreamId: "ws-1",
       documentId: "doc-1",
       correlationId: "corr-1",
-      actionRunId: "action-run-1",
     },
     results: [],
     options: { codeJudgesReport },
@@ -345,7 +320,6 @@ const scenarios: Scenario[] = [
       evaluationArgs: {
         artifactId: "doc-1",
         organizationId: "org-1",
-        actionRunId: "action-run-1",
         report: codeJudgesReport,
       },
     },
@@ -355,12 +329,6 @@ const scenarios: Scenario[] = [
     results: [makeSuccessResult()],
     options: { codeJudgesReport: null },
     expect: { evaluationCalls: 0 },
-  },
-  {
-    name: "code judges report persisted before per-repo workstreamEvent",
-    results: [makeSuccessResult()],
-    options: { codeJudgesReport },
-    expect: { assertEvalBeforeWorkstreamEvent: true },
   },
   {
     name: "prompts snapshot: null when not provided",
@@ -385,7 +353,7 @@ describe("ingestRepoExecutionResults", () => {
   });
 
   it.each(scenarios)("$name", async (s) => {
-    const { callOrder } = await invokeScenario(s);
+    await invokeScenario(s);
     const e = s.expect;
 
     if (e.txCalls !== undefined) {
@@ -422,13 +390,6 @@ describe("ingestRepoExecutionResults", () => {
       expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
         ...e.promptsSnapshotArgs
       );
-    }
-    if (e.assertEvalBeforeWorkstreamEvent) {
-      const evalIdx = callOrder.indexOf("upsertEvaluation");
-      const eventIdx = callOrder.indexOf("workstreamEvent.create");
-      expect(evalIdx).toBeGreaterThanOrEqual(0);
-      expect(eventIdx).toBeGreaterThanOrEqual(0);
-      expect(evalIdx).toBeLessThan(eventIdx);
     }
   });
 });

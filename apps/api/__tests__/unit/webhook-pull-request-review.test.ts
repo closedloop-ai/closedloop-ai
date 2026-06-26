@@ -20,8 +20,11 @@ import { mockWithDbTx as setupMockWithDbTx } from "../utils/db-helpers";
 vi.mock("@repo/database", () => ({
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
-    PULL_REQUEST: "PULL_REQUEST",
+    BRANCH: "BRANCH",
     DEPLOYMENT: "DEPLOYMENT",
+  },
+  GitHubInstallationStatus: {
+    ACTIVE: "ACTIVE",
   },
   withDb: vi.fn(),
 }));
@@ -56,6 +59,10 @@ describe("handlePullRequestReview", () => {
         upsert: vi.fn().mockResolvedValue({}),
         findMany: vi.fn().mockResolvedValue([]),
       },
+      // PLN-1034: a submitted review bumps branch_detail.last_activity_at.
+      branchDetail: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       workstreamEvent: {
         create: vi.fn(),
       },
@@ -70,7 +77,7 @@ describe("handlePullRequestReview", () => {
   });
 
   describe("submitted action with APPROVED state", () => {
-    it("updates reviewDecision to APPROVED and creates GITHUB_PR_REVIEW_SUBMITTED event", async () => {
+    it("updates reviewDecision to APPROVED without emitting a workstream event", async () => {
       const repository = createRepository(789);
       const pullRequest = createPullRequest({
         number: 42,
@@ -88,6 +95,7 @@ describe("handlePullRequestReview", () => {
         pull_request: pullRequest,
         repository,
         sender: createSender(),
+        installation: { id: 99 },
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
@@ -114,7 +122,14 @@ describe("handlePullRequestReview", () => {
       expect(
         mockTx.gitHubInstallationRepository.findFirst
       ).toHaveBeenCalledWith({
-        where: { githubRepoId: "789" },
+        where: {
+          githubRepoId: "789",
+          fullName: repository.full_name,
+          installation: {
+            installationId: "99",
+            status: "ACTIVE",
+          },
+        },
         select: { id: true },
       });
 
@@ -151,37 +166,75 @@ describe("handlePullRequestReview", () => {
 
       // Aggregate PR detail update with APPROVED decision (via recomputeAndUpdateAggregate)
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-456" },
+        where: { id: "artifact-pr-456" },
         data: { reviewDecision: "APPROVED" },
       });
 
-      // Verify workstream event creation
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: {
-          workstreamId: "ws-uuid-789",
-          type: "GITHUB_PR_REVIEW_SUBMITTED",
-          actorType: "system",
-          data: {
-            reviewId: 1,
-            reviewState: "approved",
-            reviewDecision: "APPROVED",
-            reviewerLogin: "reviewer",
-            reviewBody: "Looks good to me!",
-            prNumber: 42,
-            prTitle: "Add feature X",
-            prUrl: "https://github.com/owner/test-repo/pull/1",
-            reviewUrl:
-              "https://github.com/owner/test-repo/pull/1#pullrequestreview-1",
-            documentId: "artifact-doc-123",
-            documentSlug: "plan-feature-x",
-          },
-        },
-      });
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
 
+  it("stores reviews under PullRequestDetail.id while using branch artifact linkage", async () => {
+    const repository = createRepository(789);
+    const pullRequest = createPullRequest({
+      number: 42,
+      title: "Add feature X",
+    });
+    const review = createReview({
+      id: 12,
+      state: "approved",
+      body: "Ready",
+    });
+
+    const event: PullRequestReviewSubmittedEvent = {
+      action: "submitted",
+      review,
+      pull_request: pullRequest,
+      repository,
+      sender: createSender(),
+    } as any;
+
+    mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+      id: "repo-uuid-123",
+    });
+    mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+      makePrDetailRow({
+        id: "pr-detail-current",
+        artifactId: "legacy-pr-artifact",
+        branchArtifactId: "branch-artifact-1",
+        reviewDecision: null,
+        workstreamId: "branch-workstream",
+        branchTargetLinks: [
+          { source: { id: "branch-doc", slug: "plan-feature-x" } },
+        ],
+      })
+    );
+    mockTx.gitHubPRReview.findMany.mockResolvedValue([{ state: "APPROVED" }]);
+
+    await handlePullRequestReview(event);
+
+    expect(mockTx.gitHubPRReview.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          pullRequestId_authorLogin: {
+            pullRequestId: "pr-detail-current",
+            authorLogin: "reviewer",
+          },
+        },
+        create: expect.objectContaining({
+          pullRequestId: "pr-detail-current",
+        }),
+      })
+    );
+    expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+      where: { id: "pr-detail-current" },
+      data: { reviewDecision: "APPROVED" },
+    });
+    expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
+  });
+
   describe("submitted action with CHANGES_REQUESTED state", () => {
-    it("updates reviewDecision to CHANGES_REQUESTED and creates workstream event", async () => {
+    it("updates reviewDecision to CHANGES_REQUESTED without emitting a workstream event", async () => {
       const repository = createRepository(789);
       const pullRequest = createPullRequest({
         number: 43,
@@ -222,31 +275,11 @@ describe("handlePullRequestReview", () => {
       await handlePullRequestReview(event);
 
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-789" },
+        where: { id: "artifact-pr-789" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
 
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: {
-          workstreamId: "ws-uuid-abc",
-          type: "GITHUB_PR_REVIEW_SUBMITTED",
-          actorType: "system",
-          data: {
-            reviewId: 2,
-            reviewState: "changes_requested",
-            reviewDecision: "CHANGES_REQUESTED",
-            reviewerLogin: "reviewer",
-            reviewBody: "Please fix the typo",
-            prNumber: 43,
-            prTitle: "Fix bug Y",
-            prUrl: "https://github.com/owner/test-repo/pull/1",
-            reviewUrl:
-              "https://github.com/owner/test-repo/pull/1#pullrequestreview-2",
-            documentId: null,
-            documentSlug: undefined,
-          },
-        },
-      });
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
 
@@ -306,22 +339,11 @@ describe("handlePullRequestReview", () => {
 
       // Aggregate should be null (no active reviews after dismissal)
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-dismiss" },
+        where: { id: "artifact-pr-dismiss" },
         data: { reviewDecision: null },
       });
 
-      // Should create workstream event for dismissed review
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          workstreamId: "ws-uuid-dismiss",
-          type: "GITHUB_PR_REVIEW_SUBMITTED",
-          data: expect.objectContaining({
-            reviewState: "dismissed",
-            reviewDecision: "DISMISSED",
-            reviewerLogin: "reviewer",
-          }),
-        }),
-      });
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
 
@@ -373,12 +395,11 @@ describe("handlePullRequestReview", () => {
 
       // Aggregate should be CHANGES_REQUESTED (highest priority across all reviewers)
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-priority" },
+        where: { id: "artifact-pr-priority" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
 
-      // Still creates workstream event
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
 
     it("dismissed review is excluded from aggregate, remaining reviewer's state wins", async () => {
@@ -422,7 +443,7 @@ describe("handlePullRequestReview", () => {
       await handlePullRequestReview(event);
 
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-dismiss-priority" },
+        where: { id: "artifact-pr-dismiss-priority" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
     });
@@ -476,11 +497,11 @@ describe("handlePullRequestReview", () => {
       );
 
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-resubmit" },
+        where: { id: "artifact-pr-resubmit" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
       });
 
-      expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
+      expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
 
@@ -591,7 +612,7 @@ describe("handlePullRequestReview", () => {
       await handlePullRequestReview(event);
 
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "artifact-pr-multi2" },
+        where: { id: "artifact-pr-multi2" },
         data: { reviewDecision: "APPROVED" },
       });
     });

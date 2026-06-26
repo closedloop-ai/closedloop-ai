@@ -3,7 +3,9 @@ import { LinkType } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  ARTIFACT_LINK_DIRECTION_HELP,
   ARTIFACT_LINK_SLUG_HELP,
+  ARTIFACT_LINK_TYPE_HELP,
   asRecord,
   readString,
   withErrorHandling,
@@ -22,16 +24,19 @@ export function registerCreateArtifactLink(
   server.registerTool(
     "create-artifact-link",
     {
-      description:
-        "Create a typed relationship between artifacts (e.g. PRD-to-plan, plan-to-feature). Pass the artifact id (UUID) or supported slug (PRD-*, PLN-*, FEA-*) verbatim for sourceId/targetId.",
+      description: `Create a typed, directional relationship between artifacts (e.g. PRD-to-plan, feature-to-plan). Pass the artifact id (UUID) or supported slug (PRD-*, PLN-*, FEA-*) verbatim for sourceId/targetId. ${ARTIFACT_LINK_DIRECTION_HELP} ${ARTIFACT_LINK_TYPE_HELP}`,
       inputSchema: {
         sourceId: z
           .string()
-          .describe(`Source artifact ID. ${ARTIFACT_LINK_SLUG_HELP}`),
+          .describe(
+            `Source artifact ID — the upstream/producing artifact (the parent for PRODUCES; the link points FROM here). ${ARTIFACT_LINK_SLUG_HELP}`
+          ),
         targetId: z
           .string()
-          .describe(`Target artifact ID. ${ARTIFACT_LINK_SLUG_HELP}`),
-        linkType: z.enum(LinkType).describe("Type of the link"),
+          .describe(
+            `Target artifact ID — the downstream/produced artifact (the child for PRODUCES; the link points TO here). ${ARTIFACT_LINK_SLUG_HELP}`
+          ),
+        linkType: z.enum(LinkType).describe(ARTIFACT_LINK_TYPE_HELP),
       },
     },
     ({ sourceId, targetId, linkType }) =>

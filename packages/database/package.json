@@ -9,14 +9,19 @@
     "build": "prisma generate --no-hints --schema=./prisma/schema.prisma",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false",
-    "seed": "tsx scripts/seed.ts"
+    "seed": "tsx scripts/seed.ts",
+    "pretest": "pnpm --filter @closedloop-ai/loops-api build && prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "test": "pnpm test:unit",
+    "test:unit": "vitest run --exclude '**/integration/**'",
+    "test:integration": "vitest run --config vitest.config.integration.ts --no-file-parallelism"
   },
   "dependencies": {
     "@aws-sdk/rds-signer": "^3.1003.0",
-    "@prisma/adapter-pg": "~7.5.0",
-    "@prisma/client": "~7.5.0",
+    "@prisma/adapter-pg": "~7.8.0",
+    "@prisma/client": "~7.8.0",
     "@prisma/client-runtime-utils": "~7.8.0",
-    "@t3-oss/env-nextjs": "^0.13.10",
+    "@repo/api": "workspace:*",
+    "@t3-oss/env-nextjs": "^0.13.11",
     "@vercel/functions": "^3.4.3",
     "pg": "^8.20.0",
     "server-only": "^0.0.1",
@@ -24,12 +29,13 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "^25.3.5",
-    "@types/pg": "8.11.11",
+    "@types/node": "^25.9.1",
+    "@types/pg": "8.20.0",
     "bufferutil": "^4.1.0",
     "dotenv": "^17.3.1",
-    "prisma": "~7.5.0",
+    "prisma": "~7.8.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

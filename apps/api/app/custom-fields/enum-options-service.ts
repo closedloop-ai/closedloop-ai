@@ -3,7 +3,7 @@ import type {
   CustomFieldEnumOption,
   UpdateEnumOptionInput,
 } from "@repo/api/src/types/custom-field";
-import { withDb } from "@repo/database";
+import { Prisma, withDb } from "@repo/database";
 
 import { checkOptionLimit, computeDisplayValue } from "./utils";
 
@@ -189,15 +189,24 @@ export const enumOptionsService = {
       );
     }
 
+    // Nothing to reorder (a field with no options) — skip the batched UPDATE so
+    // we never emit an empty `VALUES ()` clause. Mirrors the no-op the previous
+    // `Promise.all([])` produced, and projectsService.reorder's empty guard.
+    if (orderedOptionIds.length === 0) {
+      return;
+    }
+
     await withDb.tx(async (tx) => {
-      await Promise.all(
-        orderedOptionIds.map((optionId, index) =>
-          tx.customFieldEnumOption.update({
-            where: { id: optionId, customFieldId },
-            data: { sortOrder: index },
-          })
-        )
+      const valueRows = orderedOptionIds.map(
+        (optionId, index) => Prisma.sql`(${optionId}::uuid, ${index}::int)`
       );
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "custom_field_enum_options"
+        SET "sort_order" = data.new_order
+        FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
+        WHERE "custom_field_enum_options"."id" = data.id
+          AND "custom_field_enum_options"."custom_field_id" = ${customFieldId}::uuid
+      `);
     });
   },
 };

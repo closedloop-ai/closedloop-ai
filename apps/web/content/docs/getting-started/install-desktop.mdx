@@ -1,17 +1,19 @@
 ---
 title: Install the desktop client
-description: Install, launch, and authenticate the ClosedLoop desktop client and its localhost gateway.
+description: Install, launch, and authenticate the Closedloop desktop client and its localhost gateway.
 ---
 
-The desktop client is the execution surface for ClosedLoop.ai. It runs a localhost HTTP gateway on port `19432` that brokers local git, filesystem, code review, and AI coding session operations, and maintains an outbound Socket.IO connection to the cloud relay so the control plane can drive work safely.
+The desktop client is the execution surface for Closedloop.ai. It runs a localhost HTTP gateway on port `19432` that brokers local git, filesystem, code review, and AI coding session operations, and maintains an outbound Socket.IO connection to the cloud relay so the control plane can drive work safely.
 
 ## Download
 
-- **macOS:** download the latest signed, notarized universal DMG from GitHub Releases under `closedloop-ai/closedloop-electron`. Drag the `ClosedLoop.app` bundle into `/Applications`.
+- **macOS:** download the latest signed, notarized universal DMG from the Desktop release channel under `closedloop-ai/symphony-alpha`. Drag the `Closedloop.app` bundle into `/Applications`.
 - **Linux:** run the app from source with `just desktop-dev` (see below). Linux is supported for development but not yet packaged.
 - **Windows:** not supported.
 
-Packaged macOS builds auto-update via `electron-updater`. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
+Packaged macOS builds auto-update via the Desktop-specific `symphony-alpha` feed. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
+
+Older builds installed from `closedloop-ai/closedloop-electron` do not auto-upgrade across repositories. Install the latest `closedloop-ai/symphony-alpha` Desktop DMG manually once; subsequent updates follow the new Desktop feed.
 
 ## First launch
 
@@ -29,7 +31,7 @@ Clicking the tray icon opens the main window. The tray also badges with the numb
 ## Authenticate
 
 1. Open the main window.
-2. Paste your ClosedLoop API key into **Settings → API key**. The key is encrypted with the operating system's keychain via Electron `safeStorage` and stored in `desktop-secrets`.
+2. Paste your Closedloop API key into **Settings → API key**. The key is encrypted with the operating system's keychain via Electron `safeStorage` and stored in `desktop-secrets`.
 3. Confirm the status indicator flips to `ready`. If it does not, see [Troubleshooting](../resources/troubleshooting).
 
 Alternatively, export `CLOSEDLOOP_API_KEY` in your shell before launching. Environment values take precedence over stored values. The `SYMPHONY_API_KEY` variable is accepted as a legacy fallback.
@@ -38,7 +40,7 @@ Alternatively, export `CLOSEDLOOP_API_KEY` in your shell before launching. Envir
 
 The built-in onboarding overlay walks you through:
 
-- confirming the API key works against the ClosedLoop API
+- confirming the API key works against the Closedloop API
 - registering this machine as a compute target via `POST /compute-targets/register`
 - choosing a sandbox base directory (the only path the gateway will let operations touch)
 - selecting a default approval tier (`low`, `medium`, or `high`, default `high`)
@@ -75,19 +77,18 @@ If the default port is in use, the client will fall back through `19433 → 1943
 ## Run from source (Linux or contributors)
 
 ```bash
-git clone git@github.com:closedloop-ai/closedloop-electron.git
-cd closedloop-electron
-just install
-just desktop-dev
+git clone git@github.com:closedloop-ai/symphony-alpha.git
+cd symphony-alpha
+pnpm install
+pnpm -C apps/desktop dev
 ```
 
 Useful `just` recipes:
 
 | Command | What it does |
 |---|---|
-| `just desktop-dev` | Build and start the Electron app. |
-| `just desktop-start` | Run Electron from an existing build. |
-| `just desktop-package` | Build and package a macOS DMG under `dist-dmg/`. |
+| `just desktop-build` | Build the Electron app. |
+| `just desktop-stage` | Materialize the packaged production dependency closure. |
 | `just desktop-lint` | Run ESLint for desktop sources. |
 | `just desktop-typecheck` | Run `tsc --noEmit`. |
 | `just desktop-test` | Run the desktop test suite. |

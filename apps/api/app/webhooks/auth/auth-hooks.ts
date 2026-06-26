@@ -131,7 +131,9 @@ export async function handleOrganizationCreated(
   return new Response("Organization created", { status: 201 });
 }
 
-export function handleOrganizationUpdated(data: OrganizationJSON): Response {
+export async function handleOrganizationUpdated(
+  data: OrganizationJSON
+): Promise<Response> {
   analytics.groupIdentify({
     groupKey: data.id,
     groupType: "company",
@@ -148,6 +150,15 @@ export function handleOrganizationUpdated(data: OrganizationJSON): Response {
       distinctId: data.created_by,
     });
   }
+
+  await organizationsService.findOrCreateByClerkId(data.id, {
+    name: data.name,
+    slug: data.slug,
+  });
+  await organizationsService.updateByClerkId(data.id, {
+    name: data.name,
+    slug: data.slug,
+  });
 
   return new Response("Organization updated", { status: 204 });
 }

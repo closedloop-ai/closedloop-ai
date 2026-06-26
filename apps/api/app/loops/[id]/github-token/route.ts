@@ -1,6 +1,5 @@
-import { verifyLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { z } from "zod";
-import { extractBearerToken } from "@/lib/auth/loop-runner-jwt";
+import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";
 import { resolveGitHubToken } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
@@ -24,18 +23,13 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const token = extractBearerToken(request);
-    if (token instanceof Response) {
-      return token;
-    }
-
-    const claims = await verifyLoopRunnerToken(token);
-    if (claims.loopId !== loopId) {
-      return errorResponse(
-        "Token does not match loop",
-        new Error("Forbidden"),
-        403
-      );
+    const claims = await authenticateLoopRunnerRequest(
+      request,
+      loopId,
+      "loops/[id]/github-token"
+    );
+    if (claims instanceof Response) {
+      return claims;
     }
 
     const loop = await loopsService.findById(loopId, claims.organizationId);

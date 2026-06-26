@@ -73,6 +73,7 @@ type DataTableProps<T> = {
   filterOptions?: FilterOption[];
   filterKey?: keyof T;
   onRowClick?: (item: T) => void;
+  rowHref?: (item: T) => string | undefined;
   renderRowActions?: (item: T) => React.ReactNode;
   pageSize?: number;
   pageSizeOptions?: number[];
@@ -89,6 +90,7 @@ export function DataTable<T extends { id: string }>({
   filterOptions,
   filterKey,
   onRowClick,
+  rowHref,
   renderRowActions,
   pageSize: initialPageSize = 10,
   pageSizeOptions,
@@ -196,6 +198,7 @@ export function DataTable<T extends { id: string }>({
           <div className="relative flex-1 max-w-sm">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
+              aria-label={searchPlaceholder || "Search"}
               placeholder={searchPlaceholder}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -285,26 +288,55 @@ export function DataTable<T extends { id: string }>({
                 </TableCell>
               </TableRow>
             ) : (
-              paginatedData.map((item) => (
-                <TableRow
-                  key={item.id}
-                  onClick={() => onRowClick?.(item)}
-                  className={cn(onRowClick && "cursor-pointer")}
-                >
-                  {columns.map((column) => (
-                    <TableCell key={String(column.key)} className={column.className}>
-                      {column.render
-                        ? column.render(item)
-                        : String(item[column.key as keyof T] ?? "")}
-                    </TableCell>
-                  ))}
-                  {renderRowActions && (
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      {renderRowActions(item)}
-                    </TableCell>
-                  )}
-                </TableRow>
-              ))
+              paginatedData.map((item) => {
+                const href = rowHref?.(item);
+                return (
+                  <TableRow
+                    key={item.id}
+                    onClick={href ? undefined : (() => onRowClick?.(item))}
+                    className={cn(
+                      (onRowClick || href) && "cursor-pointer",
+                      href && "relative"
+                    )}
+                  >
+                    {columns.map((column, colIndex) => (
+                      <TableCell
+                        key={String(column.key)}
+                        className={cn(column.className, href && colIndex > 0 && "relative z-[2]")}
+                      >
+                        {colIndex === 0 && href && (
+                          <a
+                            href={href}
+                            className="absolute inset-0 z-[1]"
+                            onClick={(e) => {
+                              if (!onRowClick) return;
+                              const isModified = e.metaKey || e.ctrlKey || e.shiftKey || e.altKey;
+                              if (e.button === 0 && !isModified) {
+                                e.preventDefault();
+                                onRowClick(item);
+                              }
+                            }}
+                            tabIndex={-1}
+                          >
+                            <span className="sr-only">Open</span>
+                          </a>
+                        )}
+                        {column.render
+                          ? column.render(item)
+                          : String(item[column.key as keyof T] ?? "")}
+                      </TableCell>
+                    ))}
+                    {renderRowActions && (
+                      <TableCell
+                        className={cn(href && "relative z-10")}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {renderRowActions(item)}
+                      </TableCell>
+                    )}
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>

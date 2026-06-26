@@ -5,12 +5,13 @@
  * 1. Fast-path: when user.preferredComputeMode is set (LOCAL or CLOUD),
  *    the endpoint returns it immediately without calling resolveEffectiveComputePreference.
  * 2. NULL-fallback: when user.preferredComputeMode is NULL, delegates to
- *    resolveEffectiveComputePreference which inspects online compute targets.
- *    - NULL + online targets → LOCAL
- *    - NULL + no online targets → CLOUD
+ *    resolveEffectiveComputePreference which inspects registered compute targets.
+ *    - NULL + online registered targets → LOCAL
+ *    - NULL + no online registered targets → CLOUD
+ *    - NULL + no registered targets → CLOUD
  */
 
-import { vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
@@ -23,11 +24,12 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 
 // Mock withDb so we can control what preferredComputeMode is returned per test
 const mockUserFindUnique = vi.fn();
+const mockUserUpdate = vi.fn();
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(
     vi.fn((fn: (db: unknown) => unknown) =>
       fn({
-        user: { findUnique: mockUserFindUnique },
+        user: { findUnique: mockUserFindUnique, update: mockUserUpdate },
       })
     ),
     { tx: vi.fn() }
@@ -61,10 +63,13 @@ vi.mock("@repo/observability/log", () => ({
 
 // --- Imports (after mocks) ---
 
-import type { ComputeTarget } from "@repo/api/src/types/compute-target";
-import { beforeEach, describe, expect, it } from "vitest";
+import {
+  ComputePreference,
+  type ComputeTarget,
+  HarnessType,
+} from "@repo/api/src/types/compute-target";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { GET } from "@/app/settings/compute-preference/route";
+import { GET, PUT } from "@/app/settings/compute-preference/route";
 import {
   createMockRequest,
   createMockRouteContext,
@@ -82,6 +87,7 @@ const makeTarget = (overrides: Partial<ComputeTarget> = {}): ComputeTarget => ({
   lastSeenAt: new Date(),
   isOnline: true,
   isSharedWithOrg: false,
+  selectedHarness: HarnessType.Claude,
   createdAt: new Date(),
   updatedAt: new Date(),
   ...overrides,
@@ -99,7 +105,9 @@ beforeEach(() => {
 
 describe("GET /settings/compute-preference — fast-path (explicit preference set)", () => {
   it("returns LOCAL immediately when user.preferredComputeMode is LOCAL", async () => {
-    mockUserFindUnique.mockResolvedValue({ preferredComputeMode: "LOCAL" });
+    mockUserFindUnique.mockResolvedValue({
+      preferredComputeMode: ComputePreference.Local,
+    });
 
     const response = await GET(
       createMockRequest({
@@ -111,13 +119,16 @@ describe("GET /settings/compute-preference — fast-path (explicit preference se
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data.preferredComputeMode).toBe("LOCAL");
+    expect(json.data.preferredComputeMode).toBe(ComputePreference.Local);
+    expect(json.data.isExplicit).toBe(true);
     // Fast-path: should not call the targets service
     expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
 
   it("returns CLOUD immediately when user.preferredComputeMode is CLOUD", async () => {
-    mockUserFindUnique.mockResolvedValue({ preferredComputeMode: "CLOUD" });
+    mockUserFindUnique.mockResolvedValue({
+      preferredComputeMode: ComputePreference.Cloud,
+    });
 
     const response = await GET(
       createMockRequest({
@@ -129,7 +140,8 @@ describe("GET /settings/compute-preference — fast-path (explicit preference se
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.preferredComputeMode).toBe(ComputePreference.Cloud);
+    expect(json.data.isExplicit).toBe(true);
     // Fast-path: should not call the targets service
     expect(computeTargetsService.listAvailableForOrg).not.toHaveBeenCalled();
   });
@@ -152,14 +164,39 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data.preferredComputeMode).toBe("LOCAL");
+    expect(json.data.preferredComputeMode).toBe(ComputePreference.Local);
+    expect(json.data.isExplicit).toBe(false);
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
     );
   });
 
-  it("returns CLOUD when user has no preference and has no online compute targets", async () => {
+  it("returns CLOUD when user has no preference and only has offline compute targets", async () => {
+    mockUserFindUnique.mockResolvedValue({ preferredComputeMode: null });
+    vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([
+      makeTarget({ isOnline: false }),
+    ]);
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data.preferredComputeMode).toBe(ComputePreference.Cloud);
+    expect(json.data.isExplicit).toBe(false);
+    expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
+      "org-1",
+      "user-1"
+    );
+  });
+
+  it("returns CLOUD when user has no preference and has no registered compute targets", async () => {
     mockUserFindUnique.mockResolvedValue({ preferredComputeMode: null });
     vi.mocked(computeTargetsService.listAvailableForOrg).mockResolvedValue([]);
 
@@ -173,7 +210,8 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.preferredComputeMode).toBe(ComputePreference.Cloud);
+    expect(json.data.isExplicit).toBe(false);
     expect(computeTargetsService.listAvailableForOrg).toHaveBeenCalledWith(
       "org-1",
       "user-1"
@@ -194,6 +232,131 @@ describe("GET /settings/compute-preference — NULL-fallback (delegates to resol
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data.preferredComputeMode).toBe("CLOUD");
+    expect(json.data.preferredComputeMode).toBe(ComputePreference.Cloud);
+    expect(json.data.isExplicit).toBe(false);
+  });
+});
+
+describe("PUT /settings/compute-preference", () => {
+  it("marks the persisted preference response as explicit", async () => {
+    mockUserUpdate.mockResolvedValue({});
+
+    const response = await PUT(
+      createMockRequest({
+        body: {
+          mode: ComputePreference.Local,
+          computeTargetId: "11111111-1111-4111-8111-111111111111",
+        },
+        method: "PUT",
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual({
+      preferredComputeMode: ComputePreference.Local,
+      computeTargetId: "11111111-1111-4111-8111-111111111111",
+      isExplicit: true,
+    });
+  });
+});
+
+describe("compute-preference harness (Cloud)", () => {
+  it("PUT persists preferredHarness and returns selectedHarness", async () => {
+    mockUserUpdate.mockResolvedValue({});
+
+    const response = await PUT(
+      createMockRequest({
+        body: {
+          mode: ComputePreference.Cloud,
+          selectedHarness: HarnessType.Codex,
+        },
+        method: "PUT",
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.data.selectedHarness).toBe(HarnessType.Codex);
+    // The write persists the harness column.
+    expect(mockUserUpdate.mock.calls[0][0].data).toMatchObject({
+      preferredHarness: HarnessType.Codex,
+    });
+  });
+
+  it("PUT without selectedHarness leaves preferredHarness untouched", async () => {
+    mockUserUpdate.mockResolvedValue({});
+
+    const response = await PUT(
+      createMockRequest({
+        body: { mode: ComputePreference.Cloud },
+        method: "PUT",
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.data.selectedHarness).toBeUndefined();
+    // Partial update — the harness column is not part of the write payload.
+    expect(mockUserUpdate.mock.calls[0][0].data).not.toHaveProperty(
+      "preferredHarness"
+    );
+  });
+
+  it("PUT rejects an invalid harness value with 400", async () => {
+    const response = await PUT(
+      createMockRequest({
+        body: { mode: ComputePreference.Cloud, selectedHarness: "gpt-4" },
+        method: "PUT",
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(400);
+    expect(mockUserUpdate).not.toHaveBeenCalled();
+  });
+
+  it("GET returns selectedHarness when the column is set", async () => {
+    mockUserFindUnique.mockResolvedValue({
+      preferredComputeMode: ComputePreference.Cloud,
+      preferredHarness: HarnessType.Codex,
+    });
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.data.selectedHarness).toBe(HarnessType.Codex);
+  });
+
+  it("GET omits selectedHarness when the column is null", async () => {
+    mockUserFindUnique.mockResolvedValue({
+      preferredComputeMode: ComputePreference.Cloud,
+      preferredHarness: null,
+    });
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/settings/compute-preference",
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.data.selectedHarness).toBeUndefined();
   });
 });

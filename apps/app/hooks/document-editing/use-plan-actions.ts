@@ -3,10 +3,10 @@
 import { DocumentStatus } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { useUpdateDocument } from "@repo/app/documents/hooks/use-documents";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useMemo, useRef } from "react";
 import { useDocumentRunLoop } from "@/hooks/document-editing/use-document-run-loop";
-import { useUpdateDocument } from "@/hooks/queries/use-documents";
 
 type UsePlanActionsConfig = {
   documentId: string | null;

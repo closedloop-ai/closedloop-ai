@@ -1,10 +1,10 @@
 import { DocumentStatus } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
 import { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { createMockDocument } from "@/__tests__/fixtures/documents";
 import { createWrapperWithClient } from "@/hooks/queries/__tests__/test-utils";
 import { usePlanActions } from "../use-plan-actions";
 
@@ -16,7 +16,7 @@ const mockApiClient = {
   delete: vi.fn(),
 };
 
-vi.mock("@/hooks/use-api-client", () => ({
+vi.mock("@repo/app/shared/api/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
 

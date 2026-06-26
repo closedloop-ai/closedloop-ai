@@ -1,12 +1,14 @@
 import { authMiddleware } from "@repo/auth/proxy";
 import { internationalizationMiddleware } from "@repo/internationalization/proxy";
 import { noseconeOptions, securityMiddleware } from "@repo/security/proxy";
+import type { NextMiddleware as NemoMiddleware } from "@rescale/nemo";
 import { createNEMO } from "@rescale/nemo";
+import type { NextMiddleware as AppMiddleware } from "next/server";
 import { NextResponse } from "next/server";
 import { env } from "./env";
 
 // Clerk middleware wraps other middleware in its callback
-export default authMiddleware(
+const middleware: AppMiddleware = authMiddleware(
   async (_auth, request, event) => {
     const host = request.headers.get("host")?.split(":")[0] ?? "";
 
@@ -49,6 +51,10 @@ export default authMiddleware(
                 "https://*.posthog.com",
                 "https://www.google-analytics.com/",
                 "https://analytics.google.com/",
+                // GA4's measurement protocol also beacons to
+                // google.com/g/collect; allow it so report-only CSP does
+                // not fire false-positive violations on every page.
+                "https://www.google.com",
               ],
             },
             reportTo: env.CSP_REPORT_URI,
@@ -57,11 +63,13 @@ export default authMiddleware(
   }
 );
 
+export default middleware;
+
 export const config = {
   // matcher tells Next.js which routes to run the middleware on. This runs the
   // middleware on all routes except for static assets and Posthog ingest
   matcher: [
-    "/((?!_next/static|_next/image|ingest|favicon.ico|illustrations/).*)",
+    "/((?!_next/static|_next/image|ingest|favicon.ico|illustrations/|ib-claude-training).*)",
   ],
 };
 
@@ -129,11 +137,18 @@ function isOldSitePath(pathname: string): boolean {
 
 const securityHeaders = securityMiddleware(noseconeOptions);
 
+// Workspace packages can resolve Next through different optional-peer hashes.
+// Adapt the request-only i18n middleware to Nemo's lighter middleware shape.
+const runInternationalizationMiddleware: NemoMiddleware = (request) =>
+  internationalizationMiddleware(
+    request as unknown as Parameters<typeof internationalizationMiddleware>[0]
+  ) as unknown as ReturnType<NemoMiddleware>;
+
 // Compose non-Clerk middleware with Nemo
 const composedMiddleware = createNEMO(
   {},
   {
-    before: [internationalizationMiddleware],
+    before: [runInternationalizationMiddleware],
   }
 );
 

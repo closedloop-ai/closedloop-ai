@@ -16,6 +16,7 @@ import { ConnectOptionalIntegrationsStep } from "./connect-optional-integrations
 import { CreateProjectStep } from "./create-project-step";
 import { CreateTeamStep } from "./create-team-step";
 import { DownloadElectronAppStep } from "./download-electron-app-step";
+import { InviteTeamStep } from "./invite-team-step";
 import { WelcomeStep } from "./welcome-step";
 import { WizardShell } from "./wizard-shell";
 
@@ -119,8 +120,12 @@ export function OnboardingWizard() {
 
       {state.currentStep === OnboardingStep.ConnectOptionalIntegrations && (
         <ConnectOptionalIntegrationsStep
-          onNext={() => goToStep(OnboardingStep.Complete)}
+          onNext={() => goToStep(OnboardingStep.InviteTeammates)}
         />
+      )}
+
+      {state.currentStep === OnboardingStep.InviteTeammates && (
+        <InviteTeamStep onNext={() => goToStep(OnboardingStep.Complete)} />
       )}
 
       {state.currentStep === OnboardingStep.Complete && (
