@@ -234,6 +234,7 @@ describe("POST /api/chat/runner-token", () => {
     expect(response.status).toBe(500);
     expect(mockFetch).not.toHaveBeenCalled();
   });
+  //test
 
   test("returns 500 when /me fetch throws a network error", async () => {
     mockAuth.mockResolvedValueOnce({
