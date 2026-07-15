@@ -6,6 +6,7 @@ import type {
   AgentSessionListResponse,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import type { AgentSessionQueryFilters } from "../data-source/agent-sessions-data-source";
 import { useAgentSessionsDataSource } from "../data-source/provider";
@@ -37,6 +38,22 @@ export const agentSessionKeys = {
   details: () => [...agentSessionKeys.all, "detail"] as const,
   detail: (scope: string, id: string) =>
     [...agentSessionKeys.details(), scope, id] as const,
+  // Transcript reads (FEA-2717) carry no source scope: transcript bytes always
+  // live in S3 and are read through the authenticated cloud route regardless of
+  // which list/detail source a surface injects, so one cache is shared across
+  // web and authenticated desktop. The parsed-file key folds in `rawSha256` so a
+  // re-upload (new archive identity) invalidates the parsed entry automatically.
+  transcripts: () => [...agentSessionKeys.all, "transcript"] as const,
+  transcriptAccess: (id: string) =>
+    [...agentSessionKeys.transcripts(), "access", id] as const,
+  transcriptFile: (id: string, fileKey: string, rawSha256: string) =>
+    [
+      ...agentSessionKeys.transcripts(),
+      "file",
+      id,
+      fileKey,
+      rawSha256,
+    ] as const,
 };
 
 export function useAgentSessionUsage(
@@ -49,9 +66,10 @@ export function useAgentSessionUsage(
   const dataSource = useAgentSessionsDataSource();
 
   return useQuery({
+    ...options,
     queryKey: agentSessionKeys.usage(dataSource.scope, filters),
     queryFn: () => dataSource.usage(filters),
-    ...options,
+    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
   });
 }
 
@@ -65,9 +83,10 @@ export function useAgentSessions(
   const dataSource = useAgentSessionsDataSource();
 
   return useQuery({
+    ...options,
     queryKey: agentSessionKeys.list(dataSource.scope, filters),
     queryFn: () => dataSource.list(filters),
-    ...options,
+    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
   });
 }
 
@@ -78,10 +97,10 @@ export function useAgentSessionDetail(
   const dataSource = useAgentSessionsDataSource();
 
   return useQuery({
+    ...options,
     queryKey: agentSessionKeys.detail(dataSource.scope, id),
     queryFn: () => dataSource.detail(id),
-    enabled: Boolean(id),
-    ...options,
+    enabled: Boolean(id) && (options?.enabled ?? true),
   });
 }
 
@@ -92,8 +111,17 @@ export function useAgentSessionAnalytics(
   const dataSource = useAgentSessionsDataSource();
 
   return useQuery({
+    ...options,
     queryKey: agentSessionKeys.analytics(dataSource.scope, filters),
     queryFn: () => dataSource.analytics(filters),
-    ...options,
+    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
   });
+}
+
+function isAgentSessionQueryEnabled(
+  filters: AgentSessionQueryFilters
+): boolean {
+  return !(
+    filters.viewerScope === AgentSessionViewerScope.Team && !filters.teamId
+  );
 }

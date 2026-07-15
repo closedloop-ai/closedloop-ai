@@ -1,7 +1,7 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { DocumentType, FeatureStatus } from "@repo/api/src/types/document";
 import type {
   DecomposeFeature,
   DecomposeResult,
@@ -107,10 +107,9 @@ async function downloadDecomposeArtifacts(
     (r) => {
       const parsed = decomposeResultSchema.safeParse(r);
       if (!parsed.success) {
-        log.warn(
-          "[loop-document-ingestion] features.json failed schema validation",
-          { error: parsed.error.message }
-        );
+        log.warn("loop.document_ingestion.features_schema_invalid", {
+          error: parsed.error.message,
+        });
         return null;
       }
       return parsed.data;
@@ -132,7 +131,7 @@ async function ingestDecomposeArtifacts(
   const { result } = artifacts;
 
   if (!(result?.features?.length && loop.documentId)) {
-    log.info("[loop-document-ingestion] No features to ingest", {
+    log.info("loop.document_ingestion.features_missing", {
       documentId: loop.documentId,
       featureCount: result?.features?.length ?? 0,
     });
@@ -146,12 +145,9 @@ async function ingestDecomposeArtifacts(
   );
 
   if (!prd?.projectId) {
-    log.warn(
-      "[loop-document-ingestion] PRD has no projectId, skipping ingestion",
-      {
-        documentId: loop.documentId,
-      }
-    );
+    log.warn("loop.document_ingestion.prd_project_id_missing", {
+      documentId: loop.documentId,
+    });
     return;
   }
 
@@ -169,7 +165,9 @@ async function ingestDecomposeArtifacts(
           content: buildFullDescription(feature),
           priority:
             PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
-          status: DocumentStatus.Draft,
+          // Agent-generated Features land in TRIAGE so a human assesses them
+          // before they enter the delivery flow (PRD-495).
+          status: FeatureStatus.Triage,
         }
       );
 
@@ -187,7 +185,7 @@ async function ingestDecomposeArtifacts(
     }
   });
 
-  log.info("[loop-document-ingestion] Features ingested", {
+  log.info("loop.document_ingestion.features_ingested", {
     documentId: loop.documentId,
     featuresCreated: created,
   });
@@ -206,10 +204,9 @@ function decomposeArtifactsFromUpload(
 ): DecomposeArtifacts {
   const parsed = decomposeUploadSchema.safeParse(uploaded);
   if (!parsed.success) {
-    log.warn(
-      "[loop-document-ingestion] Decompose upload failed schema validation",
-      { error: parsed.error.message }
-    );
+    log.warn("loop.document_ingestion.decompose_upload_schema_invalid", {
+      error: parsed.error.message,
+    });
     return { result: null };
   }
   const result = parsed.data?.features ?? null;

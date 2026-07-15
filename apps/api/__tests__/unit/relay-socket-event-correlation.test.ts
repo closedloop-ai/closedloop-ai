@@ -2,7 +2,8 @@
  * Unit tests for the relay socket-event route handler.
  *
  * Verifies that when a command event arrives with gatewaySessionId in the
- * forwarded payload body, that field appears in the structured log output.
+ * forwarded payload body, the value flows into command-store context but is only
+ * logged as a redacted hash (the raw session token is never written to logs).
  * End-to-end propagation is verified in T-6.1.
  */
 
@@ -55,6 +56,7 @@ vi.mock("@/app/compute-targets/service", () => ({
 // --- Imports (after mocks) ---
 
 import { log } from "@repo/observability/log";
+import { SHORT_HASH_PATTERN } from "@repo/observability/redact-correlation";
 import { NextRequest } from "next/server";
 import { POST } from "@/app/internal/relay/socket-event/route";
 
@@ -113,6 +115,37 @@ describe("POST /internal/relay/socket-event — correlation context propagation"
           schemaVersion: "1",
         }),
       })
+    );
+  });
+
+  it("logs only a hashed gateway session id, never the raw token", async () => {
+    const request = makeRequest({
+      event: "desktop.command.event",
+      targetId: "target-1",
+      gatewaySessionId: GATEWAY_SESSION_ID,
+      payload: {
+        commandId: "cmd-redact",
+        sequence: 1,
+        eventType: "status",
+        data: { status: "running" },
+      },
+    });
+
+    await POST(request);
+
+    const receivedLog = vi
+      .mocked(log.info)
+      .mock.calls.find((call) => call[0] === "Relay command event received");
+    expect(receivedLog).toBeDefined();
+    const meta = receivedLog?.[1] as Record<string, unknown>;
+    expect(meta).not.toHaveProperty("gatewaySessionId");
+    expect(meta.gatewaySessionIdHash).toEqual(
+      expect.stringMatching(SHORT_HASH_PATTERN)
+    );
+    expect(meta.gatewaySessionIdHash).not.toBe(GATEWAY_SESSION_ID);
+    // The raw session token must not leak into any structured log meta.
+    expect(JSON.stringify(vi.mocked(log.info).mock.calls)).not.toContain(
+      GATEWAY_SESSION_ID
     );
   });
 
@@ -193,7 +226,7 @@ describe("POST /internal/relay/socket-event — correlation context propagation"
       undefined
     );
     expect(log.info).toHaveBeenCalledWith(
-      "Relay command ack lifecycle context omitted",
+      "command.ack.lifecycle_context_omitted",
       expect.objectContaining({
         commandId: "cmd-ack-no-session",
         computeTargetId: "target-1",

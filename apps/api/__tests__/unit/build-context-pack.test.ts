@@ -36,7 +36,6 @@ vi.mock("@/app/loops/loop-errors", () => ({
 }));
 
 vi.mock("@/lib/loops/loop-state", () => ({
-  uploadContextPack: vi.fn().mockResolvedValue("s3://mock-key"),
   downloadMetadata: vi.fn().mockResolvedValue(null),
 }));
 
@@ -65,11 +64,9 @@ import { documentVersionService } from "@/app/documents/document-version-service
 import { loopsService } from "@/app/loops/service";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import {
-  buildContextPack,
   buildContextPackInMemory,
   fetchAttachmentsForContextPack,
 } from "@/lib/loops/loop-context-pack";
-import { uploadContextPack } from "@/lib/loops/loop-state";
 import { wrapUntrustedLoopArtifactContent } from "@/lib/loops/untrusted-loop-input";
 
 const mockAttachmentsService = attachmentsService as unknown as {
@@ -83,9 +80,6 @@ const mockArtifactVersionService = documentVersionService as unknown as {
   getByVersion: ReturnType<typeof vi.fn>;
   getLatest: ReturnType<typeof vi.fn>;
 };
-const mockUploadContextPack = uploadContextPack as unknown as ReturnType<
-  typeof vi.fn
->;
 const mockLoopsService = loopsService as unknown as {
   findById: ReturnType<typeof vi.fn>;
   updateStatus: ReturnType<typeof vi.fn>;
@@ -94,10 +88,9 @@ const mockGetCommandHandler = getCommandHandler as unknown as ReturnType<
   typeof vi.fn
 >;
 
-describe("buildContextPack", () => {
+describe("buildContextPackInMemory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUploadContextPack.mockResolvedValue("s3://mock-key");
     mockGetCommandHandler.mockImplementation((command: LoopCommand) => ({
       includePrimaryArtifact: command !== LoopCommand.Plan,
     }));
@@ -113,7 +106,7 @@ describe("buildContextPack", () => {
       content: "Implement the user login flow with OAuth",
     });
 
-    await buildContextPack(
+    const contextPack = await buildContextPackInMemory(
       {
         id: "loop-1",
         userId: "user-1",
@@ -131,17 +124,13 @@ describe("buildContextPack", () => {
           },
         ],
       },
-      "org-1",
-      "state-prefix"
+      "org-1"
     );
 
     expect(mockArtifactsService.findByIdSimple).toHaveBeenCalledWith(
       "feature-1",
       "org-1"
     );
-
-    const uploadCall = mockUploadContextPack.mock.calls[0];
-    const contextPack = uploadCall[1];
 
     expect(contextPack.artifacts[0]).toEqual({
       id: "feature-1",
@@ -158,7 +147,7 @@ describe("buildContextPack", () => {
   });
 
   it("does not include issue artifact when contextRefs is null", async () => {
-    await buildContextPack(
+    await buildContextPackInMemory(
       {
         id: "loop-1",
         userId: "user-1",
@@ -170,8 +159,7 @@ describe("buildContextPack", () => {
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: null,
       },
-      "org-1",
-      "state-prefix"
+      "org-1"
     );
 
     expect(mockArtifactsService.findByIdSimple).not.toHaveBeenCalled();
@@ -180,7 +168,7 @@ describe("buildContextPack", () => {
   it("gracefully handles feature not found", async () => {
     mockArtifactsService.findByIdSimple.mockResolvedValue(null);
 
-    await buildContextPack(
+    const contextPack = await buildContextPackInMemory(
       {
         id: "loop-1",
         userId: "user-1",
@@ -198,12 +186,9 @@ describe("buildContextPack", () => {
           },
         ],
       },
-      "org-1",
-      "state-prefix"
+      "org-1"
     );
 
-    const uploadCall = mockUploadContextPack.mock.calls[0];
-    const contextPack = uploadCall[1];
     expect(contextPack.artifacts).toEqual([]);
   });
 
@@ -238,7 +223,7 @@ describe("buildContextPack", () => {
       return Promise.resolve(null);
     });
 
-    await buildContextPack(
+    const contextPack = await buildContextPackInMemory(
       {
         id: "loop-1",
         userId: "user-1",
@@ -257,12 +242,8 @@ describe("buildContextPack", () => {
           { sourceId: "prd-1", include: "full" as const },
         ],
       },
-      "org-1",
-      "state-prefix"
+      "org-1"
     );
-
-    const uploadCall = mockUploadContextPack.mock.calls[0];
-    const contextPack = uploadCall[1];
 
     expect(contextPack.artifacts).toHaveLength(2);
     const featureEntry = contextPack.artifacts.find(
@@ -286,7 +267,7 @@ describe("buildContextPack", () => {
       content: "# PRD Content",
     });
 
-    await buildContextPack(
+    const contextPack = await buildContextPackInMemory(
       {
         id: "loop-1",
         userId: "user-1",
@@ -298,12 +279,8 @@ describe("buildContextPack", () => {
         repo: { fullName: "org/repo", branch: "main" },
         contextRefs: [{ sourceId: "prd-1", include: "full" as const }],
       },
-      "org-1",
-      "state-prefix"
+      "org-1"
     );
-
-    const uploadCall = mockUploadContextPack.mock.calls[0];
-    const contextPack = uploadCall[1];
 
     expect(contextPack.artifacts).toHaveLength(1);
     expect(contextPack.artifacts[0].type).toBe(DocumentType.Prd);

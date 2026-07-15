@@ -6,9 +6,21 @@ import {
 } from "@repo/api/src/agent-session-detail-projection";
 import { ERROR_EVENT_PATTERN } from "@repo/api/src/agent-session-events";
 import {
+  matchesAutonomyTier,
+  matchesChangePresence,
+  matchesCostBucket,
+  matchesPrAssociation,
+  sessionHasChanges,
+} from "@repo/api/src/agent-session-filters";
+import {
   AGENT_FAILED_STATUS_PATTERN as FAILED_STATUS_PATTERN,
   AGENT_SUCCESS_STATUS_PATTERN as SUCCESS_STATUS_PATTERN,
 } from "@repo/api/src/agent-session-status";
+import { SessionPrLifecycleStatus } from "@repo/api/src/session-trace/derivation";
+import type {
+  SessionPR,
+  TokenEventCostPoint,
+} from "@repo/api/src/types/agent-session";
 import {
   type BillingLedger,
   billingLedger,
@@ -37,6 +49,7 @@ import {
   type AgentSessionAnalyticsAggregate,
   type AgentSessionSyncSource,
   type AgentSessionUsageAggregate,
+  type AgentSessionUsageAggregateFilters,
   resolveBillingModeForRow,
   type SessionAttributionResolverCache,
   SessionListCursorSortKey,
@@ -57,7 +70,15 @@ type SanitizedQuery = {
   harness: string | null;
   status: string | null;
   statuses: string[];
+  userId: string | null;
+  userIds: string[];
   repositories: string[];
+  harnesses: string[];
+  models: string[];
+  autonomyTiers: string[];
+  costBuckets: string[];
+  changePresence: string[];
+  prAssociation: string[];
   search: string | null;
   limit: number;
   offset: number;
@@ -146,7 +167,159 @@ export async function getSharedAgentSessionDetail(
   const cache = createSessionAttributionResolverCache();
   const loaded = await source.loadSyncedSessions([sessionId], cache);
   const session = indexSessionsById(loaded).get(sessionId);
-  return session ? mapDetail(session) : null;
+  if (!session) {
+    return null;
+  }
+  const tokenEvents = await source.loadSessionTokenEvents?.(sessionId);
+  return mapDetail(session, tokenEvents);
+}
+
+/**
+ * Project a specific set of local session ids into shared list-item summaries,
+ * preserving the caller's id order and silently dropping ids that resolve to no
+ * local session. Used by the agent-components detail reader to populate its
+ * `sessionsTab` from the session ids that invoked the component (FEA-2923 MEDIUM
+ * soul review) — the same `SharedAgentSessionListItem` (≡ `AgentSessionListItem`)
+ * projection the sessions list produces, so the desktop Sessions tab matches the
+ * cloud instead of hardcoding `[]`.
+ */
+export async function getSharedAgentSessionsByIds(
+  source: AgentSessionSyncSource | null | undefined,
+  ids: readonly string[]
+): Promise<SharedAgentSessionListItem[]> {
+  if (!source || ids.length === 0) {
+    return [];
+  }
+  const orderedIds = ids
+    .map((id) => coerceNonEmptyString(id))
+    .filter((id): id is string => id !== null);
+  if (orderedIds.length === 0) {
+    return [];
+  }
+  const cache = createSessionAttributionResolverCache();
+  const loaded = await source.loadSyncedSessions(orderedIds, cache);
+  const loadedById = indexSessionsById(loaded);
+  return orderedIds.flatMap((id) => {
+    const session = loadedById.get(id);
+    return session ? [mapListItem(session)] : [];
+  });
+}
+
+/** Per-session local-git LOC + estimated cost, keyed by session id (FEA-3090). */
+export type SharedAgentSessionLocCost = { loc: number; cost: number };
+
+/**
+ * Load the local-git LOC + estimated cost for a set of session ids, keyed by
+ * session id. Backs the desktop agent-components "KLOC/$" column (FEA-3090): it
+ * derives the SAME per-session scalars the cloud persists on `SessionDetail` and
+ * divides by in `computeKlocPerDollar`
+ * (apps/api/app/agent-components/service.ts), so the metric agrees across
+ * surfaces instead of the desktop hardcoding `null`.
+ *
+ * - `loc` = authored local-git lines changed (added + removed), taking the
+ *   source-tagged `gitDiffStats` first and falling back to the loose top-level
+ *   scalars — the exact `gitDiffStats?.linesAdded ?? linesAdded` precedence the
+ *   cloud applies when it writes `SessionDetail.linesAdded/linesRemoved` from
+ *   this desktop's sync payload (apps/api/app/agent-sessions).
+ * - `cost` = summed per-model estimated cost (`sumTokenUsage`), the identical
+ *   value the cloud sums into `SessionDetail.estimatedCost` at ingest.
+ *
+ * Ids that resolve to no local session are silently dropped (they contribute no
+ * loc/cost), matching the cloud's LOC lookup, which only maps rows it found.
+ */
+export async function getSharedAgentSessionLocCostByIds(
+  source: AgentSessionSyncSource | null | undefined,
+  ids: readonly string[]
+): Promise<Map<string, SharedAgentSessionLocCost>> {
+  const byId = new Map<string, SharedAgentSessionLocCost>();
+  if (!source || ids.length === 0) {
+    return byId;
+  }
+  const orderedIds = ids
+    .map((id) => coerceNonEmptyString(id))
+    .filter((id): id is string => id !== null);
+  if (orderedIds.length === 0) {
+    return byId;
+  }
+  const cache = createSessionAttributionResolverCache();
+  // `omitEventData` skips the heavy per-event `data` blob; the loader still
+  // populates `gitDiffStats` and the per-model token usage this reads.
+  const loaded = await source.loadSyncedSessions(orderedIds, cache, {
+    omitEventData: true,
+  });
+  for (const session of loaded) {
+    byId.set(session.externalSessionId, sessionLocCost(session));
+  }
+  return byId;
+}
+
+/**
+ * Authored local-git lines changed for a session (added + removed), preferring
+ * the source-tagged `gitDiffStats` and falling back to the loose top-level
+ * scalars — the same precedence the cloud applies when persisting
+ * `SessionDetail.linesAdded/linesRemoved` (apps/api/app/agent-sessions).
+ */
+function sessionLocalGitLoc(session: SyncedAgentSession): number {
+  const git = session.gitDiffStats;
+  const added = git?.linesAdded ?? session.linesAdded ?? 0;
+  const removed = git?.linesRemoved ?? session.linesRemoved ?? 0;
+  return added + removed;
+}
+
+function sessionLocCost(
+  session: SyncedAgentSession
+): SharedAgentSessionLocCost {
+  return {
+    loc: sessionLocalGitLoc(session),
+    cost: sumTokenUsage(session).estimatedCost,
+  };
+}
+
+/** Both the projected list items AND the per-session LOC/cost, from one load. */
+export type SharedAgentSessionsWithLocCost = {
+  items: SharedAgentSessionListItem[];
+  locCost: Map<string, SharedAgentSessionLocCost>;
+};
+
+/**
+ * Project a set of session ids into BOTH the shared list-item summaries (for the
+ * agent-components `sessionsTab`) AND their per-session LOC/cost (for the KLOC/$
+ * metric, FEA-3090), from a SINGLE `loadSyncedSessions` call. The detail reader
+ * needs both, so this keeps it to one load instead of fanning the same ids into
+ * the sessions source twice. Item order preserves the caller's id order and
+ * silently drops ids that resolve to no local session (matching
+ * {@link getSharedAgentSessionsByIds}).
+ */
+export async function getSharedAgentSessionsWithLocCostByIds(
+  source: AgentSessionSyncSource | null | undefined,
+  ids: readonly string[]
+): Promise<SharedAgentSessionsWithLocCost> {
+  const locCost = new Map<string, SharedAgentSessionLocCost>();
+  if (!source || ids.length === 0) {
+    return { items: [], locCost };
+  }
+  const orderedIds = ids
+    .map((id) => coerceNonEmptyString(id))
+    .filter((id): id is string => id !== null);
+  if (orderedIds.length === 0) {
+    return { items: [], locCost };
+  }
+  const cache = createSessionAttributionResolverCache();
+  // `omitEventData` skips the heavy per-event `data` blob; events keep the
+  // `toolName`/`eventType` that `mapListItem` reads, matching how the sessions
+  // list itself loads its page.
+  const loaded = await source.loadSyncedSessions(orderedIds, cache, {
+    omitEventData: true,
+  });
+  const loadedById = indexSessionsById(loaded);
+  for (const session of loaded) {
+    locCost.set(session.externalSessionId, sessionLocCost(session));
+  }
+  const items = orderedIds.flatMap((id) => {
+    const session = loadedById.get(id);
+    return session ? [mapListItem(session)] : [];
+  });
+  return { items, locCost };
 }
 
 /**
@@ -169,21 +342,12 @@ export async function getSharedAgentSessionUsage(
 
   // FEA-1834 / PLN-941 §4: prefer the O(grouped) SQL aggregation — the summary
   // never hydrates the corpus on the live cadence. Skipped for explicit-id
-  // requests (the aggregation filters by harness/status/date, not ids) and for
+  // requests (the aggregation cannot represent explicit id sets) and for
   // free-text search (the aggregation cannot match the hydrated
   // repositoryFullName/baseBranch fields), both of which fall through to the
   // hydrate path below so usage filtering stays identical to list filtering.
-  if (
-    source.aggregateUsage &&
-    !Object.hasOwn(request, "ids") &&
-    query.search === null
-  ) {
-    const aggregate = await source.aggregateUsage({
-      harness: query.harness ?? undefined,
-      status: query.status ?? undefined,
-      startDate: query.startDate ?? undefined,
-      endDate: query.endDate ?? undefined,
-    });
+  if (source.aggregateUsage && canUseAggregateSessionFilters(request, query)) {
+    const aggregate = await source.aggregateUsage(buildAggregateFilters(query));
     return foldUsageAggregate(aggregate);
   }
 
@@ -199,8 +363,34 @@ export async function getSharedAgentSessionUsage(
   // built with `resolveAttribution: () => undefined`, so a search matching only
   // repositoryFullName/baseBranch would mis-filter usage totals. Fall through to
   // the fully-hydrated `loadWorkingSessions` path so usage search matches list search.
-  if (source.loadUsageSessions && query.search === null) {
-    const orderedIds = await resolveOrderedIds(source, request);
+  // Also skip it when an autonomy-tier facet is active: `session.autonomy` is
+  // derived from the session-trace presentation (events/analytics), which the
+  // lightweight load omits, so its rows would classify as "unknown" and the
+  // metric cards would filter differently from the list. The change-presence and
+  // PR-association facets skip it for the same reason: the lightweight load omits
+  // the git/branch diff-stat and PR rows, so those rows would classify as
+  // no-changes / no-PR and diverge from the list. Harness/model/cost stay on the
+  // fast path — those values are carried by the lightweight rows.
+  if (
+    source.loadUsageSessions &&
+    query.search === null &&
+    query.repositories.length === 0 &&
+    query.autonomyTiers.length === 0 &&
+    query.changePresence.length === 0 &&
+    query.prAssociation.length === 0
+  ) {
+    // FEA-3207: resolve ids UNCAPPED here so the usage cards aggregate over the
+    // SAME session set as the list total. This is the pushable no-filter/SQL
+    // fast path — its guard mirrors the list cursor path (which already resolves
+    // ids with `{ cap: false }`), so on a corpus > MAX_WORKING_SET_SESSIONS the
+    // usage summary no longer silently under-aggregates against the list header
+    // (a cost/usage-accounting divergence with no filter to explain it). The A5b
+    // cap stays on the genuine "can't push to SQL" full-corpus hydration
+    // fallback below, which legitimately bounds peak read memory.
+    // `loadUsageSessions` loads only lightweight metadata + tokenUsageByModel (no
+    // agents/events), so lifting the cap here does not incur the fallback's
+    // per-session hydration cost.
+    const orderedIds = await resolveOrderedIds(source, request, { cap: false });
     if (orderedIds.length === 0) {
       return emptySharedAgentSessionsUsageSummary();
     }
@@ -241,24 +431,18 @@ export async function getSharedAgentSessionAnalytics(
 
   // FEA-2038: prefer the O(grouped) SQL aggregation — analytics never hydrates
   // the whole filtered session/event/agent/token corpus into JS (the db-host
-  // OOM, exit code 5). Skipped for explicit-id requests (the aggregation filters
-  // by harness/status/date, not ids) and for free-text search (the aggregation
-  // cannot match the hydrated repositoryFullName/baseBranch fields); both fall
-  // through to the hydrate path below so analytics filtering stays identical to
-  // list filtering.
+  // OOM, exit code 5). Skipped for explicit-id requests (the aggregation cannot
+  // represent explicit id sets) and for free-text search (the aggregation cannot
+  // match the hydrated repositoryFullName/baseBranch fields); both fall through
+  // to the hydrate path below so analytics filtering stays identical to list
+  // filtering.
   if (
     source.aggregateAnalytics &&
-    !Object.hasOwn(request, "ids") &&
-    query.search === null
+    canUseAggregateSessionFilters(request, query)
   ) {
     const cache = createSessionAttributionResolverCache();
     const aggregate = await source.aggregateAnalytics(
-      {
-        harness: query.harness ?? undefined,
-        status: query.status ?? undefined,
-        startDate: query.startDate ?? undefined,
-        endDate: query.endDate ?? undefined,
-      },
+      buildAggregateFilters(query),
       cache
     );
     return foldAnalyticsAggregate(aggregate);
@@ -338,11 +522,19 @@ async function loadWorkingSessions(
     };
   }
 
-  const orderedIds = await resolveOrderedIds(source, request);
-  if (orderedIds.length === 0) {
-    return { ordered: [], filtered: [], page: [], total: 0 };
-  }
+  // FEA-3132 (A5b): the cursor-only paging branch below slices `orderedIds` and
+  // hydrates a single page — it never holds the full working set in memory, so
+  // the MAX_WORKING_SET_SESSIONS ceiling must NOT apply here (it would cap
+  // `total` at 5000 and return an empty page for `offset >= 5000`). Resolve the
+  // full id list uncapped for this path; the cap belongs only to the
+  // full-corpus hydration fallback further down.
   if (options.applyPagination && canPageBeforeLoading(request, query)) {
+    const orderedIds = await resolveOrderedIds(source, request, {
+      cap: false,
+    });
+    if (orderedIds.length === 0) {
+      return { ordered: [], filtered: [], page: [], total: 0 };
+    }
     const pageIds = orderedIds.slice(query.offset, query.offset + query.limit);
     const page = await loadOrderedPage(source, pageIds);
     return {
@@ -351,6 +543,10 @@ async function loadWorkingSessions(
       page,
       total: orderedIds.length,
     };
+  }
+  const orderedIds = await resolveOrderedIds(source, request);
+  if (orderedIds.length === 0) {
+    return { ordered: [], filtered: [], page: [], total: 0 };
   }
   const cache = createSessionAttributionResolverCache();
   // FEA-2038: same as the paged branch above — this full-corpus hydration feeds
@@ -407,9 +603,29 @@ function canPageBeforeLoading(
     query.harness === null &&
     query.status === null &&
     query.statuses.length === 0 &&
+    query.userId === null &&
+    query.userIds.length === 0 &&
     query.repositories.length === 0 &&
+    hasNoLocalFacetFilters(query) &&
     query.sortBy === null &&
     query.search === null
+  );
+}
+
+/**
+ * True when none of the in-memory-only facet filters (harness/model multi-select
+ * and autonomy-tier / cost-bucket thresholds) are active. These are evaluated by
+ * `matchesQuery`, so any fast path that bypasses it must fall back when one is
+ * set — otherwise the filter would be silently ignored.
+ */
+function hasNoLocalFacetFilters(query: SanitizedQuery): boolean {
+  return (
+    query.harnesses.length === 0 &&
+    query.models.length === 0 &&
+    query.autonomyTiers.length === 0 &&
+    query.costBuckets.length === 0 &&
+    query.changePresence.length === 0 &&
+    query.prAssociation.length === 0
   );
 }
 
@@ -441,24 +657,50 @@ function canUseListCursorPage(
     query.harness === null &&
     query.status === null &&
     query.statuses.length === 0 &&
+    query.userId === null &&
+    query.userIds.length === 0 &&
     query.repositories.length === 0 &&
+    hasNoLocalFacetFilters(query) &&
     (query.sortBy === SessionListCursorSortKey.LastActivity ||
       query.sortBy === SessionListCursorSortKey.Started)
   );
 }
 
+// FEA-3132 (A5b): hard ceiling on the full-corpus working set. When a search or
+// facet filter can't be pushed into SQL, the list/usage/analytics reads fall
+// through `resolveOrderedIds` → `loadSyncedSessions(orderedIds, …)` and hydrate
+// EVERY matching session (agents/events/links/tokenUsage; `omitEventData` only
+// drops the `data` blob) — unbounded to corpus size and a direct co-peaker with
+// backfill in the db-host OOM. `listAllSessionCursorRows` returns rows ordered
+// `updated_at DESC, id DESC`, so capping here keeps the MOST RECENT N sessions
+// (the ones the UI actually renders first) and bounds peak read memory regardless
+// of corpus growth. The P1 streaming fold (hydrate in windows, fold, release)
+// removes the ceiling; until then this trades exhaustive search over a very large
+// corpus for a bounded footprint. Explicit-id requests are already request-bounded
+// and are NOT capped.
+//
+// Exported so the read surface (and its tests) can reference the same ceiling —
+// e.g. to assert the fallback hydrates at most this many ids, and so the UI can
+// surface "showing first N" without duplicating the literal.
+export const MAX_WORKING_SET_SESSIONS = 5000;
+
 async function resolveOrderedIds(
   source: AgentSessionSyncSource,
-  request: SharedAgentSessionsListRequest
+  request: SharedAgentSessionsListRequest,
+  options: { cap: boolean } = { cap: true }
 ): Promise<string[]> {
   const explicitIds = explicitIdsFromRequest(request);
   if (explicitIds !== null) {
     return explicitIds;
   }
   const rows = await source.listAllSessionCursorRows();
+  // The cap bounds peak read memory only on the full-corpus HYDRATION paths
+  // (usage summary + the fallback below). The cursor-only paging path hydrates
+  // a single page from a slice, so it opts out (`cap: false`) to keep pagination
+  // and `total` correct past 5000 sessions.
   return sanitizeIds(
     rows.map((row) => row.id),
-    { limit: null }
+    { limit: options.cap ? MAX_WORKING_SET_SESSIONS : null }
   );
 }
 
@@ -499,7 +741,15 @@ function sanitizeQuery(query: SharedAgentSessionsQuery): SanitizedQuery {
     harness: coerceOptionalString(query.harness),
     status: coerceOptionalString(query.status),
     statuses: coerceStringArray(query.statuses),
+    userId: coerceOptionalString(query.userId),
+    userIds: coerceStringArray(query.userIds),
     repositories: coerceStringArray(query.repositories),
+    harnesses: coerceStringArray(query.harnesses),
+    models: coerceStringArray(query.models),
+    autonomyTiers: coerceStringArray(query.autonomyTiers),
+    costBuckets: coerceStringArray(query.costBuckets),
+    changePresence: coerceStringArray(query.changePresence),
+    prAssociation: coerceStringArray(query.prAssociation),
     search: coerceOptionalString(query.search),
     limit: clampLimit(query.limit),
     offset: clampOffset(query.offset),
@@ -525,11 +775,151 @@ function coerceStringArray(value: unknown): string[] {
   return result;
 }
 
+/**
+ * Harness/model multi-select and autonomy-tier / cost-bucket threshold facets —
+ * the in-memory-only filters (no cursor-page equivalent), split out of
+ * `matchesQuery` to keep its complexity bounded. Each dimension matches when the
+ * session falls in ANY selected value (OR within a dimension); the dimensions
+ * compose with AND. Uses the shared @repo/api SSOT so the desktop classification
+ * is identical to the cloud query builder.
+ */
+function matchesLocalFacetFilters(
+  session: SyncedAgentSession,
+  query: SanitizedQuery
+): boolean {
+  // Normalize a null harness/model to "unknown" so the facet selection matches
+  // the option keys the usage breakdown emits (byHarness/byModel key null under
+  // "unknown"); otherwise selecting "unknown" would hide the very rows it counts.
+  if (
+    query.harnesses.length > 0 &&
+    !query.harnesses.includes(session.harness ?? "unknown")
+  ) {
+    return false;
+  }
+  // Model options are derived from per-model token-usage rows (a session can use
+  // several models), so match on that same set rather than the single primary
+  // `session.model` — mirrors the cloud `tokenUsageByModel.some` filter.
+  if (
+    query.models.length > 0 &&
+    !session.tokenUsageByModel.some((usage) =>
+      query.models.includes(usage.model || "unknown")
+    )
+  ) {
+    return false;
+  }
+  if (
+    query.autonomyTiers.length > 0 &&
+    !query.autonomyTiers.some((tier) =>
+      matchesAutonomyTier(session.autonomy ?? null, tier)
+    )
+  ) {
+    return false;
+  }
+  if (query.costBuckets.length > 0) {
+    // Round to 6 decimal places before bucket comparison to match the cloud's
+    // Prisma Decimal column precision. The desktop sums per-model float values
+    // via sumTokenUsage, which can introduce sub-cent floating-point drift
+    // (e.g. 0.9999999999999998 instead of 1.0) and misplace a session at a
+    // bucket boundary relative to the cloud Decimal-exact value.
+    const rawCost = sumTokenUsage(session).estimatedCost;
+    const estimatedCost = Math.round(rawCost * 1e6) / 1e6;
+    if (
+      !query.costBuckets.some((bucketId) =>
+        matchesCostBucket(estimatedCost, bucketId)
+      )
+    ) {
+      return false;
+    }
+  }
+  // Change presence / PR association use the same signals the local Sessions row
+  // is built from (mapListItem → buildLocalSessionTraceFields), which the
+  // assembler may populate as either the top-level scalar LOC fields or the
+  // dedicated git/branch diff-stat objects, and PRs as either `prs` (trace) or
+  // `prRefs` (artifact-link) — so consider all of them to stay in step with the
+  // row and with the cloud query (which likewise checks both PR sources).
+  if (query.changePresence.length > 0) {
+    const hasChanges = localSessionHasChanges(session);
+    if (
+      !query.changePresence.some((option) =>
+        matchesChangePresence(hasChanges, option)
+      )
+    ) {
+      return false;
+    }
+  }
+  if (query.prAssociation.length > 0) {
+    const hasPr = localSessionHasPr(session);
+    if (
+      !query.prAssociation.some((option) => matchesPrAssociation(hasPr, option))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** True when any local diff signal (top-level LOC or git/branch stats) is non-empty. */
+function localSessionHasChanges(session: SyncedAgentSession): boolean {
+  return (
+    sessionHasChanges(session) ||
+    sessionHasChanges(session.gitDiffStats ?? {}) ||
+    sessionHasChanges(session.branchDiffStats ?? {})
+  );
+}
+
+/**
+ * True when a local session carries a PR. Derived from the same merged
+ * projection the Sessions row renders ({@link localSessionPullRequests}, which
+ * folds both the legacy trace `prs` and the artifact-link `prRefs`), so the
+ * "Has PR" / "No PR" filter can never disagree with the row's PR column.
+ */
+function localSessionHasPr(session: SyncedAgentSession): boolean {
+  return localSessionPullRequests(session).length > 0;
+}
+
+/**
+ * The PRs to render for a local session, merging the legacy trace `prs` with the
+ * artifact-link `prRefs` (deduped by PR number so an artifact link that already
+ * appears in `prs` is not shown twice). This mirrors the cloud projection, where
+ * both PR sources are folded into the rendered `prs`, so the desktop row's PR
+ * column reflects the same data the PR-association filter matches on.
+ */
+function localSessionPullRequests(session: SyncedAgentSession): SessionPR[] {
+  const prs = session.prs ?? [];
+  const prRefs = session.prRefs ?? [];
+  if (prRefs.length === 0) {
+    return prs;
+  }
+  const seenNumbers = new Set(prs.map((pr) => String(pr.num)));
+  const merged = [...prs];
+  for (const ref of prRefs) {
+    const key = String(ref.prNumber);
+    if (seenNumbers.has(key)) {
+      continue;
+    }
+    seenNumbers.add(key);
+    merged.push({
+      num: ref.prNumber,
+      title: `${ref.repositoryFullName}#${ref.prNumber}`,
+      // relationType (created/referenced) is not a lifecycle status, so these
+      // artifact-link PRs are correctly excluded from the merged-PR count.
+      status: ref.relationType,
+    });
+  }
+  return merged;
+}
+
 function matchesQuery(
   session: SyncedAgentSession,
   query: SanitizedQuery
 ): boolean {
-  if (query.harness && session.harness !== query.harness) {
+  // The multi-select `harnesses` facet takes precedence over the single-value
+  // back-compat `harness` param (matches the cloud service precedence).
+  if (
+    query.harnesses.length === 0 &&
+    query.harness &&
+    session.harness !== query.harness
+  ) {
     return false;
   }
   // Multi-select status: match if ANY selected status matches (single `status`
@@ -553,6 +943,22 @@ function matchesQuery(
   ) {
     return false;
   }
+  if (!matchesLocalFacetFilters(session, query)) {
+    return false;
+  }
+  if (
+    query.userIds.length > 0 &&
+    !query.userIds.includes(session.userId ?? "")
+  ) {
+    return false;
+  }
+  if (
+    query.userIds.length === 0 &&
+    query.userId &&
+    session.userId !== query.userId
+  ) {
+    return false;
+  }
   if (query.search && !matchesSearch(session, query.search)) {
     return false;
   }
@@ -564,6 +970,36 @@ function matchesQuery(
     return false;
   }
   return true;
+}
+
+function canUseAggregateSessionFilters(
+  request: SharedAgentSessionsQuery,
+  query: SanitizedQuery
+): boolean {
+  return (
+    !Object.hasOwn(request, "ids") &&
+    query.search === null &&
+    query.repositories.length === 0 &&
+    hasNoLocalFacetFilters(query)
+  );
+}
+
+function buildAggregateFilters(
+  query: SanitizedQuery
+): AgentSessionUsageAggregateFilters {
+  return {
+    ...(query.harness ? { harness: query.harness } : {}),
+    ...(query.statuses.length > 0 ? { statuses: query.statuses } : {}),
+    ...(query.statuses.length === 0 && query.status
+      ? { status: query.status }
+      : {}),
+    ...(query.userIds.length > 0 ? { userIds: query.userIds } : {}),
+    ...(query.userIds.length === 0 && query.userId
+      ? { userId: query.userId }
+      : {}),
+    ...(query.startDate ? { startDate: query.startDate } : {}),
+    ...(query.endDate ? { endDate: query.endDate } : {}),
+  };
 }
 
 /** Repo identity used for the Repository facet — mirrors `buildRepositoryBreakdowns`. */
@@ -646,7 +1082,7 @@ function mapListItem(session: SyncedAgentSession): SharedAgentSessionListItem {
   const attribution = session.attribution ?? null;
   const updatedAt = parseSessionDate(session.updatedAt);
   const status = canonicalSharedStatus(session.status);
-  const prs = session.prs ?? [];
+  const prs = localSessionPullRequests(session);
   const primaryModel = session.model ?? null;
   const toolUseCount = countToolUseEvents(session.events);
 
@@ -686,7 +1122,6 @@ function buildLocalSessionIdentity(
   | "externalSessionId"
   | "harness"
   | "id"
-  | "issues"
   | "model"
   | "models"
   | "name"
@@ -720,8 +1155,7 @@ function buildLocalSessionIdentity(
     model: primaryModel,
     primaryModel,
     models: toSingleModelList(primaryModel),
-    branch: resolveLocalSessionBranch(session, attribution),
-    issues: session.issues ?? [],
+    branch: resolveLocalSessionBranch(session),
     prs,
   };
 }
@@ -833,7 +1267,6 @@ function buildLocalSessionRelations(
   SharedAgentSessionListItem,
   | "baseBranch"
   | "computeTarget"
-  | "issueId"
   | "project"
   | "sourceArtifact"
   | "sourceArtifactId"
@@ -841,7 +1274,6 @@ function buildLocalSessionRelations(
   | "user"
 > {
   return {
-    issueId: attribution?.issueId ?? null,
     baseBranch: attribution?.baseBranch ?? null,
     sourceArtifactId: attribution?.sourceArtifactId ?? null,
     sourceArtifact: null,
@@ -864,24 +1296,27 @@ function toSingleModelList(model: string | null): string[] {
   return [model];
 }
 
-function resolveLocalSessionBranch(
-  session: SyncedAgentSession,
-  attribution: SyncedAgentSession["attribution"] | null
-): string | null {
-  return session.branch ?? attribution?.baseBranch ?? null;
+// Write-derived branch only — no baseBranch fallback.
+function resolveLocalSessionBranch(session: SyncedAgentSession): string | null {
+  return session.branch ?? null;
 }
 
 function countMergedPullRequests(
   prs: NonNullable<SyncedAgentSession["prs"]>
 ): number {
-  return prs.filter((pr) => pr.status.toLowerCase() === "merged").length;
+  return prs.filter(
+    (pr) => pr.status.toLowerCase() === SessionPrLifecycleStatus.Merged
+  ).length;
 }
 
 function countToolUseEvents(events: SyncedAgentSession["events"]): number {
   return events.filter((event) => Boolean(event.toolName)).length;
 }
 
-function mapDetail(session: SyncedAgentSession): SharedAgentSessionDetail {
+function mapDetail(
+  session: SyncedAgentSession,
+  tokenEvents?: TokenEventCostPoint[]
+): SharedAgentSessionDetail {
   const timeline = projectAgentSessionTimelineEvents(session.events, {
     metadata: session.metadata,
   });
@@ -907,6 +1342,7 @@ function mapDetail(session: SyncedAgentSession): SharedAgentSessionDetail {
       events: session.events,
       timeline,
       tokenUsageByModel: session.tokenUsageByModel,
+      tokenEvents,
     }),
   };
 }
@@ -973,7 +1409,12 @@ function matchesStatusFilter(
     Boolean(session.awaitingInputSince);
 
   if (status === "waiting") {
-    return isAwaitingInput;
+    // The `!session.endedAt` guard mirrors the cloud facet/projection
+    // (FEA-3149): an ended-but-not-yet-canonicalized row projects to a terminal
+    // state on cloud and so must not surface as Waiting. Kept out of
+    // `isAwaitingInput` so the `active` branch below is unchanged — cloud's
+    // active facet excludes awaiting-input rows regardless of ended_at.
+    return isAwaitingInput && !session.endedAt;
   }
   if (status === "active") {
     return canonicalStatus === "active" && !isAwaitingInput;
@@ -1405,9 +1846,7 @@ function countErrorEvents(events: readonly { eventType: string }[]): number {
 
 function hasUnsupportedCloudFilter(query: SharedAgentSessionsQuery): boolean {
   return Boolean(
-    coerceOptionalString(query.userId) ||
-      coerceOptionalString(query.teamId) ||
-      coerceOptionalString(query.projectId)
+    coerceOptionalString(query.teamId) || coerceOptionalString(query.projectId)
   );
 }
 

@@ -1,5 +1,5 @@
 import type { Priority } from "./common";
-import type { DocumentStatus, DocumentType } from "./document";
+import type { ArtifactStatus, DocumentType } from "./document";
 import type { ProjectStatus } from "./project";
 import type { BasicUser } from "./user";
 
@@ -8,7 +8,8 @@ export type DocumentSearchResult = {
   title: string;
   slug: string;
   type: DocumentType;
-  status: DocumentStatus;
+  // Either vocabulary depending on `type` (Documents vs Features). PRD-495.
+  status: ArtifactStatus;
   priority: Priority | null;
   projectName: string | null;
   assignee: BasicUser | null;

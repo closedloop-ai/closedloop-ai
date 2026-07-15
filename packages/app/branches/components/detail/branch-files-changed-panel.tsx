@@ -1,17 +1,25 @@
 "use client";
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
+import { BranchFileDiffViewer } from "@repo/app/branches/components/diff/branch-file-diff-viewer";
 import { formatNumber } from "@repo/app/shared/lib/format-utils";
 import { Chip } from "@repo/design-system/components/ui/chip";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
-import { FileIcon, GitBranchIcon, HardDriveIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  FileDiffIcon,
+  FileIcon,
+  GitBranchIcon,
+  HardDriveIcon,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { livePrFileDiffOptions } from "../../lib/live-overlays/live-pr-file-diff";
 import {
   type LivePrFile,
   livePrFilesOptions,
 } from "../../lib/live-overlays/live-pr-files";
 import { derivePrIdentity } from "../../lib/live-overlays/pr-identity";
-import { ConnectGitHubIndicator } from "../connect-github-indicator";
 
 /**
  * F1 — live files-changed panel (Epic F / FEA-1952).
@@ -33,10 +41,11 @@ import { ConnectGitHubIndicator } from "../connect-github-indicator";
  * "changed files appear once a pull request is opened" (the common case — there
  * is no per-file source for a branch without a connected PR in v1); multiple
  * linked PRs gate on ambiguity; a single linked PR whose files can't be fetched
- * (GitHub not connected/authed) shows a connect-GitHub affordance.
+ * (local gateway/CLI unavailable) shows a local unavailable state.
  */
 
 export type BranchFilesChangedPanelProps = {
+  branchId?: string;
   detail: BranchPageDetail;
 };
 
@@ -97,7 +106,15 @@ function DerivedLoc({ detail }: { detail: BranchPageDetail }) {
   return <NetLoc additions={additions} deletions={deletions} withLabel />;
 }
 
-function FilesList({ files }: { files: readonly LivePrFile[] }) {
+function FilesList({
+  files,
+  onSelectFile,
+  selectedFileKey,
+}: {
+  files: readonly LivePrFile[];
+  onSelectFile: (file: LivePrFile | null) => void;
+  selectedFileKey: string | null;
+}) {
   if (files.length === 0) {
     return (
       <p className="py-2 text-muted-foreground text-xs">
@@ -108,13 +125,20 @@ function FilesList({ files }: { files: readonly LivePrFile[] }) {
   return (
     <div className="bq-files">
       {files.map((file) => (
-        <div className="bq-file" key={file.path}>
+        <button
+          aria-label={`Open diff for ${file.path}`}
+          aria-pressed={selectedFileKey === getFileSelectionKey(file)}
+          className="bq-file bq-file-button"
+          key={getFileSelectionKey(file)}
+          onClick={() => onSelectFile(file)}
+          type="button"
+        >
           <FileIcon aria-hidden className="bq-file-ic size-3.5" />
           <span className="bq-file-path font-mono">{file.path}</span>
           <span className="ml-auto shrink-0 pl-2">
             <NetLoc additions={file.additions} deletions={file.deletions} />
           </span>
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -125,8 +149,9 @@ function FilesList({ files }: { files: readonly LivePrFile[] }) {
  * (fetched slug-only via `gh`, no local checkout); `no-pr` is the common net-new
  * local branch (no PR to query); `multi-pr` gates ambiguous attribution;
  * `unavailable` is a linked PR whose files can't be fetched (GitHub not
- * connected / not authed). There is genuinely no per-file source for a branch
- * with no connected PR in v1 — so we say so plainly instead of looking broken.
+ * reachable through the local gateway/CLI). There is genuinely no per-file
+ * source for a branch with no connected PR in v1 — so we say so plainly instead
+ * of looking broken.
  */
 type FilesPanelState =
   | { kind: "loading" }
@@ -179,10 +204,16 @@ function resolveFilesState(input: {
 }
 
 export function BranchFilesChangedPanel({
+  branchId,
   detail,
 }: BranchFilesChangedPanelProps) {
+  const [selection, setSelection] = useState<{
+    fileKey: string | null;
+    identityKey: string | null;
+  }>({ fileKey: null, identityKey: null });
   const identity = derivePrIdentity({
     repoFullName: detail.repoFullName,
+    prUrl: detail.prUrl,
     prNumber: detail.prNumber,
     multiPrWarning: detail.multiPrWarning,
   });
@@ -198,6 +229,26 @@ export function BranchFilesChangedPanel({
     multiPr: detail.multiPrWarning,
     isError: filesQuery.isError,
   });
+  const identityKey = identity
+    ? `${identity.owner}/${identity.repo}#${identity.prNumber}`
+    : null;
+  const selectedFileKey =
+    selection.identityKey === identityKey ? selection.fileKey : null;
+
+  useEffect(() => {
+    setSelection((current) => {
+      if (current.identityKey === null || current.identityKey === identityKey) {
+        return current;
+      }
+      return { fileKey: null, identityKey: null };
+    });
+  }, [identityKey]);
+
+  useEffect(() => {
+    if (state.kind !== "live") {
+      setSelection({ fileKey: null, identityKey: null });
+    }
+  }, [state.kind]);
 
   return (
     <section className="mt-2">
@@ -222,16 +273,35 @@ export function BranchFilesChangedPanel({
           />
         </span>
       </div>
-      {renderBody({ detail, state })}
+      {renderBody({
+        branchId,
+        detail,
+        identity,
+        onSelectFile: (file) =>
+          setSelection({
+            fileKey: getFileSelectionKey(file),
+            identityKey,
+          }),
+        selectedFileKey,
+        state,
+      })}
     </section>
   );
 }
 
 function renderBody({
+  branchId,
   detail,
+  identity,
+  onSelectFile,
+  selectedFileKey,
   state,
 }: {
+  branchId?: string;
   detail: BranchPageDetail;
+  identity: ReturnType<typeof derivePrIdentity>;
+  onSelectFile: (file: LivePrFile | null) => void;
+  selectedFileKey: string | null;
   state: FilesPanelState;
 }) {
   if (state.kind === "loading") {
@@ -244,7 +314,28 @@ function renderBody({
     );
   }
   if (state.kind === "live") {
-    return <FilesList files={state.files} />;
+    const selectedFile =
+      state.files.find(
+        (file) => getFileSelectionKey(file) === selectedFileKey
+      ) ?? null;
+    return (
+      <div className="flex flex-col gap-2">
+        {selectedFile && identity ? (
+          <BranchFileDiffPreview
+            branchId={branchId}
+            file={selectedFile}
+            identity={identity}
+            onClose={() => onSelectFile(null)}
+          />
+        ) : (
+          <FilesList
+            files={state.files}
+            onSelectFile={onSelectFile}
+            selectedFileKey={null}
+          />
+        )}
+      </div>
+    );
   }
   if (state.kind === "no-pr") {
     return (
@@ -272,11 +363,64 @@ function renderBody({
   return (
     <div className="flex flex-col gap-2 py-1">
       <p className="text-muted-foreground text-xs">
-        Connect GitHub to list the files changed in pull request #
-        {state.prNumber}.
+        Changed files for pull request #{state.prNumber} are not available from
+        the local GitHub CLI.
       </p>
       <DerivedLoc detail={detail} />
-      <ConnectGitHubIndicator compact />
     </div>
   );
+}
+
+function BranchFileDiffPreview({
+  branchId,
+  file,
+  identity,
+  onClose,
+}: {
+  branchId?: string;
+  file: LivePrFile;
+  identity: NonNullable<ReturnType<typeof derivePrIdentity>>;
+  onClose: () => void;
+}) {
+  const fileDiffIdentity = useMemo(
+    () => ({
+      ...identity,
+      ...(branchId ? { branchId } : {}),
+      path: file.path,
+      ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+    }),
+    [branchId, file.path, file.previousPath, identity]
+  );
+  const { data, error, isLoading } = useQuery(
+    livePrFileDiffOptions(fileDiffIdentity)
+  );
+
+  return (
+    <div className="bq-file-diff" data-testid="branch-file-diff-preview">
+      <div className="bq-file-diff-head">
+        <FileDiffIcon aria-hidden className="size-3.5" />
+        <span className="bq-file-diff-path font-mono">{file.path}</span>
+        <button
+          aria-label="Back to files changed"
+          className="bq-file-diff-close"
+          onClick={onClose}
+          type="button"
+        >
+          <ChevronLeftIcon aria-hidden className="size-3.5" />
+        </button>
+      </div>
+      <BranchFileDiffViewer
+        diffData={data}
+        diffError={error}
+        isDiffLoading={isLoading}
+      />
+    </div>
+  );
+}
+
+function getFileSelectionKey(file: LivePrFile | null): string | null {
+  if (!file) {
+    return null;
+  }
+  return `${file.path}\u0000${file.previousPath ?? ""}`;
 }

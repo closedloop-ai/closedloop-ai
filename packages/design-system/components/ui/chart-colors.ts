@@ -1,6 +1,6 @@
-// Categorical palette tokens defined in globals.css (--chart-1..10). Public
-// package entry (registered in tsup.config.ts + package.json `exports`) so
-// surface code can reuse the shared chart palette instead of redefining it.
+// Categorical palette tokens defined in globals.css (--chart-1..10). Imported
+// directly from source by consuming surfaces so they can reuse the shared chart
+// palette instead of redefining it.
 export const CHART_COLOR_TOKENS = [
   "var(--chart-1)",
   "var(--chart-2)",

@@ -30,10 +30,6 @@ vi.mock("@/lib/resolve-pr-context", () => ({
   resolvePrContext: mocks.resolvePrContext,
 }));
 
-vi.mock("./service", () => ({
-  replyToComment: vi.fn(),
-}));
-
 vi.mock("../direct-write-service", () => ({
   replyToReviewComment: mocks.replyToReviewComment,
 }));

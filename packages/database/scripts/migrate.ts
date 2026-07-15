@@ -28,8 +28,10 @@ import { recoverMigrateDeployFailure } from "./migrate-deploy-recovery";
 import {
   isTransientConnectionError,
   isTransientMigrateDeployError,
+  MIGRATE_DEPLOY_RETRY,
   withRetry,
 } from "./migrate-retry";
+import { withMigrationSerializeLock } from "./migration-lock";
 import {
   ensureSchemaExists,
   resetSchema,
@@ -125,17 +127,19 @@ async function runMigrateWithRetry(
   branch: string | undefined
 ): Promise<boolean> {
   try {
-    // Retry only a transient connectivity blip (Prisma P1001 "can't reach
-    // database server", or a dropped pg connection) before the build fails.
-    // Migration-state failures (P3005/P3009/P3018/P0001) are not transient:
-    // withRetry rethrows them on the first attempt, so they fall through to
-    // recoverMigrateDeployFailure below exactly as before this retry existed.
-    // 3 attempts × backoff capped at 2s ≈ 300ms worst-case — far under the
-    // 15-minute RDS IAM token validity window.
+    // Retry a transient connectivity blip (Prisma P1001 "can't reach database
+    // server", or a dropped pg connection) OR migration advisory-lock contention
+    // (P1002 "Timed out trying to acquire a postgres advisory lock" when a peer
+    // migrate deploy on the same physical database holds the lock — FEA-3062)
+    // before the build fails. Migration-state failures (P3005/P3009/P3018/P0001)
+    // are not transient: withRetry rethrows them on the first attempt, so they
+    // fall through to recoverMigrateDeployFailure below exactly as before.
+    // MIGRATE_DEPLOY_RETRY's wider, jittered budget stays well under the 15-min
+    // RDS IAM token validity window (retries reuse the same IAM-signed URL).
     await withRetry(
       () => runMigrateDeploy(databaseUrl),
       isTransientMigrateDeployError,
-      { attempts: 3, operation: "Migrate deploy" }
+      MIGRATE_DEPLOY_RETRY
     );
     return false;
   } catch (error) {
@@ -185,7 +189,14 @@ async function runMigrationPipeline(
     { attempts: 3 }
   );
 
-  const didReset = await runMigrateWithRetry(databaseUrl, schema, branch);
+  // FEA-3065: serialize the migrate against concurrent api deploys on the same
+  // database through our own advisory lock, so Prisma's per-DB migration lock
+  // (72707369) is uncontended. Wraps ONLY the lock-taking migrate step (schema
+  // ensure/registry ran above; clone/seed run below, all outside the gate).
+  // Fails open to runMigrateWithRetry (FEA-3062 retry) on any gate error.
+  const didReset = await withMigrationSerializeLock({ databaseUrl }, () =>
+    runMigrateWithRetry(databaseUrl, schema, branch)
+  );
 
   if ((isNew || didReset) && schema) {
     await cloneDataFromPublic(databaseUrl, schema);

@@ -1,4 +1,7 @@
-import { getTile } from "@repo/app/insights/lib/tile-catalog";
+import {
+  getTile,
+  REMOVED_DASHBOARD_TILE_IDS,
+} from "@repo/app/insights/lib/tile-catalog";
 import { describe, expect, it } from "vitest";
 import { DASHBOARD_ROWS, resolveRowTiles } from "../dashboard-tiles";
 
@@ -19,5 +22,18 @@ describe("DASHBOARD_ROWS tile ids", () => {
     for (const row of DASHBOARD_ROWS) {
       expect(resolveRowTiles(row)).toHaveLength(row.tileIds.length);
     }
+  });
+
+  it("removes session status distribution from the fixed overview dashboard", () => {
+    expect(wiredIds).not.toContain(REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus);
+  });
+
+  it("makes PR throughput full-width and pairs PR repository breakdown with model spend", () => {
+    expect(DASHBOARD_ROWS.find((row) => row.tour === "prs")?.tileIds).toEqual([
+      "chart:prTrend",
+    ]);
+    expect(
+      DASHBOARD_ROWS.find((row) => row.tour === "distribution")?.tileIds
+    ).toEqual(["chart:modelBreakdown", "chart:prByRepo"]);
   });
 });

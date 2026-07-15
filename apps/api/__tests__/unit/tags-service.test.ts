@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mockWithDbCall } from "../utils/db-helpers";
+import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -319,6 +319,13 @@ describe("tagService", () => {
       tag: { findFirst: vi.fn().mockResolvedValue({ id: TAG_ID }) },
     };
 
+    // applyTag wraps validation + write in withDb.tx; the callback relies on
+    // the inner withDb() calls (mockWithDbCall) so the passthrough tx just
+    // needs to invoke the callback.
+    beforeEach(() => {
+      mockWithDbTx({});
+    });
+
     it("applies tag to a project", async () => {
       const entityId = "proj-1";
       const mockDb = {
@@ -469,6 +476,31 @@ describe("tagService", () => {
       await expect(
         tagService.applyTag(TAG_ID, TagEntityType.Project, "missing-id", ORG_ID)
       ).rejects.toThrow("PROJECT missing-id not found in this organization");
+    });
+
+    it("throws EntityNotFoundError when a concurrent delete trips the FK (P2003)", async () => {
+      // Entity passed validation but was deleted before the insert, so the
+      // FK no longer resolves. The transaction wrapping the validation +
+      // write makes this the only racy outcome left, and we map it to a
+      // graceful not-found rather than leaking the raw Prisma error.
+      const entityId = "proj-1";
+      const p2003Error = Object.assign(new Error("FK constraint"), {
+        code: "P2003",
+      });
+      const mockDb = {
+        ...tagOwnershipMock,
+        project: {
+          findFirst: vi.fn().mockResolvedValue({ id: entityId }),
+        },
+        tagProject: {
+          create: vi.fn().mockRejectedValue(p2003Error),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      await expect(
+        tagService.applyTag(TAG_ID, TagEntityType.Project, entityId, ORG_ID)
+      ).rejects.toThrow("PROJECT proj-1 not found in this organization");
     });
   });
 

@@ -27,7 +27,10 @@ A user-defined sequence of steps that orchestrates Loops and human approval gate
 A primary artifact type with structured content (PRD, Implementation Plan, Feature spec, Template). Defined in `src/types/document.ts`. Key enums:
 
 - `DocumentType`: PRD, IMPLEMENTATION_PLAN, FEATURE, TEMPLATE
-- `DocumentStatus`: DRAFT, IN_PROGRESS, IN_REVIEW, APPROVED, EXECUTED, DONE, OBSOLETE
+- `DocumentStatus` (Documents: PRD, IMPLEMENTATION_PLAN, TEMPLATE): DRAFT, IN_REVIEW, CHANGES_REQUESTED, APPROVED, EXECUTED, OBSOLETE
+- `FeatureStatus` (Features, subtype = FEATURE): TRIAGE, BACKLOG, TODO, IN_PROGRESS, IN_REVIEW, BLOCKED, DONE, CANCELED
+
+Both vocabularies persist into the same freeform `Artifact.status` String column; the correct set is selected by the artifact's `subtype` via `statusOptionsForSubtype(subtype)` (SSOT in `@closedloop-ai/loops-api/document`). `TERMINAL_DOCUMENT_STATUSES` = {APPROVED, EXECUTED, OBSOLETE}; `TERMINAL_FEATURE_STATUSES` = {DONE, CANCELED}. See PRD-495.
 
 `DocumentDetail` includes the latest `DocumentVersion` with full content. `GenerationStatus` tracks the current AI generation run (from a Loop) for a Document. Route prefixes for navigable document types are canonically defined in `TYPE_ROUTE_PREFIX` — do not duplicate this mapping elsewhere.
 

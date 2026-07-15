@@ -18,12 +18,31 @@ function mockArtifactLinks(rows: unknown[]): Mock {
 }
 
 describe("findNonTerminalBlockers", () => {
-  it("returns only the blocking sources whose status is non-terminal", async () => {
+  it("applies the per-subtype terminal set: terminal Document and Feature blockers are excluded (PRD-495)", async () => {
     mockArtifactLinks([
-      { source: { id: "a", name: "A", status: "DONE" } },
-      { source: { id: "b", name: "B", status: "IN_REVIEW" } },
-      { source: { id: "c", name: "C", status: "OBSOLETE" } },
-      { source: { id: "d", name: "D", status: "DRAFT" } },
+      // Feature DONE is terminal (feature set) -> excluded.
+      { source: { id: "a", name: "A", status: "DONE", subtype: "FEATURE" } },
+      // Feature IN_REVIEW is non-terminal -> included.
+      {
+        source: { id: "b", name: "B", status: "IN_REVIEW", subtype: "FEATURE" },
+      },
+      // Document OBSOLETE is terminal (document set) -> excluded.
+      { source: { id: "c", name: "C", status: "OBSOLETE", subtype: "PRD" } },
+      // Document DRAFT is non-terminal -> included.
+      { source: { id: "d", name: "D", status: "DRAFT", subtype: "PRD" } },
+      // Document APPROVED is now terminal (absorbs old DONE) -> excluded.
+      {
+        source: {
+          id: "e",
+          name: "E",
+          status: "APPROVED",
+          subtype: "IMPLEMENTATION_PLAN",
+        },
+      },
+      // Feature BLOCKED is non-terminal -> included.
+      {
+        source: { id: "f", name: "F", status: "BLOCKED", subtype: "FEATURE" },
+      },
     ]);
 
     const result = await findNonTerminalBlockers("org-1", "doc-1");
@@ -31,18 +50,26 @@ describe("findNonTerminalBlockers", () => {
     expect(result).toEqual([
       { id: "b", name: "B", status: "IN_REVIEW" },
       { id: "d", name: "D", status: "DRAFT" },
+      { id: "f", name: "F", status: "BLOCKED" },
     ]);
   });
 
   it("ignores links whose source has been deleted (null)", async () => {
     mockArtifactLinks([
       { source: null },
-      { source: { id: "b", name: "B", status: "APPROVED" } },
+      {
+        source: {
+          id: "b",
+          name: "B",
+          status: "IN_PROGRESS",
+          subtype: "FEATURE",
+        },
+      },
     ]);
 
     const result = await findNonTerminalBlockers("org-1", "doc-1");
 
-    expect(result).toEqual([{ id: "b", name: "B", status: "APPROVED" }]);
+    expect(result).toEqual([{ id: "b", name: "B", status: "IN_PROGRESS" }]);
   });
 
   it("returns an empty list when there are no inbound BLOCKS links", async () => {

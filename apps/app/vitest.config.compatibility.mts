@@ -12,8 +12,14 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./"),
-      // shared-platform subpath aliases (must precede the catch-all @repo).
+      // shared-platform + loops-api subpath aliases must precede the catch-all
+      // `@repo`: both are source-consumed (resolve to `.../src/*`), so the
+      // generic `@repo` → `packages` mapping would drop the `/src` and fail.
       ...sharedPlatformAliases,
+      "@closedloop-ai/loops-api": path.resolve(
+        import.meta.dirname,
+        "../../packages/loops-api/src"
+      ),
       "@repo": path.resolve(import.meta.dirname, "../../packages"),
     },
   },

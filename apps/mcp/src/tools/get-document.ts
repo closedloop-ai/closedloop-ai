@@ -120,6 +120,14 @@ export function shapeGetDocumentPayload(
     type: readString(row.type),
     status: readString(row.status),
     projectId: readString(row.projectId),
+    priority: readString(row.priority),
+    fileName: readString(row.fileName),
+    assigneeId: readString(row.assigneeId),
+    assignee: row.assignee ?? null,
+    approverId: readString(row.approverId),
+    approver: row.approver ?? null,
+    // Immutable per-document repository record, set at creation (PLN-602).
+    repositorySnapshot: row.repositorySnapshot ?? null,
     // Stack-rank position within the project (PRD-421); lower sorts first,
     // null when unranked. Lets agents read order before calling move-artifact.
     sortOrder: readNumber(row.sortOrder),
@@ -292,7 +300,34 @@ async function resolveInlineImagesForMcp(
   return { manifest, resolvedById };
 }
 
-async function fetchInlineImageBlocks(images: ResolvedInlineImage[]): Promise<{
+// Presigned inline-image URLs carry a signature in the query string; strip it
+// before logging so image-fetch diagnostics never leak the signed credential.
+function describeInlineImageUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "<unparseable-url>";
+  }
+}
+
+// A fetch/URL-parse failure echoes the raw URL in its message (e.g. Node's
+// "Failed to parse URL from <rawUrl>"), which bypasses describeInlineImageUrl
+// and would leak X-Amz-Signature into logs. Redact the raw URL (and any residual
+// signature param) from the error detail before it is written.
+function sanitizeInlineImageErrorDetail(
+  detail: string,
+  rawUrl: string
+): string {
+  return detail
+    .replaceAll(rawUrl, describeInlineImageUrl(rawUrl))
+    .replace(/X-Amz-Signature=[^&\s]+/gi, "X-Amz-Signature=REDACTED");
+}
+
+async function fetchInlineImageBlocks(
+  images: ResolvedInlineImage[],
+  documentId: string
+): Promise<{
   blocks: { type: "image"; data: string; mimeType: string }[];
   skipped: InlineImageManifestEntry[];
 }> {
@@ -319,7 +354,9 @@ async function fetchInlineImageBlocks(images: ResolvedInlineImage[]): Promise<{
         signal: abortController.signal,
       }).finally(() => clearTimeout(timeout));
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(
+          `HTTP ${response.status} ${response.statusText}`.trim()
+        );
       }
       const bytes = Buffer.from(await response.arrayBuffer());
       if (bytes.byteLength > MCP_IMAGE_BLOCK_MAX_BYTES) {
@@ -347,7 +384,14 @@ async function fetchInlineImageBlocks(images: ResolvedInlineImage[]): Promise<{
         data: bytes.toString("base64"),
         mimeType: image.mimeType,
       });
-    } catch {
+    } catch (error) {
+      const detail = sanitizeInlineImageErrorDetail(
+        error instanceof Error ? error.message : String(error),
+        image.url
+      );
+      console.warn(
+        `[mcp] get-document: failed to fetch inline image attachment ${image.attachmentId} (${image.filename}) for document ${documentId} from ${describeInlineImageUrl(image.url)}: ${detail}. The presigned image URL may have expired (expiresAt ${image.expiresAt}); re-fetch the document to refresh inline image URLs.`
+      );
       skipped.push({
         attachmentId: image.attachmentId,
         status: "skipped",
@@ -431,7 +475,8 @@ async function buildGetDocumentToolResult(
       ? await fetchInlineImageBlocks(
           inlineImageIds
             .map((id) => inlineResolution.resolvedById.get(id))
-            .filter((image): image is ResolvedInlineImage => !!image)
+            .filter((image): image is ResolvedInlineImage => !!image),
+          input.documentId
         )
       : null;
   const resolvedContentMaxChars =
@@ -518,7 +563,7 @@ export function registerGetDocument(
           .boolean()
           .optional()
           .describe(
-            "When true, fetch bounded inline images and return MCP image content blocks. Default false."
+            "When true, fetch bounded inline images and return MCP image content blocks. Requires includeContent=true with resolveInlineImages not set to false — image fetching reuses the inline-image resolution performed for content, so on its own this returns no image blocks. Default false."
           ),
       },
     },

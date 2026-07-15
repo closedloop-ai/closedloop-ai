@@ -44,9 +44,24 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
-vi.mock("@repo/github", () => ({
-  getSinglePullRequest: vi.fn(),
-}));
+vi.mock("@repo/github", () => {
+  const GitHubProviderResultStatus = {
+    Success: "success",
+    ProviderRateLimit: "provider_rate_limit",
+    ProviderUnavailable: "provider_unavailable",
+  };
+  const getSinglePullRequest = vi.fn();
+  return {
+    getSinglePullRequest,
+    getSinglePullRequestWithProviderResult: async (...args: unknown[]) => {
+      const value = await getSinglePullRequest(...args);
+      return value
+        ? { status: GitHubProviderResultStatus.Success, value }
+        : { status: GitHubProviderResultStatus.ProviderUnavailable };
+    },
+    GitHubProviderResultStatus,
+  };
+});
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -58,7 +73,7 @@ vi.mock("@repo/observability/log", () => ({
 
 import { BranchViewPrLifecycleRepairStatus } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
@@ -318,7 +333,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
         gitHubInstallationRepository: {
           findFirst: vi.fn().mockResolvedValue({
             id: "repo-uuid-99",
-            installation: { installationId: "install-99" },
+            removedAt: null,
+            installation: {
+              installationId: "install-99",
+              status: GitHubInstallationStatus.ACTIVE,
+            },
           }),
         },
       })
@@ -350,9 +369,6 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
           { branchArtifactId: input.id, isCurrent: true },
         ],
         branchArtifact: { organizationId: input.organizationId },
-        repository: {
-          installation: { organizationId: input.organizationId },
-        },
       },
       select: { id: true, repositoryId: true },
     });
@@ -364,7 +380,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
           repositoryId: "repo-uuid-99",
           branchArtifact: { organizationId: input.organizationId },
           repository: {
-            installation: { organizationId: input.organizationId },
+            removedAt: null,
+            installation: {
+              organizationId: input.organizationId,
+              status: GitHubInstallationStatus.ACTIVE,
+            },
           },
         },
         data: expect.objectContaining({
@@ -477,7 +497,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
     expect(mockScopedRepoFindFirst).toHaveBeenCalledWith({
       where: {
         id: "repo-uuid-99",
-        installation: { organizationId: input.organizationId },
+        removedAt: null,
+        installation: {
+          organizationId: input.organizationId,
+          status: GitHubInstallationStatus.ACTIVE,
+        },
       },
       select: { installation: { select: { installationId: true } } },
     });
@@ -488,12 +512,240 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
           { branchArtifactId: input.id, isCurrent: true },
         ],
         branchArtifact: { organizationId: input.organizationId },
-        repository: {
-          installation: { organizationId: input.organizationId },
-        },
       },
       select: { id: true, repositoryId: true },
     });
+  });
+
+  it("does not fall back to another installation when owner/repo is tombstoned", async () => {
+    const input = makeInput({
+      externalUrl: "https://github.com/acme/tombstoned-repo/pull/42",
+    });
+    const mockRepoFindFirst = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "repo-uuid-tombstoned",
+      });
+
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: mockRepoFindFirst,
+        },
+      })
+    );
+
+    await runRepair([input]);
+
+    expect(mockRepoFindFirst).toHaveBeenNthCalledWith(1, {
+      where: {
+        fullName: "acme/tombstoned-repo",
+        removedAt: null,
+        installation: {
+          organizationId: ORG_ID,
+          status: GitHubInstallationStatus.ACTIVE,
+        },
+      },
+      select: {
+        id: true,
+        installation: { select: { installationId: true } },
+      },
+    });
+    expect(mockRepoFindFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        fullName: "acme/tombstoned-repo",
+        installation: { organizationId: ORG_ID },
+      },
+      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
+    expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
+    expect(mockWithDb.tx).not.toHaveBeenCalled();
+  });
+
+  it("prefers the active repository row when a tombstone shares the same fullName", async () => {
+    const input = makeInput({
+      externalUrl: "https://github.com/acme/restored-repo/pull/42",
+    });
+    const mockRepoFindFirst = vi.fn((query: { where?: { removedAt?: null } }) =>
+      Promise.resolve(
+        query.where?.removedAt === null
+          ? {
+              id: "repo-uuid-active",
+              installation: { installationId: "install-active" },
+            }
+          : { id: "repo-uuid-tombstoned" }
+      )
+    );
+    const mockExistingDetailFindFirst = vi.fn().mockResolvedValue(null);
+
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: mockRepoFindFirst,
+        },
+      })
+    );
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { findFirst: mockExistingDetailFindFirst } })
+    );
+    mockGetSinglePullRequest.mockResolvedValueOnce(null);
+
+    await runRepair([input]);
+
+    expect(mockRepoFindFirst).toHaveBeenCalledOnce();
+    expect(mockRepoFindFirst).toHaveBeenCalledWith({
+      where: {
+        fullName: "acme/restored-repo",
+        removedAt: null,
+        installation: {
+          organizationId: ORG_ID,
+          status: GitHubInstallationStatus.ACTIVE,
+        },
+      },
+      select: {
+        id: true,
+        installation: { select: { installationId: true } },
+      },
+    });
+    expect(mockExistingDetailFindFirst).toHaveBeenCalled();
+    expect(mockGetSinglePullRequest).toHaveBeenCalledWith(
+      "install-active",
+      "acme",
+      "restored-repo",
+      42
+    );
+  });
+
+  it("relinks an existing tombstoned PR detail to the restored active repository before refresh", async () => {
+    const input = makeInput({
+      externalUrl: "https://github.com/acme/restored-repo/pull/42",
+    });
+    const mockRepoFindFirst = vi.fn((query: { where?: { removedAt?: null } }) =>
+      Promise.resolve(
+        query.where?.removedAt === null
+          ? {
+              id: "repo-uuid-active",
+              installation: { installationId: "install-active" },
+            }
+          : { id: "repo-uuid-tombstoned" }
+      )
+    );
+    const mockExistingDetailFindFirst = vi.fn().mockResolvedValue({
+      id: "detail-1",
+      repositoryId: "repo-uuid-tombstoned",
+    });
+    const relinkTx = {
+      branchDetail: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      pullRequestDetail: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const stampUpdate = vi.fn().mockResolvedValue({ count: 1 });
+    const refreshTx = {
+      artifact: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      branchDetail: {
+        findFirst: vi.fn().mockResolvedValue({ headSha: "abc123" }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      pullRequestDetail: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: { findFirst: mockRepoFindFirst },
+      })
+    );
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { findFirst: mockExistingDetailFindFirst } })
+    );
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        pullRequestDetail: {
+          updateMany: stampUpdate,
+        },
+      })
+    );
+    mockWithDb.tx
+      .mockImplementationOnce((cb: (tx: unknown) => unknown) => cb(relinkTx))
+      .mockImplementationOnce((cb: (tx: unknown) => unknown) => cb(refreshTx));
+    mockGetSinglePullRequest.mockResolvedValueOnce(makeFreshPr());
+
+    await runRepair([input]);
+
+    expect(relinkTx.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: {
+        artifactId: input.id,
+        repositoryId: "repo-uuid-tombstoned",
+        artifact: { organizationId: input.organizationId },
+      },
+      data: { repositoryId: "repo-uuid-active" },
+    });
+    expect(relinkTx.pullRequestDetail.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "detail-1",
+        repositoryId: "repo-uuid-tombstoned",
+        branchArtifactId: input.id,
+        branchArtifact: { organizationId: input.organizationId },
+      },
+      data: { repositoryId: "repo-uuid-active" },
+    });
+    expect(stampUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "detail-1",
+          repositoryId: "repo-uuid-active",
+        }),
+      })
+    );
+    expect(mockGetSinglePullRequest).toHaveBeenCalledWith(
+      "install-active",
+      "acme",
+      "restored-repo",
+      42
+    );
+  });
+
+  it("does not use the single-installation fallback for a tombstoned stored PR repository", async () => {
+    const input = makeInput();
+
+    // Call 1: active owner/repo lookup misses.
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      })
+    );
+    // Call 2: stored PR detail points at a repository id.
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        pullRequestDetail: {
+          findFirst: vi.fn().mockResolvedValue({ repositoryId: "repo-dead" }),
+        },
+      })
+    );
+    // Call 3: active repository lookup rejects the tombstoned row.
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      })
+    );
+
+    await runRepair([input]);
+
+    expect(mockWithDb).toHaveBeenCalledTimes(3);
+    expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
+    expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
 
   it("skips update when getSinglePullRequest returns null", async () => {
@@ -505,7 +757,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
         gitHubInstallationRepository: {
           findFirst: vi.fn().mockResolvedValue({
             id: "repo-uuid-99",
-            installation: { installationId: "install-99" },
+            removedAt: null,
+            installation: {
+              installationId: "install-99",
+              status: GitHubInstallationStatus.ACTIVE,
+            },
           }),
         },
       })
@@ -532,7 +788,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
     });
     const mockRepoFindFirst = vi.fn().mockResolvedValue({
       id: "repo-uuid-target",
-      installation: { installationId: "install-target" },
+      removedAt: null,
+      installation: {
+        installationId: "install-target",
+        status: GitHubInstallationStatus.ACTIVE,
+      },
     });
 
     // Call 1: resolveRepositoryId
@@ -553,7 +813,15 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       expect.objectContaining({
         where: {
           fullName: "acme/target-repo",
-          installation: { organizationId: ORG_ID },
+          removedAt: null,
+          installation: {
+            organizationId: ORG_ID,
+            status: GitHubInstallationStatus.ACTIVE,
+          },
+        },
+        select: {
+          id: true,
+          installation: { select: { installationId: true } },
         },
       })
     );
@@ -571,7 +839,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
 
     const mockRepoFindFirst = vi.fn().mockResolvedValue({
       id: "repo-uuid-shared",
-      installation: { installationId: "install-shared" },
+      removedAt: null,
+      installation: {
+        installationId: "install-shared",
+        status: GitHubInstallationStatus.ACTIVE,
+      },
     });
 
     // Input A: resolveRepositoryId (DB hit), then existing detail misses.
@@ -651,7 +923,11 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
         gitHubInstallationRepository: {
           findFirst: vi.fn().mockResolvedValue({
             id: "repo-shared",
-            installation: { installationId: "install-shared" },
+            removedAt: null,
+            installation: {
+              installationId: "install-shared",
+              status: GitHubInstallationStatus.ACTIVE,
+            },
           }),
         },
         pullRequestDetail: { findFirst: vi.fn().mockResolvedValue(null) },

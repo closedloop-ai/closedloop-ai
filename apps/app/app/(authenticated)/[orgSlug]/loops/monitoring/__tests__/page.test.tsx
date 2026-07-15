@@ -31,6 +31,15 @@ vi.mock("@repo/app/agents/hooks/use-agent-sessions", () => ({
   useAgentSessionUsage: useAgentSessionUsageMock,
 }));
 
+// The Compliance Gaps section (folded into monitoring) reads this hook.
+vi.mock("@repo/app/agents/hooks/use-agent-component-compliance", () => ({
+  useAgentComponentCompliance: () => ({
+    data: { items: [] },
+    isLoading: false,
+    isError: false,
+  }),
+}));
+
 vi.mock("@repo/analytics/client", () => ({
   useAnalytics: () => ({ capture: vi.fn() }),
 }));

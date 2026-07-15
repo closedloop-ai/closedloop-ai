@@ -7,7 +7,7 @@ import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
 import { ActivityIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, type ReactNode, useMemo, useState } from "react";
 import {
   type BranchActorColorDomain,
   buildActorColorDomain,
@@ -23,6 +23,11 @@ import {
   type PreferredBranchLoc,
   resolveNetLoc,
 } from "../lib/live-overlays/use-preferred-branch-loc";
+import {
+  type BranchTipAnchor,
+  BranchTipPortal,
+  tipAnchorFromElement,
+} from "./branch-tip-portal";
 
 /**
  * Per-hour-by-actor stacked token bars (Epic E / E1) — the design handoff's
@@ -45,16 +50,23 @@ export type BranchPrActivityTimelineProps = {
   actorDomain?: BranchActorColorDomain;
   /** Highlight the bar for this hour (driven by the E2 playhead). */
   activeHourStart?: string | null;
+  /**
+   * Read-only "you are here" position along the timeline (0–1), drawn as a
+   * non-interactive line over the bars. Null hides it (no click/scroll yet).
+   */
+  activeFraction?: number | null;
   /** When provided, each bar is a button that scrubs the trace to its hour. */
   onScrubHour?: (hourStart: string) => void;
   /** PR-preferred LOC from `usePreferredBranchLoc`; omit to use `detail` columns. */
   loc?: PreferredBranchLoc;
+  /** Rendered between the bars and the time axis (the event-dot rail), so the
+   *  graph stacks bars → dots → axis like the Session timeline. */
+  children?: ReactNode;
   className?: string;
 };
 
 const MIN_BAR_PERCENT = 8;
 const TRAILING_ZERO_RE = /\.0$/;
-const LEFT_FLIP_FRACTION = 0.6;
 
 /** Token-split rows for the hover card — colors mirror the design handoff. */
 const TOKEN_PARTS = [
@@ -106,16 +118,22 @@ function formatBarLabel(
   return `${when} · ${formatTokens(column.total)} tokens · ${breakdown}`;
 }
 
-export function BranchPrActivityTimeline({
+export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
   detail,
   isLoading = false,
   actorDomain,
   activeHourStart,
+  activeFraction,
   onScrubHour,
   loc,
+  children,
   className,
 }: BranchPrActivityTimelineProps) {
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [hover, setHover] = useState<{
+    index: number;
+    anchor: BranchTipAnchor;
+  } | null>(null);
+  const hoverIndex = hover?.index ?? null;
   const domain = useMemo(
     () =>
       actorDomain ?? buildActorColorDomain(deriveActorsFromSessions(detail)),
@@ -219,9 +237,18 @@ export function BranchPrActivityTimeline({
       </div>
 
       <div className="bq-bars-wrap">
+        {activeFraction == null ? null : (
+          <div
+            aria-hidden
+            className="tl-here"
+            style={{
+              left: `${Math.min(100, Math.max(0, activeFraction * 100))}%`,
+            }}
+          />
+        )}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: container only clears the hover tooltip; bars carry the interactivity */}
         {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: container only clears the hover tooltip; bars carry the interactivity */}
-        <div className="bq-bars" onMouseLeave={() => setHoverIndex(null)}>
+        <div className="bq-bars" onMouseLeave={() => setHover(null)}>
           {columns.map((column, index) => (
             <TimelineBar
               active={
@@ -232,20 +259,19 @@ export function BranchPrActivityTimeline({
               hovered={hoverIndex === index}
               key={column.hourStart}
               maxTotal={maxTotal}
-              onHover={() => setHoverIndex(index)}
+              onHover={(anchor) => setHover({ anchor, index })}
               onScrubHour={onScrubHour}
             />
           ))}
         </div>
-        {hoverColumn && hoverColumn.total > 0 && hoverIndex != null ? (
-          <BarTip
-            column={hoverColumn}
-            domain={domain}
-            isLeft={hoverIndex > columns.length * LEFT_FLIP_FRACTION}
-            leftPercent={((hoverIndex + 0.5) / columns.length) * 100}
-          />
+        {hover && hoverColumn && hoverColumn.total > 0 ? (
+          <BarTip anchor={hover.anchor} column={hoverColumn} domain={domain} />
         ) : null}
       </div>
+
+      {/* Event-dot rail slots between the bars and the axis (bars → dots → axis,
+          matching the Session timeline). */}
+      {children}
 
       {startMs != null && endMs != null ? (
         <div className="bq-axis">
@@ -255,25 +281,21 @@ export function BranchPrActivityTimeline({
       ) : null}
     </section>
   );
-}
+});
 
-/** The design's `bq-tip`: hour + total, then a per-actor io/cache split. */
+/** The design's `bq-tip`: hour + total, then a per-actor io/cache split.
+ *  Portaled to <body> so it's never clipped behind the sticky chrome. */
 function BarTip({
   column,
   domain,
-  leftPercent,
-  isLeft,
+  anchor,
 }: {
   column: TimelineColumn;
   domain: BranchActorColorDomain;
-  leftPercent: number;
-  isLeft: boolean;
+  anchor: BranchTipAnchor;
 }) {
   return (
-    <div
-      className={cn("bq-tip", isLeft && "is-left")}
-      style={{ left: `${leftPercent}%` }}
-    >
+    <BranchTipPortal anchor={anchor}>
       <div className="bq-tip-h">
         <b>{formatClock(Date.parse(column.hourStart))}</b>
         <span className="font-mono">{formatTokens(column.total)}</span>
@@ -305,7 +327,7 @@ function BarTip({
           </div>
         </div>
       ))}
-    </div>
+    </BranchTipPortal>
   );
 }
 
@@ -324,13 +346,14 @@ function TimelineBar({
   active: boolean;
   ariaLabel: string;
   onScrubHour?: (hourStart: string) => void;
-  onHover: () => void;
+  onHover: (anchor: BranchTipAnchor) => void;
 }) {
   const height = barHeightPercent(column, maxTotal);
+  // Concurrency is already legible from a bar's stacked multi-actor colors, so it
+  // carries no extra border (only the semantic `data-concurrent` hook remains).
   const classes = cn(
     "bq-bar",
     column.isGap && "idle",
-    column.hasConcurrency && "conc",
     (hovered || active) && "hot"
   );
   const segments = column.segments.map((segment) => (
@@ -354,8 +377,10 @@ function TimelineBar({
         data-concurrent={dataConcurrent}
         data-gap={dataGap}
         onClick={() => onScrubHour(column.hourStart)}
-        onFocus={onHover}
-        onMouseEnter={onHover}
+        onFocus={(event) => onHover(tipAnchorFromElement(event.currentTarget))}
+        onMouseEnter={(event) =>
+          onHover(tipAnchorFromElement(event.currentTarget))
+        }
         style={{ height: `${height}%` }}
         type="button"
       >

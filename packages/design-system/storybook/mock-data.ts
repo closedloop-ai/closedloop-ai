@@ -3,6 +3,7 @@ import { Priority } from "@closedloop-ai/loops-api/common";
 import type { BackendMismatchBody } from "@closedloop-ai/loops-api/compute-target";
 import {
   DocumentStatus,
+  FeatureStatus,
   type PullRequestInfo,
   PullRequestState,
 } from "@closedloop-ai/loops-api/document";
@@ -349,12 +350,22 @@ export const mockPullRequest = {
 
 export const mockDocumentStatusOptions = [
   DocumentStatus.Draft,
-  DocumentStatus.InProgress,
   DocumentStatus.InReview,
+  DocumentStatus.ChangesRequested,
   DocumentStatus.Approved,
   DocumentStatus.Executed,
-  DocumentStatus.Done,
   DocumentStatus.Obsolete,
+] as const;
+
+export const mockFeatureStatusOptions = [
+  FeatureStatus.Triage,
+  FeatureStatus.Backlog,
+  FeatureStatus.Todo,
+  FeatureStatus.InProgress,
+  FeatureStatus.InReview,
+  FeatureStatus.Blocked,
+  FeatureStatus.Done,
+  FeatureStatus.Canceled,
 ] as const;
 
 export const mockFeaturePriorityOptions = [

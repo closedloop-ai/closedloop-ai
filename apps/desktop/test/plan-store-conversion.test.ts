@@ -1,15 +1,13 @@
 /**
  * @file plan-store-conversion.test.ts
- * @description FEA-1791 (PLN-886 follow-up) — the WHOLE plan-store on the single
- * DesktopPrisma client. The READ section seeds `plans`/`plan_versions` via raw
- * SQL and asserts the typed reads reproduce the prior SQL (DTO mapping, derived
- * `latestContent`/`versionCount`, filtering, ordering — absorbs the plan DTO
- * coverage formerly in ported-screen-store-contract.test.ts). The WRITE section
- * is an equivalence harness for the raw-SQL-via-`prisma.write` write path: it
- * drives `upsertPlan`/`upsertPlanVersion`/`confirm`/`reject` and verifies results
- * through the converted reads — exercising create/dedup/new-version, the
- * set-if-null COALESCE backfill, null-safe (`IS NOT DISTINCT FROM`) dedup
- * matching, and version numbering.
+ * @description The WHOLE plan-store on the single DesktopPrisma client. The READ
+ * section seeds `plans`/`plan_versions` via raw SQL and asserts the typed reads
+ * produce the correct DTO mapping, derived `latestContent`/`versionCount`,
+ * filtering, and ordering. The WRITE section drives
+ * `upsertPlan`/`upsertPlanVersion`/`confirm`/`reject` (the raw-SQL-via-
+ * `prisma.write` write path) and verifies results through the reads —
+ * exercising create/dedup/new-version, the set-if-null COALESCE backfill,
+ * null-safe (`IS NOT DISTINCT FROM`) dedup matching, and version numbering.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

@@ -18,10 +18,35 @@ type ErrorWithDatadogContext = Error & {
   digest?: string;
 };
 
+/**
+ * Next.js control-flow "errors" — `notFound()` and `redirect()` — throw with a
+ * digest prefix rather than representing a real fault. They surface to the app
+ * error boundaries but must not be reported as errors (FEA-2404): a 404 on a
+ * deleted artifact is expected UX, not an incident. RUM's own `beforeSend`
+ * filter also drops the SDK-captured path; this is the explicit-report guard.
+ */
+const NEXTJS_CONTROL_FLOW_DIGEST_PREFIXES = [
+  "NEXT_HTTP_ERROR_FALLBACK;",
+  "NEXT_REDIRECT",
+] as const;
+
+function isNextjsControlFlowDigest(digest: string | undefined): boolean {
+  if (!digest) {
+    return false;
+  }
+  return NEXTJS_CONTROL_FLOW_DIGEST_PREFIXES.some((prefix) =>
+    digest.startsWith(prefix)
+  );
+}
+
 export function reportNextjsError(
   error: Error & { digest?: string },
   context: DatadogRumErrorContext
 ): void {
+  if (isNextjsControlFlowDigest(error.digest)) {
+    return;
+  }
+
   const errorWithContext: ErrorWithDatadogContext = new Error(error.message);
   errorWithContext.name = error.name;
   errorWithContext.stack = error.stack;

@@ -21,12 +21,12 @@ test.describe("Labs nav reload persistence", () => {
     try {
       const labsToggle = page.getByRole("button", { name: "Labs" });
       await expect(labsToggle).toHaveAttribute("aria-expanded", "false");
-      await expect(page.getByRole("link", { name: "Activity" })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "Insights" })).toHaveCount(0);
 
       await labsToggle.click();
 
       await expect(labsToggle).toHaveAttribute("aria-expanded", "true");
-      await expect(page.getByRole("link", { name: "Activity" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Insights" })).toBeVisible();
       await expect
         .poll(() =>
           page.evaluate(
@@ -48,7 +48,7 @@ test.describe("Labs nav reload persistence", () => {
         "aria-expanded",
         "true"
       );
-      await expect(page.getByRole("link", { name: "Activity" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Insights" })).toBeVisible();
       const persistedAfterReload = await page.evaluate(
         (key) => window.localStorage.getItem(key),
         DESKTOP_LABS_NAV_SECTION_STORAGE_KEY

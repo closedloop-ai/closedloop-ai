@@ -33,7 +33,7 @@ describe("useBatchUpdateStatus", () => {
 
     result.current.mutate({
       documentIds: ["doc-1", "doc-2"],
-      status: DocumentStatus.InProgress,
+      status: DocumentStatus.Draft,
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -42,7 +42,7 @@ describe("useBatchUpdateStatus", () => {
       "/documents/batch-update-status",
       {
         documentIds: ["doc-1", "doc-2"],
-        status: DocumentStatus.InProgress,
+        status: DocumentStatus.Draft,
       }
     );
     expect(result.current.data).toEqual(updatedIds);
@@ -58,7 +58,7 @@ describe("useBatchUpdateStatus", () => {
 
     result.current.mutate({
       documentIds: ["doc-1"],
-      status: DocumentStatus.Done,
+      status: DocumentStatus.Approved,
     });
 
     await waitFor(() => expect(result.current.isError).toBe(true));

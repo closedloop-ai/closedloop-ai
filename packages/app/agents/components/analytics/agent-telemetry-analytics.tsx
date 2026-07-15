@@ -3,9 +3,12 @@
 import type {
   AgentSessionLastSyncTarget,
   AgentSessionListItem,
+  AgentSessionUsageByBranch,
   AgentSessionUsageByModel,
+  AgentSessionUsageByPr,
   AgentSessionUsageByUser,
 } from "@repo/api/src/types/agent-session";
+import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { ComputeTargetSyncTable } from "@repo/app/compute/components/compute-target-sync-table";
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 import {
@@ -104,7 +107,13 @@ function renderCostDescription(
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <InfoIcon className="inline h-3 w-3 cursor-help" />
+            <button
+              aria-label="Cost breakdown info"
+              className="inline-flex items-center"
+              type="button"
+            >
+              <InfoIcon className="h-3 w-3 cursor-help" />
+            </button>
           </TooltipTrigger>
           <TooltipContent side="bottom">
             Estimated cost using API pricing
@@ -135,6 +144,13 @@ export type AgentTelemetryAnalyticsProps = {
   renderExtraColumn?: (item: AgentSessionListItem) => ReactNode;
   getUserHref?: (userId: string) => string;
   organizationFiltersEnabled?: boolean;
+  /**
+   * Optional content rendered at the bottom of the scroll column, in the
+   * telemetry flow. Wrappers use this to fold in adjacent org-wide sections
+   * (e.g. the Agents component-distribution Compliance Gaps) without a
+   * separate page or scroll region.
+   */
+  footerSlot?: ReactNode;
 };
 
 /**
@@ -146,6 +162,7 @@ export function AgentTelemetryAnalytics({
   analyticsBreakdownsEnabled = false,
   exportHref,
   extraColumnLabel,
+  footerSlot,
   getSessionHref,
   getUserHref,
   onQueryStateChange,
@@ -161,6 +178,9 @@ export function AgentTelemetryAnalytics({
       status: queryState.status === "all" ? undefined : queryState.status,
       teamId: queryState.selectedTeamId ?? undefined,
       userId: queryState.selectedUserId ?? undefined,
+      viewerScope: queryState.selectedTeamId
+        ? AgentSessionViewerScope.Team
+        : undefined,
     }),
     [queryState]
   );
@@ -173,9 +193,11 @@ export function AgentTelemetryAnalytics({
     limit: PAGE_SIZE,
     offset: queryState.page * PAGE_SIZE,
   });
+  const viewerScope = usageQuery.data?.viewerScope;
   const isAdminViewer =
     organizationFiltersEnabled &&
-    usageQuery.data?.viewerScope === "organization";
+    viewerScope !== undefined &&
+    viewerScope !== AgentSessionViewerScope.Self;
   const teamsQuery = useTeams({ enabled: isAdminViewer });
   const projectsQuery = useProjects(
     queryState.selectedTeamId ?? undefined,
@@ -255,6 +277,7 @@ export function AgentTelemetryAnalytics({
           <ContextCards targets={usageQuery.data?.lastSyncTargets ?? []} />
         </>
       )}
+      {footerSlot}
     </div>
   );
 }
@@ -294,7 +317,7 @@ function MonitoringToolbar({
           }
           value={queryState.dateRange}
         >
-          <SelectTrigger className="w-[160px]">
+          <SelectTrigger aria-label="Date range" className="w-[160px]">
             <SelectValue placeholder="Range" />
           </SelectTrigger>
           <SelectContent>
@@ -310,7 +333,7 @@ function MonitoringToolbar({
           }
           value={queryState.harness}
         >
-          <SelectTrigger className="w-[160px]">
+          <SelectTrigger aria-label="Agent harness" className="w-[160px]">
             <SelectValue placeholder="Harness" />
           </SelectTrigger>
           <SelectContent>
@@ -328,7 +351,7 @@ function MonitoringToolbar({
           }
           value={queryState.status}
         >
-          <SelectTrigger className="w-[160px]">
+          <SelectTrigger aria-label="Session status" className="w-[160px]">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
@@ -391,7 +414,7 @@ function AdminFilters({
           }
           value={queryState.selectedTeamId ?? "all"}
         >
-          <SelectTrigger>
+          <SelectTrigger aria-label="Filter by team">
             <SelectValue placeholder="Filter by team" />
           </SelectTrigger>
           <SelectContent>
@@ -413,7 +436,7 @@ function AdminFilters({
           }
           value={queryState.selectedProjectId ?? "all"}
         >
-          <SelectTrigger>
+          <SelectTrigger aria-label="Filter by project">
             <SelectValue placeholder="Filter by project" />
           </SelectTrigger>
           <SelectContent>
@@ -435,7 +458,7 @@ function AdminFilters({
           }
           value={queryState.selectedUserId ?? "all"}
         >
-          <SelectTrigger>
+          <SelectTrigger aria-label="Filter by user">
             <SelectValue placeholder="Filter by user" />
           </SelectTrigger>
           <SelectContent>
@@ -535,8 +558,10 @@ function UsageBreakdown({
 }: Readonly<{
   usage:
     | {
+        byBranch?: AgentSessionUsageByBranch[];
         byUser: AgentSessionUsageByUser[];
         byModel: AgentSessionUsageByModel[];
+        byPr?: AgentSessionUsageByPr[];
       }
     | undefined;
   selectedUserId: string | null;
@@ -563,65 +588,189 @@ function UsageBreakdown({
   }));
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <UserIcon className="h-4 w-4" />
-            User Breakdown
-          </CardTitle>
-          <CardDescription>
-            Click a user to filter the sessions table.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="cl-mobile-only space-y-3">
-            {userRows.map((row) => (
-              <MobileUserAnalyticsRow
-                active={row.active}
-                key={row.id}
-                onSelect={() =>
-                  onSelectUser(selectedUserId === row.id ? null : row.id)
+    <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <UserIcon className="h-4 w-4" />
+              User Breakdown
+            </CardTitle>
+            <CardDescription>
+              Click a user to filter the sessions table.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="cl-mobile-only space-y-3">
+              {userRows.map((row) => (
+                <MobileUserAnalyticsRow
+                  active={row.active}
+                  key={row.id}
+                  onSelect={() =>
+                    onSelectUser(selectedUserId === row.id ? null : row.id)
+                  }
+                  row={row}
+                />
+              ))}
+            </div>
+            <div className="cl-desktop-block">
+              <UserUsageTable
+                onToggleUser={(userId) =>
+                  onSelectUser(selectedUserId === userId ? null : userId)
                 }
-                row={row}
+                rows={userRows}
+              />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BotIcon className="h-4 w-4" />
+              Model Breakdown
+            </CardTitle>
+            <CardDescription>Token usage and cost by model.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="cl-mobile-only space-y-3">
+              {modelRows.map((row) => (
+                <MobileBreakdownRow key={row.model} title={row.model}>
+                  <MobileBreakdownFact label="Sessions" value={row.sessions} />
+                  <MobileBreakdownFact label="Input" value={row.input} />
+                  <MobileBreakdownFact label="Output" value={row.output} />
+                  <MobileBreakdownFact label="Cache" value={row.cache} />
+                  <MobileBreakdownFact label="Cost" value={row.cost} />
+                </MobileBreakdownRow>
+              ))}
+            </div>
+            <div className="cl-desktop-block">
+              <ModelUsageTable rows={modelRows} />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      <AttributionBreakdowns byBranch={usage?.byBranch} byPr={usage?.byPr} />
+    </div>
+  );
+}
+
+function AttributionBreakdowns({
+  byBranch,
+  byPr,
+}: Readonly<{
+  byBranch?: AgentSessionUsageByBranch[];
+  byPr?: AgentSessionUsageByPr[];
+}>) {
+  const branchRows = (byBranch ?? []).slice(0, 5);
+  const prRows = (byPr ?? []).slice(0, 5);
+  if (branchRows.length === 0 && prRows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-6 xl:grid-cols-2">
+      {branchRows.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FolderGit2Icon className="h-4 w-4" />
+              Branch Attribution
+            </CardTitle>
+            <CardDescription>
+              Split lens; separate from user totals.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {branchRows.map((row) => (
+              <AttributionRow
+                cacheTokens={row.cacheReadTokens + row.cacheWriteTokens}
+                cost={row.estimatedCost}
+                inputTokens={row.inputTokens}
+                key={row.branchArtifactId}
+                label={row.branchName ?? row.branchArtifactId}
+                outputTokens={row.outputTokens}
+                sessionCount={row.sessionCount}
+                sublabel={row.repositoryFullName}
               />
             ))}
-          </div>
-          <div className="cl-desktop-block">
-            <UserUsageTable
-              onToggleUser={(userId) =>
-                onSelectUser(selectedUserId === userId ? null : userId)
-              }
-              rows={userRows}
-            />
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BotIcon className="h-4 w-4" />
-            Model Breakdown
-          </CardTitle>
-          <CardDescription>Token usage and cost by model.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="cl-mobile-only space-y-3">
-            {modelRows.map((row) => (
-              <MobileBreakdownRow key={row.model} title={row.model}>
-                <MobileBreakdownFact label="Sessions" value={row.sessions} />
-                <MobileBreakdownFact label="Input" value={row.input} />
-                <MobileBreakdownFact label="Output" value={row.output} />
-                <MobileBreakdownFact label="Cache" value={row.cache} />
-                <MobileBreakdownFact label="Cost" value={row.cost} />
-              </MobileBreakdownRow>
+          </CardContent>
+        </Card>
+      ) : null}
+      {prRows.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ArrowRightIcon className="h-4 w-4" />
+              PR Attribution
+            </CardTitle>
+            <CardDescription>Trusted current-PR branch shares.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {prRows.map((row) => (
+              <AttributionRow
+                cacheTokens={row.cacheReadTokens + row.cacheWriteTokens}
+                cost={row.estimatedCost}
+                inputTokens={row.inputTokens}
+                key={`${row.repositoryFullName}#${row.prNumber}`}
+                label={`#${row.prNumber} ${row.prTitle ?? "Untitled PR"}`}
+                outputTokens={row.outputTokens}
+                sessionCount={row.sessionCount}
+                sublabel={`${row.repositoryFullName} · ${row.purposeLabel}`}
+              />
             ))}
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function AttributionRow({
+  cacheTokens,
+  cost,
+  inputTokens,
+  label,
+  outputTokens,
+  sessionCount,
+  sublabel,
+}: Readonly<{
+  cacheTokens: number;
+  cost: number;
+  inputTokens: number;
+  label: string;
+  outputTokens: number;
+  sessionCount: number;
+  sublabel: string | null;
+}>) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="min-w-0">
+        <div className="truncate font-medium text-sm">{label}</div>
+        {sublabel ? (
+          <div className="truncate text-muted-foreground text-xs">
+            {sublabel}
           </div>
-          <div className="cl-desktop-block">
-            <ModelUsageTable rows={modelRows} />
-          </div>
-        </CardContent>
-      </Card>
+        ) : null}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-sm md:grid-cols-5">
+        <MobileBreakdownFact
+          label="Sessions"
+          value={formatNumber(sessionCount)}
+        />
+        <MobileBreakdownFact
+          label="Input"
+          value={formatTokenCount(inputTokens)}
+        />
+        <MobileBreakdownFact
+          label="Output"
+          value={formatTokenCount(outputTokens)}
+        />
+        <MobileBreakdownFact
+          label="Cache"
+          value={formatTokenCount(cacheTokens)}
+        />
+        <MobileBreakdownFact label="Cost" value={formatCost(cost)} />
+      </div>
     </div>
   );
 }

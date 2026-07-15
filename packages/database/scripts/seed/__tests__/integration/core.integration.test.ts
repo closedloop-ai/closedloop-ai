@@ -5,7 +5,7 @@
  *   TS-I.1  Team and Projects created and queryable (AC-001, AC-002)
  *   TS-I.3  Loops cover all 7 LoopStatus values with >=4 LoopCommand types (AC-004)
  *   TS-I.4  Artifacts cover all ArtifactType and DocumentStatus values (AC-005)
- *   TS-I.5  Feature artifacts exist for all 7 DocumentStatus values (AC-005)
+ *   TS-I.5  Feature artifacts exist for all FeatureStatus values (AC-005)
  *   TS-I.6  No duplicate active loops violating partial unique index (AC-008)
  *   TS-I.7  Template unique constraint (one per subtype per org) (AC-009)
  *
@@ -18,6 +18,7 @@ import {
   ArtifactSubtype,
   ArtifactType,
   DocumentStatus,
+  FeatureStatus,
   LoopCommand,
   LoopStatus,
 } from "../../../../generated/client";
@@ -175,7 +176,7 @@ describe.skipIf(!DATABASE_URL_SET)(
         }
       });
 
-      it("seeds DOCUMENT artifacts covering all 7 DocumentStatus values", async () => {
+      it("seeds DOCUMENT artifacts covering all DocumentStatus values", async () => {
         const artifacts = await ctx.prisma.artifact.findMany({
           where: {
             organizationId: BASELINE_ORG_ID,
@@ -212,11 +213,11 @@ describe.skipIf(!DATABASE_URL_SET)(
     });
 
     // -------------------------------------------------------------------------
-    // TS-I.5: Feature artifacts exist for all 7 DocumentStatus values (AC-005)
+    // TS-I.5: Feature artifacts exist for all FeatureStatus values (AC-005)
     // -------------------------------------------------------------------------
 
-    describe("TS-I.5 — Feature artifacts exist for all 7 DocumentStatus values (AC-005)", () => {
-      it("seeds FEATURE subtype artifacts covering all 7 DocumentStatus values", async () => {
+    describe("TS-I.5 — Feature artifacts exist for all FeatureStatus values (AC-005)", () => {
+      it("seeds FEATURE subtype artifacts covering all FeatureStatus values", async () => {
         const featureArtifacts = await ctx.prisma.artifact.findMany({
           where: {
             organizationId: BASELINE_ORG_ID,
@@ -226,11 +227,12 @@ describe.skipIf(!DATABASE_URL_SET)(
           select: { status: true },
         });
 
+        // Post-PRD-495 Features carry FeatureStatus values, not DocumentStatus.
         const seededStatuses = new Set(featureArtifacts.map((a) => a.status));
-        for (const status of Object.values(DocumentStatus)) {
+        for (const status of Object.values(FeatureStatus)) {
           expect(
             seededStatuses.has(status),
-            `Expected FEATURE artifact with DocumentStatus.${status} to be seeded`
+            `Expected FEATURE artifact with FeatureStatus.${status} to be seeded`
           ).toBe(true);
         }
       });

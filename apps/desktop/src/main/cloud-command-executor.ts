@@ -1,5 +1,6 @@
 import { URL } from "node:url";
 import { COMMAND_SIGNING_REJECTION_REASONS } from "../shared/contracts.js";
+import { asRecord } from "./api-response-utils.js";
 import type {
   CommandEventRecord,
   DesktopCancelEvent,
@@ -15,6 +16,44 @@ import { Observability } from "./observability.js";
 
 const COMMAND_RETENTION_MS = 10 * 60_000;
 const MAX_RETAINED_TERMINAL_COMMANDS = 200;
+
+// High-water mark on un-acknowledged events retained per command for ack-based
+// replay. `buffered.events` is only trimmed when the cloud acks (see
+// `acknowledge`); while the socket is disconnected no acks arrive, yet
+// `consumeStreamResponse` keeps pumping the local gateway output through
+// `emitTrackedEvent`, so a command streaming heavy output during an extended
+// outage would otherwise grow this buffer without bound and OOM the Electron
+// main process. When the mark is crossed we fail the command and tear down its
+// in-flight gateway stream to apply real producer backpressure — dropping the
+// oldest events instead would silently lose output the server never received.
+const MAX_BUFFERED_EVENTS_PER_COMMAND = 10_000;
+
+// Fallback watchdog for the gateway fetch's time-to-response. `command.timeoutMs`
+// is optional on the wire and long-running commands typically arrive without one,
+// so the per-command timeout above may never arm. If a local gateway handler
+// accepts the connection but never sends response headers (a stuck long-running
+// Engineer/child-process command), the fetch promise never settles, its
+// `inFlightByCommandId` slot is never released, and once `maxInFlightCommands`
+// slots wedge this way `schedule()` stops dispatching entirely. This independent
+// watchdog bounds only the wait for response headers; it is disarmed the moment
+// headers arrive so a legitimately long-running streamed response runs unbounded.
+//
+// The bound is route-aware. Streaming Engineer/child-process commands open their
+// response (SSE/ndjson headers) promptly, so the short default catches a wedge
+// quickly with no risk. The synchronous loop-launch/kill routes instead do heavy
+// setup — repo/worktree preparation, callback posting, binary resolution, process
+// spawn — BEFORE emitting their JSON response, so a slow-but-valid auto-clone can
+// legitimately exceed the short bound; they get a generous backstop that only
+// trips a truly hung handler, never a valid slow start.
+const GATEWAY_RESPONSE_TIMEOUT_MS = 60_000;
+const GATEWAY_SLOW_SETUP_RESPONSE_TIMEOUT_MS = 10 * 60_000;
+
+// Non-streaming gateway routes whose handler completes heavy synchronous setup
+// before responding; they use the generous backstop instead of the short default.
+const SLOW_SETUP_COMMAND_PATHS = new Set([
+  "/api/gateway/symphony/loop",
+  "/api/gateway/symphony/loop/kill",
+]);
 
 export type CloudCommandExecutorOptions = {
   getGatewayPort: () => number;
@@ -35,6 +74,18 @@ export type CloudCommandExecutorOptions = {
   prepareCommandForExecution?: (
     command: DesktopCommandEvent
   ) => Promise<DesktopCommandEvent>;
+  /**
+   * Override for the gateway time-to-response watchdog (see
+   * {@link GATEWAY_RESPONSE_TIMEOUT_MS}). Injected by tests; defaults to the
+   * constant in production.
+   */
+  gatewayResponseTimeoutMs?: number;
+  /**
+   * Override for the per-command buffered-event high-water mark (see
+   * {@link MAX_BUFFERED_EVENTS_PER_COMMAND}). Injected by tests; defaults to the
+   * constant in production.
+   */
+  maxBufferedEventsPerCommand?: number;
 };
 
 export class CloudCommandExecutor {
@@ -43,6 +94,7 @@ export class CloudCommandExecutor {
   private readonly inFlightByCommandId = new Map<string, RunningCommand>();
   private readonly lockOwners = new Map<string, string>();
   private readonly trackedByCommandId = new Map<string, TrackedCommand>();
+  private readonly maxBufferedEventsPerCommand: number;
   private connected = false;
   private disposed = false;
   private lastEmittedStats: {
@@ -52,6 +104,11 @@ export class CloudCommandExecutor {
 
   constructor(options: CloudCommandExecutorOptions) {
     this.options = options;
+    this.maxBufferedEventsPerCommand =
+      options.maxBufferedEventsPerCommand &&
+      options.maxBufferedEventsPerCommand > 0
+        ? options.maxBufferedEventsPerCommand
+        : MAX_BUFFERED_EVENTS_PER_COMMAND;
   }
 
   setConnected(connected: boolean): void {
@@ -338,6 +395,9 @@ export class CloudCommandExecutor {
         );
         Observability.commandTimedOut(command.commandId, command.operationId);
         this.markTerminal(command.commandId, "failed");
+      } else if (running.overflowed) {
+        // failBufferOverflow already logged, emitted the terminal error event,
+        // called markTerminal, and set this flag — nothing more to do here.
       } else {
         const msg =
           error instanceof Error ? error.message : "unknown command failure";
@@ -400,12 +460,31 @@ export class CloudCommandExecutor {
       "command-executor",
       `Gateway fetch: ${method} ${requestUrl.pathname}`
     );
-    const response = await fetch(requestUrl, {
-      method,
-      headers,
-      body,
-      signal,
-    });
+    // Arm an independent time-to-response watchdog combined with the caller's
+    // signal (cancel + optional command timeout). It aborts the fetch if headers
+    // never arrive, and is cleared as soon as they do so the streamed body — which
+    // may legitimately run far longer — stays governed only by the caller's signal.
+    // Slow-setup routes always take the generous backstop: the `gatewayResponse
+    // TimeoutMs` override is a test-only knob for the short prompt-headers bound,
+    // and must not shrink a valid slow loop launch below its intended backstop.
+    const responseTimeoutMs = SLOW_SETUP_COMMAND_PATHS.has(command.path)
+      ? GATEWAY_SLOW_SETUP_RESPONSE_TIMEOUT_MS
+      : (this.options.gatewayResponseTimeoutMs ?? GATEWAY_RESPONSE_TIMEOUT_MS);
+    const responseWatchdog = new AbortController();
+    const watchdogTimer = setTimeout(() => {
+      responseWatchdog.abort(new Error("gateway response timeout"));
+    }, responseTimeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(requestUrl, {
+        method,
+        headers,
+        body,
+        signal: AbortSignal.any([signal, responseWatchdog.signal]),
+      });
+    } finally {
+      clearTimeout(watchdogTimer);
+    }
     const contentType = (
       response.headers.get("content-type") ?? ""
     ).toLowerCase();
@@ -512,6 +591,31 @@ export class CloudCommandExecutor {
       return;
     }
 
+    // Apply backpressure before the replay buffer grows without bound. Acks are
+    // the only thing that trims `buffered.events`, so while the cloud socket is
+    // disconnected this array grows one entry per emitted event. Fail the command
+    // once it crosses the high-water mark rather than buffering unbounded.
+    // Terminal events (done/result/error) are always allowed through: they close
+    // the command, at most one is ever emitted, and failing a command that
+    // actually finished would corrupt its recorded outcome on reconnect.
+    if (
+      !isTerminalEvent(eventType, data) &&
+      tracked.buffered.events.length >= this.maxBufferedEventsPerCommand
+    ) {
+      this.failBufferOverflow(commandId, tracked);
+      return;
+    }
+
+    this.pushAndSend(tracked, commandId, eventType, data);
+  }
+
+  /** Assign the next sequence, buffer the event for replay, and forward it. */
+  private pushAndSend(
+    tracked: TrackedCommand,
+    commandId: string,
+    eventType: DesktopCommandStreamEvent["eventType"],
+    data: unknown
+  ): void {
     const sequence = tracked.lastEmittedSequence + 1;
     tracked.lastEmittedSequence = sequence;
     const record: CommandEventRecord = {
@@ -526,6 +630,37 @@ export class CloudCommandExecutor {
       eventType,
       data,
     });
+  }
+
+  /**
+   * Bound the per-command replay buffer. `buffered.events` only shrinks on ack,
+   * so a command streaming heavy output while the cloud socket is disconnected
+   * would grow it without limit (see {@link MAX_BUFFERED_EVENTS_PER_COMMAND}).
+   * Once the high-water mark is crossed, emit a terminal error (recorded so it
+   * still replays on reconnect), mark the command failed, and abort its in-flight
+   * gateway stream so the local producer stops — real backpressure rather than
+   * silently dropping events the server never acknowledged. The abort carries an
+   * Error so {@link execute}'s catch attributes the failure telemetry/log to the
+   * overflow rather than a generic "unknown command failure".
+   */
+  private failBufferOverflow(commandId: string, tracked: TrackedCommand): void {
+    const message = `command event buffer exceeded ${this.maxBufferedEventsPerCommand} unacknowledged events`;
+    this.pushAndSend(tracked, commandId, "error", {
+      type: "error",
+      terminal: true,
+      code: "buffer_overflow",
+      error: message,
+    });
+    this.markTerminal(commandId, "failed");
+    gatewayLog.error(
+      "command-executor",
+      `Command ${commandId} ${message}; aborting to apply backpressure`
+    );
+    const inFlight = this.inFlightByCommandId.get(commandId);
+    if (inFlight) {
+      inFlight.overflowed = true;
+      inFlight.abortController.abort(new Error(message));
+    }
   }
 
   private markTerminal(commandId: string, state: TerminalCommandState): void {
@@ -627,6 +762,7 @@ type RunningCommand = {
   cancelRequested: boolean;
   cancelReason?: string;
   timedOut?: boolean;
+  overflowed?: boolean;
   timeout?: NodeJS.Timeout;
 };
 
@@ -667,13 +803,6 @@ function deriveLockKey(command: DesktopCommandEvent): string | null {
     return null;
   }
   return `${command.operationId}:${scopedPath}`;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
 }
 
 function getSignatureBodyOverride(command: DesktopCommandEvent): unknown {

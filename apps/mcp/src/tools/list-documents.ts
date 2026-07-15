@@ -11,6 +11,7 @@ import {
   asRecord,
   buildDocumentUrlFromRecord,
   buildPaginatedPayload,
+  buildQuery,
   DEFAULT_PAGE_LIMIT,
   DOCUMENT_DOC_HELP,
   describeIdOrSlug,
@@ -144,16 +145,7 @@ export function registerListDocuments(
     },
     ({ projectId, assigneeId, type, limit, offset, includeParentArtifact }) =>
       withErrorHandling(async () => {
-        const query: Record<string, string> = {};
-        if (projectId !== undefined) {
-          query.projectId = projectId;
-        }
-        if (assigneeId !== undefined) {
-          query.assigneeId = assigneeId;
-        }
-        if (type !== undefined) {
-          query.type = type;
-        }
+        const query = buildQuery({ projectId, assigneeId, type });
 
         const documents = await apiClient.get<JsonDocumentWithProject[]>(
           "/documents",

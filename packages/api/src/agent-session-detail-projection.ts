@@ -5,6 +5,7 @@ import type {
   SyncedAgentSessionAgent,
   SyncedAgentSessionEvent,
   SyncedAgentSessionTokenUsage,
+  TokenEventCostPoint,
   TurnActor,
   TurnItem,
 } from "./types/agent-session.js";
@@ -18,6 +19,7 @@ type TurnProjectionInput = {
   agents: readonly SyncedAgentSessionAgent[];
   events: readonly SyncedAgentSessionEvent[];
   tokenUsageByModel: readonly SyncedAgentSessionTokenUsage[];
+  tokenEvents?: readonly TokenEventCostPoint[];
 };
 
 type TimelineProjectionInput = {
@@ -155,19 +157,98 @@ export function projectAgentSessionTurnItems(
         status: agent.status,
         model: input.primaryModel,
         duration: formatAgentDuration(agent),
-        tokens: formatTokenCount(input.tokenUsageByModel),
-        cost: formatTokenCost(input.tokenUsageByModel),
+        tokens: null,
+        cost: null,
         body: buildSubagentBody(agent, input.events),
       };
     });
 
-  return [...eventItems, ...subagentItems].sort((left, right) => {
+  const sorted = [...eventItems, ...subagentItems].sort((left, right) => {
     const byTime = getTurnItemTime(left) - getTurnItemTime(right);
     if (byTime !== 0) {
       return byTime;
     }
     return getTurnItemRow(left) - getTurnItemRow(right);
   });
+
+  attributeTokenEventCosts(sorted, input.tokenEvents);
+
+  return sorted;
+}
+
+const COST_BEARING_TYPES = new Set(["prompt", "say", "tools", "subagent"]);
+
+function isCostBearingItem(
+  item: TurnItem
+): item is Extract<
+  TurnItem,
+  { type: "prompt" | "say" | "tools" | "subagent" }
+> {
+  return COST_BEARING_TYPES.has(item.type);
+}
+
+function findAttributionTarget(
+  costBearing: Extract<
+    TurnItem,
+    { type: "prompt" | "say" | "tools" | "subagent" }
+  >[],
+  eventTMs: number
+): number {
+  let targetIndex = -1;
+  for (let i = costBearing.length - 1; i >= 0; i--) {
+    if (costBearing[i].tMs <= eventTMs) {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex < 0 || costBearing[targetIndex].type === "prompt") {
+    const searchFrom = Math.max(targetIndex, 0);
+    for (let i = searchFrom; i < costBearing.length; i++) {
+      if (costBearing[i].type !== "prompt") {
+        return i;
+      }
+    }
+    return 0;
+  }
+  return targetIndex;
+}
+
+function attributeTokenEventCosts(
+  items: TurnItem[],
+  tokenEvents: readonly TokenEventCostPoint[] | undefined
+): void {
+  const costBearing = items.filter(isCostBearingItem);
+  if (costBearing.length === 0) {
+    return;
+  }
+
+  if (!tokenEvents || tokenEvents.length === 0) {
+    return;
+  }
+
+  const deltas = new Map<number, number>();
+  const sortedEvents = [...tokenEvents].sort((a, b) => a.tMs - b.tMs);
+
+  for (const event of sortedEvents) {
+    if (!Number.isFinite(event.tMs)) {
+      continue;
+    }
+    const costUsd = event.costUsd ?? 0;
+    if (costUsd === 0) {
+      continue;
+    }
+
+    const targetIndex = findAttributionTarget(costBearing, event.tMs);
+    deltas.set(targetIndex, (deltas.get(targetIndex) ?? 0) + costUsd);
+  }
+
+  let cumulative = 0;
+  for (let i = 0; i < costBearing.length; i++) {
+    const delta = deltas.get(i) ?? 0;
+    cumulative += delta;
+    costBearing[i].costDelta = delta;
+    costBearing[i].cum = cumulative;
+  }
 }
 
 function metadataMessages(metadata: unknown): SessionMetadataMessage[] {
@@ -587,40 +668,6 @@ function formatDurationMs(durationMs: number): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
-function formatTokenCount(
-  tokenUsageByModel: readonly SyncedAgentSessionTokenUsage[]
-): string | null {
-  const total = tokenUsageByModel.reduce(
-    (sum, row) =>
-      sum +
-      row.inputTokens +
-      row.outputTokens +
-      row.cacheReadTokens +
-      row.cacheWriteTokens,
-    0
-  );
-  return total > 0 ? total.toLocaleString("en-US") : null;
-}
-
-function formatTokenCost(
-  tokenUsageByModel: readonly SyncedAgentSessionTokenUsage[]
-): string | null {
-  const total = tokenUsageByModel.reduce(
-    (sum, row) => sum + (row.estimatedCostUsd ?? 0),
-    0
-  );
-  return formatCurrency(total);
-}
-
-function formatCurrency(value: number): string | null {
-  return value > 0
-    ? new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-      }).format(value)
-    : null;
 }
 
 function buildSubagentBody(

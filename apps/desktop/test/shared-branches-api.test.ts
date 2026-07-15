@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { BranchStatus, encodeBranchId } from "@repo/api/src/types/branch.js";
+import {
+  BranchCloudHydrationStatus,
+  BranchStatus,
+  encodeBranchId,
+} from "@repo/api/src/types/branch.js";
+import {
+  ChecksStatus,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-checks.js";
+import { GitHubPRState } from "@repo/api/src/types/github.js";
+import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link.js";
 import type { SyncedAgentSession } from "../src/main/agent-session-sync-contract.js";
 import {
+  type BranchCloudHydrationSource,
   type BranchSyncSource,
   getSharedBranchAnalytics,
   getSharedBranchDetail,
   getSharedBranches,
+  getSharedBranchTrace,
   getSharedBranchUsage,
 } from "../src/main/shared-branches-api.js";
 import {
@@ -31,26 +43,11 @@ type CannedRows = {
 const SQL_SECRET = /SELECT|secret/;
 const KIND_BRANCH_RE = /kind = 'branch'/;
 
-/** snake_case canned token → the `bigint` the typed Prisma delegate surfaces. */
-const big = (value: unknown): bigint => {
-  if (typeof value === "string") {
-    return BigInt(value);
-  }
-  if (typeof value === "number") {
-    return BigInt(value);
-  }
-  if (typeof value === "bigint") {
-    return value;
-  }
-  return 0n;
-};
-
 /**
- * A `BranchSyncSource` whose `prisma.client` serves canned rows. FEA-1791: the
- * B1 branch reads run on the single Prisma client (not the raw `storeDb`
- * handle). Three are now TYPED delegates (`sessionArtifactLink.findMany`,
- * `artifact.findMany`, `tokenUsage.findMany`); the rest stay raw on
- * `$queryRawUnsafe` (row array, no `{ rows }` envelope). The canned rows are
+ * A `BranchSyncSource` whose `prisma.client` serves canned rows. The B1 branch
+ * reads run on the single Prisma client. Two are TYPED delegates
+ * (`sessionArtifactLink.findMany`, `artifact.findMany`); token reads and others
+ * stay raw on `$queryRawUnsafe` (row array, no `{ rows }` envelope). The canned rows are
  * authored once in snake_case (the DB-column shape) and translated here into the
  * Prisma RESULT shape each typed read maps, so the real read mapping — incl. the
  * `activityAt` COALESCE and the bigint→number token coercion — is exercised.
@@ -68,9 +65,32 @@ function makeSource(
   // reproduces it; `billing_mode` (a per-session column) is authored on the link
   // row and feeds the usage read's session→billing scope.
   const sessionArtifactLink = {
-    findMany: (args?: { distinct?: string[] }) => {
+    findMany: (args?: {
+      distinct?: string[];
+      where?: {
+        artifact?: {
+          kind?: string;
+          branchName?: unknown;
+          repoFullName?: string | null;
+        };
+      };
+    }) => {
+      // PLN-1148 branch-scoped commit read: session_artifact_links joined to a
+      // kind='commit' artifact, selecting the commit columns off `artifact`.
+      if (args?.where?.artifact?.kind === "commit") {
+        onQuery?.("commits");
+        return Promise.resolve(
+          (rows.commits ?? []).map((c) => ({
+            artifact: {
+              sha: c.sha,
+              committedAt: c.committed_at,
+              title: c.message,
+            },
+          }))
+        );
+      }
       onQuery?.("links");
-      const mapped = (rows.links ?? []).map((r) => ({
+      let mapped = (rows.links ?? []).map((r) => ({
         sessionId: r.session_id,
         isPrimary: r.is_primary,
         observedAt: r.observed_at,
@@ -87,6 +107,20 @@ function makeSource(
           billingMode: r.billing_mode ?? null,
         },
       }));
+      // PLN-1148 branch-scoped link read passes a STRING `branchName` (keyed to
+      // one branch); honor it so the rewired detail's early-exit (empty rows →
+      // null after a single read) and per-branch scoping are exercised. The
+      // list/usage reads pass `branchName: { not: null }` (an object) and must
+      // NOT be filtered — `typeof === "string"` distinguishes the two.
+      const wantBranch = args?.where?.artifact?.branchName;
+      if (typeof wantBranch === "string") {
+        const wantRepo = args?.where?.artifact?.repoFullName ?? null;
+        mapped = mapped.filter(
+          (m) =>
+            m.artifact.branchName === wantBranch &&
+            (m.artifact.repoFullName ?? null) === wantRepo
+        );
+      }
       if (args?.distinct?.includes("sessionId")) {
         const seen = new Set<unknown>();
         return Promise.resolve(
@@ -123,27 +157,25 @@ function makeSource(
       return Promise.resolve(keys);
     },
   };
-  // Typed usage-token read (step 2): token_usage keyed by `sessionId IN (…)`.
-  // The mock honors the `in` filter so it reproduces the read's scope; billing
-  // mode is NOT here — the read joins it from step 1 (the link relation).
-  const tokenUsage = {
-    findMany: (args?: { where?: { sessionId?: { in?: unknown[] } } }) => {
-      onQuery?.("usageTokens");
-      const ids = args?.where?.sessionId?.in;
-      const idSet = Array.isArray(ids) ? new Set(ids) : null;
+  // PLN-1148 branch-scoped PR read: pull_requests keyed by (repo, branch). The
+  // canned PR rows are snake_case (DB shape); translate to the Prisma camelCase
+  // result the typed read maps.
+  const pullRequest = {
+    findMany: () => {
+      onQuery?.("prs");
       return Promise.resolve(
-        (rows.usageTokens ?? [])
-          .filter((r) => (idSet ? idSet.has(r.session_id) : true))
-          .map((r) => ({
-            sessionId: r.session_id,
-            model: r.model,
-            inputTokens: big(r.input_tokens),
-            outputTokens: big(r.output_tokens),
-            cacheReadTokens: big(r.cache_read_tokens),
-            cacheWriteTokens: big(r.cache_write_tokens),
-            createdAt: r.created_at ?? null,
-            costUsdEstimated: r.cost_usd_estimated ?? null,
-          }))
+        (rows.prs ?? []).map((r) => ({
+          repoFullName: r.repo_full_name,
+          branchName: r.branch_name,
+          prNumber: r.pr_number ?? null,
+          prUrl: r.pr_url,
+          title: r.title ?? null,
+          state: r.state ?? null,
+          mergedAt: r.merged_at ?? null,
+          closedAt: r.closed_at ?? null,
+          openedAt: r.opened_at ?? null,
+          observedAt: r.observed_at ?? null,
+        }))
       );
     },
   };
@@ -163,6 +195,61 @@ function makeSource(
     if (sql.includes("FROM token_events")) {
       return Promise.resolve(rows.usageEvents ?? []);
     }
+    // FEA-2260: usage-path token read (JOIN sessions for billing_mode).
+    // billing_mode is a per-session column carried on the link rows in canned
+    // data; the real SQL JOINs sessions s — the mock resolves it by session id.
+    if (
+      sql.includes("FROM token_usage tu") &&
+      sql.includes("JOIN sessions s")
+    ) {
+      onQuery?.("usageTokens");
+      const linkSet = new Set(
+        (rows.links ?? []).map((r) => r.session_id as string)
+      );
+      const billingBySession = new Map<string, string | null>();
+      for (const l of rows.links ?? []) {
+        const sid = l.session_id as string;
+        if (!billingBySession.has(sid)) {
+          billingBySession.set(sid, (l.billing_mode as string) ?? null);
+        }
+      }
+      return Promise.resolve(
+        (rows.usageTokens ?? [])
+          .filter((r) => linkSet.has(r.session_id as string))
+          .map((r) => ({
+            session_id: r.session_id,
+            model: r.model,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cache_read_tokens: r.cache_read_tokens,
+            cache_write_tokens: r.cache_write_tokens,
+            billing_mode: billingBySession.get(r.session_id as string) ?? null,
+            created_at: r.created_at ?? null,
+            cost_usd_estimated: r.cost_usd_estimated ?? null,
+          }))
+      );
+    }
+    // FEA-2260: analytics-path token read (no billing mode JOIN).
+    if (sql.includes("FROM token_usage tu")) {
+      onQuery?.("usageTokens");
+      const linkSet = new Set(
+        (rows.links ?? []).map((r) => r.session_id as string)
+      );
+      return Promise.resolve(
+        (rows.usageTokens ?? [])
+          .filter((r) => linkSet.has(r.session_id as string))
+          .map((r) => ({
+            session_id: r.session_id,
+            model: r.model,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cache_read_tokens: r.cache_read_tokens,
+            cache_write_tokens: r.cache_write_tokens,
+            created_at: r.created_at ?? null,
+            cost_usd_estimated: r.cost_usd_estimated ?? null,
+          }))
+      );
+    }
     throw new Error(`unexpected SQL in test: ${sql.slice(0, 60)}`);
   };
   const sessions = rows.sessions;
@@ -177,7 +264,7 @@ function makeSource(
       client: {
         sessionArtifactLink,
         artifact,
-        tokenUsage,
+        pullRequest,
         $queryRawUnsafe: queryRaw,
       },
     },
@@ -525,6 +612,57 @@ describe("getSharedBranches (B1 list projection)", () => {
     assert.equal(row.prNumber, 42);
   });
 
+  test("cloud hydration overlays GitHub fields into shared list rows", async () => {
+    const source = makeSource({
+      links: [link({})],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "feature/x",
+          pr_number: 42,
+          pr_url: "https://github.com/acme/web/pull/42",
+          title: "Local title",
+          state: "open",
+          merged_at: null,
+          closed_at: null,
+          observed_at: "2026-06-10T12:00:00.000Z",
+        },
+      ],
+    });
+
+    const [row] = (
+      await getSharedBranches(
+        source,
+        {},
+        {
+          hydrate: async () => ({
+            status: BranchCloudHydrationStatus.Fresh,
+            overlays: {
+              "acme/web::feature/x": {
+                status: BranchStatus.Merged,
+                prNumber: 77,
+                prTitle: "Cloud title",
+                prState: GitHubPRState.Merged,
+                prUrl: "https://github.com/acme/web/pull/77",
+                checksStatus: ChecksStatus.Passing,
+                reviewDecision: ReviewDecision.Approved,
+              },
+            },
+          }),
+        }
+      )
+    ).items;
+
+    assert.equal(row.checksStatus, ChecksStatus.Passing);
+    assert.equal(row.reviewDecision, ReviewDecision.Approved);
+    assert.equal(row.status, BranchStatus.Merged);
+    assert.equal(row.prNumber, 77);
+    assert.equal(row.prTitle, "Cloud title");
+    assert.equal(row.prState, GitHubPRState.Merged);
+    assert.equal(row.prUrl, "https://github.com/acme/web/pull/77");
+    assert.equal(row.cloudHydrationStatus, BranchCloudHydrationStatus.Fresh);
+  });
+
   test("no PR + no enrichment → Draft, every enrichment field null (never 0)", async () => {
     const source = makeSource({
       links: [
@@ -844,6 +982,148 @@ describe("getSharedBranchUsage (B1 usage rollup)", () => {
     );
   });
 
+  test("windows the rollup to branches active on/after startDate (FEA-2155)", async () => {
+    // Two branches: "recent" last-active inside a 7-day window, "stale" outside.
+    // The window must restrict totals + branch count to the in-window branch.
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "recent",
+          session_id: "s-recent",
+          activity_at: "2026-06-20T10:00:00.000Z",
+        }),
+        link({
+          branch_name: "stale",
+          session_id: "s-stale",
+          activity_at: "2026-05-01T10:00:00.000Z",
+        }),
+      ],
+      usageTokens: [
+        {
+          session_id: "s-recent",
+          model: "unknown-model",
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-20T10:00:00.000Z",
+        },
+        {
+          session_id: "s-stale",
+          model: "unknown-model",
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-05-01T10:00:00.000Z",
+        },
+      ],
+    });
+    // All-time (no window): both branches, both sessions' tokens.
+    const all = await getSharedBranchUsage(source);
+    assert.equal(all.totalBranches, 2);
+    assert.equal(all.totalInputTokens, 110);
+    // 7-day-style window: only "recent" qualifies.
+    const windowed = await getSharedBranchUsage(source, {
+      startDate: "2026-06-17T00:00:00.000Z",
+    });
+    assert.equal(windowed.totalBranches, 1);
+    assert.equal(windowed.totalInputTokens, 10);
+    assert.equal(windowed.totalOutputTokens, 5);
+  });
+
+  test("usage endDate excludes branches active after the window (FEA-2155)", async () => {
+    // Mirrors the analytics endDate test: "after-window" (active 06-25) is past
+    // the window's upper bound and must be dropped, leaving only "in-window".
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "in-window",
+          session_id: "s-in",
+          activity_at: "2026-06-10T10:00:00.000Z",
+        }),
+        link({
+          branch_name: "after-window",
+          session_id: "s-after",
+          activity_at: "2026-06-25T10:00:00.000Z",
+        }),
+      ],
+      usageTokens: [
+        {
+          session_id: "s-in",
+          model: "unknown-model",
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-10T10:00:00.000Z",
+        },
+        {
+          session_id: "s-after",
+          model: "unknown-model",
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-25T10:00:00.000Z",
+        },
+      ],
+    });
+    const windowed = await getSharedBranchUsage(source, {
+      startDate: "2026-06-01T00:00:00.000Z",
+      endDate: "2026-06-15T00:00:00.000Z",
+    });
+    // Only "in-window" (active 06-10) falls within [06-01, 06-15]; the 06-25
+    // branch is excluded by endDate.
+    assert.equal(windowed.totalBranches, 1);
+    assert.equal(windowed.totalInputTokens, 10);
+  });
+
+  test("windows on the COMMIT-inclusive lastActivityAt, like the table (PRD-486 / FEA-2155)", async () => {
+    // The branch's SESSION activity (06-10) is OUTSIDE a window starting 06-18,
+    // but its latest COMMIT (06-20) is inside — and PRD-486 makes the commit the
+    // primary last-active signal, so the table (getSharedBranches) shows it. The
+    // rollup must window on the SAME commit-inclusive timestamp: dropping commits
+    // would wrongly exclude the branch and undercount totals vs. the table.
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "commit-recent",
+          session_id: "s1",
+          activity_at: "2026-06-10T10:00:00.000Z",
+        }),
+      ],
+      commits: [
+        commit({
+          branch_name: "commit-recent",
+          committed_at: "2026-06-20T08:00:00.000Z",
+        }),
+      ],
+      usageTokens: [
+        {
+          session_id: "s1",
+          model: "unknown-model",
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-20T10:00:00.000Z",
+        },
+      ],
+    });
+    const windowed = await getSharedBranchUsage(source, {
+      startDate: "2026-06-18T00:00:00.000Z",
+    });
+    // Commit 06-20 places the branch in-window → counted, its tokens included.
+    assert.equal(windowed.totalBranches, 1);
+    assert.equal(windowed.totalInputTokens, 10);
+  });
+
   test("hour buckets come from token_events (per-event time), not the aggregate", async () => {
     const source = makeSource({
       links: [link({ branch_name: "a", session_id: "s1" })],
@@ -906,13 +1186,20 @@ describe("getSharedBranchDetail (Epic C detail projection)", () => {
     assert.equal(await getSharedBranchDetail(makeSource({}), ""), null);
   });
 
-  test("null when the id matches no local branch", async () => {
-    const source = makeSource({ links: [link({ branch_name: "feature/x" })] });
+  test("null when the id matches no local branch (early-exit after one read)", async () => {
+    const reads: string[] = [];
+    const source = makeSource(
+      { links: [link({ branch_name: "feature/x" })] },
+      (q) => reads.push(q)
+    );
     const missingId = encodeBranchId({
       repoFullName: "acme/web",
       branchName: "does-not-exist",
     });
     assert.equal(await getSharedBranchDetail(source, missingId), null);
+    // PLN-1148: the scoped link read returns no rows for an unknown branch, so
+    // the detail 404s WITHOUT issuing the PR / token / commit reads.
+    assert.deepEqual(reads, ["links"]);
   });
 
   test("no session loader → graceful spine fallback (null/0 usage, empty trace)", async () => {
@@ -1111,7 +1398,12 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
           externalSessionId: "s1",
           // A prose/MCP mention of an UNRELATED artifact — must NOT become a link.
           artifactRefs: [
-            { slug: "PLN-988", isPrimary: false, method: "slug_in_message" },
+            {
+              kind: ArtifactRefTargetKind.ClosedloopArtifact,
+              slug: "PLN-988",
+              isPrimary: false,
+              method: "slug_in_message",
+            },
           ],
         }),
       ],
@@ -1129,7 +1421,12 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
         syncedSession({
           externalSessionId: "s1",
           artifactRefs: [
-            { slug: "FEA-1952", isPrimary: false, method: "slug_in_message" },
+            {
+              kind: ArtifactRefTargetKind.ClosedloopArtifact,
+              slug: "FEA-1952",
+              isPrimary: false,
+              method: "slug_in_message",
+            },
           ],
         }),
       ],
@@ -1221,7 +1518,9 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
     }
   });
 
-  test("mergedTrace: one sessionstart per session + a synthesized idle on a >=120s gap, each tagged", async () => {
+  // PLN-1148 Phase 2: the merged trace is now produced by the dedicated lazy
+  // `getSharedBranchTrace` endpoint, not the detail (which ships `mergedTrace: []`).
+  test("getSharedBranchTrace: one sessionstart per session + a synthesized idle on a >=120s gap, each tagged", async () => {
     const source = makeSource({
       links: [
         link({ branch_name: "feature/x", session_id: "s1" }),
@@ -1239,9 +1538,7 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
         }),
       ],
     });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.ok(detail);
-    const trace = detail.mergedTrace;
+    const trace = await getSharedBranchTrace(source, idFeatureX);
     // Every item carries its sessionId.
     for (const item of trace) {
       assert.equal(typeof item.sessionId, "string");
@@ -1262,6 +1559,50 @@ describe("getSharedBranchDetail (D1 enrichment)", () => {
     const s1Index = startIndexes.find((e) => e.item.sessionId === "s1")?.index;
     const s2Index = startIndexes.find((e) => e.item.sessionId === "s2")?.index;
     assert.ok(s1Index != null && s2Index != null && s1Index < s2Index);
+  });
+
+  test("PLN-1148 Phase 2: detail defers the trace ([]) and summarizes lead-time from event instants", async () => {
+    const source = makeSource({
+      links: [link({ branch_name: "feature/x", session_id: "s1" })],
+      sessions: [
+        syncedSession({
+          externalSessionId: "s1",
+          events: [
+            {
+              externalEventId: "e1",
+              eventType: "user",
+              createdAt: "2026-06-10T10:00:00.000Z",
+            },
+            // 5-minute gap (>= the 120s idle threshold) → one idle span.
+            {
+              externalEventId: "e2",
+              eventType: "assistant",
+              createdAt: "2026-06-10T10:05:00.000Z",
+            },
+          ],
+        }),
+      ],
+    });
+    const detail = await getSharedBranchDetail(source, idFeatureX);
+    assert.ok(detail);
+    // The events-heavy trace is NOT shipped by the detail anymore.
+    assert.deepEqual(detail.mergedTrace, []);
+    // The lightweight lead-time summary IS — derived from the event instants
+    // (which survive the light `omitEventData` hydration).
+    assert.equal(detail.leadTime.firstActivityT, "2026-06-10T10:00:00.000Z");
+    assert.equal(detail.leadTime.lastActivityT, "2026-06-10T10:05:00.000Z");
+    assert.equal(detail.leadTime.idleSpans.length, 1);
+    assert.ok(detail.leadTime.idleSpans[0].gapMs >= 120_000);
+  });
+
+  test("getSharedBranchTrace: empty for a missing source or an id matching no branch", async () => {
+    assert.deepEqual(await getSharedBranchTrace(null, idFeatureX), []);
+    assert.deepEqual(
+      await getSharedBranchTrace(makeSource({}), idFeatureX),
+      []
+    );
+    const otherBranch = makeSource({ links: [link({ branch_name: "other" })] });
+    assert.deepEqual(await getSharedBranchTrace(otherBranch, idFeatureX), []);
   });
 
   test("a session that does not hydrate keeps the honest link-row spine", async () => {
@@ -1325,11 +1666,12 @@ describe("getSharedBranchAnalytics (B6)", () => {
     );
   });
 
-  test("analytics computes merge rate locally and gates GitHub-only KPIs", async () => {
+  test("analytics computes merge rate and active/merged PR counts locally", async () => {
     const source = makeSource({
       links: [
         link({ branch_name: "merged-branch", session_id: "s1" }),
-        link({ branch_name: "open-branch", session_id: "s2" }),
+        link({ branch_name: "closed-branch", session_id: "s2" }),
+        link({ branch_name: "open-branch", session_id: "s3" }),
       ],
       prs: [
         {
@@ -1343,10 +1685,23 @@ describe("getSharedBranchAnalytics (B6)", () => {
           closed_at: "2026-06-11T10:00:00.000Z",
           observed_at: "2026-06-11T10:00:00.000Z",
         },
+        // Closed WITHOUT merging → a decided (terminal) outcome that counts
+        // toward the denominator but not the numerator.
+        {
+          repo_full_name: "acme/web",
+          branch_name: "closed-branch",
+          pr_number: 2,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: null,
+          closed_at: "2026-06-11T09:00:00.000Z",
+          observed_at: "2026-06-11T09:00:00.000Z",
+        },
         {
           repo_full_name: "acme/web",
           branch_name: "open-branch",
-          pr_number: 2,
+          pr_number: 3,
           pr_url: null,
           title: null,
           state: "open",
@@ -1357,16 +1712,24 @@ describe("getSharedBranchAnalytics (B6)", () => {
       ],
     });
     const analytics = await getSharedBranchAnalytics(source);
-    // 1 of 2 PR'd branches merged → 50%.
+    // FEA-2942: merge rate is over DECIDED branches (merged + closed). The
+    // still-open branch is excluded from the denominator, so 1 merged / 2
+    // decided (merged + closed) = 50% (pre-fix: 1 / 3 with-a-PR = 33%).
     assert.equal(analytics.mergeRate.state, "available");
     assert.equal(analytics.mergeRate.value, 50);
-    // The merged branch has no LOC enrichment, so it folds in as a 0-line PR
-    // (matching the dashboard's `?? 0` inclusion, FEA-2159) → median 0, available
-    // rather than unavailable. GitHub-only PR counts stay gated.
+    // Neither the branch artifact nor its PR artifact carries LOC, but the merged
+    // single-PR branch still contributes 0 to the median (dashboard parity: a
+    // missing line total folds in as 0), so median PR size is available at 0.
     assert.equal(analytics.medianPrSize.state, "available");
     assert.equal(analytics.medianPrSize.value, 0);
-    assert.equal(analytics.activePrCount.state, "gated");
-    assert.equal(analytics.mergedCount.state, "gated");
+    // Active/merged PR counts are computed locally from the same captured
+    // pr_state/branch-status rows the web producer uses (FEA-2950), so the shared
+    // card shows a real number on desktop too rather than a connect-GitHub "—".
+    // One OPEN PR (open-branch) and one merged branch (merged-branch).
+    assert.equal(analytics.activePrCount.state, "available");
+    assert.equal(analytics.activePrCount.value, 1);
+    assert.equal(analytics.mergedCount.state, "available");
+    assert.equal(analytics.mergedCount.value, 1);
   });
 
   test("merge rate excludes multi-PR branches (ambiguous lifecycle)", async () => {
@@ -1417,6 +1780,77 @@ describe("getSharedBranchAnalytics (B6)", () => {
     // multi-PR branch wrongly included in the denominator).
     assert.equal(analytics.mergeRate.state, "available");
     assert.equal(analytics.mergeRate.value, 100);
+  });
+
+  test("mergedCount shares the merge-rate numerator set — excludes MERGED multi-PR branches (FEA-2997)", async () => {
+    // The "Merged PRs" count and the merge-rate numerator must be the SAME set,
+    // or the two KPIs on one card visibly disagree. `single-merged` is a merged,
+    // single-PR branch (in the numerator); `multi-merged` is genuinely merged but
+    // carries two distinct linked PRs → multiPrWarning, so its lifecycle is
+    // ambiguous and it is excluded from the rate numerator. Before FEA-2997,
+    // `mergedCount` classified by branch status alone (no `!multiPrWarning`), so it
+    // counted BOTH (mergedCount=2) while the numerator counted ONE — a "Merged PRs"
+    // count that contradicts a 100% rate whose numerator is 1. `mergedCount` must
+    // now equal the numerator (1).
+    const source = makeSource({
+      links: [
+        link({ branch_name: "single-merged", session_id: "s1" }),
+        link({ branch_name: "multi-merged", session_id: "s2" }),
+      ],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "single-merged",
+          pr_number: 1,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-11T10:00:00.000Z",
+          closed_at: "2026-06-11T10:00:00.000Z",
+          observed_at: "2026-06-11T10:00:00.000Z",
+        },
+        // Two distinct MERGED PRs on one branch → multiPrWarning true. Merged
+        // status, so multiPrWarning is the SOLE ground for excluding it.
+        {
+          repo_full_name: "acme/web",
+          branch_name: "multi-merged",
+          pr_number: 2,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-12T10:00:00.000Z",
+          closed_at: "2026-06-12T10:00:00.000Z",
+          observed_at: "2026-06-12T12:00:00.000Z",
+        },
+        {
+          repo_full_name: "acme/web",
+          branch_name: "multi-merged",
+          pr_number: 3,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-12T09:00:00.000Z",
+          closed_at: "2026-06-12T09:00:00.000Z",
+          observed_at: "2026-06-12T11:00:00.000Z",
+        },
+      ],
+    });
+
+    // Pin the premise: multi-merged is MERGED yet multiPrWarning, so the only
+    // reason it leaves the merged set is its ambiguous lifecycle.
+    const listItems = (await getSharedBranches(source)).items;
+    const multi = listItems.find((item) => item.branchName === "multi-merged");
+    assert.ok(multi, "multi-merged branch present in the projection");
+    assert.equal(multi.status, BranchStatus.Merged);
+    assert.equal(multi.multiPrWarning, true);
+
+    const analytics = await getSharedBranchAnalytics(source);
+    // Numerator = 1 (single-merged only); denominator = 1 decided single-PR
+    // branch → 100%. `mergedCount` must match the numerator exactly: 1, not 2.
+    assert.equal(analytics.mergeRate.state, "available");
+    assert.equal(analytics.mergeRate.value, 100);
+    assert.equal(analytics.mergedCount.state, "available");
+    assert.equal(analytics.mergedCount.value, 1);
   });
 
   test("analytics prices spend from the deduped per-session usage read, never the per-branch aggregate", async () => {
@@ -1535,23 +1969,244 @@ describe("getSharedBranchAnalytics (B6)", () => {
     assert.equal(analytics.locPerDollar.value, 300);
   });
 
+  test("median PR size falls back to the merged PR artifact's LOC when the branch artifact is un-enriched (FEA-2159)", async () => {
+    // The real-world bug: the branch artifact carries NO LOC (link has no
+    // lines_added/lines_removed) while its merged PR artifact IS enriched — the
+    // same enriched source the delivery dashboard medians. `readLocalBranchPrRows`
+    // joins that PR-artifact LOC onto the PR row, and the list projection adopts
+    // it, so the card reports a real size instead of reading null off the branch.
+    const source = makeSource({
+      links: [link({ branch_name: "pr-enriched", session_id: "s1" })],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "pr-enriched",
+          pr_number: 7,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-11T10:00:00.000Z",
+          closed_at: "2026-06-11T10:00:00.000Z",
+          observed_at: "2026-06-11T10:00:00.000Z",
+          // LOC from the joined `kind='pull_request'` artifact (FEA-2159).
+          lines_added: 600,
+          lines_removed: 22,
+          files_changed: 9,
+        },
+      ],
+    });
+    const analytics = await getSharedBranchAnalytics(source);
+    // Median (600 + 22) = 622 from the PR artifact, even though the branch
+    // artifact's own LOC is null.
+    assert.equal(analytics.medianPrSize.state, "available");
+    assert.equal(analytics.medianPrSize.value, 622);
+  });
+
+  test("analytics uses cloud-hydrated PR LOC when local desktop LOC is missing", async () => {
+    const source = makeSource({
+      links: [link({ branch_name: "prod-hydrated", session_id: "s1" })],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "prod-hydrated",
+          pr_number: 8,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-11T10:00:00.000Z",
+          closed_at: "2026-06-11T10:00:00.000Z",
+          observed_at: "2026-06-11T10:00:00.000Z",
+        },
+      ],
+    });
+    const hydration: BranchCloudHydrationSource = {
+      hydrate: async () => ({
+        status: BranchCloudHydrationStatus.Fresh,
+        overlays: {
+          "acme/web::prod-hydrated": {
+            additions: 140,
+            deletions: 10,
+            filesChanged: 4,
+          },
+        },
+      }),
+    };
+
+    const analytics = await getSharedBranchAnalytics(source, {}, hydration);
+
+    assert.equal(analytics.medianPrSize.state, "available");
+    assert.equal(analytics.medianPrSize.value, 150);
+  });
+
+  test("analytics windows after cloud hydration updates lastActivityAt", async () => {
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "cloud-recent",
+          session_id: "s1",
+          activity_at: "2026-06-01T10:00:00.000Z",
+        }),
+      ],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "cloud-recent",
+          pr_number: 9,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-01T10:00:00.000Z",
+          closed_at: "2026-06-01T10:00:00.000Z",
+          observed_at: "2026-06-01T10:00:00.000Z",
+        },
+      ],
+    });
+    const hydration: BranchCloudHydrationSource = {
+      hydrate: async () => ({
+        status: BranchCloudHydrationStatus.Fresh,
+        overlays: {
+          "acme/web::cloud-recent": {
+            additions: 140,
+            deletions: 10,
+            filesChanged: 4,
+            lastActivityAt: "2026-06-20T10:00:00.000Z",
+          },
+        },
+      }),
+    };
+
+    const analytics = await getSharedBranchAnalytics(
+      source,
+      { startDate: "2026-06-18T00:00:00.000Z" },
+      hydration
+    );
+
+    assert.equal(analytics.medianPrSize.state, "available");
+    assert.equal(analytics.medianPrSize.value, 150);
+  });
+
+  test("median PR size excludes MERGED multi-PR branches (ambiguous lifecycle) even when LOC-enriched (FEA-2159)", async () => {
+    // Both branches are MERGED and LOC-enriched. The single-PR branch contributes
+    // 200 + 50 = 250; the multi-PR branch (two distinct linked PRs →
+    // multiPrWarning) carries 4000 + 1000 = 5000. Because BOTH are merged, the ONLY
+    // reason the multi-PR branch stays out of the median is its ambiguous lifecycle
+    // (multiPrWarning) — the row only carries the latest PR's state. So the median
+    // must be 250 (the single-PR branch alone). If the `!multiPrWarning` guard were
+    // dropped from the median filter, the 5000 would join and median([250, 5000])
+    // would be 2625 — this assertion fails closed, guarding the clause.
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "single-merged",
+          session_id: "s1",
+          lines_added: 200,
+          lines_removed: 50,
+          files_changed: 5,
+        }),
+        link({
+          branch_name: "multi-merged",
+          session_id: "s2",
+          lines_added: 4000,
+          lines_removed: 1000,
+          files_changed: 40,
+        }),
+      ],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "single-merged",
+          pr_number: 1,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-11T10:00:00.000Z",
+          closed_at: "2026-06-11T10:00:00.000Z",
+          observed_at: "2026-06-11T10:00:00.000Z",
+        },
+        // Two distinct MERGED PRs on one branch → multiPrWarning true. The newest
+        // by observed_at (pr 2) is displayed and its MERGED state makes the branch
+        // status Merged, so multiPrWarning is the sole ground for its exclusion.
+        {
+          repo_full_name: "acme/web",
+          branch_name: "multi-merged",
+          pr_number: 2,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-12T10:00:00.000Z",
+          closed_at: "2026-06-12T10:00:00.000Z",
+          observed_at: "2026-06-12T12:00:00.000Z",
+        },
+        {
+          repo_full_name: "acme/web",
+          branch_name: "multi-merged",
+          pr_number: 3,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-12T09:00:00.000Z",
+          closed_at: "2026-06-12T09:00:00.000Z",
+          observed_at: "2026-06-12T11:00:00.000Z",
+        },
+      ],
+    });
+
+    // Pin the exclusion PREMISE explicitly (self-diagnosing guard): the same list
+    // projection analytics medians over must classify multi-merged as a MERGED,
+    // multi-PR (ambiguous-lifecycle) branch and single-merged as a MERGED,
+    // single-PR one. Asserting these directly means a future break surfaces as the
+    // exact invariant that moved (e.g. "multiPrWarning false") rather than only as
+    // a shifted median, and it proves the branch's exclusion is due to
+    // multiPrWarning ALONE — both branches are otherwise merged + LOC-enriched.
+    const listItems = (await getSharedBranches(source)).items;
+    const single = listItems.find(
+      (item) => item.branchName === "single-merged"
+    );
+    const multi = listItems.find((item) => item.branchName === "multi-merged");
+    assert.ok(single, "single-merged branch present in the projection");
+    assert.ok(multi, "multi-merged branch present in the projection");
+    // multi-merged: genuinely merged AND unambiguously multi-PR (2 distinct PRs).
+    assert.equal(multi.status, BranchStatus.Merged);
+    assert.equal(multi.multiPrWarning, true);
+    assert.equal((multi.additions ?? 0) + (multi.deletions ?? 0), 5000);
+    // single-merged: merged and single-PR — the only branch that may enter the set.
+    assert.equal(single.status, BranchStatus.Merged);
+    assert.equal(single.multiPrWarning, false);
+    assert.equal((single.additions ?? 0) + (single.deletions ?? 0), 250);
+
+    const analytics = await getSharedBranchAnalytics(source);
+    // Only the single-PR merged branch contributes: median([250]) = 250. The
+    // merged multi-PR branch's 5000 is EXCLUDED (multiPrWarning); wrongly
+    // including it would make median([250, 5000]) = 2625.
+    assert.equal(analytics.medianPrSize.state, "available");
+    assert.equal(analytics.medianPrSize.value, 250);
+  });
+
   test("LOC-per-$ excludes the un-enriched-branch share of a mixed session (even-split)", async () => {
-    // One session worked an ENRICHED branch (net LOC 100) AND an UN-enriched one
-    // (unknown LOC). Its $1.00 is even-split across the 2 branches it touched, so
-    // only the enriched half ($0.50) — the spend backed by known LOC — counts in
-    // the denominator. Counting the full $1.00 would drag the un-enriched half
-    // (no LOC to offset it) in and HALVE the ratio (100/$1 = 100 vs 100/$0.50 = 200).
+    // One session PUSHED an ENRICHED branch (net LOC 100) AND an UN-enriched one
+    // (unknown LOC). FEA-2531: both are active-write links (the `method` records
+    // the push that got them past the branch-reads display gate; `makeSource`
+    // serves canned post-read rows, so the divisor here IS the active-write-link
+    // count — 2). Its $1.00 is even-split across those 2 branches, so only the
+    // enriched half ($0.50) — the spend backed by known LOC — counts in the
+    // denominator. Counting the full $1.00 would drag the un-enriched half (no LOC
+    // to offset it) in and HALVE the ratio (100/$1 = 100 vs 100/$0.50 = 200).
     const source = makeSource({
       links: [
         link({
           branch_name: "enriched",
           session_id: "s1",
+          method: "git_push",
           lines_added: 150,
           lines_removed: 50,
           files_changed: 5,
         }),
-        // Same session, a second branch with NO LOC enrichment (lines null).
-        link({ branch_name: "unenriched", session_id: "s1" }),
+        // Same session, a second PUSHED branch with NO LOC enrichment (lines null).
+        link({
+          branch_name: "unenriched",
+          session_id: "s1",
+          method: "git_push",
+        }),
       ],
       usageTokens: [
         {
@@ -1718,5 +2373,139 @@ describe("getSharedBranchAnalytics (B6)", () => {
     // PR-less branch derives to Draft → in progress).
     assert.equal(analytics.activeBranchCount.state, "available");
     assert.equal(analytics.activeBranchCount.value, 1);
+  });
+
+  test("windows the KPIs + spend to branches active in [startDate, endDate] (FEA-2155)", async () => {
+    // The card↔table reconciliation bug: a 7-day table shown under all-time
+    // cards. With a window, the active-branch count AND AI spend must reflect
+    // only the in-window branches, the same set the table windows on.
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "recent",
+          session_id: "s-recent",
+          activity_at: "2026-06-20T10:00:00.000Z",
+        }),
+        link({
+          branch_name: "stale",
+          session_id: "s-stale",
+          activity_at: "2026-05-01T10:00:00.000Z",
+        }),
+      ],
+      usageTokens: [
+        {
+          session_id: "s-recent",
+          model: "claude-sonnet-4-5",
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          created_at: null,
+          cost_usd_estimated: 0.3,
+        },
+        {
+          session_id: "s-stale",
+          model: "claude-sonnet-4-5",
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          created_at: null,
+          cost_usd_estimated: 0.7,
+        },
+      ],
+    });
+    // All-time: both Draft branches active, spend 0.3 + 0.7 = 1.0.
+    const all = await getSharedBranchAnalytics(source);
+    assert.equal(all.activeBranchCount.value, 2);
+    assert.equal(all.totalSpendUsd.value, 1.0);
+    // 7-day-style window starting after "stale": only "recent" survives.
+    const windowed = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-17T00:00:00.000Z",
+    });
+    assert.equal(windowed.activeBranchCount.value, 1);
+    assert.equal(windowed.totalSpendUsd.value, 0.3);
+  });
+
+  test("window compares lastActivityAt by instant, not byte-wise (FEA-2155)", async () => {
+    // A space-separated timestamp on the SAME calendar day as the window start:
+    // a byte-wise compare would drop it (space 0x20 < `T` 0x54), but its instant
+    // is on/after the start in every timezone, so it must be KEPT.
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "recent",
+          session_id: "s1",
+          activity_at: "2026-06-17 23:59:59",
+        }),
+      ],
+    });
+    const windowed = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-17T00:00:00.000Z",
+    });
+    assert.equal(windowed.activeBranchCount.value, 1);
+  });
+
+  test("windows on the COMMIT-inclusive lastActivityAt, like the table (PRD-486 / FEA-2155)", async () => {
+    // SESSION activity (06-10) is outside a window starting 06-18, but the latest
+    // COMMIT (06-20) is inside. The table windows on the commit-inclusive
+    // `lastActivityAt` (PRD-486), so the cards must too — windowing on a
+    // commit-blind timestamp would drop this branch and its spend, breaking the
+    // card↔table reconciliation this change exists to fix.
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "commit-recent",
+          session_id: "s1",
+          activity_at: "2026-06-10T10:00:00.000Z",
+        }),
+      ],
+      commits: [
+        commit({
+          branch_name: "commit-recent",
+          committed_at: "2026-06-20T08:00:00.000Z",
+        }),
+      ],
+      usageTokens: [
+        {
+          session_id: "s1",
+          model: "claude-sonnet-4-5",
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          created_at: null,
+          cost_usd_estimated: 0.25,
+        },
+      ],
+    });
+    const windowed = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-18T00:00:00.000Z",
+    });
+    // Commit 06-20 places the branch in-window → counted + its spend included.
+    assert.equal(windowed.activeBranchCount.value, 1);
+    assert.equal(windowed.totalSpendUsd.value, 0.25);
+  });
+
+  test("endDate excludes branches active after the window (FEA-2155)", async () => {
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "in-window",
+          session_id: "s1",
+          activity_at: "2026-06-10T10:00:00.000Z",
+        }),
+        link({
+          branch_name: "after-window",
+          session_id: "s2",
+          activity_at: "2026-06-25T10:00:00.000Z",
+        }),
+      ],
+    });
+    const windowed = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-01T00:00:00.000Z",
+      endDate: "2026-06-15T00:00:00.000Z",
+    });
+    assert.equal(windowed.activeBranchCount.value, 1);
   });
 });

@@ -3,7 +3,7 @@
 import type { BranchCommit, MergedTraceItem } from "@repo/api/src/types/branch";
 import { cn } from "@repo/design-system/lib/utils";
 import { MessageSquareIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   type BranchEventDot,
   deriveEventDots,
@@ -15,6 +15,11 @@ import {
   type TimeRange,
   timeRange,
 } from "../lib/branch-timeline-range";
+import {
+  type BranchTipAnchor,
+  BranchTipPortal,
+  tipAnchorFromElement,
+} from "./branch-tip-portal";
 
 /**
  * Event-dot rail (Epic E / E3) — the design handoff's `bq-drail`. Green
@@ -74,8 +79,6 @@ const DOT_META: Record<
   orange: { label: "Review comments", color: "var(--warning, #d9a441)" },
 };
 
-const LEFT_FLIP_PERCENT = 60;
-
 type PositionedDot = { dot: BranchEventDot; left: number; key: string };
 
 function EventDot({
@@ -89,7 +92,7 @@ function EventDot({
   left: number;
   active: boolean;
   onScrub?: (t: string) => void;
-  onHover: () => void;
+  onHover: (anchor: BranchTipAnchor) => void;
 }) {
   const className = cn("bq-dot", COLOR_CLASS[dot.color], active && "hot");
   const style = { left: `${left}%` };
@@ -99,8 +102,10 @@ function EventDot({
         aria-label={dot.label}
         className={className}
         onClick={() => onScrub(dot.t)}
-        onFocus={onHover}
-        onMouseEnter={onHover}
+        onFocus={(event) => onHover(tipAnchorFromElement(event.currentTarget))}
+        onMouseEnter={(event) =>
+          onHover(tipAnchorFromElement(event.currentTarget))
+        }
         style={style}
         type="button"
       />
@@ -109,13 +114,17 @@ function EventDot({
   return <span className={className} style={style} />;
 }
 
-function DotTip({ dot, left }: { dot: BranchEventDot; left: number }) {
+/** Portaled to <body> so it's never clipped behind the sticky chrome. */
+function DotTip({
+  dot,
+  anchor,
+}: {
+  dot: BranchEventDot;
+  anchor: BranchTipAnchor;
+}) {
   const meta = DOT_META[dot.color];
   return (
-    <div
-      className={cn("bq-tip bq-tip-mk", left > LEFT_FLIP_PERCENT && "is-left")}
-      style={{ left: `${left}%` }}
-    >
+    <BranchTipPortal anchor={anchor} className="bq-tip-mk">
       <div className="bq-tip-mkhead" style={{ color: meta.color }}>
         <span className="bq-tip-sw" style={{ background: meta.color }} />
         {meta.label}
@@ -130,11 +139,11 @@ function DotTip({ dot, left }: { dot: BranchEventDot; left: number }) {
           <span className="bq-tip-ll">{dot.label}</span>
         </div>
       </div>
-    </div>
+    </BranchTipPortal>
   );
 }
 
-export function BranchEventDotRail({
+export const BranchEventDotRail = memo(function BranchEventDotRail({
   traceItems,
   mergedAt,
   openedAt,
@@ -147,7 +156,10 @@ export function BranchEventDotRail({
   onScrub,
   className,
 }: BranchEventDotRailProps) {
-  const [hovered, setHovered] = useState<PositionedDot | null>(null);
+  const [hovered, setHovered] = useState<{
+    dot: BranchEventDot;
+    anchor: BranchTipAnchor;
+  } | null>(null);
   const dots = useMemo(
     () => [
       ...deriveEventDots(traceItems),
@@ -206,12 +218,12 @@ export function BranchEventDotRail({
             dot={entry.dot}
             key={entry.key}
             left={entry.left}
-            onHover={() => setHovered(entry)}
+            onHover={(anchor) => setHovered({ anchor, dot: entry.dot })}
             onScrub={onScrub}
           />
         ))}
       </div>
-      {hovered ? <DotTip dot={hovered.dot} left={hovered.left} /> : null}
+      {hovered ? <DotTip anchor={hovered.anchor} dot={hovered.dot} /> : null}
       {showComments || showHint ? (
         <div className="bq-drail-foot">
           {showComments ? (
@@ -230,4 +242,4 @@ export function BranchEventDotRail({
       ) : null}
     </div>
   );
-}
+});

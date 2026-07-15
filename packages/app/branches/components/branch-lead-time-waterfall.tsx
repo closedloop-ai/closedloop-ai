@@ -2,19 +2,18 @@
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
-import {
-  activeIdleSpans,
-  leadTimeWaterfallSegments,
-} from "../lib/branch-derivations";
+import { leadTimeWaterfallSegments } from "../lib/branch-derivations";
 
 /**
  * Lead-time-for-change waterfall (Epic D / D5) — restyled to the design
  * handoff's `BQLeadTime`: a staged wall-clock track from the FIRST session's
  * start (NOT branch creation) through merge, with active work as solid segments
- * and idle gaps hatched. Work/idle segments are derived from the D1 merged trace
- * via `activeIdleSpans` (real gaps ≥ 2m render as idle). v1 has no per-phase
- * signal, so work is a single Build color; phase colors appear when phase
- * capture lands. `totalMs`/`mergeUnknown`/`multiPr` come from the shared D5
+ * and idle gaps hatched. Work/idle segments are derived from the branch's
+ * lightweight `leadTime` activity summary (PLN-1148 Phase 2) — server-computed
+ * from the captured event instants (real gaps ≥ 2m render as idle), so the
+ * default view no longer depends on the events-heavy `mergedTrace`. v1 has no
+ * per-phase signal, so work is a single Build color; phase colors appear when
+ * phase capture lands. `totalMs`/`mergeUnknown`/`multiPr` come from the shared D5
  * computation (the same `totalMs` D6's lead-time card reads). Open-ended when
  * the branch hasn't merged; a multi-PR branch gets an asterisk.
  */
@@ -26,19 +25,26 @@ const BUILD_COLOR = "#4F7DF0";
 
 type Seg = { type: "work" | "idle"; durationMs: number };
 
-/** Build the ordered work/idle track from the merged trace's real timestamps. */
+/**
+ * Build the ordered work/idle track from the branch's lightweight lead-time
+ * activity summary (PLN-1148 Phase 2) — `firstActivityT` / `lastActivityT` bound
+ * the track and `idleSpans` hatch the gaps. This summary is computed server-side
+ * from the captured event instants, so the waterfall no longer depends on the
+ * events-heavy `mergedTrace` (which is now fetched lazily for the timeline tab).
+ */
 function buildTrack(detail: BranchPageDetail): {
   segs: Seg[];
   totalMs: number;
   idleMs: number;
 } {
-  const stamps = detail.mergedTrace
-    .map((item) => ("t" in item ? Date.parse(item.t) : Number.NaN))
-    .filter((ms) => !Number.isNaN(ms))
-    .sort((a, b) => a - b);
-  const anchor = stamps[0];
-  const lastStamp = stamps.at(-1);
-  if (anchor === undefined || lastStamp === undefined) {
+  const {
+    firstActivityT,
+    lastActivityT,
+    idleSpans: activitySpans,
+  } = detail.leadTime;
+  const anchor = firstActivityT ? Date.parse(firstActivityT) : Number.NaN;
+  const lastStamp = lastActivityT ? Date.parse(lastActivityT) : Number.NaN;
+  if (Number.isNaN(anchor) || Number.isNaN(lastStamp)) {
     return { segs: [], totalMs: 0, idleMs: 0 };
   }
   const mergedMs = detail.mergedAt ? Date.parse(detail.mergedAt) : Number.NaN;
@@ -46,8 +52,8 @@ function buildTrack(detail: BranchPageDetail): {
     !Number.isNaN(mergedMs) && mergedMs >= lastStamp ? mergedMs : lastStamp;
   const totalMs = Math.max(1, end - anchor);
 
-  const idleSpans = activeIdleSpans(detail.mergedTrace)
-    .idleSpans.map((span) => ({
+  const idleSpans = activitySpans
+    .map((span) => ({
       a: Date.parse(span.startT),
       b: Date.parse(span.endT),
     }))

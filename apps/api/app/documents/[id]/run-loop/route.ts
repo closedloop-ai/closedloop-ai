@@ -28,6 +28,7 @@ import {
 } from "@/lib/loops/harness-selection-feature";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
+import { enforcePrdRequestChangesGate } from "@/lib/loops/prd-request-changes-feature";
 import { buildLoopPrompt } from "@/lib/loops/prompts";
 import {
   badRequestResponse,
@@ -79,6 +80,18 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
       }
 
       const handler = getCommandHandler(COMMAND_MAP[body.command]);
+
+      // Fail closed for the dark-launched `request_prd_changes` command: the
+      // PRD editor hides its menu item behind the `prd-request-changes` flag,
+      // but a stale client or a direct API call could otherwise dispatch the
+      // mutation. Every other command passes through untouched.
+      const prdRequestChangesGate = await enforcePrdRequestChangesGate(
+        body.command,
+        { clerkUserId: user.clerkId, userId: user.id }
+      );
+      if (prdRequestChangesGate) {
+        return prdRequestChangesGate;
+      }
 
       const explicitSelectionGate =
         await buildMissingExplicitPreferenceResponse({

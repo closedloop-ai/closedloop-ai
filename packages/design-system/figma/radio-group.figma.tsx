@@ -1,9 +1,9 @@
-import figma from "@figma/code-connect";
-import { Label } from "@repo/design-system/components/ui/label";
+import { Label } from "@closedloop-ai/design-system/components/ui/label";
 import {
   RadioGroup,
   RadioGroupItem,
-} from "@repo/design-system/components/ui/radio-group";
+} from "@closedloop-ai/design-system/components/ui/radio-group";
+import figma from "@figma/code-connect";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2780-51105";

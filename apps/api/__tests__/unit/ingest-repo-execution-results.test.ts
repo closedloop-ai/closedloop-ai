@@ -392,4 +392,55 @@ describe("ingestRepoExecutionResults", () => {
       );
     }
   });
+
+  it("bounds per-repo ingest fan-out (never exceeds the concurrency limit)", async () => {
+    // Concurrency limit is REPO_INGEST_CONCURRENCY (5) in the implementation.
+    const CONCURRENCY_LIMIT = 5;
+    const REPO_COUNT = 12;
+
+    const results = Array.from({ length: REPO_COUNT }, (_, i) =>
+      makeSuccessResult({
+        fullName: `org/repo-${i}`,
+        prNumber: i + 1,
+        prUrl: `https://github.com/org/repo-${i}/pull/${i + 1}`,
+        branchName: `symphony/feature-${i}`,
+      })
+    );
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    // Each success entry starts with a withDb() repo lookup. Hold it open for a
+    // real async tick so overlapping entries are observable, then track the
+    // peak number processed simultaneously. An unbounded fan-out would drive
+    // maxInFlight up to REPO_COUNT; the bounded loop caps it at the limit.
+    mockWithDb.mockImplementation(
+      async (callback: (db: unknown) => unknown) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        try {
+          return await callback({
+            gitHubInstallationRepository: {
+              findFirst: vi.fn().mockResolvedValue({ id: "install-repo" }),
+            },
+          });
+        } finally {
+          inFlight--;
+        }
+      }
+    );
+
+    mockWithDb.tx = vi
+      .fn()
+      .mockImplementation((callback: (tx: unknown) => unknown) =>
+        callback(makeIngestionSuccessMockTx())
+      );
+
+    await ingestRepoExecutionResults(makeIngestionCtx(), results);
+
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(CONCURRENCY_LIMIT);
+    expect(mockEnsurePrLinkageRecords).toHaveBeenCalledTimes(REPO_COUNT);
+  });
 });

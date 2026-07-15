@@ -1,20 +1,22 @@
-import { DocumentStatus } from "@repo/api/src/types/document";
+import { DocumentStatus, FeatureStatus } from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
   compareSlugValues,
   compareStatusValues,
   NAME_SORT_OPTIONS,
 } from "../sort-comparators";
+import { STATUS_DISPLAY_ORDER } from "../status-grouping";
 
 describe("compareStatusValues", () => {
-  describe("lifecycle order", () => {
+  describe("lifecycle order (combined Document+Feature default order)", () => {
+    // Document statuses in their combined-order positions (PRD-495). Each must
+    // sort before the next under the default combined STATUS_DISPLAY_ORDER.
     const orderedStatuses = [
       DocumentStatus.Draft,
-      DocumentStatus.InProgress,
       DocumentStatus.InReview,
+      DocumentStatus.ChangesRequested,
       DocumentStatus.Approved,
       DocumentStatus.Executed,
-      DocumentStatus.Done,
       DocumentStatus.Obsolete,
     ];
 
@@ -28,11 +30,32 @@ describe("compareStatusValues", () => {
 
     it("sorts later lifecycle statuses after earlier ones", () => {
       expect(
-        compareStatusValues(DocumentStatus.Done, DocumentStatus.Draft)
+        compareStatusValues(DocumentStatus.Obsolete, DocumentStatus.Draft)
       ).toBeGreaterThan(0);
       expect(
-        compareStatusValues(DocumentStatus.Obsolete, DocumentStatus.InProgress)
+        compareStatusValues(DocumentStatus.Approved, DocumentStatus.InReview)
       ).toBeGreaterThan(0);
+    });
+
+    it("interleaves Feature statuses: TRIAGE leads, before IN_REVIEW", () => {
+      expect(
+        compareStatusValues(FeatureStatus.Triage, DocumentStatus.InReview)
+      ).toBeLessThan(0);
+      expect(
+        compareStatusValues(FeatureStatus.Done, FeatureStatus.Backlog)
+      ).toBeGreaterThan(0);
+    });
+
+    it("accepts an explicit order argument", () => {
+      // Passing an explicit order array exercises the per-order index path;
+      // within STATUS_DISPLAY_ORDER, TRIAGE precedes DONE.
+      expect(
+        compareStatusValues(
+          FeatureStatus.Triage,
+          FeatureStatus.Done,
+          STATUS_DISPLAY_ORDER
+        )
+      ).toBeLessThan(0);
     });
   });
 
@@ -42,7 +65,7 @@ describe("compareStatusValues", () => {
         compareStatusValues(DocumentStatus.Draft, DocumentStatus.Draft)
       ).toBe(0);
       expect(
-        compareStatusValues(DocumentStatus.Done, DocumentStatus.Done)
+        compareStatusValues(DocumentStatus.Approved, DocumentStatus.Approved)
       ).toBe(0);
     });
   });

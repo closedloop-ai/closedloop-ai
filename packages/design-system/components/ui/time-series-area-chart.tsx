@@ -9,6 +9,7 @@ import {
   ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
+  resolveTickFormatter,
 } from "./chart";
 
 export type TimeSeriesSeriesDef = {
@@ -43,6 +44,8 @@ export function TimeSeriesAreaChart({
   comparison,
   comparisonLabel,
   emptyMessage = "No data",
+  valueFormatter,
+  allowDecimals = false,
 }: {
   series: TimeSeriesSeriesDef[];
   points: TimeSeriesPointDatum[];
@@ -52,10 +55,17 @@ export function TimeSeriesAreaChart({
   };
   comparisonLabel?: string;
   emptyMessage?: string;
+  // Formats the y-axis ticks + tooltip values (e.g. currency). Defaults to the
+  // compact number formatter.
+  valueFormatter?: (value: number) => string;
+  // Allow fractional y-axis ticks (e.g. sub-dollar spend). Defaults to false so
+  // integer-count metrics keep whole-number ticks.
+  allowDecimals?: boolean;
 }) {
   if (isEmptyTimeSeries(points, series)) {
     return <ChartEmpty message={emptyMessage} />;
   }
+  const formatTick = resolveTickFormatter(valueFormatter, formatNumberTick);
 
   const config: ChartConfig = {};
   // Resolve each series' palette color up front and bind it to the Area
@@ -107,14 +117,16 @@ export function TimeSeriesAreaChart({
           tickLine={false}
         />
         <YAxis
-          allowDecimals={false}
+          allowDecimals={allowDecimals}
           axisLine={true}
           tick={{ fontSize: 11 }}
-          tickFormatter={formatNumberTick}
+          tickFormatter={formatTick}
           tickLine={false}
           width={56}
         />
-        <ChartTooltip content={<ChartTooltipContent />} />
+        <ChartTooltip
+          content={<ChartTooltipContent valueFormatter={valueFormatter} />}
+        />
         {series.map((entry) => (
           <Area
             dataKey={entry.key}

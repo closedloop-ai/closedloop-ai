@@ -5,8 +5,8 @@
 export const EXPECTED_CLAUDE_CODE_PROPERTY_LABELS = [
   "Status",
   "Harness",
+  "Session ID",
   "Repository",
-  "Artifacts",
   "Duration",
   "Tokens",
   "Autonomy",

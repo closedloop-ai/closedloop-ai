@@ -24,9 +24,13 @@ export type DonutDatum = {
 export function DonutChart({
   data,
   emptyMessage = "No data",
+  valueFormatter,
 }: {
   data: DonutDatum[];
   emptyMessage?: string;
+  // Formats the slice value shown in the tooltip (e.g. currency). Defaults to
+  // the shared tooltip number formatting.
+  valueFormatter?: (value: number) => string;
 }) {
   const total = data.reduce((sum, slice) => sum + slice.value, 0);
   if (total === 0) {
@@ -46,7 +50,13 @@ export function DonutChart({
     <ChartContainer className="h-full w-full" config={config}>
       <PieChart>
         <ChartTooltip
-          content={<ChartTooltipContent hideLabel nameKey="key" />}
+          content={
+            <ChartTooltipContent
+              hideLabel
+              nameKey="key"
+              valueFormatter={valueFormatter}
+            />
+          }
         />
         <Pie
           data={data}

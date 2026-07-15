@@ -5,14 +5,17 @@ import {
   appPayload,
   genAiPayload,
   permissionPayload,
+  spanEnvelopePayload,
   spanPayload,
   syncPayload,
 } from "../src/test-fixtures";
 import {
+  type SpanEnvelopeValidationResult,
   type TelemetryValidationFailure,
   TelemetryValidationIssueCode,
   type TelemetryValidationResult,
   validate,
+  validateSpanEnvelope,
 } from "../src/validate";
 
 const UnknownTelemetryAttribute = {
@@ -320,8 +323,180 @@ describe("validate", () => {
   });
 });
 
+describe("validateSpanEnvelope", () => {
+  it("validates envelopes and schema-selected nested attributes", () => {
+    const result = validateSpanEnvelope(
+      spanEnvelopePayload({
+        parent_span_id: "1111111111111111",
+        links: [
+          {
+            trace_id: "22222222222222222222222222222222",
+            span_id: "3333333333333333",
+          },
+        ],
+      })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        parent_span_id: "1111111111111111",
+        attributes: {
+          [TelemetryAttribute.HttpRequestMethod]: "GET",
+        },
+      },
+    });
+  });
+
+  it("validates non-span envelope attributes through the central schema registry", () => {
+    const result = validateSpanEnvelope(
+      spanEnvelopePayload({
+        schema_name: TelemetrySchemaName.App,
+        attributes: appPayload(),
+      })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        schema_name: TelemetrySchemaName.App,
+        attributes: {
+          [TelemetryAttribute.AppInstallationId]: "install_0123456789abcdef",
+        },
+      },
+    });
+  });
+
+  it("preserves flat span validation compatibility", () => {
+    expect(validate(spanPayload(), TelemetrySchemaName.Span)).toMatchObject({
+      ok: true,
+      value: {
+        [TelemetryAttribute.DurationMs]: 1,
+      },
+    });
+  });
+
+  it("returns safe envelope failures without raw values", () => {
+    const result = expectInvalid(
+      validateSpanEnvelope(
+        spanEnvelopePayload({
+          trace_id: RawSecretValue.ApiKey,
+          parent_span_id: null,
+          "secret.extra": RawSecretValue.ApiKey,
+        })
+      )
+    );
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          schemaName: "span_envelope",
+          path: ["trace_id"],
+          attributePath: "trace_id",
+        }),
+        expect.objectContaining({
+          schemaName: "span_envelope",
+          path: ["parent_span_id"],
+          attributePath: "parent_span_id",
+        }),
+        expect.objectContaining({
+          schemaName: "span_envelope",
+          path: ["secret.extra"],
+          attributePath: "secret.extra",
+          code: TelemetryValidationIssueCode.UnrecognizedKeys,
+        }),
+      ])
+    );
+    expect(JSON.stringify(result.errors)).not.toContain(RawSecretValue.ApiKey);
+  });
+
+  it("rejects unknown envelope schema-name selectors", () => {
+    const result = expectInvalid(
+      validateSpanEnvelope(
+        spanEnvelopePayload({
+          schema_name: SimilarTelemetrySchemaName.Spans,
+        })
+      )
+    );
+
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        schemaName: "span_envelope",
+        path: ["schema_name"],
+        attributePath: "schema_name",
+      }),
+    ]);
+  });
+
+  it("prefixes nested attribute failures from the central schema registry", () => {
+    const result = expectInvalid(
+      validateSpanEnvelope(
+        spanEnvelopePayload({
+          attributes: spanPayload({
+            [UnknownTelemetryAttribute.NotInSchema]: RawSecretValue.ApiKey,
+          }),
+        })
+      )
+    );
+
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        schemaName: TelemetrySchemaName.Span,
+        path: ["attributes", UnknownTelemetryAttribute.NotInSchema],
+        attributePath: `attributes.${UnknownTelemetryAttribute.NotInSchema}`,
+        code: TelemetryValidationIssueCode.UnrecognizedKeys,
+      }),
+    ]);
+    expect(JSON.stringify(result.errors)).not.toContain(RawSecretValue.ApiKey);
+  });
+
+  it("rejects nested attributes that do not match a non-span schema selector", () => {
+    const result = expectInvalid(
+      validateSpanEnvelope(
+        spanEnvelopePayload({
+          schema_name: TelemetrySchemaName.App,
+          attributes: spanPayload(),
+        })
+      )
+    );
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          schemaName: TelemetrySchemaName.App,
+          path: ["attributes", TelemetryAttribute.HttpRequestMethod],
+          attributePath: `attributes.${TelemetryAttribute.HttpRequestMethod}`,
+          code: TelemetryValidationIssueCode.UnrecognizedKeys,
+        }),
+      ])
+    );
+  });
+
+  it("rejects mismatched duplicate duration for span attributes", () => {
+    const result = expectInvalid(
+      validateSpanEnvelope(
+        spanEnvelopePayload({
+          duration_ms: 2,
+          attributes: spanPayload({ [TelemetryAttribute.DurationMs]: 1 }),
+        })
+      )
+    );
+
+    expect(result.errors).toEqual([
+      {
+        schemaName: TelemetrySchemaName.Span,
+        path: ["attributes", TelemetryAttribute.DurationMs],
+        attributePath: `attributes.${TelemetryAttribute.DurationMs}`,
+        code: "custom",
+        message:
+          "Span envelope attributes.duration_ms must equal envelope duration_ms",
+      },
+    ]);
+  });
+});
+
 function expectInvalid(
-  result: TelemetryValidationResult
+  result: SpanEnvelopeValidationResult | TelemetryValidationResult
 ): TelemetryValidationFailure {
   if (result.ok) {
     throw new Error("Expected validation to fail");

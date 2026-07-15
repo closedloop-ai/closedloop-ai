@@ -1,11 +1,11 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@repo/design-system/components/ui/tooltip";
+} from "@closedloop-ai/design-system/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowUpDownIcon,

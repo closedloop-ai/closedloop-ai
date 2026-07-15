@@ -15,21 +15,35 @@ const { utilityProcess } = electron;
 const WORKER_STDIO: WorkerStdio = ["ignore", "ignore", "pipe"];
 type WorkerStdio = ["ignore", "ignore", "pipe"];
 
-// V8 old-space ceiling for the child, which holds the DB + the import/sync
-// working set + reader snapshots during a large from-scratch backfill. This is a
-// LAZY ceiling (V8 only grows the heap on demand — it does not reserve the
-// memory up front), so a generous limit just raises the OOM threshold without
-// pre-allocating. 8 GB was still being exceeded (exit code 5) when the backfill,
-// the cloud-sync payload build, and dashboard reads peak together; 12 GB clears
-// that with comfortable headroom on typical (≥16 GB) machines. The read-path
-// bounding (omitEventData) + WAL checkpointing + smaller reader pool reduce the
-// peak; this raises the ceiling above it. Crashes still auto-restart below.
-const WORKER_EXEC_ARGV = ["--max-old-space-size=12288"];
+// NOTE (exit-code-5 RCA, 2026-07): the child's `exit` code is the SIGNAL number
+// when it dies to a native crash (measured on Electron 39: SIGTRAP→5, SIGABRT→6,
+// SIGSEGV→11), so the recurring "exited (code: 5)" was a trapped native failure,
+// NOT a V8 heap OOM — a real JS-heap OOM prints a FATAL ERROR banner on the
+// piped stderr first. Root cause was `@libsql/client.transaction()` leaking one
+// native connection per Prisma `$transaction` until fds/native memory ran out
+// (fixed by patches/@libsql__client@0.17.3.patch). The `--max-old-space-size=12288`
+// execArgv this file used to pass was measured to be a complete no-op in a
+// utilityProcess (heap_size_limit stays at the ~4 GB pointer-compression cage
+// regardless of the flag), so it was removed rather than left to mislead the
+// next OOM investigation.
+//
 // Backoff before re-forking a crashed child, so a crash-on-start can't tight-loop.
 const RESTART_BACKOFF_MS = 1000;
+// FEA-3072 — crash-storm guard. When the child crashes (e.g. the exit-code-5
+// native failure above) on a request the renderer polls (dashboard
+// get-insights), a fixed 1 s backoff re-forks into the SAME slamming load and
+// the process crashes again ~1×/s indefinitely. Escalate the backoff with the
+// number of crashes seen inside a rolling window so a persistent crash degrades
+// to widely-spaced retries (giving backfill/sync room to drain between reads)
+// instead of a hot loop. Self-resets: once crashes age out of the window a lone
+// crash restarts at the base backoff again.
+const CRASH_WINDOW_MS = 60_000;
+const MAX_RESTART_BACKOFF_MS = 30_000;
+// Below this many crashes in the window, stay quiet (a one-off restart is normal).
+const CRASH_STORM_THRESHOLD = 3;
 
 /** Structural view of the forked utility process (also lets tests inject a fake). */
-export type DbHostProcess = {
+type DbHostProcess = {
   stderr?: {
     on(event: "data", listener: (chunk: Buffer) => void): unknown;
   } | null;
@@ -39,7 +53,7 @@ export type DbHostProcess = {
   kill(): void;
 };
 
-export type DbHostForkFn = (
+type DbHostForkFn = (
   modulePath: string,
   args: string[],
   options: {
@@ -49,9 +63,15 @@ export type DbHostForkFn = (
   }
 ) => DbHostProcess;
 
-export type DbHostClientOptions = {
+type DbHostClientOptions = {
   /** Forwarded to the renderer as desktop:db:changed (child saw a mutation). */
   onEmit: (sessionId: string) => void;
+  /**
+   * A live SessionEnd hook drove a session terminal; the main process fires the
+   * desktop completion Notification (gated on the flag). Optional so existing
+   * call sites and tests that don't wire notifications stay unaffected.
+   */
+  onSessionTerminal?: (notice: { sessionId: string; status: string }) => void;
   /** Forwarded to the main-process logger. */
   onLog: (message: string) => void;
   /** Override the fork (tests). Defaults to electron utilityProcess.fork. */
@@ -99,6 +119,9 @@ export class DbHostClient {
   private identity: DbHostUserIdentity = null;
   private ready: Promise<void> = Promise.resolve();
   private restarting = false;
+  // FEA-3072 — timestamps of recent unexpected exits, pruned to CRASH_WINDOW_MS,
+  // used to escalate the restart backoff during a crash storm.
+  private readonly recentCrashes: number[] = [];
 
   constructor(private readonly options: DbHostClientOptions) {
     this.fork =
@@ -123,7 +146,6 @@ export class DbHostClient {
     const child = this.fork(workerPath, [], {
       serviceName: "closedloop-db-host",
       stdio: WORKER_STDIO,
-      execArgv: WORKER_EXEC_ARGV,
     });
     this.child = child;
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -207,6 +229,12 @@ export class DbHostClient {
       case DbHostResponseKind.Emit:
         this.options.onEmit(message.sessionId);
         return;
+      case DbHostResponseKind.SessionTerminal:
+        this.options.onSessionTerminal?.({
+          sessionId: message.sessionId,
+          status: message.status,
+        });
+        return;
       case DbHostResponseKind.Log:
         this.options.onLog(message.message);
         return;
@@ -251,10 +279,39 @@ export class DbHostClient {
     if (this.closed) {
       return;
     }
-    this.options.onLog(
-      `db-host exited unexpectedly (code: ${code ?? "null"}); restarting`
-    );
-    this.scheduleRestart();
+    const backoffMs = this.registerCrashAndComputeBackoff();
+    const crashesInWindow = this.recentCrashes.length;
+    if (crashesInWindow >= CRASH_STORM_THRESHOLD) {
+      this.options.onLog(
+        `db-host crash storm: ${crashesInWindow} crashes in ${
+          CRASH_WINDOW_MS / 1000
+        }s (code: ${code ?? "null"}); backing off ${backoffMs}ms before restart`
+      );
+    } else {
+      this.options.onLog(
+        `db-host exited unexpectedly (code: ${code ?? "null"}); restarting in ${backoffMs}ms`
+      );
+    }
+    this.scheduleRestart(backoffMs);
+  }
+
+  /**
+   * Record this crash, prune crashes older than the rolling window, and return
+   * the backoff to use before the next restart: base backoff doubled per crash
+   * still inside the window, capped at MAX_RESTART_BACKOFF_MS. Self-resets to the
+   * base once the window empties (a lone crash → base backoff).
+   */
+  private registerCrashAndComputeBackoff(): number {
+    const now = Date.now();
+    this.recentCrashes.push(now);
+    while (
+      this.recentCrashes.length > 0 &&
+      now - this.recentCrashes[0] > CRASH_WINDOW_MS
+    ) {
+      this.recentCrashes.shift();
+    }
+    const exponent = Math.min(this.recentCrashes.length - 1, 5);
+    return Math.min(RESTART_BACKOFF_MS * 2 ** exponent, MAX_RESTART_BACKOFF_MS);
   }
 
   /**
@@ -264,7 +321,7 @@ export class DbHostClient {
    * attempts retry with backoff. The on-disk DB persists, so committed data
    * survives the crash.
    */
-  private scheduleRestart(): void {
+  private scheduleRestart(backoffMs: number): void {
     if (this.closed || this.child || this.restarting || !this.initOptions) {
       return;
     }
@@ -290,11 +347,11 @@ export class DbHostClient {
                   : String(spawnError)
               }`
             );
-            setTimeout(attempt, RESTART_BACKOFF_MS);
+            setTimeout(attempt, backoffMs);
           }
         );
       };
-      setTimeout(attempt, RESTART_BACKOFF_MS);
+      setTimeout(attempt, backoffMs);
     });
   }
 }

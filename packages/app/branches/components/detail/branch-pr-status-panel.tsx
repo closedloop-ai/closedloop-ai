@@ -32,6 +32,9 @@ import { ConnectGitHubIndicator } from "../connect-github-indicator";
 
 export type BranchPrStatusPanelProps = {
   detail: BranchPageDetail;
+  allowLive?: boolean;
+  connectHref?: string;
+  onConnect?: () => void;
 };
 
 const TONE_VARIANT: Record<
@@ -84,12 +87,30 @@ function StatusRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function BranchPrStatusPanel({ detail }: BranchPrStatusPanelProps) {
-  const { data, isLoading, reason } = useLivePrStatus({
-    repoFullName: detail.repoFullName,
-    prNumber: detail.prNumber,
-    multiPrWarning: detail.multiPrWarning,
-  });
+export function BranchPrStatusPanel({
+  detail,
+  allowLive = true,
+  connectHref,
+  onConnect,
+}: BranchPrStatusPanelProps) {
+  const liveStatus = useLivePrStatus(
+    allowLive
+      ? {
+          repoFullName: detail.repoFullName,
+          prUrl: detail.prUrl,
+          prNumber: detail.prNumber,
+          multiPrWarning: detail.multiPrWarning,
+        }
+      : {
+          repoFullName: null,
+          prUrl: null,
+          prNumber: null,
+          multiPrWarning: true,
+        }
+  );
+  const data = allowLive ? liveStatus.data : null;
+  const isLoading = allowLive ? liveStatus.isLoading : false;
+  const reason = allowLive ? liveStatus.reason : null;
 
   // No PR → no PR status block (the branch status lives in Properties).
   if (detail.prNumber == null) {
@@ -138,6 +159,9 @@ export function BranchPrStatusPanel({ detail }: BranchPrStatusPanelProps) {
         checksValue,
         persistedReviewLabel,
         hasPersistedChecks: overlay.checksTotal != null,
+        liveDisabled: !allowLive,
+        connectHref,
+        onConnect,
       })}
     </section>
   );
@@ -152,6 +176,9 @@ function renderBody({
   checksValue,
   persistedReviewLabel,
   hasPersistedChecks,
+  liveDisabled,
+  connectHref,
+  onConnect,
 }: {
   connected: boolean;
   isLoading: boolean;
@@ -161,6 +188,9 @@ function renderBody({
   checksValue: string;
   persistedReviewLabel: string | null;
   hasPersistedChecks: boolean;
+  liveDisabled: boolean;
+  connectHref?: string;
+  onConnect?: () => void;
 }) {
   if (connected) {
     return (
@@ -192,6 +222,18 @@ function renderBody({
         ) : null}
       </div>
     ) : null;
+  if (liveDisabled) {
+    return (
+      <div className="flex flex-col gap-2 py-1">
+        {persistedRows}
+        {persistedRows ? null : (
+          <p className="text-muted-foreground text-xs">
+            Cloud GitHub data has not synced review or check status yet.
+          </p>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-2 py-1">
       {persistedRows}
@@ -200,7 +242,13 @@ function renderBody({
           ? "Multiple PRs are linked — live review status is ambiguous and not shown."
           : "Connect GitHub to see live review and check status."}
       </p>
-      {multiPr ? null : <ConnectGitHubIndicator compact />}
+      {multiPr ? null : (
+        <ConnectGitHubIndicator
+          compact
+          connectHref={connectHref}
+          onConnect={onConnect}
+        />
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import type { Priority } from "@repo/api/src/types/common";
-import type { DocumentStatus } from "@repo/api/src/types/document";
+import type { ArtifactStatus } from "@repo/api/src/types/document";
 import type {
   LoopSummariesResponse,
   LoopWithUser,
@@ -19,7 +19,7 @@ export type RowEditHandlers = {
   onUpdateAssignee?: (itemId: string, assigneeId: string | null) => void;
   onUpdatePriority?: (itemId: string, priority: Priority) => void;
   onUpdateDueDate?: (itemId: string, date: Date | null) => void;
-  onUpdateStatus?: (itemId: string, status: DocumentStatus) => void;
+  onUpdateStatus?: (itemId: string, status: ArtifactStatus) => void;
   /** Team members for the UserSelectPopover. */
   teamMembers?: User[];
   /** Active loops for displaying per-artifact loop status. */

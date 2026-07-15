@@ -13,6 +13,11 @@ export type DesktopTrayHandlers = {
   onTogglePaused?: (paused: boolean) => void;
 };
 
+export type DesktopTrayOptions = {
+  /** FEA-2648: suffix tray tooltip/menu labels to mark golden launch mode. */
+  golden?: boolean;
+};
+
 const TRAY_STATE_TOOLTIP: Record<TrayState, string> = {
   starting: "Starting Symphony Desktop Client",
   ready: "Symphony Desktop Client is ready",
@@ -21,12 +26,17 @@ const TRAY_STATE_TOOLTIP: Record<TrayState, string> = {
 };
 
 export class DesktopTray {
+  private readonly golden: boolean;
   private tray: Tray | null = null;
   private state: TrayState = "starting";
   private paused = false;
   private pendingApprovals = 0;
   private agentMonitorEnabled = false;
   private handlers: DesktopTrayHandlers = {};
+
+  constructor(options?: DesktopTrayOptions) {
+    this.golden = options?.golden ?? false;
+  }
 
   init(handlers?: DesktopTrayHandlers): void {
     if (this.tray) {
@@ -97,13 +107,14 @@ export class DesktopTray {
       return;
     }
 
+    const openLabelBase =
+      this.pendingApprovals > 0
+        ? `Open Symphony (${this.pendingApprovals} pending)`
+        : "Open Symphony";
     this.tray.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label:
-            this.pendingApprovals > 0
-              ? `Open Symphony (${this.pendingApprovals} pending)`
-              : "Open Symphony",
+          label: this.golden ? `${openLabelBase} (GOLDEN)` : openLabelBase,
           click: () => {
             this.handlers.onOpen?.();
           },
@@ -138,10 +149,11 @@ export class DesktopTray {
   }
 
   private buildTooltip(base: string): string {
+    const labeled = this.golden ? `${base} (GOLDEN)` : base;
     if (this.pendingApprovals === 0) {
-      return base;
+      return labeled;
     }
-    return `${base} | pending approvals: ${this.pendingApprovals}`;
+    return `${labeled} | pending approvals: ${this.pendingApprovals}`;
   }
 }
 

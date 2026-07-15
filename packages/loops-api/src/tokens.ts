@@ -282,10 +282,21 @@ export function getModelPricing(model: string): ModelPricing {
   if (model in source) {
     return source[model];
   }
-  for (const [key, pricing] of Object.entries(source)) {
-    if (key !== "default" && model.startsWith(key)) {
-      return pricing;
+  // Match the most-specific (longest) prefix, not merely the first one in
+  // insertion order. e.g. "gpt-5-mini-2025-08-07" must resolve to "gpt-5-mini",
+  // not "gpt-5" — the map defines "gpt-5" before "gpt-5-mini"/"gpt-5-nano", so a
+  // first-match scan misprices dated mini/nano ids at 5×–25×.
+  let bestKey: string | null = null;
+  for (const key of Object.keys(source)) {
+    if (key === "default" || !model.startsWith(key)) {
+      continue;
     }
+    if (bestKey === null || key.length > bestKey.length) {
+      bestKey = key;
+    }
+  }
+  if (bestKey !== null) {
+    return source[bestKey];
   }
   return DEFAULT_PRICING;
 }

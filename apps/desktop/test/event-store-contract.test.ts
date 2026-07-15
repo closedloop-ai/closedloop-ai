@@ -6,11 +6,10 @@ import test from "node:test";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 /**
- * FEA-1791 Phase 3 contract test for the events + token-usage store reads after
- * their conversion onto typed Prisma delegates. Seeds rows with raw SQL (so the
- * data is independent of the typed write path) and asserts the converted reads
- * preserve ordering, the LEFT JOIN session-name semantics (including the
- * name-is-null-when-the-session-row-is-absent case the old query produced), the
+ * Contract test for the events + token-usage store reads on typed Prisma
+ * delegates. Seeds rows with raw SQL (so the data is independent of the typed
+ * write path) and asserts the reads preserve ordering, the LEFT JOIN session-name
+ * semantics (including the name-is-null-when-the-session-row-is-absent case), the
  * COUNT(*) GROUP BY ordering, and the BIGINT -> JS-number coercion.
  */
 

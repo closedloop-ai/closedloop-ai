@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type BranchRow, BranchRowStatus } from "../branch-sample-data";
+import { type BranchRow, BranchRowStatus } from "../branch-row";
 import {
   BranchSortDir,
   BranchSortKey,

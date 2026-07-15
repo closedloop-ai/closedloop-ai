@@ -1,6 +1,7 @@
 import type { JsonValue } from "@repo/api/src/types/common";
 import type { DesktopCommandSummary } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { ErrorClass } from "@repo/observability/telemetry/schema";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import type { DesktopCommandTelemetryContext } from "@/lib/desktop-command-telemetry-context";
@@ -33,11 +34,17 @@ export async function acknowledgeDesktopCommand(input: {
     return acknowledged;
   }
 
+  // gatewaySessionId is a session-correlation token that must never be logged in
+  // plaintext (see apps/api/docs/command-correlation.md). Log a short stable
+  // hash; the raw id still flows into the store/DB context below, which is a
+  // non-log contract governed separately.
   log.warn("Command rejected by desktop", {
     commandId: input.commandId,
     reason: input.reason,
     computeTargetId: input.context?.computeTargetId ?? input.targetId,
-    gatewaySessionId: input.context?.gatewaySessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(
+      input.context?.gatewaySessionId
+    ),
     requestId: input.context?.requestId,
     errorClass: ErrorClass.Execution,
   });

@@ -41,6 +41,7 @@ export const OPERATION_RISK_TIERS: Record<
   desktop_security_upgrade: "high",
   binary_paths_settings: "medium",
   update_and_restart: "high",
+  github_resync_nudge: "low",
   browser_key_revoke: "high",
   browser_key_approval_request: "high",
 };

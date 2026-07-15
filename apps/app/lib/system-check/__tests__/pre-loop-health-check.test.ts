@@ -2,15 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { HEALTH_CHECK_DEFAULT_FRESHNESS_MS } from "../health-check-freshness";
 import {
+  getPreLoopHealthCheckTimeoutMs,
+  PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS,
+  PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS,
+} from "../health-check-timeouts";
+import {
   buildPreLoopAnalyticsProperties,
   getFailingRequiredCheckIds,
   getFailingRequiredFingerprint,
-  getPreLoopHealthCheckTimeoutMs,
   getPreLoopTargetKey,
   getRequiredFailureSummary,
   isPreLoopHealthCheckFresh,
-  PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS,
-  PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS,
   PreLoopAnalyticsEvent,
   PreLoopCommand,
 } from "../pre-loop-health-check";

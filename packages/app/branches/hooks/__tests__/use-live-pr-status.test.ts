@@ -39,6 +39,28 @@ describe("deriveStatusIdentity", () => {
     ).toBeNull();
   });
 
+  it("falls back to a matching GitHub PR URL when repo identity is missing", () => {
+    expect(
+      deriveStatusIdentity({
+        repoFullName: null,
+        prUrl: "https://github.com/octo/repo/pull/42",
+        prNumber: 42,
+        multiPrWarning: false,
+      })
+    ).toEqual({ owner: "octo", repo: "repo", prNumber: 42 });
+  });
+
+  it("gates a mismatched PR URL instead of guessing the repository", () => {
+    expect(
+      deriveStatusIdentity({
+        repoFullName: null,
+        prUrl: "https://github.com/octo/repo/pull/43",
+        prNumber: 42,
+        multiPrWarning: false,
+      })
+    ).toBeNull();
+  });
+
   it("gates a non owner/name slug rather than mis-splitting it", () => {
     expect(
       deriveStatusIdentity({

@@ -48,8 +48,8 @@ const defaultViewModel: DocumentTableFiltersViewModel = {
       icon: <StatusIcon size={16} status="draft" />,
     },
     {
-      id: DocumentStatus.InProgress,
-      label: "In Progress",
+      id: DocumentStatus.InReview,
+      label: "In Review",
       count: 7,
       icon: <StatusIcon size={16} status="active" />,
     },
@@ -80,7 +80,7 @@ const defaultState: DocumentTableFiltersState = {
   assignToMe: false,
   hideCompletedItems: true,
   favoritesOnly: true,
-  statuses: [DocumentStatus.InProgress, DocumentStatus.Draft],
+  statuses: [DocumentStatus.InReview, DocumentStatus.Draft],
   priorities: [Priority.High],
   date: {
     field: TableDateFilterField.CreatedAt,

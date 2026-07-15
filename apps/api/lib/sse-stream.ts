@@ -153,8 +153,15 @@ export function createSseStream(
 
 const KEEPALIVE_BYTES = new TextEncoder().encode(": keepalive\n\n");
 
-export function encodeSseData(data: unknown): Uint8Array {
-  return new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`);
+export function encodeSseData(
+  data: unknown,
+  options?: { id?: string | number }
+): Uint8Array {
+  // When an `id` is provided, prepend an SSE `id:` field so the browser's
+  // native EventSource remembers it and replays it as `Last-Event-ID` on
+  // auto-reconnect. Omitting it preserves the plain `data:`-only framing.
+  const idLine = options?.id === undefined ? "" : `id: ${options.id}\n`;
+  return new TextEncoder().encode(`${idLine}data: ${JSON.stringify(data)}\n\n`);
 }
 
 export function createSseResponse(

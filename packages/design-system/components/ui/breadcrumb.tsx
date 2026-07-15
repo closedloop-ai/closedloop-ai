@@ -2,7 +2,7 @@ import * as React from "react"
 import { Slot as SlotPrimitive } from "radix-ui"
 import { ChevronRight, MoreHorizontal } from "lucide-react"
 
-import { cn } from "@repo/design-system/lib/utils"
+import { cn } from "@closedloop-ai/design-system/lib/utils"
 
 function Breadcrumb({ ...props }: React.ComponentProps<"nav">) {
   return <nav aria-label="breadcrumb" data-slot="breadcrumb" {...props} />

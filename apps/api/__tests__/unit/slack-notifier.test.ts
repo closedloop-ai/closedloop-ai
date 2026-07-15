@@ -43,6 +43,7 @@ import {
   buildCorrelationId,
   notifySlack,
   postToSlack,
+  postToSlackChannel,
 } from "@/lib/slack-notifier";
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,44 @@ describe("postToSlack", () => {
 
     expect(result.ok).toBe(false);
     expect(result.retryable).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// postToSlackChannel tests
+// ---------------------------------------------------------------------------
+
+describe("postToSlackChannel", () => {
+  it("posts to the explicit channel rather than the ops-channel constant", async () => {
+    const mockFetch = makeJsonFetch({ ok: true, ts: "1.2", channel: "C0ORG" });
+
+    const result = await postToSlackChannel(
+      TEST_TOKEN,
+      "C0ORG",
+      TEST_TEXT,
+      mockFetch
+    );
+
+    expect(result.ok).toBe(true);
+    const [, init] = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({
+      channel: "C0ORG",
+      text: TEST_TEXT,
+    });
+  });
+
+  it("never throws on a network failure — resolves with an error result", async () => {
+    const mockFetch = makeThrowingFetch("boom");
+
+    const result = await postToSlackChannel(
+      TEST_TOKEN,
+      "C0ORG",
+      TEST_TEXT,
+      mockFetch
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("boom");
   });
 });
 

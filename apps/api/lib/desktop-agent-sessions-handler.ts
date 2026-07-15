@@ -1,5 +1,6 @@
 import type { DesktopAgentSessionsAck } from "@repo/api/src/types/agent-session";
 import { log } from "@repo/observability/log";
+import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
@@ -8,10 +9,7 @@ import {
   type DesktopAgentSessionsPayload,
   parseDesktopAgentSessionsPayload,
 } from "./desktop-agent-sessions-schema";
-
-const DESKTOP_AGENT_SESSIONS_RATE_LIMIT_MAX = 120;
-const DESKTOP_AGENT_SESSIONS_RATE_LIMIT_WINDOW_MS = 60_000;
-const DESKTOP_AGENT_SESSIONS_RATE_LIMIT_MAX_ENTRIES = 10_000;
+import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter";
 
 export type DesktopAgentSessionsHandlerContext = {
   organizationId: string;
@@ -40,63 +38,7 @@ export type DesktopAgentSessionsHandlerDeps = {
   now?: () => number;
 };
 
-type RateLimitEntry = {
-  count: number;
-  resetAt: number;
-};
-
-export class DesktopAgentSessionsRateLimiter {
-  private readonly entries = new Map<string, RateLimitEntry>();
-  private readonly maxEntries: number;
-
-  constructor(options: { maxEntries?: number } = {}) {
-    this.maxEntries =
-      options.maxEntries ?? DESKTOP_AGENT_SESSIONS_RATE_LIMIT_MAX_ENTRIES;
-  }
-
-  attempt(key: string, now: number): boolean {
-    this.pruneExpired(now);
-
-    const current = this.entries.get(key);
-    if (!current || now >= current.resetAt) {
-      this.entries.set(key, {
-        count: 1,
-        resetAt: now + DESKTOP_AGENT_SESSIONS_RATE_LIMIT_WINDOW_MS,
-      });
-      this.pruneOldestEntries();
-      return true;
-    }
-
-    if (current.count >= DESKTOP_AGENT_SESSIONS_RATE_LIMIT_MAX) {
-      return false;
-    }
-
-    current.count += 1;
-    return true;
-  }
-
-  clear(): void {
-    this.entries.clear();
-  }
-
-  private pruneExpired(now: number): void {
-    for (const [key, entry] of this.entries) {
-      if (now >= entry.resetAt) {
-        this.entries.delete(key);
-      }
-    }
-  }
-
-  private pruneOldestEntries(): void {
-    while (this.entries.size > this.maxEntries) {
-      const oldestKey = this.entries.keys().next().value;
-      if (oldestKey === undefined) {
-        return;
-      }
-      this.entries.delete(oldestKey);
-    }
-  }
-}
+export class DesktopAgentSessionsRateLimiter extends FixedWindowRateLimiter {}
 
 const defaultRateLimiter = new DesktopAgentSessionsRateLimiter();
 
@@ -105,6 +47,33 @@ export async function handleDesktopAgentSessionsEvent(
   context: DesktopAgentSessionsHandlerContext,
   deps: DesktopAgentSessionsHandlerDeps = {}
 ): Promise<DesktopAgentSessionsAck> {
+  // FEA-2258: rate-limit BEFORE parsing/sanitizing so an abusive (authenticated
+  // or compromised) target is throttled with a cheap in-memory check before the
+  // handler pays the O(payload) Zod parse + recursive sanitize cost.
+  const rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
+  if (
+    !rateLimiter.attempt(buildRateLimitKey(context), deps.now?.() ?? Date.now())
+  ) {
+    log.warn("Desktop agent sessions request rate limit exceeded", {
+      computeTargetId: context.targetId,
+      gatewaySessionId: context.gatewaySessionId,
+      organizationId: context.organizationId,
+      relaySocketId: context.relaySocketId,
+      userId: context.userId,
+    });
+    emitTelemetryMetric({
+      metric: "agent_sessions.sync.failed",
+      organizationId: context.organizationId,
+      computeTargetId: context.targetId,
+      gatewaySessionId: context.gatewaySessionId,
+      reason: DesktopAgentSessionsAckReason.RateLimited,
+    });
+    return {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.RateLimited,
+    };
+  }
+
   const parsed = parseDesktopAgentSessionsPayload(payload);
   if (!parsed.ok) {
     log.warn("Desktop agent sessions validation failed", {
@@ -147,35 +116,9 @@ export async function handleDesktopAgentSessionsEvent(
     };
   }
 
-  const rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
-  if (
-    !rateLimiter.attempt(buildRateLimitKey(context), deps.now?.() ?? Date.now())
-  ) {
-    emitTelemetryMetric({
-      metric: "agent_sessions.sync.failed",
-      organizationId: context.organizationId,
-      computeTargetId: context.targetId,
-      gatewaySessionId: context.gatewaySessionId,
-      reason: DesktopAgentSessionsAckReason.RateLimited,
-    });
-    return {
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.RateLimited,
-    };
-  }
-
   const upsertBatch = deps.upsertBatch ?? agentSessionsService.upsertSessions;
 
   try {
-    emitTelemetryMetric({
-      metric: "agent_sessions.sync.received",
-      organizationId: context.organizationId,
-      computeTargetId: context.targetId,
-      gatewaySessionId: context.gatewaySessionId,
-      sessionCount: parsed.payload.sessions.length,
-      syncMode: parsed.payload.syncMode,
-      count: 1,
-    });
     await upsertBatch(
       {
         organizationId: context.organizationId,
@@ -188,7 +131,9 @@ export async function handleDesktopAgentSessionsEvent(
   } catch (error) {
     log.error("Desktop agent sessions ingestion failed", {
       computeTargetId: context.targetId,
+      gatewaySessionIdHash: redactGatewaySessionId(context.gatewaySessionId),
       organizationId: context.organizationId,
+      relaySocketId: context.relaySocketId,
       error,
     });
     emitTelemetryMetric({
@@ -196,7 +141,7 @@ export async function handleDesktopAgentSessionsEvent(
       organizationId: context.organizationId,
       computeTargetId: context.targetId,
       gatewaySessionId: context.gatewaySessionId,
-      reason: "ingestion_failed",
+      reason: DesktopAgentSessionsAckReason.IngestionFailed,
     });
     return {
       accepted: false,

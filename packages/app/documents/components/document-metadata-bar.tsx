@@ -67,6 +67,7 @@ export function DocumentMetadataBar({
       <DocumentTypeBadge type={documentType} />
       <StatusMetadataSection
         assignee={metadata.assignee}
+        documentType={documentType}
         layout="horizontal"
         onAssigneeChange={metadata.handleAssigneeChange}
         onStatusChange={metadata.handleStatusChange}

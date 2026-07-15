@@ -22,6 +22,7 @@ export function ThinkingBlock({
   return (
     <div className="overflow-hidden rounded-lg border border-amber-500/20 bg-amber-500/5">
       <button
+        aria-expanded={expanded}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-amber-500/10"
         onClick={() => setExpanded((value) => !value)}
         type="button"

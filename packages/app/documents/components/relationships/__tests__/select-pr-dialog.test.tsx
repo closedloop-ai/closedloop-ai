@@ -32,6 +32,7 @@ const DIFFERENT_SOURCE_LINKED_PR_REGEX = /linked somewhere else/i;
 const EXISTING_PR_LINKS_REGEX = /checking existing pr links/i;
 const PR_TITLE_REGEX = /fix direct feature pr linking/i;
 const PARTIAL_FAILURE_WARNING_REGEX = /Could not load PRs from/i;
+const BOUNDED_READ_WARNING_REGEX = /older pull requests may be omitted/i;
 const ALL_REPOS_FAIL_ERROR_REGEX =
   /Failed to load pull requests from all repositories/i;
 const SEARCH_PR_PLACEHOLDER_REGEX = /search pull requests/i;
@@ -452,6 +453,28 @@ describe("SelectPullRequestDialog", () => {
       expect(
         screen.getByText(PARTIAL_FAILURE_WARNING_REGEX)
       ).toBeInTheDocument();
+    });
+    expect(screen.getByText(PR_TITLE_REGEX)).toBeInTheDocument();
+  });
+
+  it("shows bounded-read warning when GitHub reports truncated PR results", async () => {
+    mockGet.mockResolvedValue({
+      pullRequests: [makePullRequest()],
+      trackedPrUrls: [],
+      truncated: true,
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(BOUNDED_READ_WARNING_REGEX)).toBeInTheDocument();
     });
     expect(screen.getByText(PR_TITLE_REGEX)).toBeInTheDocument();
   });

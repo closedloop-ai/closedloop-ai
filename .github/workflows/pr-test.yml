@@ -91,6 +91,16 @@ jobs:
           # prisma generate (runs via postinstall) only needs the URL format, not a live DB
           DATABASE_URL: postgresql://localhost:5432/placeholder
 
+      # Storybook resolves @closedloop-ai/design-system through its package
+      # `exports` map to the built dist/, so the design-system (and its workspace
+      # deps, e.g. loops-api, whose dist/*.d.ts the design-system DTS build needs)
+      # must be compiled before `storybook build`. `storybook build` runs the app
+      # script directly and does not trigger turbo `^build`, so build it here.
+      - name: Build workspace dependencies (design-system + deps)
+        run: pnpm turbo build --filter=@closedloop-ai/design-system
+        env:
+          DATABASE_URL: postgresql://localhost:5432/placeholder
+
       - name: Build Storybook
         run: pnpm --filter storybook build
 

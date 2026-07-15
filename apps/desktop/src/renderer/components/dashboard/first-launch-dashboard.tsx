@@ -1,49 +1,59 @@
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
-import type {
-  AgentsInsightsResponse,
-  InsightsPeriod,
-} from "@closedloop-ai/loops-api/insights";
+import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
 import {
   InsightsScope,
   InsightsSection,
 } from "@closedloop-ai/loops-api/insights";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
+import {
+  AI_IMPACT_FEATURE_FLAG_KEY,
+  AiImpactCard,
+} from "@repo/app/insights/components/overview/ai-impact-card";
 import { DashboardRowContent } from "@repo/app/insights/components/overview/dashboard-rows";
 import { DASHBOARD_ROWS } from "@repo/app/insights/components/overview/dashboard-tiles";
 import type { InsightsSectionData } from "@repo/app/insights/components/tile-content";
+import { useInsightsDataSource } from "@repo/app/insights/data/insights-data-source";
+import { useDashboardRange } from "@repo/app/insights/hooks/use-dashboard-range";
 import {
   useAgentsInsights,
   useDeliveryInsights,
   useUtilizationInsights,
 } from "@repo/app/insights/hooks/use-insights";
+import { resolveMissingSourceTileAvailability } from "@repo/app/insights/lib/tile-availability";
+import type { TileDescriptor } from "@repo/app/insights/lib/tile-catalog";
+import { DateRangeFilter } from "@repo/app/shared/components/date-range-filter";
+import { FeatureFlagged } from "@repo/app/shared/feature-flags/feature-flagged";
+import { CompassIcon, CpuIcon, LayersIcon } from "lucide-react";
 import {
-  CompassIcon,
-  CpuIcon,
-  LayersIcon,
-  ShieldCheckIcon,
-} from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { desktopSessionDetailHashHref } from "../../shared-agent-sessions/session-hrefs";
 import { DashboardCard, PageShell } from "../layout/page-shell";
+import { DASHBOARD_PAGE_TITLE } from "./dashboard-constants";
 import { DashboardLoading } from "./dashboard-loading";
+import {
+  dashboardOnboardedStorageKey,
+  dashboardTourSeenStorageKey,
+} from "./dashboard-storage-keys";
 import { Tour, type TourStep, type TourSummaryChip } from "./tour/tour";
 import { TourHint } from "./tour/tour-hint";
 
-// The first-launch dashboard is a 90-day overview: every widget — KPI totals,
-// trend sparklines, and the activity heatmap — uses a rolling 90-day window so
-// the metrics and time-series visuals stay bounded and readable (the all-time
-// corpus produces an unreadable ~200-column heatmap and noisy trends). Other
-// screens (sessions/branches lists) remain all-time.
-const PERIOD: InsightsPeriod = "90";
 const SCOPE = InsightsScope.Me;
 const RECENT_SESSIONS_LIMIT = 8;
+// FEA-2232: the dashboard window is user-driven via the shared, surface-keyed
+// `useDashboardRange` hook (the maps + persistence formerly inlined here for
+// FEA-2210 now live in `@repo/app/insights`). The "desktop" surface persists
+// independently of the Sessions / Branches tabs and the web dashboard.
+const DASHBOARD_RANGE_SURFACE = "desktop";
 
 // localStorage flags gate the one-time first-launch experience.
-const ONBOARDED_KEY = "cl-desktop-dashboard-onboarded";
-const TOUR_SEEN_KEY = "cl-desktop-dashboard-tour-seen";
-
 const REVEAL_DURATION_MS = 3600;
 // Poll cadence for the cheap session-count read used to detect when the local
 // import has "settled" (the dashboard's loading treatment holds until then).
@@ -61,15 +71,11 @@ const REVEAL_AT: Record<string, number> = {
 };
 
 function readFlag(key: string): boolean {
-  return (
-    typeof localStorage !== "undefined" && localStorage.getItem(key) === "1"
-  );
+  return getLocalStorage()?.getItem(key) === "1";
 }
 
 function writeFlag(key: string): void {
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(key, "1");
-  }
+  getLocalStorage()?.setItem(key, "1");
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -95,14 +101,20 @@ function usePrefersReducedMotion(): boolean {
  * tour. Subsequent launches render immediately; the tour stays replayable.
  */
 export function FirstLaunchDashboard() {
+  const source = useInsightsDataSource();
   const prefersReduced = usePrefersReducedMotion();
-  const [firstLaunch] = useState(() => !readFlag(ONBOARDED_KEY));
+  const [firstLaunch] = useState(() => !readFlag(dashboardOnboardedStorageKey));
   const motion = firstLaunch && !prefersReduced;
 
   const [tick, setTick] = useState(motion ? 0 : 100);
   const [tourActive, setTourActive] = useState(false);
   const [tourHint, setTourHint] = useState(false);
   const completedRef = useRef(false);
+
+  // FEA-2210/FEA-2232: user-driven window (desktop-local persisted selection),
+  // backed by the shared surface-keyed hook.
+  const { dateRange, setDateRange, period, periodLabel, deltaLabel } =
+    useDashboardRange(DASHBOARD_RANGE_SURFACE);
 
   // Backfill settle detection: while the local DB is still importing sessions,
   // the totals keep growing. Poll the cheap session list and treat the data as
@@ -154,9 +166,19 @@ export function FirstLaunchDashboard() {
   // import grows. (The old `settled || !grew` gate was a SQLite-era mitigation
   // for the single-connection engine blocking the UI during ingest.)
   const insightsEnabled = true;
-  const delivery = useDeliveryInsights(PERIOD, SCOPE, insightsEnabled);
-  const utilization = useUtilizationInsights(PERIOD, SCOPE, insightsEnabled);
-  const agents = useAgentsInsights(PERIOD, SCOPE, insightsEnabled);
+  const delivery = useDeliveryInsights(
+    period,
+    SCOPE,
+    undefined,
+    insightsEnabled
+  );
+  const utilization = useUtilizationInsights(
+    period,
+    SCOPE,
+    undefined,
+    insightsEnabled
+  );
+  const agents = useAgentsInsights(period, SCOPE, undefined, insightsEnabled);
 
   // All three insights sections resolved — the data behind every tile and the
   // tour summary (KPIs, model breakdown) is ready. The first-launch tour waits
@@ -164,11 +186,31 @@ export function FirstLaunchDashboard() {
   const analyticsLoaded =
     delivery.isSuccess && utilization.isSuccess && agents.isSuccess;
 
-  const sections: InsightsSectionData = {
-    [InsightsSection.Delivery]: delivery.data,
-    [InsightsSection.Utilization]: utilization.data,
-    [InsightsSection.Agents]: agents.data,
-  };
+  const sections = useMemo<InsightsSectionData>(
+    () => ({
+      [InsightsSection.Delivery]: delivery.data,
+      [InsightsSection.Utilization]: utilization.data,
+      [InsightsSection.Agents]: agents.data,
+    }),
+    [agents.data, delivery.data, utilization.data]
+  );
+  const sourceGetTileAvailability = source.getTileAvailability;
+  const getTileAvailability = useCallback(
+    (tile: TileDescriptor) => {
+      if (!sourceGetTileAvailability) {
+        return resolveMissingSourceTileAvailability({
+          tileId: tile.id,
+          section: tile.section,
+        });
+      }
+      return sourceGetTileAvailability({
+        tileId: tile.id,
+        section: tile.section,
+        scope: SCOPE,
+      });
+    },
+    [sourceGetTileAvailability]
+  );
 
   const recentItems = sessionsQuery.data?.items ?? [];
 
@@ -202,18 +244,74 @@ export function FirstLaunchDashboard() {
     if (tick < 100 || !settled || !analyticsLoaded || completedRef.current) {
       return;
     }
-    completedRef.current = true;
     if (!firstLaunch) {
+      // Nothing to arm on a returning launch; latch so this never re-runs.
+      completedRef.current = true;
       return;
     }
-    writeFlag(ONBOARDED_KEY);
-    const button = document.querySelector<HTMLElement>("[data-tour-btn]");
-    const onScreen =
-      document.visibilityState === "visible" && button?.offsetParent != null;
-    if (!readFlag(TOUR_SEEN_KEY) && onScreen) {
-      const timer = window.setTimeout(() => setTourActive(true), 650);
-      return () => window.clearTimeout(timer);
+
+    // FEA-2737: commit the one-time latch / persist ONBOARDED only once the
+    // tour is actually armed — the window is foregrounded (visible) AND the
+    // tour button is laid out. If the dashboard is off screen when the reveal
+    // settles, defer instead of suppressing the tour permanently:
+    //   - a backgrounded/minimized window flips `visibilityState`, so re-arm on
+    //     `visibilitychange` when it returns to the foreground;
+    //   - a same-session in-app view swap (behind the keep-alive map) keeps
+    //     `visibilityState` "visible" and only drops the button's layout, which
+    //     fires no event here. But because ONBOARDED is NOT persisted until
+    //     arming succeeds, `firstLaunch` stays true and the next launch replays
+    //     the reveal and re-attempts arming — the tour is only ever deferred,
+    //     never lost (and the manual Tour button remains available meanwhile).
+    let timer: number | undefined;
+    const arm = () => {
+      if (completedRef.current) {
+        return;
+      }
+      const button = document.querySelector<HTMLElement>("[data-tour-btn]");
+      const onScreen =
+        document.visibilityState === "visible" && button?.offsetParent != null;
+      if (!onScreen) {
+        return;
+      }
+      completedRef.current = true;
+      document.removeEventListener("visibilitychange", arm);
+      if (readFlag(dashboardTourSeenStorageKey)) {
+        // Tour already seen this session — no reveal to show; commit the latch
+        // now (there is no deferred work that a later unmount could cancel).
+        writeFlag(dashboardOnboardedStorageKey);
+        return;
+      }
+      // Persist ONBOARDED only when the tour actually fires, not at arm time.
+      // If the dashboard unmounts during the 650 ms delay the cleanup clears
+      // this timer, so persisting here (rather than above) means the latch is
+      // never committed for a tour that never showed — the next launch replays
+      // the reveal and re-arms instead of silently swallowing the tour.
+      timer = window.setTimeout(() => {
+        // Fired: clear the handle so a later cleanup treats this as committed
+        // (does not clear/re-arm) — the latch below is now permanent.
+        timer = undefined;
+        writeFlag(dashboardOnboardedStorageKey);
+        setTourActive(true);
+      }, 650);
+    };
+
+    arm();
+    if (!completedRef.current) {
+      document.addEventListener("visibilitychange", arm);
     }
+    return () => {
+      document.removeEventListener("visibilitychange", arm);
+      if (timer !== undefined) {
+        // Cancel the pending reveal timer on teardown so it can't call
+        // setTourActive after unmount. Because ONBOARDED is not persisted until
+        // the timer fires, a real unmount here leaves firstLaunch true and the
+        // next launch re-arms the tour. Reset the latch so React Strict Mode's
+        // synchronous unmount→remount re-runs arm() and re-schedules the timer
+        // (the original bug: leaving it latched permanently suppressed the tour).
+        window.clearTimeout(timer);
+        completedRef.current = false;
+      }
+    };
   }, [tick, settled, analyticsLoaded, firstLaunch]);
 
   // "Analyzing" treatment: initial load, the first-launch reveal, or an
@@ -245,6 +343,8 @@ export function FirstLaunchDashboard() {
   // complete store (`!grew`) settles within a poll or two and reveals immediately.
   const loading = !analyticsLoaded || (grew && !settled);
   const empty = !(loading || hasData);
+  const progressPct =
+    motion && tick < 100 ? Math.max(tick, loadProgress) : loadProgress;
 
   const tourSteps = useMemo(
     () => buildTourSteps(sessionsTotal, agents.data),
@@ -253,7 +353,7 @@ export function FirstLaunchDashboard() {
 
   const closeTour = (reason: "done" | "skip") => {
     setTourActive(false);
-    writeFlag(TOUR_SEEN_KEY);
+    writeFlag(dashboardTourSeenStorageKey);
     if (reason === "skip") {
       window.setTimeout(() => setTourHint(true), 80);
     }
@@ -269,6 +369,7 @@ export function FirstLaunchDashboard() {
     <PageShell
       actions={
         <>
+          <DateRangeFilter onChange={setDateRange} value={dateRange} />
           <ScanStatus analyzing={analyzing} sessionsTotal={sessionsTotal} />
           <span data-tour-btn>
             <Button
@@ -284,16 +385,23 @@ export function FirstLaunchDashboard() {
         </>
       }
       fullWidth
-      title="Welcome to Closedloop"
+      title={DASHBOARD_PAGE_TITLE}
     >
       {analyzing ? (
-        <div className="h-0.5 w-full overflow-hidden rounded-full bg-[var(--accent)]">
+        <div
+          aria-label="Analysis progress"
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={Math.round(progressPct)}
+          className="h-0.5 w-full overflow-hidden rounded-full bg-[var(--accent)]"
+          role="progressbar"
+        >
           {/* Determinate: how many data reads have resolved (and, on first
               launch, the reveal tick) — so the bar tracks real load progress. */}
           <div
             className="h-full bg-[var(--primary)] transition-[width] duration-300 ease-out"
             style={{
-              width: `${motion && tick < 100 ? Math.max(tick, loadProgress) : loadProgress}%`,
+              width: `${progressPct}%`,
             }}
           />
         </div>
@@ -313,12 +421,24 @@ export function FirstLaunchDashboard() {
               <div data-tour={row.tour}>
                 <DashboardRowContent
                   autonomySeries={agents.data?.charts.autonomyTrend}
+                  deltaLabel={deltaLabel}
+                  getTileAvailability={getTileAvailability}
+                  githubConnectHref={source.githubConnectHref}
                   heatmap={utilization.data?.charts.activityHeatmap}
                   modelSeries={agents.data?.charts.modelUsageOverTime}
+                  onConnectGitHub={source.onConnectGitHub}
+                  periodLabel={periodLabel}
                   row={row}
                   sections={sections}
                 />
               </div>
+              {row.tour === "stats" ? (
+                <FeatureFlagged flag={AI_IMPACT_FEATURE_FLAG_KEY}>
+                  <div className="mt-5">
+                    <AiImpactCard sections={sections} />
+                  </div>
+                </FeatureFlagged>
+              ) : null}
               {row.tour === "activity" && isShown("sessions") ? (
                 <div className="mt-5">
                   <RecentSessions
@@ -349,21 +469,26 @@ function ScanStatus({
 }) {
   if (analyzing) {
     return (
-      <span className="inline-flex items-center gap-2 font-mono text-[var(--muted-foreground)] text-xs">
+      <span
+        aria-live="polite"
+        className="inline-flex items-center gap-2 font-mono text-[var(--muted-foreground)] text-xs"
+        role="status"
+      >
         <span
           className="size-1.5 rounded-full bg-[var(--ai,var(--primary))]"
           style={{ animation: "ob-pulse 1.1s ease-in-out infinite" }}
         />
-        Analyzing locally · {sessionsTotal.toLocaleString()} sessions
+        Analyzing locally
+        {/* Session count refetches (~2.5s) while analyzing; keep it out of the
+            live region so only the static "Analyzing locally" is announced. */}
+        <span aria-hidden="true">
+          {" "}
+          · {sessionsTotal.toLocaleString()} sessions
+        </span>
       </span>
     );
   }
-  return (
-    <span className="inline-flex items-center gap-2 text-[var(--muted-foreground)] text-xs">
-      <ShieldCheckIcon className="size-3.5 text-[var(--success-foreground)]" />
-      Computed on this device · 0 bytes uploaded
-    </span>
-  );
+  return null;
 }
 
 // Settled with genuinely no local sessions.
@@ -465,7 +590,7 @@ function renderSessions(
   );
 }
 
-function buildTourSteps(
+export function buildTourSteps(
   sessionsTotal: number,
   agents: AgentsInsightsResponse | undefined
 ): TourStep[] {
@@ -529,13 +654,29 @@ function buildTourSteps(
       sel: "models",
       eyebrow: "Models",
       title: "Which models did the work",
-      body: "Usage over time by model, with the token share by provider beside it — so you can see where the spend goes.",
+      body: "Spend over time by model, with the spend share by provider beside it — so you can see where the money goes.",
     },
     {
       sel: "prs",
       eyebrow: "Throughput",
       title: "Shipping velocity",
-      body: "Pull requests merged over time, with a per-repository breakdown right beside it.",
+      body: "Pull requests merged over time, followed by repository-level shipping patterns in the breakdown row.",
     },
   ];
+}
+
+function getLocalStorage(): Storage | null {
+  try {
+    const storage = globalThis.localStorage;
+    if (
+      !storage ||
+      typeof storage.getItem !== "function" ||
+      typeof storage.setItem !== "function"
+    ) {
+      return null;
+    }
+    return storage;
+  } catch {
+    return null;
+  }
 }

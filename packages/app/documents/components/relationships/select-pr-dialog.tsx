@@ -140,7 +140,9 @@ export function SelectPullRequestDialog({
     trackedUrls,
     isLoading: isLoadingPullRequests,
     failedRepoCount,
+    hasMore: hasMorePullRequests,
     totalRepoCount,
+    truncated: truncatedPullRequests,
     allFailed,
   } = useGitHubPullRequestsAcrossRepos(repos, projectId, { enabled: open });
 
@@ -313,6 +315,15 @@ export function SelectPullRequestDialog({
             <AlertDescription>
               Could not load PRs from {failedRepoCount} of {totalRepoCount}{" "}
               repositories. Showing results from the remaining repositories.
+            </AlertDescription>
+          </Alert>
+        )}
+        {!allFailed && (hasMorePullRequests || truncatedPullRequests) && (
+          <Alert aria-live="polite" role="status" variant="warning">
+            <AlertTriangleIcon />
+            <AlertDescription>
+              Some older pull requests may be omitted from this bounded GitHub
+              read.
             </AlertDescription>
           </Alert>
         )}

@@ -1,6 +1,10 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_DASHBOARD_TILE_IDS } from "../../lib/tile-catalog";
+import { SHARED_DASHBOARD_FIXTURE } from "../../lib/__tests__/fixtures";
+import {
+  DEFAULT_DASHBOARD_TILE_IDS,
+  REMOVED_DASHBOARD_TILE_IDS,
+} from "../../lib/tile-catalog";
 import { useDashboardPins } from "../use-dashboard-pins";
 
 const KEY = "closedloop:insights-dashboard:v1:org-a";
@@ -108,7 +112,6 @@ describe("useDashboardPins", () => {
       "kpi:sessions",
       "chart:toolUsage",
       "chart:tokenDistribution",
-      "chart:sessionsByStatus",
       "chart:agentsByStatus",
       "chart:eventsByType",
       "chart:agentsByType:donut",
@@ -119,6 +122,45 @@ describe("useDashboardPins", () => {
 
     act(() => result.current.togglePin("chart:toolUsage"));
     expect(localStorage.getItem(KEY)).toContain('"version":7');
+  });
+
+  it("drops retired sessions-by-status tiles from current stored dashboards", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        version: 7,
+        tiles: [
+          "chart:eventsByType",
+          REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus,
+          REMOVED_DASHBOARD_TILE_IDS.SessionsByStatusBar,
+        ],
+        layout: {
+          "chart:eventsByType": { x: 0, y: 0, w: 6, h: 4 },
+          [REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus]: {
+            x: 6,
+            y: 0,
+            w: 6,
+            h: 4,
+          },
+        },
+        settings: {
+          [REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus]: {
+            comparisonOverlay: true,
+          },
+        },
+      })
+    );
+
+    const { result } = renderHook(() => useDashboardPins("org-a"));
+    expect(result.current.tiles).toEqual(["chart:eventsByType"]);
+    expect(result.current.layout).toEqual({
+      "chart:eventsByType": { x: 0, y: 0, w: 6, h: 4 },
+    });
+    expect(
+      result.current.getTileSettings(
+        REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus
+      )
+    ).toEqual({});
   });
 
   it("clears stacked layout when migrating stored v4 dashboards", () => {
@@ -206,16 +248,48 @@ describe("useDashboardPins", () => {
       KEY,
       JSON.stringify({
         version: 6,
-        tiles: ["kpi:input-tokens", "kpi:output-tokens", "chart:prTrend"],
-        layout: cleanLayout,
-        settings: {},
+        tiles: [
+          "kpi:input-tokens",
+          REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus,
+          "kpi:output-tokens",
+          "chart:prTrend",
+        ],
+        layout: {
+          ...cleanLayout,
+          [REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus]: {
+            x: 9,
+            y: 0,
+            w: 3,
+            h: 4,
+          },
+        },
+        settings: {
+          "chart:prTrend": { comparisonOverlay: true },
+          [REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus]: {
+            comparisonOverlay: true,
+          },
+        },
       })
     );
 
     const { result } = renderHook(() => useDashboardPins("org-a"));
     // Tiles sit at varying x — not the corrupted single-column stack — so the
-    // customized arrangement must survive the v6 -> v7 upgrade untouched.
+    // customized arrangement must survive the v6 -> v7 upgrade while retired
+    // sessions-by-status tile state is removed.
     expect(result.current.layout).toEqual(cleanLayout);
+    expect(result.current.tiles).toEqual([
+      "kpi:input-tokens",
+      "kpi:output-tokens",
+      "chart:prTrend",
+    ]);
+    expect(result.current.getTileSettings("chart:prTrend")).toEqual({
+      comparisonOverlay: true,
+    });
+    expect(
+      result.current.getTileSettings(
+        REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus
+      )
+    ).toEqual({});
 
     act(() => result.current.togglePin("kpi:input-tokens"));
     expect(localStorage.getItem(KEY)).toContain('"version":7');
@@ -227,5 +301,100 @@ describe("useDashboardPins", () => {
 
     const { result: orgB } = renderHook(() => useDashboardPins("org-b"));
     expect(orgB.current.isPinned("chart:prByRepo:donut")).toBe(false);
+  });
+
+  describe("shared dashboard override", () => {
+    const OVERRIDE = SHARED_DASHBOARD_FIXTURE;
+
+    it("renders the shared snapshot instead of the stored dashboard", () => {
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({
+          version: 7,
+          tiles: ["kpi:sessions"],
+          layout: {},
+          settings: {},
+        })
+      );
+
+      const { result } = renderHook(() => useDashboardPins("org-a", OVERRIDE));
+
+      expect(result.current.tiles).toEqual(OVERRIDE.tiles);
+      expect(result.current.layout).toEqual(OVERRIDE.layout);
+      expect(result.current.getTileSettings("chart:prTrend")).toEqual({
+        comparisonOverlay: true,
+      });
+    });
+
+    it("keeps edits ephemeral without touching the recipient's stored dashboard", () => {
+      const storedValue = JSON.stringify({
+        version: 7,
+        tiles: ["kpi:sessions"],
+        layout: {},
+        settings: {},
+      });
+      localStorage.setItem(KEY, storedValue);
+
+      const { result } = renderHook(() => useDashboardPins("org-a", OVERRIDE));
+
+      act(() => result.current.togglePin("kpi:sessions"));
+
+      // The edit is reflected in the live (shared) view...
+      expect(result.current.isPinned("kpi:sessions")).toBe(true);
+      // ...but localStorage still holds the recipient's own dashboard.
+      expect(localStorage.getItem(KEY)).toBe(storedValue);
+    });
+
+    it("strips retired tiles carried by an older shared link", () => {
+      const { result } = renderHook(() =>
+        useDashboardPins("org-a", {
+          tiles: ["kpi:merged", REMOVED_DASHBOARD_TILE_IDS.SessionsByStatus],
+          layout: {},
+          settings: {},
+        })
+      );
+
+      expect(result.current.tiles).toEqual(["kpi:merged"]);
+    });
+
+    it("discards ephemeral edits when the shared dashboard changes identity", () => {
+      const overrideB: typeof OVERRIDE = {
+        tiles: ["kpi:sessions"],
+        layout: {},
+        settings: {},
+      };
+
+      const { result, rerender } = renderHook(
+        ({ override }) => useDashboardPins("org-a", override),
+        { initialProps: { override: OVERRIDE } }
+      );
+
+      // Edit while previewing dashboard A.
+      act(() => result.current.togglePin("kpi:sessions"));
+      expect(result.current.isPinned("kpi:sessions")).toBe(true);
+
+      // Switching to a different shared dashboard (e.g. ?dash=A -> ?dash=B) must
+      // drop A's ephemeral edits and render B's snapshot verbatim, not A's edits
+      // painted over B.
+      rerender({ override: overrideB });
+
+      expect(result.current.tiles).toEqual(overrideB.tiles);
+    });
+
+    it("falls back to the stored dashboard when no override is provided", () => {
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({
+          version: 7,
+          tiles: ["kpi:sessions"],
+          layout: {},
+          settings: {},
+        })
+      );
+
+      const { result } = renderHook(() => useDashboardPins("org-a", null));
+
+      expect(result.current.tiles).toEqual(["kpi:sessions"]);
+    });
   });
 });

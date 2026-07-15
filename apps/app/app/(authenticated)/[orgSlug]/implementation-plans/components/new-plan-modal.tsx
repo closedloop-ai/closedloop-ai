@@ -12,6 +12,10 @@ import {
 } from "@repo/app/documents/hooks/use-documents";
 import { useResolvedJobRepos } from "@repo/app/loops/hooks/use-resolved-job-repos";
 import { useProjects } from "@repo/app/projects/hooks/use-projects";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -473,13 +477,9 @@ function NewPlanModalBody({
   return (
     <div className="space-y-4 py-4">
       {error ? (
-        <div
-          className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm"
-          id="title-error"
-          role="alert"
-        >
-          {error}
-        </div>
+        <Alert id="title-error" variant="error">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       ) : null}
 
       <div className="space-y-2">

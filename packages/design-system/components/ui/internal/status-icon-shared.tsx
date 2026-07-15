@@ -43,3 +43,40 @@ export function FilledXCircle({ fill }: { fill: string }) {
     </>
   );
 }
+
+/**
+ * Filled circle with a white double-headed arrow glyph (↔) — used for triage
+ * states: a single horizontal stem with a chevron arrowhead on each end.
+ */
+export function FilledSwapCircle({ fill }: { fill: string }) {
+  return (
+    <>
+      <circle cx={CENTER} cy={CENTER} r={RADIUS + STROKE_WIDTH / 2} fill={fill} />
+      <path
+        d="M5 10H15M7.5 7.5L5 10L7.5 12.5M12.5 7.5L15 10L12.5 12.5"
+        stroke="var(--background)"
+        strokeWidth={ICON_STROKE_WIDTH}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </>
+  );
+}
+
+/** Filled circle with a white exclamation mark — used for blocked states. */
+export function FilledExclamationCircle({ fill }: { fill: string }) {
+  return (
+    <>
+      <circle cx={CENTER} cy={CENTER} r={RADIUS + STROKE_WIDTH / 2} fill={fill} />
+      <path
+        d="M10 5.5V11"
+        stroke="var(--background)"
+        strokeWidth={ICON_STROKE_WIDTH}
+        strokeLinecap="round"
+        fill="none"
+      />
+      <circle cx={CENTER} cy={14} r={0.9} fill="var(--background)" />
+    </>
+  );
+}

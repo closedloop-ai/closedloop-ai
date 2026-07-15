@@ -1,11 +1,7 @@
 /**
  * @file rollup.ts
- * @description LOC-source selection for enrichment rollups.
- *
- * FEA-1791: the `getSessionGitLoc` / `getSessionAgentLoc` / `getSessionLocRollup`
- * / `getBranchLocRollup` / `getPrLocRollup` raw-SQL query helpers that once lived
- * here were dead (no runtime caller) and were removed with the rest of the raw
- * `SqliteExecutor` store path. Only the pure `pickBestLoc` selector remains.
+ * @description LOC-source selection for enrichment rollups — the pure
+ * `pickBestLoc` selector that chooses between the git and agent LOC sources.
  */
 
 import type { LocStats } from "./types.js";

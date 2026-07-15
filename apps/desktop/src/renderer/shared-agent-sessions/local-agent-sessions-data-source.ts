@@ -1,8 +1,10 @@
+import { ReadSource } from "@repo/api/src/types/read-source";
 import type {
   AgentSessionsChange,
   AgentSessionsDataSource,
 } from "@repo/app/agents/data-source/agent-sessions-data-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
+import { withReadSource } from "@repo/app/shared/lib/read-source";
 import {
   SHARED_AGENT_SESSIONS_NOT_FOUND_CODE,
   SHARED_AGENT_SESSIONS_SOURCE_ERROR_CODE,
@@ -49,8 +51,15 @@ export function createLocalAgentSessionsDataSource(
 
   return {
     scope: "local",
-    list: (filters) =>
-      sanitize(() => desktopApi.agentSessionsApi.list(filters)),
+    // FEA-3120: rows come straight from the desktop's local SQLite over IPC, so
+    // stamp `local` at the read boundary (never overwriting an explicit value the
+    // IPC layer already reported).
+    list: async (filters) => {
+      const response = await sanitize(() =>
+        desktopApi.agentSessionsApi.list(filters)
+      );
+      return withReadSource(response, ReadSource.Local);
+    },
     detail: async (id) => {
       const data = await sanitize(() => desktopApi.agentSessionsApi.detail(id));
       if (!data) {

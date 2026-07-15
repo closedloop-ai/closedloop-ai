@@ -5,7 +5,6 @@ import {
   BranchViewLocalOperationId,
 } from "@repo/api/src/types/branch-view-local";
 import type { JsonValue } from "@repo/api/src/types/common";
-import type { DesktopCommandEventType } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
 import { z } from "zod";
 import {
@@ -40,6 +39,8 @@ const helloPayloadSchema = z.object({
   machineName: z.string(),
   platform: z.string(),
   pluginVersion: z.string(),
+  desktopClientVersion: z.string().optional(),
+  gatewayProtocolVersion: z.string().optional(),
   supportedOperations: stringArraySchema,
   maxInFlightCommands: z.number().finite().min(1),
   allowedDirectoriesHash: z.string().optional(),
@@ -56,12 +57,6 @@ const commandEventPayloadSchema = z.object({
   eventType: desktopCommandEventTypeSchema,
   data: jsonValueSchema.optional(),
 });
-
-export function isDesktopCommandEventType(
-  value: unknown
-): value is DesktopCommandEventType {
-  return desktopCommandEventTypeSchema.safeParse(value).success;
-}
 
 export function isTerminalEventData(data: JsonValue): boolean {
   return isRecord(data) && data.terminal === true;
@@ -95,6 +90,8 @@ export function parseHelloPayload(
     machineName: hello.machineName,
     platform: hello.platform,
     pluginVersion: hello.pluginVersion,
+    desktopClientVersion: hello.desktopClientVersion,
+    gatewayProtocolVersion: hello.gatewayProtocolVersion,
     supportedOperations: hello.supportedOperations,
     maxInFlightCommands: Math.floor(hello.maxInFlightCommands),
     allowedDirectoriesHash: hello.allowedDirectoriesHash,

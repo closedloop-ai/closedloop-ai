@@ -1,10 +1,10 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 
-import { cn } from "@repo/design-system/lib/utils"
+import { cn } from "@closedloop-ai/design-system/lib/utils"
 
 const alertVariants = cva(
-  "relative w-full rounded-lg border px-4 py-3 text-sm grid has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] grid-cols-[0_1fr] has-[>svg]:gap-x-3 gap-y-0.5 items-start [&>svg]:size-4 [&>svg]:translate-y-0.5 [&>svg]:text-current",
+  "relative w-full rounded-md border px-3 py-2 text-sm grid has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] grid-cols-[0_1fr] has-[>svg]:gap-x-3 gap-y-0.5 items-start [&>svg]:size-4 [&>svg]:translate-y-0.5 [&>svg]:text-current",
   {
     variants: {
       variant: {
@@ -12,12 +12,12 @@ const alertVariants = cva(
         destructive:
           "text-destructive bg-card [&>svg]:text-current *:data-[slot=alert-description]:text-destructive/90",
         error:
-          "text-destructive bg-destructive/10 border-destructive/20 [&>svg]:text-current *:data-[slot=alert-description]:text-destructive/90",
+          "text-destructive bg-destructive/12 border-destructive/30 [&>svg]:text-current *:data-[slot=alert-description]:text-destructive/90",
         warning:
-          "text-warning-foreground bg-warning/10 border-warning/30 [&>svg]:text-current *:data-[slot=alert-description]:text-warning-foreground/90",
-        info: "text-info-foreground bg-info/10 border-info/30 [&>svg]:text-current *:data-[slot=alert-description]:text-info-foreground/90",
+          "text-warning-foreground bg-warning/12 border-warning/30 [&>svg]:text-current *:data-[slot=alert-description]:text-warning-foreground/90",
+        info: "text-info-foreground bg-info/12 border-info/30 [&>svg]:text-current *:data-[slot=alert-description]:text-info-foreground/90",
         success:
-          "text-success-foreground bg-success/10 border-success/30 [&>svg]:text-current *:data-[slot=alert-description]:text-success-foreground/90",
+          "text-success-foreground bg-success/12 border-success/30 [&>svg]:text-current *:data-[slot=alert-description]:text-success-foreground/90",
       },
     },
     defaultVariants: {

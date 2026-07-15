@@ -1,4 +1,6 @@
 import {
+  SessionPrLifecycleStatus as ContractSessionPrLifecycleStatus,
+  type SessionPrLifecycleStatus as ContractSessionPrLifecycleStatusType,
   SessionTraceCorrectionSourceKind as ContractSessionTraceCorrectionKind,
   SessionTracePhaseSourceType as ContractSessionTracePhaseSourceType,
   SessionTraceThrottleSourceType as ContractSessionTraceThrottleSourceType,
@@ -13,20 +15,14 @@ import {
   type SessionTraceThrottleSource,
 } from "../types/agent-session.ts";
 import { PullRequestState } from "../types/document.ts";
+import { median } from "../utils/math.ts";
 
 export const SessionTracePhaseSourceType = ContractSessionTracePhaseSourceType;
 export const SessionTraceThrottleSourceType =
   ContractSessionTraceThrottleSourceType;
 export const SessionTraceCorrectionKind = ContractSessionTraceCorrectionKind;
-
-export const SessionPrLifecycleStatus = {
-  Merged: "merged",
-  Closed: "closed",
-  Open: "open",
-  Unknown: "unknown",
-} as const;
-export type SessionPrLifecycleStatus =
-  (typeof SessionPrLifecycleStatus)[keyof typeof SessionPrLifecycleStatus];
+export const SessionPrLifecycleStatus = ContractSessionPrLifecycleStatus;
+export type SessionPrLifecycleStatus = ContractSessionPrLifecycleStatusType;
 
 export const AutonomyLabel = {
   Unknown: "Unknown",
@@ -40,9 +36,32 @@ export const SESSION_TRACE_SOURCE_LIMITS = {
   phaseSources: 100,
   throttleSources: 100,
   correctionSources: 100,
+  markers: 500,
+  // Per-marker `label` cap. Mirrors the cloud's `sessionMarkerSchema.label`
+  // `.max()` — an over-long label fails zod (`session_invalid`) and rejects the
+  // whole sync batch, so the desktop must clamp at build time (FEA-2986).
+  markerLabel: 300,
   sourceText: 300,
   aggregatePayloadBytes: 64_000,
 } as const;
+
+/**
+ * Clamp a session-marker `label` to the cloud's `sessionMarkerSchema.label`
+ * cap. Marker labels are sourced from free text (tool names, summaries, commit
+ * and PR titles) that can exceed the cap; an unclamped label fails cloud zod
+ * validation and — because the batch is parsed as one unit — drops up to 200
+ * sessions (FEA-2986). Mirrors `sourceTextFromMetadata`'s slice on trace
+ * sources; both are bounded by `SESSION_TRACE_SOURCE_LIMITS`.
+ *
+ * `.trim()` first because the cloud schema is `z.string().trim().min(1).max()`
+ * — zod trims before measuring length, so slicing raw text could ship 300
+ * leading-whitespace chars that the cloud trims down (or to empty), disagreeing
+ * with this clamp. Trimming here keeps the desktop's length accounting
+ * identical to the cloud's.
+ */
+export function clampMarkerLabel(label: string): string {
+  return label.trim().slice(0, SESSION_TRACE_SOURCE_LIMITS.markerLabel);
+}
 
 const AUTONOMY_LONG_STRETCH_MS = 5 * 60 * 1000;
 const AUTONOMY_AGENTIC_MEDIAN_MS = 15 * 60 * 1000;
@@ -54,6 +73,10 @@ const TITLEIZE_SPLIT_PATTERN = /[-_\s]+/;
 type AutonomyInput = {
   promptTimestamps: readonly string[];
   activityTimestamps: readonly string[];
+  // FEA-2870: when the calling params mark the session as headless/autonomous,
+  // the score is asserted as fully agentic — the lone prompt episode of a
+  // headless run must not drag it down.
+  headless?: boolean;
 };
 
 type TracePresentationInput = {
@@ -65,6 +88,8 @@ type TracePresentationInput = {
   phaseSources?: readonly SessionTracePhaseSource[] | null;
   throttleSources?: readonly SessionTraceThrottleSource[] | null;
   correctionSources?: readonly SessionTraceCorrectionSource[] | null;
+  // FEA-2870: forwarded to the autonomy deriver so a headless session scores 100.
+  headless?: boolean;
 };
 
 /**
@@ -94,6 +119,13 @@ export function deriveAutonomyAndSteering(input: AutonomyInput): {
   autonomy: number | null;
   steeringEpisodes: number | null;
 } {
+  // FEA-2870: a headless/autonomous session is fully agentic by construction —
+  // short-circuit before the prompt-episode formula, whose single headless prompt
+  // would otherwise register as steering and depress the score.
+  if (input.headless) {
+    return { autonomy: 100, steeringEpisodes: 0 };
+  }
+
   const promptTimes = sortedFiniteTimes(input.promptTimestamps);
   const activityTimes = sortedFiniteTimes(input.activityTimestamps);
   if (promptTimes.length === 0 || activityTimes.length === 0) {
@@ -122,7 +154,7 @@ export function deriveAutonomyAndSteering(input: AutonomyInput): {
     return { autonomy: null, steeringEpisodes };
   }
 
-  const medianStretch = median(stretches);
+  const medianStretch = median(stretches) ?? 0;
   const totalStretch = stretches.reduce((sum, value) => sum + value, 0);
   const longStretchShare =
     totalStretch > 0
@@ -167,6 +199,7 @@ export function deriveSessionTracePresentation(input: TracePresentationInput): {
   const autonomy = deriveAutonomyAndSteering({
     promptTimestamps: input.promptTimestamps,
     activityTimestamps: input.activityTimestamps,
+    headless: input.headless,
   });
   const phases = derivePhases(input.phaseSources ?? []);
   return {
@@ -304,7 +337,13 @@ function deriveCorrectionMarkers(
         kind: "frust",
         x: clampPercent(((observedMs - startMs) / durationMs) * 100),
         t: source.observedAt,
-        label: source.label?.trim() || titleize(source.kind),
+        // Third synced marker-label sink (alongside buildTraceMarkers and
+        // buildCandidate): clamp so a long correction label can't fail the
+        // cloud cap and reject the batch. Today `source.label` is already
+        // bounded to `sourceText` (300) upstream, but routing it through the
+        // shared helper makes the invariant explicit, not coincidental on
+        // `sourceText === markerLabel` (FEA-2986).
+        label: clampMarkerLabel(source.label?.trim() || titleize(source.kind)),
         tl: index,
       },
     ];
@@ -332,15 +371,6 @@ function groupPromptEpisodes(times: readonly number[]): {
     episodes.push({ start: time, end: time });
   }
   return episodes;
-}
-
-function median(values: readonly number[]): number {
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) {
-    return sorted[middle] ?? 0;
-  }
-  return ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
 function clamp01(value: number): number {

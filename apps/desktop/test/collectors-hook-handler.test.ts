@@ -11,12 +11,17 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { copyFileSync, mkdtempSync } from "node:fs";
+import { copyFileSync } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  cleanupTempDirs,
+  makeTempDir,
+} from "./normalized-session-test-utils.js";
+
+afterEach(cleanupTempDirs);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = path.join(__dirname, "..", "resources", "hooks");
@@ -38,26 +43,47 @@ function runHandler(
   stdinPayload: string
 ): Promise<CapturedHook> {
   return new Promise((resolve, reject) => {
-    const dir = mkdtempSync(path.join(tmpdir(), "hook-handler-"));
+    const dir = makeTempDir("hook-handler-");
     const handlerCopy = path.join(dir, script);
     copyFileSync(path.join(HOOKS_DIR, script), handlerCopy);
 
-    let received: CapturedHook | null = null;
+    let settled = false;
+    // Settle exactly once, closing the server first to free the port.
+    function finish(done: () => void): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      server.close(done);
+    }
+
     const server = http.createServer((req, res) => {
       if (req.method === "POST" && req.url === "/api/hooks/event") {
         let body = "";
         req.on("data", (chunk) => (body += chunk));
         req.on("end", () => {
+          let captured: CapturedHook | null = null;
           try {
-            received = {
+            captured = {
               path: req.url ?? "",
               envelope: JSON.parse(body) as HookEnvelope,
             };
           } catch {
-            received = null;
+            captured = null;
           }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
+          // The handler only exits from inside its HTTP response callback, so
+          // capturing the POST here is strictly ordered before child exit —
+          // settle now rather than waiting a fixed grace period after exit.
+          if (captured) {
+            const hook = captured;
+            finish(() => resolve(hook));
+          } else {
+            finish(() =>
+              reject(new Error("handler POSTed an unparseable body"))
+            );
+          }
         });
       } else {
         res.writeHead(404);
@@ -73,21 +99,12 @@ function runHandler(
       });
       child.stdin.write(stdinPayload);
       child.stdin.end();
-      child.on("error", (err) => {
-        server.close();
-        reject(err);
-      });
-      child.on("exit", () => {
-        setTimeout(() => {
-          server.close(() => {
-            if (received) {
-              resolve(received);
-            } else {
-              reject(new Error("handler did not POST a hook event"));
-            }
-          });
-        }, 100);
-      });
+      child.on("error", (err) => finish(() => reject(err)));
+      // Reached only on the failure path: the handler exited (error/timeout)
+      // without a successful POST. The happy path already settled above.
+      child.on("exit", () =>
+        finish(() => reject(new Error("handler did not POST a hook event")))
+      );
     });
   });
 }

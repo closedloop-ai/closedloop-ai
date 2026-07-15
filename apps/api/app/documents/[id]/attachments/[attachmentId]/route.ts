@@ -1,8 +1,10 @@
 import type { AttachmentDownloadResponse } from "@repo/api/src/types/attachment";
 import {
+  ATTACHMENT_NOT_FOUND_ERROR,
   attachmentsService,
   type DeleteAttachmentError,
   DeleteAttachmentErrorCode,
+  DOCUMENT_NOT_FOUND_ERROR,
 } from "@/app/documents/attachments-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
@@ -33,10 +35,10 @@ export const GET = withAnyAuth<
     return successResponse(result);
   } catch (error) {
     if (error instanceof Error) {
-      if (error.message === "Document not found") {
+      if (error.message === DOCUMENT_NOT_FOUND_ERROR) {
         return notFoundResponse("Document");
       }
-      if (error.message === "Attachment not found") {
+      if (error.message === ATTACHMENT_NOT_FOUND_ERROR) {
         return notFoundResponse("Attachment");
       }
     }

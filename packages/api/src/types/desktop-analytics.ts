@@ -4,6 +4,14 @@ export const DESKTOP_ANALYTICS_SOCKET_EVENT = "desktop.analytics" as const;
 export const DESKTOP_SERVER_ANALYTICS_RELAY_FLAG =
   "desktop-server-analytics-relay" as const;
 
+/**
+ * Maximum length (UTF-16 code units) the cloud accepts for any single string
+ * property value. The server schema rejects the entire event when a value
+ * exceeds this, so Desktop clamps each string to this length before sending.
+ * Shared here so the sender-side clamp and the server-side cap stay in lockstep.
+ */
+export const DESKTOP_ANALYTICS_STRING_MAX_LENGTH = 512;
+
 export const DesktopAnalyticsAckReason = {
   FeatureDisabled: "feature_disabled",
   RateLimited: "rate_limited",

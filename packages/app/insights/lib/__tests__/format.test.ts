@@ -1,12 +1,31 @@
 import { KpiFormat } from "@repo/api/src/types/insights";
 import { describe, expect, it } from "vitest";
-import { deltaIsPositive, formatDelta, formatKpiValue } from "../format";
+import {
+  deltaIsPositive,
+  formatDelta,
+  formatKpiValue,
+  metricAllowsFractions,
+  metricValueFormatter,
+} from "../format";
 
 describe("formatKpiValue", () => {
   it("formats currency under and over a thousand", () => {
     expect(formatKpiValue(28, KpiFormat.Currency)).toBe("$28");
     expect(formatKpiValue(4.2, KpiFormat.Currency)).toBe("$4.20");
     expect(formatKpiValue(36_412, KpiFormat.Currency)).toBe("$36.4k");
+  });
+
+  it("renders — for an unavailable (null / non-finite) value, not 0", () => {
+    // Median PR size uses a non-finite sentinel when no PR in the window is
+    // LOC-enriched (NaN in-process, null over JSON). Render `—`, never `0`.
+    expect(formatKpiValue(null, KpiFormat.Number)).toBe("—");
+    expect(formatKpiValue(undefined, KpiFormat.Number)).toBe("—");
+    expect(formatKpiValue(Number.NaN, KpiFormat.Number)).toBe("—");
+    expect(formatKpiValue(Number.POSITIVE_INFINITY, KpiFormat.Currency)).toBe(
+      "—"
+    );
+    // A real 0 still formats as 0 (not swallowed into —).
+    expect(formatKpiValue(0, KpiFormat.Number)).toBe("0");
   });
 
   it("formats percent as a rounded integer", () => {
@@ -30,6 +49,30 @@ describe("formatKpiValue", () => {
     expect(formatKpiValue(84, KpiFormat.Number)).toBe("84");
     expect(formatKpiValue(2960, KpiFormat.Number)).toBe("2,960");
     expect(formatKpiValue(2960.45, KpiFormat.Number)).toBe("2,960.5");
+  });
+});
+
+describe("metricValueFormatter", () => {
+  it("formats the cost metric as currency (FEA-2331 spend-by-model)", () => {
+    const fmt = metricValueFormatter("cost");
+    expect(fmt(4.2)).toBe("$4.20");
+    expect(fmt(5016.61)).toBe("$5k");
+  });
+
+  it("compacts the tokens metric", () => {
+    expect(metricValueFormatter("tokens")(1800)).toBe("1.8k");
+  });
+
+  it("falls back to plain numbers for unknown metrics", () => {
+    expect(metricValueFormatter("models")(2960)).toBe("2,960");
+  });
+});
+
+describe("metricAllowsFractions", () => {
+  it("allows fractional ticks for currency (sub-dollar spend), not counts", () => {
+    expect(metricAllowsFractions("cost")).toBe(true);
+    expect(metricAllowsFractions("tokens")).toBe(false);
+    expect(metricAllowsFractions("models")).toBe(false);
   });
 });
 

@@ -1,10 +1,13 @@
+import { performance } from "node:perf_hooks";
 import {
   projectAgentSessionTimelineEvents,
   projectAgentSessionTurnItems,
 } from "@repo/api/src/agent-session-detail-projection";
-import type { TurnItem } from "@repo/api/src/types/agent-session";
 import {
   type BranchAnalytics,
+  type BranchCloudHydrationStatus,
+  type BranchIdleSpan,
+  type BranchLeadTimeActivity,
   type BranchLinkedArtifact,
   type BranchListResponse,
   type BranchPageDetail,
@@ -14,10 +17,16 @@ import {
   BranchStatus,
   type BranchUsageSummary,
   BranchViewerScope,
+  decodeBranchId,
   encodeBranchId,
   type MergedTraceItem,
 } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  buildMergedTrace as buildSharedMergedTrace,
+  MERGED_TRACE_IDLE_THRESHOLD_MS,
+  type MergedTraceSessionInput,
+} from "@repo/lib/branches/merged-trace";
 import { normalizeBillingMode } from "../shared/billing-mode.js";
 import { DESKTOP_LOCAL_SESSION_AUTHOR_LABEL } from "../shared/shared-agent-sessions-contract.js";
 import {
@@ -44,17 +53,84 @@ import {
   type BranchCommitRow,
   type BranchLinkRow,
   type BranchPrRow,
+  readBranchAnalyticsTokenRows,
+  readBranchCommitRowsForSessions,
   readBranchTokenAggregateRows,
+  readBranchTokenAggregateRowsForBranch,
   readBranchUsageEventRows,
   readBranchUsageTokenRows,
-  readBranchUsageTokenRowsForSessions,
-  readDistinctBranchKeyRows,
   readLocalBranchCommitRows,
   readLocalBranchLinkRows,
+  readLocalBranchLinkRowsForBranch,
   readLocalBranchPrRows,
+  readLocalBranchPrRowsForBranch,
 } from "./database/branch-reads.js";
-import type { SqliteAgentDatabase } from "./database/sqlite.js";
+import type { DbHostAgentDatabase } from "./database/sqlite.js";
+import type {
+  DesktopCloudGitHubHydration,
+  DesktopCloudGitHubHydrationResult,
+} from "./desktop-cloud-github-hydration.js";
+import { gatewayLog } from "./gateway-logger.js";
+import { writePersistentLog } from "./persistent-log.js";
 import { reportTokenCostPricingMiss } from "./token-cost-pricing-miss.js";
+
+function rethrowAsSourceError(label: string, error: unknown): never {
+  writePersistentLog(
+    "error",
+    "branch-source-error",
+    `${label}: ${String(error)}`
+  );
+  throw new Error(SHARED_BRANCHES_SOURCE_ERROR_CODE);
+}
+
+/**
+ * Process-wide serialization gate for heavy branch reads (FEA-3056).
+ *
+ * The Branches screen fires the list + analytics handlers together on load as
+ * SEPARATE IPC requests, so per-handler sequencing alone is not enough: each
+ * handler enters its own `readSequentially` and starts its first heavy read
+ * immediately, so the list's and the analytics' large result sets can still be
+ * materialized in the db-host worker's V8 heap simultaneously and blow past its
+ * `--max-old-space-size` ceiling (exit code 5 → restart loop →
+ * `LOCAL_BRANCHES_SOURCE_ERROR`). This module-level promise chain makes every
+ * heavy branch read run one at a time ACROSS all handlers and concurrent
+ * requests, so at most ONE big result set is ever resident.
+ *
+ * A read that rejects must not wedge the queue, so the tail advances on settle
+ * (resolve OR reject). This only orders WHEN reads run, never which rows or
+ * their order — purely a peak-memory change, not a behavior change.
+ */
+let branchReadTail: Promise<unknown> = Promise.resolve();
+
+function runExclusiveBranchRead<T>(thunk: () => Promise<T>): Promise<T> {
+  const run = branchReadTail.then(thunk, thunk);
+  branchReadTail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/**
+ * Run heavy, row-materializing branch reads ONE AT A TIME — globally, via the
+ * shared {@link runExclusiveBranchRead} gate — so concurrent branch handlers
+ * (list + analytics on screen mount) never materialize their result sets in the
+ * worker heap together. Output is identical to the previous `Promise.all` (same
+ * reads, same rows, same tuple order); the tuple return preserves positional
+ * destructuring at the call sites and the `Thunks`/`Awaited` generics keep each
+ * element's type exact.
+ */
+export async function readSequentially<
+  Thunks extends readonly [...(() => Promise<unknown>)[]],
+>(
+  thunks: [...Thunks]
+): Promise<{ [K in keyof Thunks]: Awaited<ReturnType<Thunks[K]>> }> {
+  const results: unknown[] = [];
+  for (const thunk of thunks) {
+    results.push(await runExclusiveBranchRead(thunk));
+  }
+  return results as { [K in keyof Thunks]: Awaited<ReturnType<Thunks[K]>> };
+}
 
 /**
  * The slice of the local SQLite database the Branches serving reads through.
@@ -79,25 +155,84 @@ import { reportTokenCostPricingMiss } from "./token-cost-pricing-miss.js";
  * without it (e.g. a unit test exercising only the Prisma branch reads) degrades
  * to the minimal session spine + empty trace rather than failing.
  */
-export type BranchSyncSource = Pick<SqliteAgentDatabase, "prisma"> &
-  Partial<Pick<SqliteAgentDatabase, "syncSource">>;
+export type BranchSyncSource = Pick<DbHostAgentDatabase, "prisma"> &
+  Partial<Pick<DbHostAgentDatabase, "syncSource">>;
+
+export type BranchCloudHydrationSource = Pick<
+  DesktopCloudGitHubHydration,
+  "hydrate"
+>;
 
 /**
  * Cloud-only filters have no meaning for the local (self-scoped) source — mirror
  * the agent-sessions fail-closed: a present cloud filter yields the empty
  * canonical response rather than silently ignoring the constraint.
  *
- * DEFERRAL (v1): the SUPPORTED local filters (owner / repo / status / search /
- * startDate / endDate) are intentionally NOT applied inside these serving ops.
- * The renderer applies them client-side over the full local corpus for the LIST
- * (`useBranchFilterState`), matching the plan's local-corpus model; usage and
- * analytics are computed corpus-wide on purpose (the KPI cards + by-person chart
- * are a global summary, not a filtered slice). Server-side local filtering lands
- * with the authed REST source. Documented here so callers aren't misled into
- * expecting a filtered result from these functions.
+ * DEFERRAL (v1): the facet filters (owner / repo / status / search) are still
+ * applied client-side over the full local corpus by the renderer
+ * (`useBranchFilterState`); server-side facet filtering lands with the authed
+ * REST source. The TIME WINDOW (`startDate` / `endDate`) IS now honored here for
+ * usage + analytics (FEA-2155) so the summary cards reconcile with the
+ * window-filtered table instead of rendering all-time KPIs beneath a 7-day
+ * table; see `filterBranchItemsByWindow`. The LIST op still windows client-side
+ * (`filterBranchRowsByWindow` in the renderer) — moving that server-side is a
+ * later step.
  */
 function hasUnsupportedCloudFilter(request: SharedBranchesQuery): boolean {
   return Boolean(request.userId || request.teamId || request.projectId);
+}
+
+/** Parse a window bound to epoch ms; absent / unparseable → null (not applied). */
+function parseWindowBoundMs(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * Window the projected branch rows to those last active within
+ * [`startDate`, `endDate`]. Compares by true INSTANT via `Date.parse` —
+ * mirroring the renderer's `filterBranchRowsByWindow` and the wire-side
+ * `isoEpoch` sort — because `lastActivityAt` is the producer-owned wire value
+ * and may be a mixed timestamp format (space- vs `T`-separated), where a
+ * byte-wise compare would mis-drop a recent row (a space `0x20` sorts before
+ * `T` `0x54`). A bound that is absent or unparseable is simply not applied; a
+ * row whose own `lastActivityAt` is unparseable is KEPT rather than silently
+ * dropped. With NEITHER bound set (the "All time" window) the rows pass through
+ * unchanged, so the all-time usage/analytics output is byte-for-byte intact.
+ */
+function filterBranchItemsByWindow(
+  items: BranchRow[],
+  request: SharedBranchesQuery
+): BranchRow[] {
+  const startMs = parseWindowBoundMs(request.startDate);
+  const endMs = parseWindowBoundMs(request.endDate);
+  if (startMs == null && endMs == null) {
+    return items;
+  }
+  return items.filter((item) => {
+    const ms = Date.parse(item.lastActivityAt);
+    if (Number.isNaN(ms)) {
+      return true;
+    }
+    if (startMs != null && ms < startMs) {
+      return false;
+    }
+    return endMs == null || ms <= endMs;
+  });
+}
+
+/** Union of the session ids across a set of branch rows. */
+function collectSessionIds(items: BranchRow[]): Set<string> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    for (const sessionId of item.sessionIds) {
+      ids.add(sessionId);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -253,6 +388,7 @@ function groupBranchAccumulators(
       repoFullName: link.repoFullName,
       branchName: link.branchName,
     });
+    const linkLoc = completeArtifactLoc(link);
     const existing = branches.get(id);
     if (!existing) {
       branches.set(id, {
@@ -260,9 +396,9 @@ function groupBranchAccumulators(
         branchName: link.branchName,
         sessionIds: new Set([link.sessionId]),
         updatedAt: link.activityAt,
-        linesAdded: link.linesAdded,
-        linesRemoved: link.linesRemoved,
-        filesChanged: link.filesChanged,
+        linesAdded: linkLoc?.linesAdded ?? null,
+        linesRemoved: linkLoc?.linesRemoved ?? null,
+        filesChanged: linkLoc?.filesChanged ?? null,
       });
       continue;
     }
@@ -274,15 +410,64 @@ function groupBranchAccumulators(
     if (isoEpoch(link.activityAt) > isoEpoch(existing.updatedAt)) {
       existing.updatedAt = link.activityAt;
     }
-    // LOC lives on the one branch artifact, so it's identical across this
-    // branch's links; adopt it only if an earlier row hadn't carried it yet.
-    if (existing.linesAdded == null && link.linesAdded != null) {
-      existing.linesAdded = link.linesAdded;
-      existing.linesRemoved = link.linesRemoved;
-      existing.filesChanged = link.filesChanged;
+    // LOC is an artifact-level triple; adopt it only when all fields are present
+    // so partial enrichment cannot synthesize a mixed branch/PR size.
+    if (!completeArtifactLoc(existing) && linkLoc) {
+      existing.linesAdded = linkLoc.linesAdded;
+      existing.linesRemoved = linkLoc.linesRemoved;
+      existing.filesChanged = linkLoc.filesChanged;
     }
   }
   return branches;
+}
+
+/**
+ * The branch's LOC for the size / value KPIs: its own FEA-1899 enrichment when
+ * present, else its merged PR artifact's LOC (joined onto the PR rows by
+ * `readLocalBranchPrRows`). Branch artifacts are frequently un-enriched while
+ * the PR artifact carries LOC — the SAME enriched source the delivery dashboard
+ * medians — so this fallback keeps Median PR size / Value-per-$ populated and
+ * reconciled with the dashboard instead of reading null off the branch row
+ * (FEA-2159). Extracted to keep `projectBranchListItems` under the complexity
+ * budget.
+ */
+function resolveBranchLoc(
+  branch: BranchAccumulator,
+  prs: BranchPrRow[]
+): {
+  additions: number | null;
+  deletions: number | null;
+  filesChanged: number | null;
+} {
+  const branchLoc = completeArtifactLoc(branch);
+  const prLoc =
+    prs.map((pr) => completeArtifactLoc(pr)).find((loc) => loc != null) ?? null;
+  const loc = branchLoc ?? prLoc;
+
+  return {
+    additions: loc?.linesAdded ?? null,
+    deletions: loc?.linesRemoved ?? null,
+    filesChanged: loc?.filesChanged ?? null,
+  };
+}
+
+function completeArtifactLoc(candidate: {
+  linesAdded: number | null;
+  linesRemoved: number | null;
+  filesChanged: number | null;
+}): { linesAdded: number; linesRemoved: number; filesChanged: number } | null {
+  if (
+    candidate.linesAdded == null ||
+    candidate.linesRemoved == null ||
+    candidate.filesChanged == null
+  ) {
+    return null;
+  }
+  return {
+    linesAdded: candidate.linesAdded,
+    linesRemoved: candidate.linesRemoved,
+    filesChanged: candidate.filesChanged,
+  };
 }
 
 /**
@@ -353,7 +538,11 @@ function projectBranchListItems(
     tokensByBranch.set(id, list);
   }
 
-  const items: BranchRow[] = [];
+  // Decorate-sort-undecorate: each row's activity epoch is parsed ONCE here while
+  // building the list, then the sort compares the precomputed number. A
+  // comparator that called `isoEpoch` on both operands would re-`Date.parse`
+  // `lastActivityAt` ~2·N·log₂N times per fetch instead of N.
+  const decorated: { row: BranchRow; sortEpoch: number }[] = [];
   for (const [id, branch] of branches) {
     // PR rows arrive newest-first (read ORDER BY observed_at DESC), so [0] is
     // the most-recently-observed PR for the branch.
@@ -365,6 +554,10 @@ function projectBranchListItems(
         .filter((value): value is number => value != null)
     );
     const prState = latestPr ? derivePrState(latestPr) : null;
+    const { additions, deletions, filesChanged } = resolveBranchLoc(
+      branch,
+      prs
+    );
 
     // PRD-486: a branch's "last active" is its latest REAL lifecycle event — a
     // commit, or a PR opened/merged/closed — NOT session activity (which the
@@ -376,37 +569,41 @@ function projectBranchListItems(
       ...prs.flatMap((pr) => [pr.openedAt, pr.mergedAt, pr.closedAt]),
     ]);
 
-    items.push({
-      id,
-      branchName: branch.branchName,
-      baseBranch: null,
-      repoFullName: branch.repoFullName,
-      owner: null,
-      status: deriveStatus(prState),
-      prNumber: latestPr?.prNumber ?? null,
-      prTitle: latestPr?.title ?? null,
-      prState,
-      prUrl: latestPr?.prUrl ?? null,
-      multiPrWarning: distinctPrNumbers.size > 1,
-      checksStatus: null,
-      checksPassed: null,
-      checksTotal: null,
-      reviewDecision: null,
-      ahead: null,
-      behind: null,
-      additions: branch.linesAdded,
-      deletions: branch.linesRemoved,
-      filesChanged: branch.filesChanged,
-      estimatedCostUsd: sumStoredBranchCost(tokensByBranch.get(id) ?? []),
-      lastActivityAt: eventActivity ?? branch.updatedAt,
-      sessionIds: [...branch.sessionIds].sort(),
+    const lastActivityAt = eventActivity ?? branch.updatedAt;
+    decorated.push({
+      row: {
+        id,
+        branchName: branch.branchName,
+        baseBranch: null,
+        repoFullName: branch.repoFullName,
+        owner: null,
+        status: deriveStatus(prState),
+        prNumber: latestPr?.prNumber ?? null,
+        prTitle: latestPr?.title ?? null,
+        prState,
+        prUrl: latestPr?.prUrl ?? null,
+        multiPrWarning: distinctPrNumbers.size > 1,
+        checksStatus: null,
+        checksPassed: null,
+        checksTotal: null,
+        reviewDecision: null,
+        ahead: null,
+        behind: null,
+        additions,
+        deletions,
+        filesChanged,
+        estimatedCostUsd: sumStoredBranchCost(tokensByBranch.get(id) ?? []),
+        lastActivityAt,
+        sessionIds: [...branch.sessionIds].sort(),
+      },
+      sortEpoch: isoEpoch(lastActivityAt),
     });
   }
 
-  // Newest activity first. Sort by parsed epoch (not raw string order) so mixed
-  // timestamp formats still rank by true instant.
-  items.sort((a, b) => isoEpoch(b.lastActivityAt) - isoEpoch(a.lastActivityAt));
-  return items;
+  // Newest activity first. Sort by the parsed epoch (not raw string order) so
+  // mixed timestamp formats still rank by true instant.
+  decorated.sort((a, b) => b.sortEpoch - a.sortEpoch);
+  return decorated.map((entry) => entry.row);
 }
 
 /**
@@ -417,7 +614,8 @@ function projectBranchListItems(
  */
 export async function getSharedBranches(
   source: BranchSyncSource | null | undefined,
-  request: SharedBranchesListRequest = {}
+  request: SharedBranchesListRequest = {},
+  cloudHydration?: BranchCloudHydrationSource
 ): Promise<BranchListResponse> {
   if (!source) {
     return emptySharedBranchesListResponse();
@@ -426,13 +624,16 @@ export async function getSharedBranches(
     return emptySharedBranchesListResponse();
   }
   try {
-    // Independent grouped reads — run concurrently (first joint use is the
-    // projection below), so the list pays one read latency, not three.
-    const [linkRows, prRows, tokenRows, commitRows] = await Promise.all([
-      readLocalBranchLinkRows(source.prisma),
-      readLocalBranchPrRows(source.prisma),
-      readBranchTokenAggregateRows(source.prisma),
-      readLocalBranchCommitRows(source.prisma),
+    // Independent grouped reads. Run SEQUENTIALLY (FEA-3056): the first joint use
+    // is the projection below, but running these unbounded per-row reads
+    // concurrently — doubled with the analytics handler the Branches screen fires
+    // alongside this one — pins every large result set in the db-host worker heap
+    // at once and OOMs it. Serializing keeps one big result set resident at a time.
+    const [linkRows, prRows, tokenRows, commitRows] = await readSequentially([
+      () => readLocalBranchLinkRows(source.prisma),
+      () => readLocalBranchPrRows(source.prisma),
+      () => readBranchTokenAggregateRows(source.prisma),
+      () => readLocalBranchCommitRows(source.prisma),
     ]);
     const projected = projectBranchListItems(
       linkRows,
@@ -443,23 +644,19 @@ export async function getSharedBranches(
     // Honor the requested id set, then page the output. `total` is the matched
     // count BEFORE paging (standard pagination semantics).
     const matched = selectRequestedBranches(projected, request.ids);
+    const items = pageBranches(matched, request.limit, request.offset);
     return {
-      items: pageBranches(matched, request.limit, request.offset),
+      items: await applyCloudHydration(items, cloudHydration, {
+        forceRefresh: request.forceRefresh,
+        scope: "list",
+      }),
       total: matched.length,
       viewerScope: BranchViewerScope.Self,
     };
-  } catch {
-    throw new Error(SHARED_BRANCHES_SOURCE_ERROR_CODE);
+  } catch (error) {
+    rethrowAsSourceError("getSharedBranches", error);
   }
 }
-
-/**
- * A gap between consecutive trace items >= this is a synthesized idle marker.
- * SSOT pair: keep in sync with `DEFAULT_IDLE_THRESHOLD_MS` in
- * `packages/app/branches/lib/branch-derivations.ts` — the renderer re-derives
- * idle spans from the same trace and must use the same threshold.
- */
-const MERGED_TRACE_IDLE_THRESHOLD_MS = 120_000;
 
 /**
  * Price one loaded session's `tokenUsageByModel`. Prefers the STORED per-model
@@ -534,85 +731,17 @@ function toEnrichedBranchSession(
   };
 }
 
-/** Parse a subagent cost label (e.g. "$0.42") into a number, else null. */
-function parseSubagentCostUsd(value: string | null): number | null {
-  if (value == null) {
-    return null;
-  }
-  const parsed = Number.parseFloat(value.replace(/[^0-9.-]/g, ""));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 /**
- * Map a Sessions-detail `TurnItem` onto the contract `MergedTraceItem`, tagging
- * its `sessionId`. The detail projection (`projectAgentSessionTurnItems`) only
- * ever emits `prompt`/`say`/`tools`/`subagent`/`event` — the per-session
- * `sessionstart` and the gap `idle` markers are SYNTHESIZED by the merged builder
- * below (the projection carries neither), so those fall through to `null` here.
+ * Project one loaded desktop session into the surface-agnostic
+ * `MergedTraceSessionInput` the shared `buildMergedTrace` consumes: run the same
+ * verified timeline + turn-item projectors the Sessions detail uses, then hand
+ * off the identity + start + turn items. The map/merge/idle logic lives in
+ * `@repo/lib/branches/merged-trace` so the desktop single-player trace and the
+ * cloud org-aggregated branch trace stay a single source of truth.
  */
-function mapTurnItemToTrace(
-  item: TurnItem,
-  sessionId: string
-): MergedTraceItem | null {
-  switch (item.type) {
-    case "prompt":
-    case "say":
-      return {
-        type: item.type,
-        sessionId,
-        t: item.t,
-        tMs: item.tMs,
-        cumCostUsd: item.cum,
-        actorName: item.actor.name,
-        text: item.text,
-      };
-    case "tools":
-      return {
-        type: "tools",
-        sessionId,
-        t: item.t,
-        tMs: item.tMs,
-        endMs: item.endMs,
-        summary: item.summary,
-        hasFail: item.hasFail,
-        failN: item.failN,
-        // Carry the per-tool rows so the branch trace's tool cards expand with
-        // the same detail the session-detail trace shows.
-        items: item.items,
-      };
-    case "subagent":
-      return {
-        type: "subagent",
-        sessionId,
-        t: item.t,
-        tMs: item.tMs,
-        sub: item.sub,
-        model: item.model,
-        costUsd: parseSubagentCostUsd(item.cost),
-      };
-    case "event":
-      return {
-        type: "event",
-        sessionId,
-        t: item.t,
-        dot: item.dot,
-        text: item.text,
-        tag: item.tag,
-      };
-    case "end":
-      return { type: "end", sessionId, text: item.text };
-    default:
-      // `sessionstart` (synthesized per session) and `idle` (synthesized from
-      // real gaps) are handled by the merged builder, not mapped 1:1.
-      return null;
-  }
-}
-
-/** Project one loaded session into its stamped `MergedTraceItem`s (+ end tail). */
-function collectSessionTraceItems(session: SyncedAgentSession): {
-  stamped: { ms: number; item: MergedTraceItem }[];
-  tail: MergedTraceItem[];
-} {
+function toMergedTraceSessionInput(
+  session: SyncedAgentSession
+): MergedTraceSessionInput {
   const timeline = projectAgentSessionTimelineEvents(session.events, {
     metadata: session.metadata,
   });
@@ -626,84 +755,64 @@ function collectSessionTraceItems(session: SyncedAgentSession): {
     timeline,
     tokenUsageByModel: session.tokenUsageByModel,
   });
-  const stamped: { ms: number; item: MergedTraceItem }[] = [];
-  const tail: MergedTraceItem[] = [];
+  return {
+    sessionId: session.externalSessionId,
+    startedAt: session.startedAt,
+    actorName: session.name ?? session.model ?? null,
+    harness: session.harness ?? null,
+    turnItems,
+  };
+}
 
-  // Synthesize exactly one session-boundary marker at the session's start. The
-  // detail projection never emits one, and the richer `isResumed`/`machine`
-  // signals have no v1 producer — they stay undefined until Epic E captures them
-  // (the contract union already carries the optional fields).
-  const startMs = Date.parse(session.startedAt);
-  if (!Number.isNaN(startMs)) {
-    stamped.push({
-      ms: startMs,
-      item: {
-        type: "sessionstart",
-        sessionId: session.externalSessionId,
-        t: session.startedAt,
-        actor: {
-          name: session.name ?? session.model ?? null,
-          harness: session.harness ?? null,
-        },
-      },
-    });
-  }
-
-  for (const turn of turnItems) {
-    const mapped = mapTurnItemToTrace(turn, session.externalSessionId);
-    if (!mapped) {
-      continue;
-    }
-    if (mapped.type === "end") {
-      tail.push(mapped);
-      continue;
-    }
-    const ms = Date.parse(mapped.t);
-    if (Number.isNaN(ms)) {
-      continue;
-    }
-    stamped.push({ ms, item: mapped });
-  }
-  return { stamped, tail };
+/** Build the chronological cross-session `mergedTrace` for loaded sessions. */
+function buildMergedTrace(sessions: SyncedAgentSession[]): MergedTraceItem[] {
+  return buildSharedMergedTrace(sessions.map(toMergedTraceSessionInput));
 }
 
 /**
- * Build the chronological cross-session `mergedTrace`: project each session's
- * turn items, k-way merge-sort all stamped items by timestamp, and synthesize an
- * `idle` marker wherever consecutive items gap by >= the idle threshold. Each
- * session contributes exactly one `sessionstart` (carrying the richer
- * `isResumed`/`machine` actor fields E4 needs). `end` markers (which carry no
- * timestamp) trail the stream.
+ * Lightweight work/idle activity summary for the lead-time waterfall (PLN-1148
+ * Phase 2). Built from the captured event INSTANTS (`event.createdAt`) across the
+ * branch's sessions — which survive the light (`omitEventData`) hydration, since
+ * only the heavy event `data` blob is dropped — so the DEFAULT detail view can
+ * chart work-vs-idle WITHOUT building the events-heavy `mergedTrace`. Idle spans
+ * are the same `MERGED_TRACE_IDLE_THRESHOLD_MS` gaps the merged trace inserts; the
+ * basis is every captured activity instant (a more faithful "active vs idle"
+ * signal than the projected trace items, and one that needs no `data`).
  */
-function buildMergedTrace(sessions: SyncedAgentSession[]): MergedTraceItem[] {
-  const stamped: { ms: number; item: MergedTraceItem }[] = [];
-  const tail: MergedTraceItem[] = [];
+function buildBranchLeadTime(
+  sessions: SyncedAgentSession[]
+): BranchLeadTimeActivity {
+  const instants: number[] = [];
   for (const session of sessions) {
-    const collected = collectSessionTraceItems(session);
-    stamped.push(...collected.stamped);
-    tail.push(...collected.tail);
-  }
-  stamped.sort((a, b) => a.ms - b.ms);
-
-  const merged: MergedTraceItem[] = [];
-  for (let i = 0; i < stamped.length; i += 1) {
-    const current = stamped[i];
-    if (i > 0) {
-      const previous = stamped[i - 1];
-      const gapMs = current.ms - previous.ms;
-      if (gapMs >= MERGED_TRACE_IDLE_THRESHOLD_MS) {
-        merged.push({
-          type: "idle",
-          sessionId: current.item.sessionId,
-          t: new Date(previous.ms).toISOString(),
-          gapMs,
-        });
+    for (const event of session.events) {
+      const ms = Date.parse(event.createdAt);
+      if (!Number.isNaN(ms)) {
+        instants.push(ms);
       }
     }
-    merged.push(current.item);
   }
-  merged.push(...tail);
-  return merged;
+  instants.sort((a, b) => a - b);
+  const first = instants[0];
+  const last = instants.at(-1);
+  if (first === undefined || last === undefined) {
+    return { firstActivityT: null, lastActivityT: null, idleSpans: [] };
+  }
+  const idleSpans: BranchIdleSpan[] = [];
+  for (let i = 1; i < instants.length; i += 1) {
+    const gapMs = instants[i] - instants[i - 1];
+    if (gapMs >= MERGED_TRACE_IDLE_THRESHOLD_MS) {
+      idleSpans.push({
+        startT: new Date(instants[i - 1]).toISOString(),
+        endT: new Date(instants[i]).toISOString(),
+        gapMs,
+      });
+    }
+  }
+  return {
+    firstActivityT: new Date(first).toISOString(),
+    lastActivityT: new Date(last).toISOString(),
+    idleSpans,
+  };
 }
 
 /**
@@ -813,14 +922,18 @@ function projectBranchDetail(
     };
   });
 
-  // buildMergedTrace runs OUTSIDE loadBranchSessions' degrade boundary, so guard
-  // it here: a projection failure degrades to an empty trace (matching the
-  // loader's best-effort contract) instead of 500-ing the whole detail.
-  let mergedTrace: MergedTraceItem[] = [];
+  // PLN-1148 Phase 2: the detail no longer builds the events-heavy mergedTrace —
+  // it light-hydrates (`omitEventData`), so the heavy `data` blobs are never
+  // loaded here. The trace is fetched lazily via `getSharedBranchTrace` when the
+  // Sessions & timeline tab opens; the default view's only trace need (the
+  // lead-time waterfall) is served by the lightweight `leadTime` summary below.
+  // `buildBranchLeadTime` is guarded so a projection failure degrades to an empty
+  // summary instead of 500-ing the whole detail (matching the loader's contract).
+  let leadTime: BranchLeadTimeActivity;
   try {
-    mergedTrace = buildMergedTrace(loadedSessions);
+    leadTime = buildBranchLeadTime(loadedSessions);
   } catch {
-    mergedTrace = [];
+    leadTime = { firstActivityT: null, lastActivityT: null, idleSpans: [] };
   }
 
   return {
@@ -843,7 +956,9 @@ function projectBranchDetail(
       }))
       .sort((a, b) => isoEpoch(a.committedAt) - isoEpoch(b.committedAt)),
     sessions,
-    mergedTrace,
+    // Deferred to the lazy trace fetch (PLN-1148 Phase 2) — never shipped here.
+    mergedTrace: [],
+    leadTime,
     linkedPrNumbers,
     linkedArtifacts: deriveLinkedArtifactsFromBranchName(row.branchName),
   };
@@ -858,7 +973,8 @@ function projectBranchDetail(
  */
 async function loadBranchSessions(
   source: BranchSyncSource,
-  sessionIds: readonly string[]
+  sessionIds: readonly string[],
+  options?: { omitEventData?: boolean }
 ): Promise<SyncedAgentSession[]> {
   if (!source.syncSource || sessionIds.length === 0) {
     return [];
@@ -869,12 +985,53 @@ async function loadBranchSessions(
     repoFullNameByPath: new Map(),
   };
   try {
-    return await source.syncSource.loadSyncedSessions([...sessionIds], cache);
+    return await source.syncSource.loadSyncedSessions(
+      [...sessionIds],
+      cache,
+      options
+    );
   } catch {
     // The trace/usage enrichment is best-effort; a loader failure must not 500
     // the whole detail when the Prisma branch-reads projection already succeeded.
     return [];
   }
+}
+
+/**
+ * PLN-1148 Phase 0: per-stage timing for the branch detail read, emitted ONLY in
+ * verbose mode — `gatewayLog.debug` skips its message factory entirely when
+ * verbose is off, so this is zero-cost in normal runs. Lets a large-corpus
+ * profile attribute the load to the scoped reads vs the session/trace hydration
+ * without attaching a debugger. Enable via the gateway logger's verbose toggle.
+ */
+function startBranchDetailPerf(id: string): {
+  mark: (label: string, count?: number) => void;
+  done: (outcome: string, counts?: Record<string, number>) => void;
+} {
+  const t0 = performance.now();
+  let last = t0;
+  const stages: string[] = [];
+  return {
+    mark(label, count) {
+      const now = performance.now();
+      const ms = (now - last).toFixed(1);
+      stages.push(
+        count == null ? `${label}=${ms}ms` : `${label}=${ms}ms(${count})`
+      );
+      last = now;
+    },
+    done(outcome, counts) {
+      const total = (performance.now() - t0).toFixed(1);
+      gatewayLog.debug("branches-perf", () => {
+        const tail = counts
+          ? ` ${Object.entries(counts)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(" ")}`
+          : "";
+        return `detail ${outcome} id=${id} total=${total}ms ${stages.join(" ")}${tail}`;
+      });
+    },
+  };
 }
 
 /**
@@ -884,10 +1041,19 @@ async function loadBranchSessions(
  * + the cross-session merged trace, then fills the body via `projectBranchDetail`.
  * Returns `null` — translated to a typed 404 at the IPC boundary — for a missing
  * source, a non-string/empty id, or an id that matches no local branch.
+ *
+ * PLN-1148 Phase 1: reads are scoped to the requested `(repoFullName, branchName)`
+ * via `decodeBranchId` rather than reading the whole corpus and filtering in JS,
+ * so the detail's cost scales with the opened branch, not the total local
+ * history. Links are read first — they establish the branch exists (a branch IS
+ * its set of session links) and give the session-id set the commit read scopes
+ * on — so an unknown id 404s after one tiny indexed query.
  */
 export async function getSharedBranchDetail(
   source: BranchSyncSource | null | undefined,
-  id: unknown
+  id: unknown,
+  cloudHydration?: BranchCloudHydrationSource,
+  options: { forceRefresh?: boolean } = {}
 ): Promise<BranchPageDetail | null> {
   if (!source) {
     return null;
@@ -895,13 +1061,27 @@ export async function getSharedBranchDetail(
   if (typeof id !== "string" || id.length === 0) {
     return null;
   }
+  // The branch identity the scoped reads filter on — the exact inverse of the
+  // list's `encodeBranchId`, so the detail reads the SAME branch the id names.
+  const key = decodeBranchId(id);
+  const perf = startBranchDetailPerf(id);
   try {
-    const [linkRows, prRows, tokenRows, commitRows] = await Promise.all([
-      readLocalBranchLinkRows(source.prisma),
-      readLocalBranchPrRows(source.prisma),
-      readBranchTokenAggregateRows(source.prisma),
-      readLocalBranchCommitRows(source.prisma),
+    const linkRows = await readLocalBranchLinkRowsForBranch(source.prisma, key);
+    perf.mark("links", linkRows.length);
+    if (linkRows.length === 0) {
+      perf.done("not-found");
+      return null;
+    }
+    const sessionIds = [...new Set(linkRows.map((link) => link.sessionId))];
+    // The remaining branch-scoped reads are independent — run them together.
+    const [prRows, tokenRows, commitRows] = await Promise.all([
+      readLocalBranchPrRowsForBranch(source.prisma, key),
+      readBranchTokenAggregateRowsForBranch(source.prisma, key),
+      readBranchCommitRowsForSessions(source.prisma, sessionIds, key),
     ]);
+    perf.mark("reads");
+    // The reads are already scoped to this branch, so the list projection yields
+    // exactly this branch's row — no cross-branch `encodeBranchId` filter needed.
     const row = projectBranchListItems(
       linkRows,
       prRows,
@@ -909,27 +1089,126 @@ export async function getSharedBranchDetail(
       commitRows
     ).find((item) => item.id === id);
     if (!row) {
+      perf.done("not-found");
       return null;
     }
-    // Narrow the grouped reads to this branch via the same identity the list
-    // keys on, so the detail can never mis-attribute another branch's PRs/links.
-    const matchesId = (parts: {
-      repoFullName: string | null;
-      branchName: string;
-    }) => encodeBranchId(parts) === id;
-    const branchPrs = prRows.filter((pr) => matchesId(pr));
-    const branchLinks = linkRows.filter((link) => matchesId(link));
-    const branchCommits = commitRows.filter((commit) => matchesId(commit));
-    const loadedSessions = await loadBranchSessions(source, row.sessionIds);
-    return projectBranchDetail(
+    // PLN-1148 Phase 2: LIGHT hydration — `omitEventData: true` drops the heavy
+    // event `data` blobs (the dominant load term), keeping only what the sessions
+    // list (token/cost/name/harness) and the lead-time summary (event instants)
+    // need. The events-heavy `mergedTrace` is built lazily by `getSharedBranchTrace`
+    // when the Sessions & timeline tab opens.
+    const loadedSessions = await loadBranchSessions(source, row.sessionIds, {
+      omitEventData: true,
+    });
+    perf.mark("sessions", loadedSessions.length);
+    const detail = projectBranchDetail(
       row,
-      branchPrs,
-      branchLinks,
-      branchCommits,
+      prRows,
+      linkRows,
+      commitRows,
       loadedSessions
     );
+    perf.done("ok", {
+      sessions: detail.sessions.length,
+      idleSpans: detail.leadTime.idleSpans.length,
+    });
+    const [hydrated] = await applyCloudHydration([detail], cloudHydration, {
+      forceRefresh: options.forceRefresh,
+      scope: "detail",
+    });
+    return hydrated ?? detail;
+  } catch (error) {
+    perf.done("error");
+    rethrowAsSourceError("getSharedBranchDetail", error);
+  }
+}
+
+async function applyCloudHydration<T extends BranchRow>(
+  rows: T[],
+  cloudHydration: BranchCloudHydrationSource | undefined,
+  options: { forceRefresh?: boolean; scope: "list" | "detail" }
+): Promise<T[]> {
+  if (!cloudHydration || rows.length === 0) {
+    return rows;
+  }
+  const result = await cloudHydration.hydrate({
+    rows,
+    forceRefresh: options.forceRefresh,
+    scope: options.scope,
+  });
+  return rows.map((row) =>
+    applyCloudHydrationResult(
+      row,
+      result.status,
+      result.failure,
+      result.overlays
+    )
+  );
+}
+
+function applyCloudHydrationResult<T extends BranchRow>(
+  row: T,
+  status: BranchCloudHydrationStatus,
+  failure: string | undefined,
+  overlays: DesktopCloudGitHubHydrationResult["overlays"] | undefined
+): T {
+  const overlay = overlayForRow(row, overlays);
+  return {
+    ...row,
+    ...overlay,
+    cloudHydrationStatus: status,
+    ...(failure === undefined ? {} : { cloudHydrationFailure: failure }),
+  };
+}
+
+function overlayForRow(
+  row: BranchRow,
+  overlays: DesktopCloudGitHubHydrationResult["overlays"] | undefined
+): Partial<BranchRow> {
+  if (!row.repoFullName || row.multiPrWarning || !overlays) {
+    return {};
+  }
+  const overlay = overlays[`${row.repoFullName}::${row.branchName}`];
+  if (!overlay) {
+    return {};
+  }
+  return overlay;
+}
+
+/**
+ * The branch's events-heavy cross-session merged trace (PLN-1148 Phase 2),
+ * fetched lazily by the Sessions & timeline tab — split out of
+ * `getSharedBranchDetail` so the DEFAULT branch-detail view never loads the
+ * multi-KB event `data` blobs the trace projection needs. Reuses the same scoped
+ * link read for branch identity + the session set, then FULL-hydrates those
+ * sessions (`omitEventData` off) and builds the trace.
+ *
+ * Best-effort like the in-detail trace it replaces: a missing source, an unknown
+ * id, or any read/projection failure degrades to an empty trace rather than
+ * throwing, so the tab renders an empty timeline instead of erroring.
+ */
+export async function getSharedBranchTrace(
+  source: BranchSyncSource | null | undefined,
+  id: unknown
+): Promise<MergedTraceItem[]> {
+  if (!source) {
+    return [];
+  }
+  if (typeof id !== "string" || id.length === 0) {
+    return [];
+  }
+  const key = decodeBranchId(id);
+  try {
+    const linkRows = await readLocalBranchLinkRowsForBranch(source.prisma, key);
+    if (linkRows.length === 0) {
+      return [];
+    }
+    const sessionIds = [...new Set(linkRows.map((link) => link.sessionId))];
+    // FULL hydration (omitEventData off) — the trace projection needs event data.
+    const loadedSessions = await loadBranchSessions(source, sessionIds);
+    return buildMergedTrace(loadedSessions);
   } catch {
-    throw new Error(SHARED_BRANCHES_SOURCE_ERROR_CODE);
+    return [];
   }
 }
 
@@ -975,21 +1254,52 @@ export async function getSharedBranchUsage(
     return emptySharedBranchesUsageSummary();
   }
   try {
-    const [tokenRows, eventRows, branchKeys] = await Promise.all([
-      readBranchUsageTokenRows(source.prisma),
-      readBranchUsageEventRows(source.prisma),
-      readDistinctBranchKeyRows(source.prisma),
-    ]);
-    const branchCount = new Set(branchKeys.map((key) => encodeBranchId(key)))
-      .size;
+    // Project the branch list (links + PRs + commits) alongside the usage reads
+    // so the rollup can be scoped to the branches active in the requested window
+    // (FEA-2155) — the SAME `lastActivityAt` axis the table windows on. Commits
+    // are read and threaded in because PRD-486 makes the latest commit the
+    // PRIMARY last-active signal: the list op (`getSharedBranches`) computes
+    // `lastActivityAt = maxIso([commitMax, ...prTimes]) ?? updatedAt`, so omitting
+    // commits here would window on a commit-blind timestamp and the cards would
+    // NOT reconcile with the table for any commit-aged branch. The distinct-branch
+    // COUNT also falls out of the windowed projection, so the separate
+    // `readDistinctBranchKeyRows` is no longer needed: one item per distinct
+    // `encodeBranchId` == the old DISTINCT key count for the all-time window.
+    // FEA-3056: run SEQUENTIALLY, not `Promise.all`. Same OOM guard as the list +
+    // analytics handlers — these unbounded per-row reads must not all be resident
+    // in the db-host worker heap at once. Serializing caps peak heap at one big
+    // result set; output is identical (same reads, same rows, same order).
+    const [tokenRows, eventRows, linkRows, prRows, commitRows] =
+      await readSequentially([
+        () => readBranchUsageTokenRows(source.prisma),
+        () => readBranchUsageEventRows(source.prisma),
+        () => readLocalBranchLinkRows(source.prisma),
+        () => readLocalBranchPrRows(source.prisma),
+        () => readLocalBranchCommitRows(source.prisma),
+      ]);
+    // No usage KPI surfaces per-branch cost, so the per-branch token aggregate is
+    // skipped (pass [] for tokens); branch identity + the commit-inclusive
+    // `lastActivityAt` are what the window keys on.
+    const windowed = filterBranchItemsByWindow(
+      projectBranchListItems(linkRows, prRows, [], commitRows),
+      request
+    );
+    const windowedSessionIds = collectSessionIds(windowed);
+    const branchCount = windowed.length;
     // Totals/cost/billing-split from the complete per-(session,model) aggregate
     // (its created_at is the pricing-time proxy); hour buckets from per-event
     // rows so a multi-hour session isn't collapsed onto one aggregate timestamp.
-    const rows = tokenRows.map(branchUsageRowFromTokenRow);
-    const hourRows = eventRows.map(branchUsageRowFromTokenRow);
+    // Both are restricted to the windowed branches' sessions so the rollup
+    // reconciles with the windowed table + summary cards.
+    const rows = tokenRows
+      .filter((row) => windowedSessionIds.has(row.sessionId))
+      .map(branchUsageRowFromTokenRow);
+    const hourRows = eventRows
+      .filter((row) => windowedSessionIds.has(row.sessionId))
+      .map(branchUsageRowFromTokenRow);
     return projectBranchUsage(rows, branchCount, hourRows);
-  } catch {
-    throw new Error(SHARED_BRANCHES_SOURCE_ERROR_CODE);
+  } catch (error) {
+    rethrowAsSourceError("getSharedBranchUsage", error);
   }
 }
 
@@ -1002,7 +1312,8 @@ export async function getSharedBranchUsage(
  */
 export async function getSharedBranchAnalytics(
   source: BranchSyncSource | null | undefined,
-  request: SharedBranchesQuery = {}
+  request: SharedBranchesQuery = {},
+  cloudHydration?: BranchCloudHydrationSource
 ): Promise<BranchAnalytics> {
   if (!source) {
     return emptySharedBranchesAnalytics();
@@ -1018,30 +1329,60 @@ export async function getSharedBranchAnalytics(
     // full cost to every branch it touched, so summing it inflates AI spend (a
     // session on N branches counted N times). Pricing the deduped rows once
     // reconciles this card with the usage summary + agent dashboard.
-    const [linkRows, prRows] = await Promise.all([
-      readLocalBranchLinkRows(source.prisma),
-      readLocalBranchPrRows(source.prisma),
-    ]);
-    // The branch-linked session ids are already in `linkRows`, so hand them to the
-    // usage-token read instead of letting it re-query session_artifact_links (the
-    // full `readBranchUsageTokenRows` also resolves billing mode, which analytics
-    // doesn't use). Collapses this path from 4 DB round-trips to 3.
-    const usageTokenRows = await readBranchUsageTokenRowsForSessions(
-      source.prisma,
-      linkRows.map((row) => row.sessionId)
-    );
+    // Links + PRs + commits run concurrently. Commits (PRD-486) are read because
+    // the window keys on `lastActivityAt`, whose PRIMARY signal is the latest
+    // commit — the list op the table renders computes
+    // `maxIso([commitMax, ...prTimes]) ?? updatedAt`, so windowing on a
+    // commit-blind timestamp would mis-window any commit-aged branch and break the
+    // card↔table reconciliation this change exists to fix. No KPI reads commit
+    // times directly; they only place each branch on the window axis.
+    // FEA-3056: run SEQUENTIALLY, not `Promise.all`. This handler fires together
+    // with the list handler on Branches load; running these unbounded per-row
+    // reads concurrently across both handlers pins every large result set in the
+    // db-host worker heap simultaneously and OOMs it. Serializing caps peak heap
+    // at one big result set. The token read already followed these; it now joins
+    // the same sequence so it is never resident alongside the link/PR/commit rows.
+    const [linkRows, prRows, commitRows, usageTokenRows] =
+      await readSequentially([
+        () => readLocalBranchLinkRows(source.prisma),
+        () => readLocalBranchPrRows(source.prisma),
+        () => readLocalBranchCommitRows(source.prisma),
+        // FEA-2260: resolves branch-linked sessions via a SQL subquery JOIN
+        // rather than accepting session IDs as parameters — avoids SQLite's
+        // 999-parameter limit.
+        () => readBranchAnalyticsTokenRows(source.prisma),
+      ]);
     // No analytics KPI surfaces per-branch cost (spend comes from the deduped read
-    // above), so the per-branch token aggregate AND the commit read (PRD-486) are
-    // both skipped — pass [] for tokens and commits. `estimatedCostUsd` on these
-    // items stays null and is never read; merge rate / median PR size / active
-    // count / the LOC numerator all derive from links + PRs, not cost.
-    const items = projectBranchListItems(linkRows, prRows, [], []);
+    // above), so the per-branch token aggregate is skipped — pass [] for tokens.
+    // `estimatedCostUsd` on these items stays null and is never read; merge rate /
+    // median PR size / active count / the LOC numerator all derive from links +
+    // PRs, not cost. Hydrate before windowing: cloud overlays can supply a newer
+    // `lastActivityAt` and PR LOC, and analytics must use the same hydrated rows
+    // the table filters/renders.
+    const hydratedItems = await applyCloudHydration(
+      projectBranchListItems(linkRows, prRows, [], commitRows),
+      cloudHydration,
+      {
+        scope: "list",
+      }
+    );
+    // Window to the branches active in the requested range (FEA-2155), keyed on
+    // the SAME hydrated, commit-inclusive `lastActivityAt` instant the table
+    // windows on, so every KPI reconciles with the window-filtered table.
+    const windowed = filterBranchItemsByWindow(hydratedItems, request);
+    const windowedSessionIds = collectSessionIds(windowed);
+    // Restrict spend to the windowed branches' sessions so AI spend reflects the
+    // same set of branches the count KPIs do. (Reusing the already-fetched rows —
+    // no extra read — keeps the single session_artifact_links query intact.)
+    const windowedUsageRows = usageTokenRows.filter((row) =>
+      windowedSessionIds.has(row.sessionId)
+    );
 
-    // Headline AI spend: CAPTURED cost of every branch-linked session, counted
-    // ONCE. Stored cost (not re-derived list price) so it reconciles with the
-    // dashboard; un-priced rows (subscription / un-costed models) count as $0.
+    // Headline AI spend: CAPTURED cost of every windowed branch-linked session,
+    // counted ONCE. Stored cost (not re-derived list price) so it reconciles with
+    // the dashboard; un-priced rows (subscription / un-costed models) count as $0.
     const totalSpendUsd = sumStoredBranchCost(
-      usageTokenRows.map(branchUsageRowFromTokenRow)
+      windowedUsageRows.map(branchUsageRowFromTokenRow)
     );
     // LOC-per-$ denominator: captured cost EVEN-SPLIT-attributed to the
     // LOC-enriched branches. A session is apportioned across the branches it
@@ -1049,12 +1390,15 @@ export async function getSharedBranchAnalytics(
     // also worked un-enriched branches doesn't drag spend with no LOC to offset
     // it into the ratio (which deflates LOC/$). The numerator (net LOC) is
     // summed over the SAME enriched branches in `projectBranchAnalytics`.
-    const locEnrichedSpendUsd = sumLocEnrichedSpend(items, usageTokenRows);
-    return projectBranchAnalytics(items, {
+    const locEnrichedSpendUsd = sumLocEnrichedSpend(
+      windowed,
+      windowedUsageRows
+    );
+    return projectBranchAnalytics(windowed, {
       totalSpendUsd,
       locEnrichedSpendUsd,
     });
-  } catch {
-    throw new Error(SHARED_BRANCHES_SOURCE_ERROR_CODE);
+  } catch (error) {
+    rethrowAsSourceError("getSharedBranchAnalytics", error);
   }
 }

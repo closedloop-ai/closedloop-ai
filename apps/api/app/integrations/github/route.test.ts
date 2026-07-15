@@ -21,7 +21,7 @@ vi.mock("./service", () => ({
   },
 }));
 
-import { DELETE } from "./route";
+import { DELETE, GET } from "./route";
 
 function deleteRequest() {
   return new NextRequest("https://api.example.test/integrations/github", {
@@ -29,10 +29,29 @@ function deleteRequest() {
   });
 }
 
-describe("DELETE /integrations/github", () => {
+function getRequest() {
+  return new NextRequest("https://api.example.test/integrations/github");
+}
+
+describe("/integrations/github", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.disconnectInstallation.mockResolvedValue(undefined);
+    mocks.getIntegrationStatus.mockResolvedValue({ connected: false });
+  });
+
+  it("gets the current organization's GitHub status for the current user", async () => {
+    const response = await GET(getRequest(), {
+      params: Promise.resolve({}),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      success: true,
+      data: { connected: false },
+    });
+    expect(mocks.getIntegrationStatus).toHaveBeenCalledWith("org-1", "user-1");
   });
 
   it("disconnects the current organization's GitHub installation", async () => {

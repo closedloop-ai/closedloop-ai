@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { RequiredCompatibilityMappingFields } from "../scripts/check-schema-update-gates";
+import { RequiredCompatibilityMappingFields } from "../scripts/telemetry-contract-constants";
 
 const README_PATH = new URL("../README.md", import.meta.url);
 const PACKAGE_JSON_PATH = new URL("../package.json", import.meta.url);
@@ -35,7 +35,7 @@ describe("package README", () => {
   it("documents the schema update workflow and required companion files", () => {
     const readme = readmeSource();
 
-    expect(readme).toContain("check:schema-update");
+    expect(readme).toContain("telemetry-contract-drift");
     expect(readme).toContain("packages/telemetry-contract/app.ts");
     expect(readme).toContain(
       "packages/telemetry-contract/__tests__/app.test.ts"

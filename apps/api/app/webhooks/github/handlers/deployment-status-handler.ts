@@ -1,6 +1,6 @@
 import type { DeploymentStatusEvent } from "@octokit/webhooks-types";
 import { LinkType } from "@repo/api/src/types/artifact";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { deploymentService } from "@/app/deployments/deployment-service";
@@ -54,6 +54,10 @@ export async function handleDeploymentStatus(
       where: {
         githubRepoId: String(event.repository.id),
         fullName: event.repository.full_name,
+        removedAt: null,
+        installation: {
+          status: GitHubInstallationStatus.ACTIVE,
+        },
       },
       select: { id: true },
     });

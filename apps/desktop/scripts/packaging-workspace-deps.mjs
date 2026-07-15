@@ -11,32 +11,36 @@ import path from "node:path";
 // runtime (resolved from node_modules), not inlined by the bundler. Each is
 // packed as a tarball and installed so the asar carries its real files.
 //
-//   - @closedloop-ai/loops-api — imported by the main process via its `exports`
-//     subpaths and left external by electron-vite (it resolves cleanly from
-//     node_modules). Its only runtime dep is the registry package
-//     `@pydantic/genai-prices`, so the closure needs no other workspace member.
 //   - @closedloop-ai/telemetry-contract — imported by Desktop OTel bootstrap
 //     via its `exports` subpaths and left external by electron-vite, so packaged
-//     Desktop needs its built files in node_modules at runtime.
+//     Desktop needs its built files in node_modules at runtime. It is the only
+//     remaining external workspace member — the sole package still published and
+//     pre-built to `dist`.
 //
 // NOT listed — bundled from source by electron-vite (PLN-999), so they never
 // resolve from node_modules at runtime and are excluded from the packaged
 // closure by isBundledWorkspaceDependency in stage-packaging-app.mjs:
 //   - @repo/api — main/preload inline it from source (electron.vite.config.ts
 //     aliases it to packages/api). Its transitive `@repo/shared-platform`
-//     (= @closedloop-ai/shared-platform, FEA-1513) is inlined with it.
+//     (FEA-1513) is inlined with it.
+//   - @repo/lib — surface-agnostic business logic incl. the harness parser
+//     cores (FEA-2717); main inlines it from source, same as @repo/api
+//     (WORKSPACE_INLINE + alias in electron.vite.config.ts).
+//   - @closedloop-ai/loops-api — its `exports` now resolve to `.ts` source (it is no
+//     longer published/pre-built), so main inlines it from source; its only
+//     runtime dep `@pydantic/genai-prices` is bundled with it (not externalized),
+//     so it needs no closure entry.
 //   - @repo/app, @closedloop-ai/design-system — renderer-only; Vite bundles them.
 //
-// `packages/api/**` and `packages/shared-platform/**` are now *bundled build
-// inputs* (a change to them alters the bundle), so CI path filters
-// (pr-test.yml, desktop-packaging-validation gating) still cover them even
-// though they left the staged runtime closure.
+// `packages/api/**`, `packages/shared-platform/**`, and `packages/loops-api/**`
+// are now *bundled build inputs* (a change to them alters the bundle), so CI path
+// filters (pr-test.yml, desktop-packaging-validation gating) still cover them
+// even though they left the staged runtime closure.
 //
 // This is the SINGLE SOURCE OF TRUTH consumed by stage-packaging-app.mjs, which
 // builds its `workspaceDependencyPackages` Map from it.
 // `packageDir` is the directory name under `packages/`.
 export const DESKTOP_RUNTIME_CLOSURE = [
-  { packageName: "@closedloop-ai/loops-api", packageDir: "loops-api" },
   {
     packageName: "@closedloop-ai/telemetry-contract",
     packageDir: "telemetry-contract",
@@ -54,7 +58,7 @@ const WORKSPACE_PLAIN_RANGE_PATTERN = /^[*^~\d]/;
  * dependency key. An aliased spec (`workspace:@scope/name@range` or
  * `workspace:name@range`) installs the named target package under the key — e.g.
  * `"@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*"` installs
- * the `@closedloop-ai/shared-platform` package, imported as `@repo/shared-platform`.
+ * the `@repo/shared-platform` package, imported as `@repo/shared-platform`.
  *
  * @param {string} dependencyKey The package.json dependency key.
  * @param {string} sourceSpec The declared `workspace:`/`link:` spec.

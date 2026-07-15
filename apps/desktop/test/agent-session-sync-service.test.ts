@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
 import type {
   AgentSessionSyncBatch,
+  AgentSessionSyncTransportPayload,
   SyncedAgentSession,
 } from "../src/main/agent-session-sync-contract.js";
 import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "../src/main/agent-session-sync-contract.js";
@@ -13,14 +14,19 @@ import {
 } from "../src/main/agent-session-sync-payload.js";
 import {
   AgentSessionSyncService,
+  type AgentSessionSyncServiceOptions,
   type AgentSessionSyncSource,
+  buildAgentComponentSyncSourceKey,
   buildAgentSessionSyncSourceKey,
+  INGESTION_FAILED_BACKOFF_MS,
+  MAX_CONSECUTIVE_INGESTION_FAILED,
   MAX_CONSECUTIVE_RATE_LIMITED,
   MAX_CONSECUTIVE_TIMEOUTS,
   type PersistedSyncState,
   RATE_LIMIT_BACKOFF_MS,
   SESSION_PAYLOAD_BYTE_CAP,
 } from "../src/main/agent-session-sync-service.js";
+import type { DesktopSyncBatchEventInput } from "../src/main/app-otel-runtime.js";
 import { DesktopAgentSessionsAckReason } from "../src/main/cloud-protocol.js";
 
 test("agent-session sync batches source sessions and dequeues accepted backfill", async () => {
@@ -111,6 +117,331 @@ test("agent-session sync dead-letters unchunkable oversized sessions locally", a
   assert.ok(
     estimateAgentSessionSyncBatchBytes(sent[0]) <= SESSION_PAYLOAD_BYTE_CAP
   );
+});
+
+test("FEA-2718: does not skip a session the retired unhydratable gate would have flagged", async () => {
+  // The sync path now hydrates with `omitEventData`, so raw event `data` size no
+  // longer risks a hydration crash. A source that still exposes the old
+  // raw-event-`data` gate must never have it consulted, and a session with a slim
+  // payload must sync instead of being dead-lettered by it.
+  const source = new UnhydratableFlaggingSyncSource([
+    makeSyncedSession("big-events-slim-metadata", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sent: AgentSessionSyncBatch[] = [];
+  const service = makeService(source, async (batch) => {
+    sent.push(batch);
+    return { accepted: true };
+  });
+
+  service.start();
+  await flushAgentSessionSync();
+  service.refresh();
+  await flushAgentSessionSync();
+  service.stop();
+
+  assert.equal(
+    source.findLocallyUnhydratableCallCount,
+    0,
+    "the retired raw-event-data unhydratable gate must never be consulted"
+  );
+  assert.deepEqual(
+    sent.flatMap((batch) =>
+      batch.sessions.map((session) => session.externalSessionId)
+    ),
+    ["big-events-slim-metadata"],
+    "the session syncs instead of being dead-lettered by the removed gate"
+  );
+});
+
+const SYNC_TELEMETRY_ALLOWED_KEYS = new Set([
+  "outcome",
+  "payloadBytes",
+  "latencyMs",
+]);
+
+// Returns any emitted attribute keys outside the transport-health allowlist, so
+// the assertion stays inside each test() (Biome noMisplacedAssertion).
+function leakedSyncTelemetryKeys(
+  events: DesktopSyncBatchEventInput[]
+): string[] {
+  return events
+    .flatMap((event) => Object.keys(event))
+    .filter((key) => !SYNC_TELEMETRY_ALLOWED_KEYS.has(key));
+}
+
+test("FEA-1995: accepted batch emits one success sync.* event with latency", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("session-1", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({ accepted: true }),
+    { sync }
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  assert.equal(sync.length, 1);
+  assert.equal(sync[0].outcome, "success");
+  assert.ok(
+    typeof sync[0].payloadBytes === "number" && sync[0].payloadBytes > 0,
+    "success event carries a positive payload byte count"
+  );
+  assert.ok(
+    typeof sync[0].latencyMs === "number" && sync[0].latencyMs >= 0,
+    "success event carries a non-negative latency"
+  );
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: transient (sub-threshold) ack failure emits a failure outcome and keeps PostHog path", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("session-1", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  let postHogFailures = 0;
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.AckTimeout,
+    }),
+    {
+      sync,
+      batchOutcome: () => {
+        postHogFailures += 1;
+      },
+    }
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  // One timeout is below MAX_CONSECUTIVE_TIMEOUTS → retryable, not dead-lettered.
+  assert.equal(sync.length, 1);
+  assert.equal(sync[0].outcome, "failure");
+  assert.ok(
+    typeof sync[0].latencyMs === "number" && sync[0].latencyMs >= 0,
+    "failure event carries a measured latency"
+  );
+  // The pre-existing failure-only product-analytics path is unchanged.
+  assert.equal(postHogFailures, 1);
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: repeated ack timeouts escalate to a dead_letter outcome", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("timeout-session", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.AckTimeout,
+    }),
+    { sync }
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+  for (let i = 1; i < MAX_CONSECUTIVE_TIMEOUTS; i += 1) {
+    service.refresh();
+    await flushAgentSessionSync();
+  }
+  service.stop();
+
+  assert.equal(sync.length, MAX_CONSECUTIVE_TIMEOUTS);
+  // Sub-threshold attempts report failure; the threshold attempt dead-letters.
+  assert.deepEqual(
+    sync.map((event) => event.outcome),
+    [
+      ...Array.from({ length: MAX_CONSECUTIVE_TIMEOUTS - 1 }, () => "failure"),
+      "dead_letter",
+    ]
+  );
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: locally oversized session emits dead_letter with payload but no latency", async () => {
+  const source = new FakeSyncSource([
+    makeUnchunkableOversizedSession("oversized", "2026-06-08T12:01:00.000Z"),
+    makeSyncedSession("healthy-session", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({ accepted: true }),
+    { sync }
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  const deadLetters = sync.filter((event) => event.outcome === "dead_letter");
+  assert.equal(
+    deadLetters.length,
+    1,
+    "oversized local session dead-letters once"
+  );
+  assert.equal(
+    deadLetters[0].latencyMs,
+    undefined,
+    "pre-send dead-letter omits latency"
+  );
+  assert.ok(
+    typeof deadLetters[0].payloadBytes === "number",
+    "dead-letter still reports the offending payload size"
+  );
+  // The healthy session that did send produces a separate success event.
+  assert.ok(sync.some((event) => event.outcome === "success"));
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: a validation_failed ack emits a dead_letter outcome", async () => {
+  // validation_failed dead-letters on the FIRST failure (no counter), so it is
+  // the simplest path that grows deadLetteredIds — guards the failure-vs-
+  // dead_letter discrimination from a deadLetteredCountBefore regression.
+  const source = new FakeSyncSource([
+    makeSyncedSession("invalid-session", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.ValidationFailed,
+    }),
+    { sync }
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  assert.equal(sync.length, 1);
+  assert.equal(sync[0].outcome, "dead_letter");
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: repeated rate_limited acks escalate to a dead_letter outcome", async () => {
+  // The rate-limit trip is the third (and subtlest) dead_letter trigger: with
+  // the relay healthy, the per-session counter trips at
+  // MAX_CONSECUTIVE_RATE_LIMITED → the final event is dead_letter, earlier
+  // events are failure. (The transport-down flap that deliberately never
+  // dead-letters is a pre-existing FEA-1461 invariant covered separately.)
+  const source = new FakeSyncSource([
+    makeSyncedSession("rate-limited-session", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.RateLimited,
+    }),
+    { sync }
+  );
+
+  await runWithMockedNow(async ({ advance }) => {
+    service.start();
+    await flushAgentSessionSync();
+    for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
+      advance(RATE_LIMIT_BACKOFF_MS + 1);
+      service.refresh();
+      await flushAgentSessionSync();
+    }
+  });
+  service.stop();
+
+  assert.equal(sync.length, MAX_CONSECUTIVE_RATE_LIMITED);
+  assert.deepEqual(
+    sync.map((event) => event.outcome),
+    [
+      ...Array.from(
+        { length: MAX_CONSECUTIVE_RATE_LIMITED - 1 },
+        () => "failure"
+      ),
+      "dead_letter",
+    ]
+  );
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: repeated ingestion_failed acks escalate to a dead_letter outcome", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("ingestion-failed-session", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => ({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.IngestionFailed,
+    }),
+    { sync }
+  );
+
+  await runWithMockedNow(async ({ advance }) => {
+    service.start();
+    await flushAgentSessionSync();
+    for (let i = 1; i < MAX_CONSECUTIVE_INGESTION_FAILED; i += 1) {
+      advance(INGESTION_FAILED_BACKOFF_MS + 1);
+      service.refresh();
+      await flushAgentSessionSync();
+    }
+  });
+  service.stop();
+
+  assert.equal(sync.length, MAX_CONSECUTIVE_INGESTION_FAILED);
+  assert.deepEqual(
+    sync.map((event) => event.outcome),
+    [
+      ...Array.from(
+        { length: MAX_CONSECUTIVE_INGESTION_FAILED - 1 },
+        () => "failure"
+      ),
+      "dead_letter",
+    ]
+  );
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
+});
+
+test("FEA-1995: a thrown transport error emits a failure outcome", async () => {
+  // A sendBatch throw (socket drop, serialization failure) is a real transport
+  // failure the dashboard should count — it must not be swallowed silently.
+  const source = new FakeSyncSource([
+    makeSyncedSession("session-1", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const sync: DesktopSyncBatchEventInput[] = [];
+  const service = makeServiceCapturingSyncTelemetry(
+    source,
+    async () => {
+      throw new Error("socket dropped mid-send");
+    },
+    { sync }
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  assert.equal(sync.length, 1);
+  assert.equal(sync[0].outcome, "failure");
+  assert.ok(
+    typeof sync[0].payloadBytes === "number" && sync[0].payloadBytes > 0,
+    "a thrown-transport failure still reports the attempted payload size"
+  );
+  assert.ok(
+    typeof sync[0].latencyMs === "number" && sync[0].latencyMs >= 0,
+    "a thrown-transport failure reports a measured latency"
+  );
+  assert.deepEqual(leakedSyncTelemetryKeys(sync), []);
 });
 
 test("agent-session sync compacts bulky metadata before chunking", () => {
@@ -216,26 +547,57 @@ test("agent-session sync dead-letters repeated server rate limits", async () => 
     };
   });
 
-  const realNow = Date.now;
   try {
-    let virtualNow = realNow();
-    Date.now = () => virtualNow;
-    service.start();
-    await flushAgentSessionSync();
-    for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
-      virtualNow += RATE_LIMIT_BACKOFF_MS + 1;
+    await runWithMockedNow(async ({ advance }) => {
+      service.start();
+      await flushAgentSessionSync();
+      for (let i = 1; i < MAX_CONSECUTIVE_RATE_LIMITED; i += 1) {
+        advance(RATE_LIMIT_BACKOFF_MS + 1);
+        service.refresh();
+        await flushAgentSessionSync();
+      }
+      advance(RATE_LIMIT_BACKOFF_MS + 1);
       service.refresh();
       await flushAgentSessionSync();
-    }
-    virtualNow += RATE_LIMIT_BACKOFF_MS + 1;
-    service.refresh();
-    await flushAgentSessionSync();
+    });
   } finally {
-    Date.now = realNow;
     service.stop();
   }
 
   assert.equal(attempts, MAX_CONSECUTIVE_RATE_LIMITED);
+});
+
+test("agent-session sync dead-letters repeated ingestion failures", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("ingestion-failed-session", "2026-06-08T12:00:00.000Z"),
+  ]);
+  let attempts = 0;
+  const service = makeService(source, async () => {
+    attempts += 1;
+    return {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.IngestionFailed,
+    };
+  });
+
+  try {
+    await runWithMockedNow(async ({ advance }) => {
+      service.start();
+      await flushAgentSessionSync();
+      for (let i = 1; i < MAX_CONSECUTIVE_INGESTION_FAILED; i += 1) {
+        advance(INGESTION_FAILED_BACKOFF_MS + 1);
+        service.refresh();
+        await flushAgentSessionSync();
+      }
+      advance(INGESTION_FAILED_BACKOFF_MS + 1);
+      service.refresh();
+      await flushAgentSessionSync();
+    });
+  } finally {
+    service.stop();
+  }
+
+  assert.equal(attempts, MAX_CONSECUTIVE_INGESTION_FAILED);
 });
 
 test("agent-session sync lets healthy siblings pass a rate-limited queue head", async () => {
@@ -740,6 +1102,63 @@ test("agent-session sync re-discovers a validation_failed row on a fresh restart
   );
 });
 
+test("FEA-2258: a dead-lettered ingestion_failed row recovers on the next restart", async () => {
+  // The recovery path for the FEA-2258 NUL/lone-surrogate fix: a session that
+  // the server keeps rejecting with ingestion_failed dead-letters locally after
+  // MAX_CONSECUTIVE_INGESTION_FAILED attempts, but `deadLetteredIds` blocks
+  // persistCursorIfCaughtUp, so the cursor never advances past it. A restart (the
+  // user relaunching after the server sanitization deploys) therefore re-attempts
+  // and accepts it instead of skipping it forever.
+  const source = new FakeSyncSource([
+    makeSyncedSession("recovers", "2026-06-08T12:00:00.000Z"),
+  ]);
+  const first = makeServiceWithIdentity(
+    source,
+    async () => ({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.IngestionFailed,
+    }),
+    "target-a"
+  );
+  await runWithMockedNow(async ({ advance }) => {
+    first.start();
+    await flushAgentSessionSync();
+    // Drive the remaining attempts past the per-session backoff until it
+    // dead-letters at the threshold.
+    for (let i = 1; i < MAX_CONSECUTIVE_INGESTION_FAILED; i += 1) {
+      advance(INGESTION_FAILED_BACKOFF_MS + 1);
+      first.refresh();
+      await flushAgentSessionSync();
+    }
+  });
+  first.stop();
+  assert.equal(
+    source.advanceCalls.length,
+    0,
+    "the cursor must not advance past a dead-lettered session"
+  );
+
+  // Restart: same identity + source, the server now accepts.
+  const sent: string[][] = [];
+  const restarted = makeServiceWithIdentity(
+    source,
+    async (batch) => {
+      sent.push(batch.sessions.map((session) => session.externalSessionId));
+      return { accepted: true };
+    },
+    "target-a"
+  );
+  restarted.start();
+  await flushAgentSessionSync();
+  restarted.stop();
+
+  assert.deepEqual(
+    sent,
+    [["recovers"]],
+    "a restart must re-attempt the previously dead-lettered ingestion_failed row"
+  );
+});
+
 test("agent-session sync aborts an active tick when source state resets during hydration", async () => {
   const source = new ResettingSyncSource([
     makeSyncedSession("reset-session", "2026-06-08T12:00:00.000Z"),
@@ -770,6 +1189,183 @@ test("agent-session sync aborts an active tick when source state resets during h
   assert.equal(source.advanceCalls.length, 1);
 });
 
+// ---------------------------------------------------------------------------
+// FEA-2733: getSyncProgress() — the content-blind snapshot that drives the
+// renderer "syncing your history" indicator. These assert the state machine
+// the UI depends on: a draining first-connect backfill settles to caughtUp,
+// an empty store is caught up after the first pass, and caughtUp never leaks
+// across a compute-target (account) switch.
+// ---------------------------------------------------------------------------
+
+test("getSyncProgress reflects a draining first-connect backfill, then settles to caught up", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("session-1", "2026-06-08T12:01:00.000Z"),
+    makeSyncedSession("session-2", "2026-06-08T12:02:00.000Z"),
+    makeSyncedSession("session-3", "2026-06-08T12:03:00.000Z"),
+    makeSyncedSession("session-4", "2026-06-08T12:04:00.000Z"),
+  ]);
+  const service = makeServiceWithIdentity(
+    source,
+    async () => ({ accepted: true }),
+    "target-progress"
+  );
+
+  // Before the first tick: identified (identity known from options) but the
+  // walk has not enumerated history yet — must NOT report "up to date".
+  assert.equal(service.getSyncProgress().caughtUp, false);
+  assert.equal(service.getSyncProgress().identified, true);
+
+  // Tick 1 enqueues all four historical sessions and sends the first backfill
+  // batch (BACKFILL_SESSION_BATCH_SIZE = 3), leaving one queued.
+  service.start();
+  await flushAgentSessionSync();
+  assert.deepEqual(service.getSyncProgress(), {
+    identified: true,
+    pendingBackfillSessions: 1,
+    pendingIncrementalSessions: 0,
+    backfilling: true,
+    caughtUp: false,
+    deadLetteredSessions: 0,
+  });
+
+  // Tick 2 drains the last session — the queues empty and the snapshot settles.
+  // Assert BEFORE stop(): stop() → resetSourceState() zeroes the flag and queues,
+  // so a post-stop snapshot would read a cleared state, not the settled one.
+  service.refresh();
+  await flushAgentSessionSync();
+  assert.deepEqual(service.getSyncProgress(), {
+    identified: true,
+    pendingBackfillSessions: 0,
+    pendingIncrementalSessions: 0,
+    backfilling: false,
+    caughtUp: true,
+    deadLetteredSessions: 0,
+  });
+  service.stop();
+});
+
+test("getSyncProgress reports caught up for an empty local store after the first pass", async () => {
+  const source = new FakeSyncSource([]);
+  const service = makeServiceWithIdentity(
+    source,
+    async () => ({ accepted: true }),
+    "target-empty"
+  );
+
+  // Nothing enumerated yet → not caught up (avoids a premature "up to date").
+  assert.equal(service.getSyncProgress().caughtUp, false);
+
+  service.start();
+  await flushAgentSessionSync();
+
+  // The initial enumeration ran (0 rows) so there is genuinely nothing to
+  // sync: caught up, not backfilling, nothing pending. Assert before stop(),
+  // which would otherwise clear the flag/queues this snapshot reads.
+  assert.deepEqual(service.getSyncProgress(), {
+    identified: true,
+    pendingBackfillSessions: 0,
+    pendingIncrementalSessions: 0,
+    backfilling: false,
+    caughtUp: true,
+    deadLetteredSessions: 0,
+  });
+  service.stop();
+});
+
+test("getSyncProgress never leaks a caught-up state across a compute-target switch", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("session-1", "2026-06-08T12:01:00.000Z"),
+    makeSyncedSession("session-2", "2026-06-08T12:02:00.000Z"),
+    makeSyncedSession("session-3", "2026-06-08T12:03:00.000Z"),
+    makeSyncedSession("session-4", "2026-06-08T12:04:00.000Z"),
+  ]);
+  let currentTarget = "target-A";
+  const service = new AgentSessionSyncService({
+    isAgentMonitorEnabled: () => true,
+    isRelayReady: () => true,
+    getSource: () => source,
+    getSyncComputeTargetId: () => currentTarget,
+    sendBatch: async () => ({ accepted: true }),
+  });
+
+  // Fully drain the backfill for account A → caught up.
+  service.start();
+  await flushAgentSessionSync();
+  service.refresh();
+  await flushAgentSessionSync();
+  assert.equal(service.getSyncProgress().caughtUp, true);
+
+  // Switch accounts. The next tick re-hydrates for the new identity (no seeded
+  // cursor) and restarts the full backfill — the snapshot must report account
+  // B's in-progress walk, never account A's stale "up to date".
+  currentTarget = "target-B";
+  service.refresh();
+  await flushAgentSessionSync();
+
+  // Assert before stop(): stop() clears the queues this snapshot reads.
+  const progress = service.getSyncProgress();
+  assert.equal(progress.caughtUp, false);
+  assert.equal(progress.backfilling, true);
+  assert.equal(progress.pendingBackfillSessions, 1);
+  service.stop();
+});
+
+test("getSyncProgress settles to caught up on a resumed persisted cursor (already-synced restart)", async () => {
+  // An already-synced user restarts: `hydratePersistedCursorIfNeeded` resumes
+  // the persisted cursor and `initializeBackfillQueueIfNeeded` skips the full
+  // walk. `initialBackfillPassRun` must still flip on that skip path, or the
+  // indicator latches on "checking" forever instead of "up to date".
+  const source = new FakeSyncSource([
+    makeSyncedSession("old", "2026-06-08T12:00:00.000Z"),
+    makeSyncedSession("top", "2026-06-08T12:05:00.000Z"),
+  ]);
+  const key = buildAgentSessionSyncSourceKey("target-resumed");
+  source.seedSyncState(key, {
+    observedTopUpdatedAt: "2026-06-08T12:05:00.000Z",
+    observedIdsAtTopUpdatedAt: ["top"],
+  });
+  const service = makeServiceWithIdentity(
+    source,
+    async () => ({ accepted: true }),
+    "target-resumed"
+  );
+
+  service.start();
+  await flushAgentSessionSync();
+
+  // No backfill was queued (cursor resumed) yet the snapshot is caught up.
+  const progress = service.getSyncProgress();
+  assert.equal(progress.caughtUp, true);
+  assert.equal(progress.backfilling, false);
+  assert.equal(progress.pendingBackfillSessions, 0);
+  service.stop();
+});
+
+/**
+ * Run `body` with `Date.now` pinned to a mutable virtual clock, restoring the
+ * real `Date.now` afterward even if `body` throws. The sync service reads
+ * `Date.now` for per-session backoff scheduling but drives flushing with real
+ * timers/promises, so we mock only the clock (not the timer queue) and advance
+ * it explicitly via the `advance(ms)` passed to `body`. The owned try/finally
+ * cleanup keeps the global mutation from leaking across tests on failure.
+ */
+async function runWithMockedNow(
+  body: (clock: { advance: (ms: number) => void }) => Promise<void>
+): Promise<void> {
+  const realNow = Date.now;
+  let virtualNow = realNow();
+  Date.now = () => virtualNow;
+  try {
+    await body({
+      advance: (ms) => {
+        virtualNow += ms;
+      },
+    });
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 class FakeSyncSource implements AgentSessionSyncSource {
   private readonly sessions = new Map<string, SyncedAgentSession>();
   /** FEA-1962: in-memory stand-in for the sqlite `sync_state` table. */
@@ -779,6 +1375,7 @@ class FakeSyncSource implements AgentSessionSyncSource {
     sourceKey: string;
     state: PersistedSyncState;
   }> = [];
+  findLocallyOversizedCallCount = 0;
   listAllCursorCallCount = 0;
   listTopCursorCallCount = 0;
   loadSyncedSessionIds: string[][] = [];
@@ -833,6 +1430,7 @@ class FakeSyncSource implements AgentSessionSyncSource {
   }
 
   findLocallyOversizedSessions(ids: string[], maxBytes: number) {
+    this.findLocallyOversizedCallCount += 1;
     return ids.flatMap((id) => {
       const session = this.sessions.get(id);
       if (!session) {
@@ -867,10 +1465,25 @@ class ResettingSyncSource extends FakeSyncSource {
   }
 }
 
+/**
+ * FEA-2718: still exposes the retired raw-event-`data` "unhydratable" gate (which
+ * `AgentSessionSyncSource` no longer declares) so a test can prove the sync path
+ * never consults it. Flags every candidate as unhydratable — if the gate were
+ * still wired up, every session would be dead-lettered.
+ */
+class UnhydratableFlaggingSyncSource extends FakeSyncSource {
+  findLocallyUnhydratableCallCount = 0;
+
+  findLocallyUnhydratableSessions(ids: string[], _maxBytes: number) {
+    this.findLocallyUnhydratableCallCount += 1;
+    return ids.map((id) => ({ id, payloadBytes: Number.MAX_SAFE_INTEGER }));
+  }
+}
+
 function makeService(
   source: AgentSessionSyncSource,
   sendBatch: (
-    batch: AgentSessionSyncBatch
+    batch: AgentSessionSyncTransportPayload
   ) => Promise<
     | { accepted: true }
     | { accepted: false; reason: DesktopAgentSessionsAckReason }
@@ -884,10 +1497,30 @@ function makeService(
   });
 }
 
+function makeServiceCapturingSyncTelemetry(
+  source: AgentSessionSyncSource,
+  sendBatch: AgentSessionSyncServiceOptions["sendBatch"],
+  capture: {
+    sync: DesktopSyncBatchEventInput[];
+    batchOutcome?: AgentSessionSyncServiceOptions["onBatchOutcome"];
+  }
+) {
+  return new AgentSessionSyncService({
+    isAgentMonitorEnabled: () => true,
+    isRelayReady: () => true,
+    getSource: () => source,
+    sendBatch,
+    onSyncBatchTelemetry: (event) => {
+      capture.sync.push(event);
+    },
+    onBatchOutcome: capture.batchOutcome,
+  });
+}
+
 function makeServiceWithIdentity(
   source: AgentSessionSyncSource,
   sendBatch: (
-    batch: AgentSessionSyncBatch
+    batch: AgentSessionSyncTransportPayload
   ) => Promise<
     | { accepted: true }
     | { accepted: false; reason: DesktopAgentSessionsAckReason }
@@ -922,15 +1555,14 @@ function makeSyncedSession(
 }
 
 function makeOversizedSession(id: string): SyncedAgentSession {
-  const events = Array.from({ length: 80 }, (_, index) => ({
+  // FEA-2718: turn text (`data`) is stripped before sync, so a session is only
+  // oversized by its RETAINED columnar fields — here, a very large event array
+  // whose slim per-event metadata still overflows the byte cap and must chunk.
+  const events = Array.from({ length: 4000 }, (_, index) => ({
     externalEventId: `${id}-event-${index}`,
     eventType: "ToolUse",
     toolName: "Read",
     createdAt: "2026-06-08T12:00:00.000Z",
-    data: {
-      index,
-      safePayload: "x".repeat(6000),
-    },
   }));
   return makeSyncedSession(id, "2026-06-08T12:00:00.000Z", events);
 }
@@ -939,17 +1571,25 @@ function makeUnchunkableOversizedSession(
   id: string,
   updatedAt: string
 ): SyncedAgentSession {
-  return makeSyncedSession(id, updatedAt, [
-    {
-      externalEventId: `${id}-event`,
-      eventType: "ToolUse",
-      toolName: "Read",
-      createdAt: "2026-06-08T12:00:00.000Z",
-      data: {
-        safePayload: "x".repeat(SESSION_PAYLOAD_BYTE_CAP + 1024),
+  // FEA-2718: chunking paginates the event array but replicates every agent into
+  // each chunk, so a session whose agents alone exceed the cap can never produce
+  // a valid chunk and is dead-lettered locally.
+  return {
+    ...makeSyncedSession(id, updatedAt, [
+      {
+        externalEventId: `${id}-event`,
+        eventType: "ToolUse",
+        toolName: "Read",
+        createdAt: "2026-06-08T12:00:00.000Z",
       },
-    },
-  ]);
+    ]),
+    agents: Array.from({ length: 5000 }, (_, index) => ({
+      externalAgentId: `${id}-agent-${index}`,
+      name: `agent-${index}`,
+      type: "subagent",
+      status: "completed",
+    })),
+  };
 }
 
 function makeMetadataHeavyChunkCandidate(id: string): SyncedAgentSession {
@@ -989,3 +1629,88 @@ async function flushAgentSessionSync(): Promise<void> {
     setImmediate(resolve);
   });
 }
+
+// ---------------------------------------------------------------------------
+// T-10.9: component inventory lane uses its own SyncState cursor key
+// ---------------------------------------------------------------------------
+
+test("T-10.9: component inventory lane advances its own SyncState cursor independently of the session lane", async () => {
+  const COMPUTE_TARGET = "target-comp-lane";
+  // A single session so the session lane also runs and we can verify the two
+  // cursor keys are distinct.
+  const source = new FakeSyncSource([
+    makeSyncedSession("sess-comp", "2026-07-10T00:00:00.000Z"),
+  ]);
+
+  // One component row with a last_seen_at timestamp so the watermark advances.
+  const componentRow = {
+    id: "comp-abc",
+    last_seen_at: "2026-07-10T01:00:00.000Z",
+  };
+  const fullComponent = {
+    externalId: "comp-abc",
+    componentKind: "mcp",
+    componentKey: "myserver",
+    firstSeenAt: "2026-07-10T01:00:00.000Z",
+    lastSeenAt: "2026-07-10T01:00:00.000Z",
+  };
+
+  const sentBatches: AgentSessionSyncTransportPayload[] = [];
+  const sentComponents: unknown[] = [];
+
+  const service = new AgentSessionSyncService({
+    isAgentMonitorEnabled: () => true,
+    isRelayReady: () => true,
+    getSource: () => source,
+    getSyncComputeTargetId: () => COMPUTE_TARGET,
+    sendBatch: async (batch) => {
+      sentBatches.push(batch);
+      return { accepted: true };
+    },
+    listComponentCursorRows: async (_since) => [componentRow],
+    loadComponentRows: async (_ids) => [fullComponent],
+    sendComponents: async (_payload) => {
+      sentComponents.push(_payload);
+      return true;
+    },
+  });
+
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  // The session lane must have synced at least once.
+  assert.ok(sentBatches.length >= 1, "session batch was sent");
+
+  // The component lane must also have fired.
+  assert.ok(sentComponents.length >= 1, "component batch was sent");
+
+  // Verify that the component cursor advance used the COMPONENT source key
+  // (not the session source key — the two lanes must never share a watermark).
+  const componentSourceKey = buildAgentComponentSyncSourceKey(COMPUTE_TARGET);
+  const sessionSourceKey = buildAgentSessionSyncSourceKey(COMPUTE_TARGET);
+
+  const componentAdvance = source.advanceCalls.find(
+    (call) => call.sourceKey === componentSourceKey
+  );
+  assert.ok(
+    componentAdvance,
+    `advanceSyncState was called with the component source key (${componentSourceKey})`
+  );
+
+  // The session lane must have used a DIFFERENT key.
+  const sessionAdvance = source.advanceCalls.find(
+    (call) => call.sourceKey === sessionSourceKey
+  );
+  assert.ok(
+    sessionAdvance,
+    `advanceSyncState was called with the session source key (${sessionSourceKey})`
+  );
+
+  // The keys must be distinct — they must not be equal.
+  assert.notEqual(
+    componentSourceKey,
+    sessionSourceKey,
+    "component lane and session lane advance independent SyncState cursors"
+  );
+});

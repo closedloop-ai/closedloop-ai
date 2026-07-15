@@ -51,6 +51,8 @@ type CreatedProfileConfig = {
 };
 
 type ProfileConfigIpcDeps = {
+  /** Reject IPC events whose sender is not the trusted renderer window. */
+  isTrustedSender: (sender: unknown) => boolean;
   settingsStore: SettingsStore;
   apiKeyStore: ApiKeyStore;
   getGatewaySnapshot: () => GatewaySnapshot;
@@ -78,6 +80,16 @@ function getPayloadRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === "object"
     ? (payload as Record<string, unknown>)
     : {};
+}
+
+function assertTrustedSender(deps: ProfileConfigIpcDeps, event: unknown): void {
+  const sender =
+    event && typeof event === "object"
+      ? (event as { sender?: unknown }).sender
+      : undefined;
+  if (!deps.isTrustedSender(sender)) {
+    throw new Error("untrusted sender");
+  }
 }
 
 function getConfigConnectionPatch(
@@ -274,7 +286,8 @@ export function registerProfileConfigIpcHandlers(
 
   ipcMainLike.handle(
     ProfileConfigIpcChannel.SaveConfig,
-    (_event, rawPayload) => {
+    (event, rawPayload) => {
+      assertTrustedSender(deps, event);
       const payload = getPayloadRecord(rawPayload);
       const snapshot = deps.getGatewaySnapshot();
       const explicitApiKey = normalizeOptionalClosedloopApiKey(payload.apiKey);
@@ -324,7 +337,8 @@ export function registerProfileConfigIpcHandlers(
 
   ipcMainLike.handle(
     ProfileConfigIpcChannel.DeleteConfig,
-    (_event, rawPayload) => {
+    (event, rawPayload) => {
+      assertTrustedSender(deps, event);
       const payload = getPayloadRecord(rawPayload);
       const id = typeof payload.id === "string" ? payload.id : "";
       if (!id) {
@@ -343,7 +357,8 @@ export function registerProfileConfigIpcHandlers(
 
   ipcMainLike.handle(
     ProfileConfigIpcChannel.RenameConfig,
-    (_event, rawPayload) => {
+    (event, rawPayload) => {
+      assertTrustedSender(deps, event);
       const payload = getPayloadRecord(rawPayload);
       const id = typeof payload.id === "string" ? payload.id : "";
       if (!id) {
@@ -358,7 +373,8 @@ export function registerProfileConfigIpcHandlers(
 
   ipcMainLike.handle(
     ProfileConfigIpcChannel.ApplyConfig,
-    (_event, rawPayload) => {
+    (event, rawPayload) => {
+      assertTrustedSender(deps, event);
       const payload = getPayloadRecord(rawPayload);
       const id = typeof payload.id === "string" ? payload.id : "";
       if (!id) {

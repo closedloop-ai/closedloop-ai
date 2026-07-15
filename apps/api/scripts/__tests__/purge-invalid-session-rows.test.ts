@@ -53,7 +53,6 @@ function associationCountRow(overrides: Partial<Record<string, number>> = {}) {
     _count: {
       sourceLinks: 0,
       targetLinks: 0,
-      sessionPrLinks: 0,
       ratings: 0,
       evaluations: 0,
       commentThreads: 0,

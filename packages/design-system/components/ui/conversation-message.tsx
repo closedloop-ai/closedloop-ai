@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { BotIcon, UserIcon } from "lucide-react";
 
 export type ConversationMessageRole = "user" | "assistant";

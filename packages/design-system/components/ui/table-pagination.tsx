@@ -8,7 +8,7 @@ import {
   PaginationLink,
   PaginationNext,
   PaginationPrevious,
-} from "@repo/design-system/components/ui/pagination";
+} from "@closedloop-ai/design-system/components/ui/pagination";
 
 /**
  * Button-driven pagination control built on the shadcn `Pagination` primitives.

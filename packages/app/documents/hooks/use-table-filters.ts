@@ -1,7 +1,11 @@
 "use client";
 
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus } from "@repo/api/src/types/document";
+import {
+  type ArtifactStatus,
+  DOCUMENT_STATUS_OPTIONS,
+  FEATURE_STATUS_OPTIONS,
+} from "@repo/api/src/types/document";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import {
   isDocumentRowItem,
@@ -51,7 +55,7 @@ export type TableFilters = {
   assignToMe: boolean;
   hideCompletedItems: boolean;
   favoritesOnly: boolean;
-  statuses: DocumentStatus[];
+  statuses: ArtifactStatus[];
   priorities: Priority[];
   date: DateFilter | null;
   tagIds: string[];
@@ -190,7 +194,11 @@ const PERSISTENCE_DEFAULT: TableFilters = {
 
 // ---- Filter validation (strips invalid enum values on restore) ----
 
-const VALID_STATUSES = new Set<string>(Object.values(DocumentStatus));
+// Mixed table renders Documents and Features; accept either vocabulary (PRD-495).
+const VALID_STATUSES = new Set<string>([
+  ...DOCUMENT_STATUS_OPTIONS,
+  ...FEATURE_STATUS_OPTIONS,
+]);
 const VALID_PRIORITIES = new Set<string>(Object.values(Priority));
 const VALID_DATE_FIELDS = new Set<string>(Object.values(DateFilterField));
 const VALID_DATE_PRESETS = new Set<string>(Object.values(DatePreset));
@@ -297,7 +305,7 @@ export function useTableFilters({
   }, [currentUserId, setFilters]);
 
   const toggleStatus = useCallback(
-    (status: DocumentStatus) => {
+    (status: ArtifactStatus) => {
       setFilters((prev) => {
         const next = prev.statuses.includes(status)
           ? prev.statuses.filter((s) => s !== status)

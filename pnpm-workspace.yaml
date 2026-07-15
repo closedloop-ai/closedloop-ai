@@ -2,11 +2,37 @@ packages:
   - "apps/*"
   - "packages/*"
 
+# Keep platform-specific optional deps (e.g. @tailwindcss/oxide-*,
+# lightningcss, esbuild) for every OS/CPU/libc in the lockfile so installs on
+# x64 CI runners, Intel/ARM Macs, Windows, and Docker (glibc + musl) all resolve
+# their native binding. Without this, a lockfile regenerated on one machine can
+# drop the other platforms' bindings and break cross-platform installs.
+supportedArchitectures:
+  os:
+    - current
+    - linux
+    - darwin
+    - win32
+  cpu:
+    - current
+    - x64
+    - arm64
+    - arm
+  libc:
+    - current
+    - glibc
+    - musl
+
 # Catalog: single source of truth for versions shared across the workspace,
 # referenced via the `catalog:` protocol. `next` lives here so the apps and the
 # dedupe override below all pin one version — replacing the `next: "$next"`
 # override, whose `$<name>` syntax pnpm 11.7 deprecated in favour of catalogs.
 catalog:
+  # Pinned to 16.2.6 (not upstream's 16.2.10): 16.2.7+ changed RSC static-export
+  # behavior such that fumadocs-ui@16.8 calls next-themes' useTheme() during
+  # prerender of the docs/blog pages ("useTheme() from the server"). The
+  # community edition serves those docs from web (upstream uses a separate docs
+  # app), so it holds Next at the last version that prerenders them cleanly.
   next: 16.2.6
 
 # Supply-chain hardening (Shai-Hulud / TanStack-style npm worm mitigations).
@@ -35,14 +61,57 @@ allowBuilds:
   sharp: true
   utf-8-validate: true
 overrides:
-  # Pin a single TypeScript across the workspace. A transitive dep declares a
-  # loose `typescript` range that otherwise floats to 6.0.x for some packages,
-  # which turns the (still-valid) `baseUrl` tsconfig option into a hard TS5101
-  # error. Pin to the workspace devDependency version so every package
-  # typechecks under one compiler.
-  typescript: "5.9.3"
   # Force transitive `next` to the workspace version (the catalog entry above).
   next: "catalog:"
+  # Pin the entire @tiptap/* graph to a single consistent version set. The
+  # direct deps use ~3.22.3,
+  # but @tiptap/starter-kit pulls its individual extension packages (bold,
+  # italic, heading, blockquote, code, …) TRANSITIVELY with ranges that float to
+  # the latest 3.x on any lockfile regen, while @tiptap/core stays pinned. The
+  # resulting core-vs-extensions split breaks the command-type augmentations
+  # (toggleBold/toggleItalic/… "does not exist on SingleCommands") and reds
+  # typecheck on every npm Dependabot PR that regenerates pnpm-lock.yaml. A
+  # catalog can't fix this — it only governs direct deps; overrides force the
+  # transitive extensions to match core. Bump these deliberately as a set.
+  # (FEA-2798 Workstream B; band-aid pending the Dependabot→Renovate migration,
+  # which does pnpm lockFileMaintenance natively.)
+  "@tiptap/core": "3.22.3"
+  "@tiptap/extension-blockquote": "3.22.3"
+  "@tiptap/extension-bold": "3.22.3"
+  "@tiptap/extension-bubble-menu": "3.22.3"
+  "@tiptap/extension-bullet-list": "3.22.3"
+  "@tiptap/extension-code-block": "3.22.3"
+  "@tiptap/extension-code": "3.22.3"
+  "@tiptap/extension-document": "3.22.3"
+  "@tiptap/extension-dropcursor": "3.22.3"
+  "@tiptap/extension-floating-menu": "3.22.3"
+  "@tiptap/extension-gapcursor": "3.22.3"
+  "@tiptap/extension-hard-break": "3.22.3"
+  "@tiptap/extension-heading": "3.22.3"
+  "@tiptap/extension-horizontal-rule": "3.22.3"
+  "@tiptap/extension-italic": "3.22.3"
+  "@tiptap/extension-link": "3.22.3"
+  "@tiptap/extension-list-item": "3.22.3"
+  "@tiptap/extension-list-keymap": "3.22.3"
+  "@tiptap/extension-list": "3.22.3"
+  "@tiptap/extension-ordered-list": "3.22.3"
+  "@tiptap/extension-paragraph": "3.22.3"
+  "@tiptap/extension-placeholder": "3.22.3"
+  "@tiptap/extension-strike": "3.22.3"
+  "@tiptap/extension-table-cell": "3.22.3"
+  "@tiptap/extension-table-header": "3.22.3"
+  "@tiptap/extension-table-row": "3.22.3"
+  "@tiptap/extension-table": "3.22.3"
+  "@tiptap/extension-text": "3.22.3"
+  "@tiptap/extension-underline": "3.22.3"
+  "@tiptap/extensions": "3.22.3"
+  "@tiptap/markdown": "3.22.3"
+  "@tiptap/pm": "3.22.3"
+  "@tiptap/react": "3.22.3"
+  "@tiptap/starter-kit": "3.22.3"
+  # suggestion is versioned independently upstream (no 3.22.3 release); pin to
+  # its current known-good resolution, not the 3.22.3 the rest of the graph uses.
+  "@tiptap/suggestion": "3.19.0"
   # Pin a single React instance across the workspace. Caret peer ranges
   # (^19.2.0) otherwise float react/react-dom to multiple patch versions
   # (19.2.3/19.2.5/19.2.6), which makes pnpm emit peer-keyed duplicate copies
@@ -59,8 +128,14 @@ overrides:
   # declared range and survives lockfile churn that a per-package pin would not.
   react-hook-form: "7.76.1"
   # >=7.3.5 closes GHSA-fx9v-vv6r-65h4 (server.fs.deny bypass; 7.0.0-7.3.4).
-  # The <8.0.0 bound is required: an unbounded floor floats vite to 8.x, a
-  # breaking major (vitest JSX import-analysis failures).
+  # The <8.0.0 cap holds the whole workspace on Vite 7 (single hoisted version).
+  # Blocker for Vite 8 is electron-vite: stable 5.x peer-requires vite <8, and
+  # only electron-vite 6 — currently a stalled beta (6.0.0-beta.1, Apr 2026) —
+  # supports Vite 8. Vitest 4.1.x and @tailwindcss/vite already support Vite 8
+  # (the old "vitest JSX import-analysis" rationale here was stale/disproven).
+  # A validated migration exists on branch explore/vite8-spike; lift this cap to
+  # ">=8.1.1 <9.0.0" as part of it once electron-vite 6 ships stable/rc. Plan:
+  # ClosedLoop PLN-1286 (Vite 8 Toolchain Migration).
   vite: ">=7.3.5 <8.0.0"
   # >=4.12.25 closes GHSA-88fw-hqm2-52qc (CORS reflects any Origin with
   # Access-Control-Allow-Credentials; affects <4.12.25). hono is in a production
@@ -70,15 +145,17 @@ overrides:
   handlebars: ">=4.7.9"
   fast-xml-parser: ">=5.7.0"
   defu: ">=6.1.5"
-  dompurify: ">=3.4.0"
+  # >=3.4.11 closes the cumulative dompurify XSS/prototype advisories through
+  # GHSA-cmwh-pvxp-8882 (fixed 3.4.11). Note GHSA-x4vx-rjvf-j5p4 currently has
+  # no patched release; it cannot be resolved by a version bump yet.
+  dompurify: ">=3.4.11"
   # >=7.6.1 closes GHSA-76w4-37v2-3rm6 (Any-expansion DoS; affects <=7.6.0).
   protobufjs: ">=7.6.1 <8.0.0"
-  # Deferred: the fix for GHSA-xvwp-j846-p89q / GHSA-hm92-r4w5-c3mj
-  # (undici 7.23.0-7.27.x) and GHSA-f7r6-5fcg-jx25 (7.0.0-7.27.x) is 7.28.0, but
-  # it is still within this repo's minimumReleaseAge supply-chain window. The
-  # pre-existing >=7.24.0 floor already blocks 7.0.0-7.23.x. Raise to
-  # ">=7.28.0 <8.0.0" once 7.28.0 matures.
-  undici: ">=7.24.0 <8.0.0"
+  # >=7.28.0 closes the 7.x undici advisories: GHSA-vxpw-j846-p89q,
+  # GHSA-hm92-r4w5-c3mj, GHSA-vmh5-mc38-953g, GHSA-p88m-4jfj-68fv,
+  # GHSA-pr7r-676h-xcf6, GHSA-g8m3-5g58-fq7m, GHSA-35p6-xmwp-9g52 (all fixed in
+  # 7.28.0). The <8.0.0 bound keeps undici on the 7.x line our consumers target.
+  undici: ">=7.28.0 <8.0.0"
   flatted: ">=3.4.0"
   socket.io-parser: ">=4.2.6"
   express-rate-limit: ">=8.2.2"
@@ -90,16 +167,57 @@ overrides:
   lodash: ">=4.18.0"
   lodash-es: ">=4.18.0"
   axios: ">=1.15.2"
-  # Deferred: GHSA-r628-mhmh-5j3r (tar hardlink path traversal) has no patched
-  # 6.x release; the fix requires tar@>=7.5.7 (a breaking major). The sole
-  # consumer is a dev/CI build script. Raise the <7.0.0 bound to ">=7.5.7" in a
-  # follow-up once 6.x->7.x compatibility is verified.
+  # tar@6.2.1 is pulled only by dev/build-time tooling (node-gyp,
+  # electron-builder, @electron/rebuild, cacache). This 6.x copy remains
+  # affected by BOTH GHSA-r628-mhmh-5j3r (hardlink path traversal; no patched
+  # 6.x release) and GHSA-vmf3-w455-68vh (CVE-2026-53655; advisory range
+  # <=7.5.15 includes all 6.x). Neither is remediable without a tar@7 breaking
+  # major, which risks breaking native-module compilation and Desktop packaging
+  # and cannot be validated by pnpm build/typecheck/test. That 6->7 migration is
+  # deferred (tracked with r628) until 6.x->7.x build-tooling compatibility is
+  # verified; until then security scans will keep flagging both advisories
+  # against this 6.x copy.
   tar: ">=6.2.1 <7.0.0"
+  # For the 7.x consumers, close GHSA-vmf3-w455-68vh (tar parser interpretation
+  # differential) now: fixed in 7.5.16. 7.5.16+ cleared the minimumReleaseAge:
+  # 10080 window (7.5.16 is 39 days old).
+  "tar@>=7.0.0 <8.0.0": ">=7.5.16 <8.0.0"
   # >=0.2.6 closes GHSA-ph9p-34f9-6g65 / CVE-2026-44705 (path traversal via
   # symlinked tmp dir; affects <0.2.6). Pulled dev-only via
   # @turbo/gen > node-plop > inquirer > external-editor > tmp@0.0.33.
   tmp: ">=0.2.6"
   postcss: ">=8.5.10"
+  # >=14.2.0 closes GHSA-6v5v-wf23-fmfq (markdown-it ReDoS; fixed 14.2.0).
+  markdown-it: ">=14.2.0"
+  # >=7.29.6 closes GHSA-4x5r-pxfx-6jf8 (@babel/core RegExp complexity; affects
+  # <=7.29.0, fixed 7.29.6). Patch-level; safe across the workspace.
+  "@babel/core": ">=7.29.6"
+  # >=0.28.1 closes GHSA-g7r4-m6w7-qqqr (esbuild; affects 0.27.3-0.28.0, fixed
+  # 0.28.1). Scope the selector to the affected range so the non-vulnerable
+  # 0.25.x copy that vite/vitest pin is left untouched (forcing it to 0.28.x
+  # would break vite's pinned esbuild integration).
+  "esbuild@>=0.27.0 <0.28.1": "0.28.1"
+  # OpenTelemetry: 0.219.0 (experimental line) pins stable @opentelemetry/core,
+  # resources, sdk-trace-base, sdk-metrics @2.8.0 and exporter-prometheus
+  # @0.219.0, resolving GHSA-q7rr-3cgh-j5r3 (sdk-node/exporter-prometheus
+  # <0.217.0) and GHSA-8988-4f7v-96qf (core <2.8.0) together.
+  "@opentelemetry/core": ">=2.8.0 <3.0.0"
+  "@opentelemetry/sdk-node": ">=0.219.0"
+  "@opentelemetry/exporter-prometheus": ">=0.219.0"
+  # >=11.1.1 closes GHSA-w5hq-g745-h8pq (fixed 11.1.1, published 2026-06-20).
+  # Cleared the minimumReleaseAge: 10080 supply-chain window above. Reaches 28
+  # production paths via @solana/web3.js and googleapis.
+  uuid: ">=11.1.1"
+  # GHSA-h67p-54hq-rp68 (js-yaml special-char DoS). Scoped per major so the
+  # only 3.x consumer (front-matter@4 -> js-yaml@3.14.2) takes the 3.15.0 patch
+  # instead of a forced 4.x major; the 4.x closure floors at 4.2.0. Both patched
+  # releases have cleared the minimumReleaseAge: 10080 window (checked 2026-07-04).
+  "js-yaml@3": ">=3.15.0 <4.0.0"
+  "js-yaml@4": ">=4.2.0 <5.0.0"
+  # >=6.15.2 closes GHSA-q8mj-m7cp-5q26 (qs prototype-pollution DoS; affects
+  # 6.11.1-6.15.1). Cleared the minimumReleaseAge: 10080 window (6.15.2 is mature).
+  # The <7.0.0 bound keeps qs on the 6.x line our consumers target.
+  qs: ">=6.15.2 <7.0.0"
   ip-address: ">=10.1.1"
   fast-uri: ">=3.1.2"
   "@babel/plugin-transform-modules-systemjs": ">=7.29.4"
@@ -121,3 +239,12 @@ overrides:
   # read/exec; 4.0.x). Scoped to 4.x so packages/shared-platform's vitest@3
   # (^3.2.4) pin is untouched.
   "vitest@4": ">=4.1.0"
+  # 8.x only — >=8.18.0 closes GHSA-2g4f-4pwh-qvx6 (moderate ReDoS via the `$data`
+  # option; 8.0.0-8.17.x). Dedupes onto the 8.18.0 already in the tree
+  # (@asyncapi/parser, @stoplight/spectral-core); the transitive apps/mcp >
+  # @modelcontextprotocol/sdk > ajv@8.17.1 is the only 8.x copy below the fix.
+  # Scoped to 8.x so the ajv@6 used by schema-utils@3 / @develar/schema-utils
+  # (paired with ajv-keywords@3, which requires ajv 6) is left untouched.
+  "ajv@8": ">=8.18.0"
+patchedDependencies:
+  '@libsql/client@0.17.3': patches/@libsql__client@0.17.3.patch

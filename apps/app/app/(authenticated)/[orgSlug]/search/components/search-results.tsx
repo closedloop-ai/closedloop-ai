@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  type DocumentStatus,
   DocumentType,
+  type FeatureStatus,
   getRoutePrefixForType,
 } from "@repo/api/src/types/document";
 import type {
@@ -164,7 +166,10 @@ function ArtifactsSection({
                     artifact.type}
                 </TableCell>
                 <TableCell>
-                  <DocumentStatusBadge status={artifact.status} />
+                  {/* This list holds non-Feature documents, so status is a DocumentStatus (PRD-495). */}
+                  <DocumentStatusBadge
+                    status={artifact.status as DocumentStatus}
+                  />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {artifact.projectName ?? "-"}
@@ -207,7 +212,8 @@ function FeaturesSection({
                 </TitleCell>
               </TableCell>
               <TableCell>
-                <FeatureStatusBadge status={feature.status} />
+                {/* This list holds Features, so status is a FeatureStatus (PRD-495). */}
+                <FeatureStatusBadge status={feature.status as FeatureStatus} />
               </TableCell>
               <TableCell>
                 {feature.priority && (

@@ -4,7 +4,9 @@ import type {
   McpProviderAvailability,
   NeutralMcpProviderAvailability,
 } from "@repo/api/src/types/compute-target";
+import { PluginUpdateOutcome } from "@repo/api/src/types/compute-target";
 import { queryOptions } from "@tanstack/react-query";
+import { z } from "zod";
 import { env } from "@/env";
 import { COMPUTE_TARGET_HEADER } from "@/lib/desktop-command-signing/constants";
 import {
@@ -12,6 +14,7 @@ import {
   GATEWAY_RELAY_HEALTH_CHECK_PATH,
 } from "@/lib/engineer/constants";
 import type { EngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import { getPreLoopHealthCheckTimeoutMs } from "@/lib/system-check/health-check-timeouts";
 import { queryKeys } from "./keys";
 
 const APP_VERSION_CHECK_ID = "app-version";
@@ -269,16 +272,23 @@ export function healthCheckOptions(
       latestVersion,
       pluginAutoUpdateEnabled
     ),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const request = buildHealthCheckRequest({
         expectedMcpUrl,
         relayTargetId,
         latestVersion,
         pluginAutoUpdateEnabled,
       });
-      const res = await fetch(request.url, request.init);
-      return res.json();
+      const res = await fetch(request.url, {
+        ...request.init,
+        signal: composeHealthCheckSignal(
+          signal,
+          getPreLoopHealthCheckTimeoutMs(pluginAutoUpdateEnabled)
+        ),
+      });
+      return parseHealthCheckResponse(res);
     },
+    retry: false,
     staleTime: (query) => {
       const data = query.state.data;
       if (!data) {
@@ -288,4 +298,144 @@ export function healthCheckOptions(
       return hasFailingCheck ? 0 : HEALTH_CHECK_QUERY_STALE_TIME_MS;
     },
   });
+}
+
+const healthCheckDebugSchema = z
+  .object({
+    errorCode: z.string().optional(),
+    stderr: z.string().optional(),
+    resolvedPath: z.string().optional(),
+    shell: z.string().optional(),
+    platform: z.string().optional(),
+    foundAt: z.array(z.string()).optional(),
+    nonExecutableAt: z.array(z.string()).optional(),
+    overrideUsed: z.string().optional(),
+  })
+  .passthrough();
+
+const remediationLinkUrlSchema = z.url().refine(
+  (value) => {
+    try {
+      return new URL(value).protocol === "https:";
+    } catch {
+      return false;
+    }
+  },
+  { message: "Remediation link URLs must use HTTPS" }
+);
+
+const remediationLinkSchema = z.object({
+  label: z.string().trim().min(1),
+  url: remediationLinkUrlSchema,
+});
+
+const pluginUpdateOutcomeValues = new Set<string>(
+  Object.values(PluginUpdateOutcome)
+);
+const optionalPluginUpdateOutcomeSchema = z.preprocess(
+  (value) =>
+    typeof value === "string" && !pluginUpdateOutcomeValues.has(value)
+      ? undefined
+      : value,
+  z.enum(PluginUpdateOutcome).optional()
+);
+
+const checkResultSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    required: z.boolean(),
+    passed: z.boolean(),
+    version: z.string().optional(),
+    error: z.string().optional(),
+    remediation: z.string().optional(),
+    debug: healthCheckDebugSchema.optional(),
+    enableAttempted: z.boolean().optional(),
+    enableOutcome: optionalPluginUpdateOutcomeSchema,
+    enablePluginIds: z.array(z.string().trim().min(1)).optional(),
+    updateAttempted: z.boolean().optional(),
+    updateOutcome: optionalPluginUpdateOutcomeSchema,
+    updatePluginIds: z.array(z.string().trim().min(1)).optional(),
+    remediationLinks: z.array(remediationLinkSchema).optional(),
+  })
+  .passthrough();
+
+const neutralMcpProviderAvailabilitySchema = z
+  .object({
+    available: z.boolean(),
+    serverName: z.string().nullable(),
+    matchedUrl: z.string().nullable(),
+    checkedAt: z.string(),
+    error: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+const legacyMcpProviderAvailabilitySchema = z
+  .object({
+    closedloopAvailable: z.boolean(),
+    checkedAt: z.string(),
+  })
+  .passthrough();
+
+const mcpProviderAvailabilitySchema = z.union([
+  neutralMcpProviderAvailabilitySchema,
+  legacyMcpProviderAvailabilitySchema,
+]);
+
+const healthCheckResponseSchema = z.object({
+  checks: z.array(checkResultSchema),
+  allRequiredPassed: z.boolean(),
+  mcpServers: z
+    .object({
+      claude: mcpProviderAvailabilitySchema.optional(),
+      codex: mcpProviderAvailabilitySchema.optional(),
+    })
+    .optional(),
+});
+
+function composeHealthCheckSignal(
+  querySignal: AbortSignal,
+  timeoutMs: number
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (querySignal.aborted) {
+    return querySignal;
+  }
+
+  return AbortSignal.any([querySignal, timeoutSignal]);
+}
+
+async function parseHealthCheckResponse(
+  response: Response
+): Promise<HealthCheckResponse> {
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(getHealthCheckResponseErrorMessage(response, body));
+  }
+
+  const parsed = healthCheckResponseSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new Error("Gateway health check returned an invalid response");
+  }
+
+  return parsed.data;
+}
+
+function getHealthCheckResponseErrorMessage(
+  response: Response,
+  body: unknown
+): string {
+  const parsed = z
+    .object({
+      error: z.string().trim().min(1).optional(),
+      message: z.string().trim().min(1).optional(),
+    })
+    .safeParse(body);
+  const detail = parsed.success
+    ? (parsed.data.error ?? parsed.data.message)
+    : undefined;
+
+  return detail
+    ? `Gateway health check failed: ${detail}`
+    : `Gateway health check failed with HTTP ${response.status}`;
 }

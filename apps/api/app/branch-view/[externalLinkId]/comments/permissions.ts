@@ -9,6 +9,7 @@ import {
   CommentKind,
   type CommentKind as CommentKindType,
 } from "@repo/api/src/types/branch-view";
+import type { AuthContext } from "@/lib/auth/with-auth";
 
 const HTTP_READ_METHODS = new Set(["GET", "HEAD"]);
 
@@ -17,7 +18,9 @@ export const BranchViewGithubIdentityStatus =
 export type BranchViewGithubIdentityStatus = BranchViewGithubIdentityStatusType;
 
 export type BranchViewCommentPermissionAuth = {
-  authMethod: "session" | "api_key";
+  // desktop_session behaves like session here: only api_key gates on scopes
+  // (see checkOrganizationAndApiKeyScope).
+  authMethod: AuthContext["authMethod"];
   organizationId: string;
   apiKeyScopes?: ApiKeyScope[];
 };

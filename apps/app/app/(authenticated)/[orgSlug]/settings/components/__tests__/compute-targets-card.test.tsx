@@ -322,6 +322,29 @@ describe("ComputeTargetsCard", () => {
     });
   });
 
+  it("renders a terminal system-check row when a manual check fails", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new Error("gateway unavailable")) as typeof fetch;
+
+    renderWithClient();
+
+    fireEvent.click(screen.getByRole("button", { name: RE_RUN_CHECK }));
+
+    await waitFor(() => {
+      expect(screen.getByText("1 failure")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: RE_SYSTEM_CHECK }));
+
+    expect(screen.getByText("gateway unavailable")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Retry System Check. If this persists, update Closedloop plugins manually and try again."
+      )
+    ).toBeInTheDocument();
+  });
+
   it("waits for latest release data to settle before manual system checks can run", () => {
     mockUseLatestElectronRelease.mockReturnValue({
       data: undefined,

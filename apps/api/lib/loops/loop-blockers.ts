@@ -1,5 +1,5 @@
 import { LinkType } from "@repo/api/src/types/artifact";
-import { isTerminalDocumentStatus } from "@repo/api/src/types/document";
+import { isTerminalStatusForSubtype } from "@repo/api/src/types/document";
 import { withDb } from "@repo/database";
 
 /**
@@ -38,15 +38,21 @@ export async function findNonTerminalBlockers(
         linkType: LinkType.Blocks,
       },
       select: {
-        source: { select: { id: true, name: true, status: true } },
+        source: {
+          select: { id: true, name: true, status: true, subtype: true },
+        },
       },
     })
   );
 
-  return links
-    .map((link) => link.source)
-    .filter(
-      (source): source is LoopBlocker =>
-        source !== null && !isTerminalDocumentStatus(source.status)
-    );
+  return links.flatMap((link) => {
+    const source = link.source;
+    if (
+      source === null ||
+      isTerminalStatusForSubtype(source.subtype, source.status)
+    ) {
+      return [];
+    }
+    return [{ id: source.id, name: source.name, status: source.status }];
+  });
 }

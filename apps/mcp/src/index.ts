@@ -12,6 +12,7 @@ import { isIPv4 } from "node:net";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js";
 import { withDb } from "@repo/database";
 import { createRedisClient } from "@repo/redis";
 import {
@@ -31,8 +32,20 @@ import {
   RedisAuthCacheStore,
   type SerializedMcpAuth,
 } from "./auth-cache-store.js";
+import {
+  EMERGENT_FEATURE_FLAG,
+  isMcpFeatureFlagEnabled,
+} from "./feature-flags.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { registerAddLoopEvent } from "./tools/add-loop-event.js";
+import {
+  registerGetAgentSessionTranscript,
+  registerListAgentSessions,
+} from "./tools/agent-session-read.js";
+import {
+  registerGetAgentSessionAnalytics,
+  registerGetAgentSessionUsage,
+} from "./tools/agent-session-reporting.js";
 import { registerCancelLoop } from "./tools/cancel-loop.js";
 import { registerCompleteLoop } from "./tools/complete-loop.js";
 import { registerCreateArtifactLink } from "./tools/create-artifact-link.js";
@@ -62,6 +75,7 @@ import { registerListProjects } from "./tools/list-projects.js";
 import { registerListTemplates } from "./tools/list-templates.js";
 import { registerListUsers } from "./tools/list-users.js";
 import { registerMoveArtifact } from "./tools/move-artifact.js";
+import { registerSearch } from "./tools/search.js";
 import { setSessionOrgSlug } from "./tools/tool-utils.js";
 import { registerUpdateDocument } from "./tools/update-document.js";
 import { registerUpdateProject } from "./tools/update-project.js";
@@ -74,7 +88,6 @@ const OAUTH_REFRESH_TOKEN_PREFIX = "mcp_rt_";
 const SCOPE_SPLIT_REGEX = /\s+/;
 const LEADING_QUESTION_MARK_REGEX = /^\?/;
 const PORT = Number(process.env.MCP_PORT ?? 3010);
-const SUPPORTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26"];
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
 const OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID ?? "closedloop-mcp";
 
@@ -138,6 +151,10 @@ const OAUTH_RATE_LIMIT_TIMEOUT_MS = Number(
 );
 const OAUTH_VERIFY_FALLBACK_TIMEOUT_MS = Number(
   process.env.MCP_OAUTH_VERIFY_FALLBACK_TIMEOUT_MS ?? 5000
+);
+const MCP_READY_DB_TIMEOUT_MS = parsePositiveIntegerEnv(
+  "MCP_READY_DB_TIMEOUT_MS",
+  2000
 );
 const MCP_SERVER_CACHE_TTL_MS = Number(
   process.env.MCP_SERVER_CACHE_TTL_MS ?? 60_000
@@ -299,6 +316,11 @@ type ToolRegistration = {
   register: (server: McpServer, apiClient: ApiClient) => void;
   requiredScopes?: ApiKeyScope[];
   requiresWrite?: boolean;
+  /**
+   * PostHog feature flag key that must be enabled for the session's user before
+   * the tool is registered. Gates prototype/parity tools that are not yet GA.
+   */
+  featureFlag?: string;
 };
 
 const TOOL_REGISTRATIONS: ToolRegistration[] = [
@@ -315,6 +337,7 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
       );
     },
   },
+  { name: "search", register: registerSearch },
   { name: "list-projects", register: registerListProjects },
   { name: "get-project", register: registerGetProject },
   {
@@ -412,6 +435,26 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   { name: "get-github-status", register: registerGetGithubStatus },
   { name: "get-linear-status", register: registerGetLinearStatus },
   { name: "get-google-status", register: registerGetGoogleStatus },
+  {
+    name: "get-agent-session-usage",
+    register: registerGetAgentSessionUsage,
+    featureFlag: EMERGENT_FEATURE_FLAG,
+  },
+  {
+    name: "get-agent-session-analytics",
+    register: registerGetAgentSessionAnalytics,
+    featureFlag: EMERGENT_FEATURE_FLAG,
+  },
+  {
+    name: "list-agent-sessions",
+    register: registerListAgentSessions,
+    featureFlag: EMERGENT_FEATURE_FLAG,
+  },
+  {
+    name: "get-agent-session-transcript",
+    register: registerGetAgentSessionTranscript,
+    featureFlag: EMERGENT_FEATURE_FLAG,
+  },
 ];
 
 /**
@@ -468,6 +511,18 @@ async function createMcpServer(
       continue;
     }
     if (registration.requiresWrite && !allowWriteTools) {
+      continue;
+    }
+    if (
+      registration.featureFlag &&
+      // PostHog identifies users by their Clerk id, so evaluate the flag
+      // against it; fall back to the internal DB userId only when the Clerk id
+      // wasn't resolved (fallback verification paths).
+      !(await isMcpFeatureFlagEnabled(
+        registration.featureFlag,
+        context.clerkUserId ?? context.userId
+      ))
+    ) {
       continue;
     }
     registration.register(server, apiClient);
@@ -587,7 +642,7 @@ function normalizeApiKeyScopes(scopes: unknown): ApiKeyScope[] {
 async function verifyApiKeyLocally(
   plaintextKey: string
 ): Promise<VerifiedApiKeyContext | null> {
-  const hash = createHash("sha256").update(plaintextKey, "utf8").digest("hex");
+  const hash = getTokenFingerprint(plaintextKey);
   const now = new Date();
   const record = await withDb((db) =>
     db.apiKey.findFirst({
@@ -776,7 +831,7 @@ async function storeAuthorizationCode(
     db.oAuthAuthorizationCode.create({
       data: {
         id: randomUUID(),
-        code,
+        codeFingerprint: getTokenFingerprint(code),
         encryptedApiKey: record.encryptedApiKey,
         keyId: record.keyId,
         userId: record.userId,
@@ -797,7 +852,7 @@ function loadAuthorizationCode(
 ): Promise<StoredAuthorizationCodeRecord | null> {
   return withDb((db) =>
     db.oAuthAuthorizationCode.findUnique({
-      where: { code },
+      where: { codeFingerprint: getTokenFingerprint(code) },
       select: {
         id: true,
         encryptedApiKey: true,
@@ -1659,12 +1714,41 @@ function sendInternalUnauthorized(
 async function handleReady(
   res: import("node:http").ServerResponse
 ): Promise<void> {
-  const apiReachable = await checkApiReachable();
-  sendJson(res, apiReachable ? 200 : 503, {
-    status: apiReachable ? "ready" : "not_ready",
-    checks: { api: apiReachable ? "reachable" : "unreachable" },
+  const [apiReachable, dbReachable] = await Promise.all([
+    checkApiReachable(),
+    checkDbReachable(),
+  ]);
+  const ready = apiReachable && dbReachable;
+
+  sendJson(res, ready ? 200 : 503, {
+    status: ready ? "ready" : "not_ready",
+    checks: {
+      api: readinessCheckStatus(apiReachable),
+      db: readinessCheckStatus(dbReachable),
+    },
     timestamp: new Date().toISOString(),
   });
+}
+
+async function checkDbReachable(): Promise<boolean> {
+  try {
+    await withDb.tx(
+      async (db) => {
+        await db.$queryRaw`SELECT 1`;
+      },
+      {
+        maxWait: MCP_READY_DB_TIMEOUT_MS,
+        timeout: MCP_READY_DB_TIMEOUT_MS,
+      }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readinessCheckStatus(reachable: boolean): "reachable" | "unreachable" {
+  return reachable ? "reachable" : "unreachable";
 }
 
 type ResolvedMcpAuth = {
@@ -1966,6 +2050,31 @@ function handleUnauthenticatedMcpProbe(
   return true;
 }
 
+// Connect a freshly-created (not yet session-registered) server/transport and
+// handle the request. On failure, close the server before rethrowing: init
+// failed before the session was registered in mcpSessions, so
+// cleanupExpiredMcpSessions can never reap it — closing here avoids leaking one
+// McpServer + transport per error, mirroring handleMcpStatelessRequest.
+async function connectMcpTransportOrCleanup(
+  server: McpServer,
+  transport: StreamableHTTPServerTransport,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  parsedBody: unknown
+): Promise<void> {
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  } catch (error) {
+    try {
+      await server.close();
+    } catch {
+      // best-effort cleanup — original error is more important
+    }
+    throw error;
+  }
+}
+
 async function handleMcp(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
@@ -2053,8 +2162,7 @@ async function handleMcp(
     sessionIdGenerator: () => randomBytes(16).toString("hex"),
   });
 
-  await server.connect(transport);
-  await transport.handleRequest(req, res, parsedBody);
+  await connectMcpTransportOrCleanup(server, transport, req, res, parsedBody);
 
   // Store session for subsequent requests
   const newSessionId = transport.sessionId;
@@ -2712,7 +2820,7 @@ async function handleAuthorizationCodeGrant(
 
   const refreshToken = await withDb.tx(async (db) => {
     const currentCode = await db.oAuthAuthorizationCode.findUnique({
-      where: { code: body.code },
+      where: { codeFingerprint: getTokenFingerprint(body.code) },
       select: {
         id: true,
         consumedAt: true,
@@ -3577,7 +3685,9 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
       url: `${MCP_SERVER_URL}/mcp`,
       transport: { type: "streamable-http" },
       authentication: { type: "bearer", format: "sk_live_*" },
-      protocol_versions: SUPPORTED_PROTOCOL_VERSIONS,
+      // Advertise exactly the versions the SDK negotiates so the card stays a
+      // single source of truth and cannot silently drift from the transport.
+      protocol_versions: [...SUPPORTED_PROTOCOL_VERSIONS],
       capabilities: { tools: true },
       tools: TOOL_NAMES,
     });

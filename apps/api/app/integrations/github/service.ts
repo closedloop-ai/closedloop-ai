@@ -19,16 +19,18 @@ import {
   deleteInstallation,
   getRepositoryBranches,
   getRepositoryContributors,
-  getRepositoryPullRequests,
+  getRepositoryPullRequestsWithMetadata,
 } from "@repo/github";
 import { keys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
+import { parseGitHubPullRequestUrl } from "@/app/artifact-links/pull-requests/pull-request-url";
 import { normalizeGitHubLogin } from "@/app/comments/external-authors";
 import { projectsService } from "@/app/projects/service";
 import { getPrismaErrorCode } from "@/lib/db-utils";
 import { encryptTokenPair } from "@/lib/integration-encryption";
+import { resolveGitHubDataConnectionStatus } from "./data-connection-status";
 import { publicRepositoryService } from "./public-repositories/service";
 
 /**
@@ -65,6 +67,9 @@ type RepositoryRelinkCandidate = Pick<
   GitHubInstallationRepository,
   "id" | "githubRepoId" | "fullName"
 >;
+
+const TARGET_PULL_REQUEST_MAX_PAGES = 5;
+const TARGET_PULL_REQUEST_MAX_ITEMS = 500;
 
 export const RepositoryArtifactRelinkStatus = {
   Completed: "completed",
@@ -1499,31 +1504,51 @@ export async function resolveInstallation(
 export const githubService = {
   /**
    * Get the GitHub integration status for an organization.
-   * Returns connection status and installation details if connected.
+   * Returns legacy App-installation status plus the additive GitHub data
+   * connection predicate used by product-surface gating.
    */
   async getIntegrationStatus(
-    organizationId: string
+    organizationId: string,
+    userId?: string | null
   ): Promise<GitHubIntegrationStatus> {
-    const installation = await withDb((db) =>
-      db.gitHubInstallation.findFirst({
+    const { githubDataConnection, installation } = await withDb(async (db) => {
+      const installationResult = await db.gitHubInstallation.findFirst({
         where: {
           organizationId,
           status: {
-            in: ["ACTIVE", "SUSPENDED"],
+            in: [
+              GitHubInstallationStatus.ACTIVE,
+              GitHubInstallationStatus.SUSPENDED,
+            ],
           },
         },
         include: {
           repositories: { where: { removedAt: null } },
         },
-      })
-    );
+      });
+      const githubDataConnectionResult =
+        await resolveGitHubDataConnectionStatus(db, {
+          hasActiveInstallation:
+            installationResult?.status === GitHubInstallationStatus.ACTIVE,
+          organizationId,
+          userId,
+        });
+      return {
+        githubDataConnection: githubDataConnectionResult,
+        installation: installationResult,
+      };
+    });
 
     if (!installation) {
-      return { connected: false };
+      return {
+        connected: false,
+        githubDataConnection,
+      };
     }
 
     return {
       connected: true,
+      githubDataConnection,
       installation: {
         id: installation.id,
         installationId: installation.installationId,
@@ -1885,7 +1910,8 @@ export const githubService = {
 
   /**
    * Sync repositories for an installation.
-   * Uses upsert to preserve record IDs and only removes repos no longer in the list.
+   * Uses upsert to preserve record IDs and tombstones repos no longer in the
+   * active installation grant so historical projection FKs stay resolvable.
    */
   syncRepositories(
     installationId: string,
@@ -1898,11 +1924,14 @@ export const githubService = {
           repositories.map((r) => r.githubRepoId)
         );
 
-        // Delete repos that are no longer in the installation
-        await tx.gitHubInstallationRepository.deleteMany({
+        await tx.gitHubInstallationRepository.updateMany({
           where: {
             installationId,
             githubRepoId: { notIn: [...incomingRepoIds] },
+            removedAt: null,
+          },
+          data: {
+            removedAt: new Date(),
           },
         });
 
@@ -1943,7 +1972,7 @@ export const githubService = {
 
         const syncedRepositories =
           await tx.gitHubInstallationRepository.findMany({
-            where: { installationId },
+            where: { installationId, removedAt: null },
           });
         return syncedRepositories;
       })
@@ -2090,8 +2119,10 @@ export const githubService = {
   },
 
   /**
-   * Remove GitHubInstallationRepository records by githubRepoId.
-   * Used when repositories are removed from an installation.
+   * Tombstone GitHubInstallationRepository records by githubRepoId.
+   * Used when repositories are removed from an installation. Rows are
+   * preserved so historical PR/branch records and pending dirty-scope nudges
+   * keep a resolvable repository identity.
    */
   async removeRepositories(
     installationId: string,
@@ -2103,15 +2134,19 @@ export const githubService = {
     }
 
     await withDb((db) =>
-      db.gitHubInstallationRepository.deleteMany({
+      db.gitHubInstallationRepository.updateMany({
         where: {
           installationId,
           githubRepoId: { in: githubRepoIds },
+          removedAt: null,
+        },
+        data: {
+          removedAt: new Date(),
         },
       })
     );
 
-    log.info("[github] Removed repositories", {
+    log.info("[github] Tombstoned repositories", {
       installationId,
       count: githubRepoIds.length,
       githubRepoIds,
@@ -2374,11 +2409,17 @@ export const githubService = {
    * @param repositoryId - Internal UUID of GitHubInstallationRepository
    * @param organizationId - Organization ID for authorization
    * @param limit - Maximum number of branches to return (default: 20)
+   * @param allowPublicFallback - When false, a non-installation (public)
+   *   repository id is treated as not found instead of resolving via the
+   *   public-repository store. User-facing callers pass the
+   *   `public-github-repos` flag here so a bookmarked/cached public repo id
+   *   cannot reach the dark-launched public path outside the rollout (FEA-2764).
    */
   async getBranches(
     repositoryId: string,
     organizationId: string,
-    limit = 20
+    limit = 20,
+    allowPublicFallback = true
   ): Promise<GetBranchesResponse> {
     // Look up the repository and its installation
     const repository = await withDb((db) =>
@@ -2393,6 +2434,11 @@ export const githubService = {
     );
 
     if (!repository) {
+      if (!allowPublicFallback) {
+        // Fail closed: mirror an unknown repository id so the public-repo path
+        // stays unreachable when the flag is disabled for this principal.
+        throw new Error("Repository not found");
+      }
       return publicRepositoryService.getBranches(
         repositoryId,
         organizationId,
@@ -2404,6 +2450,8 @@ export const githubService = {
     if (repository.installation.organizationId !== organizationId) {
       throw new Error("Repository does not belong to organization");
     }
+
+    assertActiveGitHubRepository(repository);
 
     const [owner, name] = repository.fullName.split("/");
 
@@ -2455,6 +2503,8 @@ export const githubService = {
       throw new Error("Repository does not belong to organization");
     }
 
+    assertActiveGitHubRepository(repository);
+
     const [owner, name] = repository.fullName.split("/");
 
     if (!(owner && name)) {
@@ -2462,69 +2512,42 @@ export const githubService = {
     }
 
     try {
-      const pullRequests = await getRepositoryPullRequests(
+      const tracked = await getTrackedPullRequestState({
+        organizationId,
+        projectId,
+        repositoryFullName: repository.fullName,
+        repositoryId: repository.id,
+      });
+      const targetNumbers = tracked.trackedPrNumbers;
+      const pullRequests = await getRepositoryPullRequestsWithMetadata(
         repository.installation.installationId,
         owner,
         name,
-        { state: "all", limit: options?.limit ?? 30 }
+        {
+          state: "all",
+          limit: options?.limit ?? 30,
+          maxItems:
+            targetNumbers.length > 0
+              ? TARGET_PULL_REQUEST_MAX_ITEMS
+              : undefined,
+          maxPages:
+            targetNumbers.length > 0
+              ? TARGET_PULL_REQUEST_MAX_PAGES
+              : undefined,
+          targetNumbers,
+        }
       );
 
-      // Find which branch artifacts are already tracked in this project. PR URL
-      // compatibility is derived from the current PR detail when present.
-      let trackedPrUrls: string[] = [];
-      let trackedBranches: NonNullable<
-        GetPullRequestsResponse["trackedBranches"]
-      > = [];
-      let trackedBranchKeys: string[] = [];
-      if (projectId) {
-        const existingBranches = await withDb((db) =>
-          db.artifact.findMany({
-            where: {
-              organizationId,
-              projectId,
-              type: ArtifactType.BRANCH,
-              branch: { repositoryId: repository.id },
-            },
-            select: {
-              externalUrl: true,
-              branch: {
-                select: {
-                  branchName: true,
-                  currentPullRequestDetail: {
-                    select: { htmlUrl: true },
-                  },
-                },
-              },
-            },
-          })
-        );
-
-        trackedBranches = existingBranches.flatMap((artifact) => {
-          if (!artifact.branch) {
-            return [];
-          }
-          const branchKey = `${repository.fullName}:${artifact.branch.branchName}`;
-          return [
-            {
-              branchName: artifact.branch.branchName,
-              branchKey,
-              htmlUrl: artifact.externalUrl ?? "",
-              pullRequestUrl:
-                artifact.branch.currentPullRequestDetail?.htmlUrl ?? null,
-            },
-          ];
-        });
-        trackedBranchKeys = trackedBranches.map((branch) => branch.branchKey);
-        trackedPrUrls = trackedBranches.flatMap((branch) =>
-          branch.pullRequestUrl ? [branch.pullRequestUrl] : []
-        );
-      }
-
       return {
-        pullRequests,
-        trackedPrUrls,
-        trackedBranches,
-        trackedBranchKeys,
+        pullRequests: pullRequests.pullRequests,
+        hasMore: pullRequests.hasMore,
+        truncated: pullRequests.truncated,
+        pageInfo: pullRequests.pageInfo,
+        stopReason: pullRequests.stopReason,
+        missingTargetNumbers: pullRequests.missingTargetNumbers,
+        trackedPrUrls: tracked.trackedPrUrls,
+        trackedBranches: tracked.trackedBranches,
+        trackedBranchKeys: tracked.trackedBranchKeys,
       };
     } catch (error) {
       log.error("[github/service] Failed to fetch pull requests", {
@@ -2602,3 +2625,109 @@ export const githubService = {
     return { contributors };
   },
 };
+
+type ActiveGitHubRepositoryInput = {
+  removedAt: Date | null;
+  installation: {
+    status: GitHubInstallationStatus;
+  };
+};
+
+function assertActiveGitHubRepository(
+  repository: ActiveGitHubRepositoryInput
+): void {
+  if (
+    repository.removedAt !== null ||
+    repository.installation.status !== GitHubInstallationStatus.ACTIVE
+  ) {
+    throw new Error("Repository not found");
+  }
+}
+
+async function getTrackedPullRequestState(input: {
+  organizationId: string;
+  projectId: string | null;
+  repositoryFullName: string;
+  repositoryId: string;
+}): Promise<{
+  trackedPrUrls: string[];
+  trackedBranches: NonNullable<GetPullRequestsResponse["trackedBranches"]>;
+  trackedBranchKeys: string[];
+  trackedPrNumbers: number[];
+}> {
+  if (!input.projectId) {
+    return {
+      trackedPrUrls: [],
+      trackedBranches: [],
+      trackedBranchKeys: [],
+      trackedPrNumbers: [],
+    };
+  }
+
+  const existingBranches = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        type: ArtifactType.BRANCH,
+        branch: { repositoryId: input.repositoryId },
+      },
+      select: {
+        externalUrl: true,
+        branch: {
+          select: {
+            branchName: true,
+            currentPullRequestDetail: {
+              select: { htmlUrl: true },
+            },
+          },
+        },
+      },
+    })
+  );
+
+  const trackedBranches = existingBranches.flatMap((artifact) => {
+    if (!artifact.branch) {
+      return [];
+    }
+    const branchKey = `${input.repositoryFullName}:${artifact.branch.branchName}`;
+    return [
+      {
+        branchName: artifact.branch.branchName,
+        branchKey,
+        htmlUrl: artifact.externalUrl ?? "",
+        pullRequestUrl:
+          artifact.branch.currentPullRequestDetail?.htmlUrl ?? null,
+      },
+    ];
+  });
+  const trackedPrUrls = trackedBranches.flatMap((branch) =>
+    branch.pullRequestUrl ? [branch.pullRequestUrl] : []
+  );
+  return {
+    trackedPrUrls,
+    trackedBranches,
+    trackedBranchKeys: trackedBranches.map((branch) => branch.branchKey),
+    trackedPrNumbers: extractTrackedPullRequestNumbers(
+      input.repositoryFullName,
+      trackedPrUrls
+    ),
+  };
+}
+
+function extractTrackedPullRequestNumbers(
+  repositoryFullName: string,
+  trackedPrUrls: readonly string[]
+): number[] {
+  const seen = new Set<number>();
+  const numbers: number[] = [];
+  for (const url of trackedPrUrls) {
+    const parsed = parseGitHubPullRequestUrl(url);
+    if (parsed?.fullName !== repositoryFullName || seen.has(parsed.number)) {
+      continue;
+    }
+    seen.add(parsed.number);
+    numbers.push(parsed.number);
+  }
+  return numbers;
+}

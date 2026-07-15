@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { CompatibilityMappingField } from "../scripts/check-schema-update-gates";
+import { CompatibilityMappingField } from "../scripts/telemetry-contract-constants";
 import {
   AppTelemetryAttributes,
   ClosedLoopCompatibilityAttribute,
@@ -11,6 +11,7 @@ import {
   ErrorSpanTelemetryAttributes,
   GenAiTelemetryAttributes,
   HttpSpanTelemetryAttributes,
+  IpcTelemetryAttributes,
   OtelTelemetryAttributes,
   PermissionTelemetryAttributes,
   ResourceTelemetryAttributes,
@@ -28,6 +29,7 @@ const PINNED_OTEL_ATTRIBUTE_VALUES: ReadonlySet<string> = new Set([
   ),
 ]);
 const EXPECTED_COMPATIBILITY_ATTRIBUTES = [
+  TelemetryAttribute.AppOrganizationId,
   TelemetryAttribute.AppExceptionOrigin,
   TelemetryAttribute.AppOperatingMode,
   TelemetryAttribute.AppLifecycleEvent,
@@ -42,6 +44,10 @@ const EXPECTED_COMPATIBILITY_ATTRIBUTES = [
   TelemetryAttribute.GenAiPermissionDecision,
   TelemetryAttribute.GenAiPermissionSource,
   TelemetryAttribute.HarnessName,
+  TelemetryAttribute.IpcOperation,
+  TelemetryAttribute.IpcPayloadBytes,
+  TelemetryAttribute.IpcResultCount,
+  TelemetryAttribute.IpcSessionCount,
 ] as const;
 const NON_EMPTY_TEXT_PATTERN = /\S/;
 
@@ -141,6 +147,7 @@ describe("OTel semantic convention compatibility", () => {
       ...SyncTelemetryAttributes,
       ...PermissionTelemetryAttributes,
       ...ResourceTelemetryAttributes,
+      ...IpcTelemetryAttributes,
     ]);
 
     for (const attribute of Object.values(ClosedLoopCompatibilityAttribute)) {

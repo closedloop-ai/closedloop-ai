@@ -1,4 +1,7 @@
-import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
+import {
+  type AgentSessionListItem,
+  SessionPrLifecycleStatus,
+} from "@repo/api/src/types/agent-session";
 import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 import { formatCost, formatDuration } from "@repo/app/shared/lib/format-utils";
@@ -35,6 +38,7 @@ export function agentSessionToSessionTableRow(
 ): SessionTableRow {
   const startedAt = toNullableDate(item.startedAt);
   const lastActivityAt = toNullableDate(item.lastActivityAt);
+  const pullRequests = toSessionTablePullRequests(item.prs ?? []);
 
   return {
     autonomy: item.autonomy ?? null,
@@ -51,6 +55,9 @@ export function agentSessionToSessionTableRow(
       : "—",
     model: item.model,
     name: item.name ?? item.externalSessionId ?? "Unknown session",
+    mergeStatusLabel: toMergeStatusLabel(item.prsMerged ?? 0, pullRequests),
+    pullRequestSummaryLabel: toPullRequestSummaryLabel(pullRequests),
+    pullRequests,
     repo,
     startedLabel: startedAt ? formatRelativeTime(startedAt) : "—",
     status: item.status,
@@ -73,4 +80,69 @@ function toNullableDate(value: Date | string | null | undefined): Date | null {
 
 function toSafeNumber(value: number | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function toSessionTablePullRequests(
+  prs: NonNullable<AgentSessionListItem["prs"]>
+): SessionTableRow["pullRequests"] {
+  return prs.map((pr) => {
+    const numberLabel = `#${pr.num}`;
+    const statusLabel = toPullRequestStatusLabel(pr.status);
+    return {
+      numberLabel,
+      statusLabel,
+      title: pr.title,
+      label: `${numberLabel} ${statusLabel}`,
+    };
+  });
+}
+
+function toPullRequestStatusLabel(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === SessionPrLifecycleStatus.Merged) {
+    return SessionPrLifecycleStatus.Merged;
+  }
+  if (normalized === SessionPrLifecycleStatus.Closed) {
+    return SessionPrLifecycleStatus.Closed;
+  }
+  if (normalized === SessionPrLifecycleStatus.Open) {
+    return SessionPrLifecycleStatus.Open;
+  }
+  return SessionPrLifecycleStatus.Unknown;
+}
+
+function toPullRequestSummaryLabel(
+  pullRequests: SessionTableRow["pullRequests"]
+): string | null {
+  if (pullRequests.length === 0) {
+    return null;
+  }
+  if (pullRequests.length === 1) {
+    return pullRequests[0]?.label ?? null;
+  }
+  return `${pullRequests.length} PRs`;
+}
+
+function toMergeStatusLabel(
+  mergedCount: number,
+  pullRequests: SessionTableRow["pullRequests"]
+): string | null {
+  if (pullRequests.length === 0) {
+    return null;
+  }
+  if (
+    pullRequests.every(
+      (pullRequest) =>
+        pullRequest.statusLabel === SessionPrLifecycleStatus.Unknown
+    )
+  ) {
+    return "Unknown";
+  }
+  if (mergedCount <= 0) {
+    return "Not merged";
+  }
+  if (mergedCount === pullRequests.length) {
+    return "Merged";
+  }
+  return `${mergedCount}/${pullRequests.length} merged`;
 }

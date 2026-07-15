@@ -10,7 +10,7 @@ export function ApiAdapterProvider({
   children,
 }: {
   adapter: ApiAdapter;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <ApiAdapterContext.Provider value={adapter}>

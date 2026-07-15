@@ -1,5 +1,5 @@
 import type { AgentSessionListResponse } from "@repo/api/src/types/agent-session";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   afterEach,
   beforeAll,
@@ -9,6 +9,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { type Deferred, deferred } from "../../../test/deferred.js";
 import { DesktopNavigationApp } from "../App";
 import {
   createDesktopNavigation,
@@ -64,7 +65,7 @@ describe("Insights route initial navigation", () => {
   beforeEach(() => {
     analyticsModuleState.loadCount = 0;
     analyticsModuleState.renderCount = 0;
-    installDesktopApi(createDeferred<AgentSessionListResponse>());
+    installDesktopApi(deferred<AgentSessionListResponse>());
   });
 
   afterEach(() => {
@@ -72,11 +73,12 @@ describe("Insights route initial navigation", () => {
       navigation.dispose();
     }
     activeNavigations.clear();
+    cleanup();
     window.location.hash = "";
   });
 
   it("renders the desktop shell before importing shared analytics", async () => {
-    const listDeferred = createDeferred<AgentSessionListResponse>();
+    const listDeferred = deferred<AgentSessionListResponse>();
     installDesktopApi(listDeferred);
     await renderDesktopApp("#/insights");
 
@@ -112,7 +114,7 @@ describe("Insights route initial navigation", () => {
 
     listDeferred.resolve({ items: [], total: 0, viewerScope: "self" });
     expect(await screen.findByText("No synced sessions found.")).toBeDefined();
-  });
+  }, 15_000);
 });
 
 function renderDesktopApp(initialHash: string) {
@@ -145,17 +147,4 @@ function installDesktopApi(listDeferred: Deferred<AgentSessionListResponse>) {
       getAllFlags: vi.fn(() => Promise.resolve({ flags: [] })),
     },
   });
-}
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-};
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
 }

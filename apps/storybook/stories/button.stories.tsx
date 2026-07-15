@@ -13,6 +13,10 @@ const meta = {
     children: {
       control: "text",
     },
+    size: {
+      options: ["default", "sm", "lg", "icon", "icon-sm", "icon-lg"],
+      control: { type: "radio" },
+    },
   },
   parameters: {
     layout: "centered",
@@ -142,6 +146,30 @@ export const Icon: Story = {
   args: {
     ...Secondary.args,
     size: "icon",
+    children: <Mail />,
+  },
+};
+
+/**
+ * Use the `icon-sm` size for a smaller icon-only button, suitable for dense
+ * toolbars and compact controls.
+ */
+export const IconSm: Story = {
+  args: {
+    ...Secondary.args,
+    size: "icon-sm",
+    children: <Mail />,
+  },
+};
+
+/**
+ * Use the `icon-lg` size for a larger icon-only button, offering a bigger hit
+ * target for prominent actions.
+ */
+export const IconLg: Story = {
+  args: {
+    ...Secondary.args,
+    size: "icon-lg",
     children: <Mail />,
   },
 };

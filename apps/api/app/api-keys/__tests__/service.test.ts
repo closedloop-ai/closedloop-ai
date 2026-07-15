@@ -702,9 +702,11 @@ describe("apiKeysService.verifyKey", () => {
 
     expect(updateArgs?.where).toEqual({ id: record.id });
     expect(updateArgs?.data).toHaveProperty("lastUsedAt");
-    expect(
-      (updateArgs?.data as Record<string, unknown>).lastUsedAt
-    ).toBeInstanceOf(Date);
+    const updateData = updateArgs?.data;
+    expect(updateData).toBeDefined();
+    expect((updateData as Record<string, unknown>).lastUsedAt).toBeInstanceOf(
+      Date
+    );
   });
 
   it("returns stored scopes unchanged when record has ['read'] scopes", async () => {

@@ -4,8 +4,8 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@repo/design-system/components/ui/card";
-import { cn } from "@repo/design-system/lib/utils";
+} from "@closedloop-ai/design-system/components/ui/card";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { ReactNode } from "react";
 
 type SectionProps = {

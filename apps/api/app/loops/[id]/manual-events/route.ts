@@ -8,6 +8,7 @@ import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 import {
   badRequestResponse,
   errorResponse,
+  logLoopIngestFailure,
   notFoundResponse,
   parseBody,
   successResponse,
@@ -33,8 +34,11 @@ export const POST = withAnyAuth<
   "/loops/[id]/manual-events"
 >(
   async ({ user }, request, params) => {
+    // Hoisted so the outer catch can stitch the failure to its loop in
+    // Datadog — see `loop.manual_event_ingest_failed` below.
+    let loopId: string | undefined;
     try {
-      const { id: loopId } = await params;
+      ({ id: loopId } = await params);
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
@@ -100,6 +104,11 @@ export const POST = withAnyAuth<
 
       return successResponse({ received: true as const });
     } catch (error) {
+      logLoopIngestFailure("loop.manual_event_ingest_failed", {
+        error,
+        loopId,
+        organizationId: user.organizationId,
+      });
       return errorResponse("Failed to record manual loop event", error);
     }
   },

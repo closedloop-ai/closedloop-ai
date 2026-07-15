@@ -2,6 +2,7 @@ import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type Artifact,
@@ -14,7 +15,10 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
-import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
+import {
+  buildPullRequestDetailCreate,
+  writeExistingBranchPullRequestProjection,
+} from "@/app/branches/github-projection-writer";
 
 /**
  * PR artifact service. Owns CRUD on BRANCH artifacts and their
@@ -90,56 +94,6 @@ function buildBranchTreeUrl(prUrl: string, branchName: string): string {
   )}`;
 }
 
-function buildPullRequestDetailCreate(
-  input: UpsertBranchArtifactInput
-): Prisma.PullRequestDetailUncheckedCreateWithoutBranchArtifactInput {
-  const create: Prisma.PullRequestDetailUncheckedCreateWithoutBranchArtifactInput =
-    {
-      repositoryId: input.repositoryId,
-      githubId: input.githubId,
-      number: input.number,
-      title: input.title,
-      htmlUrl: input.htmlUrl,
-      body: input.body ?? null,
-      prState: input.prState,
-      isDraft: input.isDraft,
-      isCurrent: true,
-      closedAt: input.closedAt ?? null,
-      mergedAt: input.mergedAt ?? null,
-      mergeCommitSha: input.mergeCommitSha ?? null,
-    };
-  if (input.reviewDecision !== undefined) {
-    create.reviewDecision = input.reviewDecision;
-  }
-  return create;
-}
-
-function buildPullRequestDetailUpdate(
-  input: UpsertBranchArtifactInput
-): Prisma.PullRequestDetailUpdateInput {
-  const update: Prisma.PullRequestDetailUpdateInput = {
-    number: input.number,
-    title: input.title,
-    htmlUrl: input.htmlUrl,
-    body: input.body ?? undefined,
-    prState: input.prState,
-    isDraft: input.isDraft,
-  };
-  if (input.reviewDecision !== undefined) {
-    update.reviewDecision = input.reviewDecision;
-  }
-  if (input.closedAt !== undefined) {
-    update.closedAt = input.closedAt;
-  }
-  if (input.mergedAt !== undefined) {
-    update.mergedAt = input.mergedAt;
-  }
-  if (input.mergeCommitSha !== undefined) {
-    update.mergeCommitSha = input.mergeCommitSha;
-  }
-  return update;
-}
-
 async function updateExistingPullRequest(
   db: TransactionClient,
   branchArtifactId: string,
@@ -171,31 +125,15 @@ async function updateExistingPullRequest(
     select: { headSha: true },
   });
 
-  await db.branchDetail.update({
-    where: { artifactId: branchArtifactId },
-    data: {
-      branchName: input.headBranch,
-      baseBranch: input.baseBranch,
-      baseBranchSource: BranchBaseBranchSource.PullRequestBase,
-      headSha: input.headSha ?? null,
-      headShaSource: input.headSha
-        ? BranchHeadShaSource.PullRequestWebhook
-        : null,
-      ...(input.checksStatus === undefined
-        ? {}
-        : { checksStatus: input.checksStatus }),
+  await writeExistingBranchPullRequestProjection(
+    db,
+    {
+      branchArtifactId,
+      pullRequestDetailId,
+      currentHeadSha: previousBranch?.headSha ?? null,
     },
-  });
-  if (previousBranch?.headSha !== (input.headSha ?? null)) {
-    await invalidateBranchStatusChecksForHeadChange(db, branchArtifactId);
-  }
-
-  // Detail update + re-read with include. Safe now that the parent row is
-  // confirmed in-org; branch identity/status is stored on BranchDetail.
-  await db.pullRequestDetail.update({
-    where: { id: pullRequestDetailId },
-    data: buildPullRequestDetailUpdate(input),
-  });
+    input
+  );
 
   const updated = (await db.artifact.findUnique({
     where: { id: branchArtifactId },
@@ -208,6 +146,22 @@ async function createPullRequest(
   db: TransactionClient,
   input: UpsertBranchArtifactInput
 ): Promise<ArtifactWithPullRequestDetail> {
+  // D2 identity: the branch row needs the normalized repo full name. Resolve it
+  // from the (required-FK) installation repo we are creating the branch under.
+  const repository = await db.gitHubInstallationRepository.findUnique({
+    where: { id: input.repositoryId },
+    select: { fullName: true },
+  });
+  if (!repository) {
+    // `input.repositoryId` is a required FK, so a null lookup means upstream
+    // data corruption, not a normal condition. Fail loud rather than persist an
+    // empty-string D2 identity: an empty `repositoryFullName` would collide with
+    // the next null-lookup branch and merge two unrelated branches under one row
+    // (PRD-510 D2 unique key).
+    throw new Error(
+      `createPullRequest: installation repository ${input.repositoryId} not found; refusing to write an empty D2 repositoryFullName`
+    );
+  }
   const created = await db.artifact.create({
     data: {
       type: ArtifactType.BRANCH,
@@ -218,7 +172,10 @@ async function createPullRequest(
       externalUrl: buildBranchTreeUrl(input.htmlUrl, input.headBranch),
       branch: {
         create: {
+          // FR13: write-once org copy from the parent Artifact.
+          organizationId: input.organizationId,
           repositoryId: input.repositoryId,
+          repositoryFullName: normalizeRepoFullName(repository.fullName),
           branchName: input.headBranch,
           baseBranch: input.baseBranch,
           baseBranchSource: BranchBaseBranchSource.PullRequestBase,

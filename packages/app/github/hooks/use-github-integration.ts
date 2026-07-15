@@ -112,6 +112,8 @@ export type UseGitHubPullRequestsAcrossReposResult = {
   pullRequests: TaggedPullRequest[];
   trackedUrls: Set<string>;
   trackedBranchKeys: Set<string>;
+  hasMore: boolean;
+  truncated: boolean;
   isLoading: boolean;
   failedRepoCount: number;
   totalRepoCount: number;
@@ -144,6 +146,8 @@ export function useGitHubPullRequestsAcrossRepos(
       trackedBranchKeys: new Set<string>(
         results.flatMap((r) => r.data?.trackedBranchKeys ?? [])
       ),
+      hasMore: results.some((r) => r.data?.hasMore === true),
+      truncated: results.some((r) => r.data?.truncated === true),
       ...computeRepoQueryStatus(results),
     }),
   });

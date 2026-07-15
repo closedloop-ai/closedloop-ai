@@ -1,11 +1,9 @@
 /**
- * Narrows an unknown value to a plain object record.
- *
- * Returns true only for non-null, non-array objects, making it safe to index
- * the value with string keys (e.g. after `JSON.parse`). Shared across the
- * desktop main and server process domains so callers stop hand-rolling the
- * same guard.
+ * @file type-guards.ts
+ * @description Re-export shim. `isRecord`/`asRecord` were extracted to the
+ * browser-safe harness slice of `@repo/lib` (FEA-2717) — the Codex parser
+ * core depends on them — while this historical `shared/type-guards` import path
+ * stays stable for its desktop consumers.
  */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+// biome-ignore lint/performance/noBarrelFile: re-export shim for the extracted @repo/lib/harness module (FEA-2717)
+export * from "@repo/lib/harness/type-guards";

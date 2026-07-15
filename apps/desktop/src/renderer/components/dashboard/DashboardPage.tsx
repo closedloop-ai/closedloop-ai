@@ -1,7 +1,4 @@
 import { DesktopInsightsProvider } from "../insights/desktop-insights-provider";
-import { PageShell } from "../layout/page-shell";
-import { useDashboardReady } from "../layout/use-dashboard-ready";
-import { DashboardLoading } from "./dashboard-loading";
 import { FirstLaunchDashboard } from "./first-launch-dashboard";
 
 /**
@@ -10,23 +7,12 @@ import { FirstLaunchDashboard } from "./first-launch-dashboard";
  * DesktopInsightsProvider; on first launch it plays a populate reveal and an
  * auto-started guided tour.
  *
- * Mounting it runs synchronous local-DB reads on the main thread, so we gate it
- * on readiness: until the initial collector import completes, render only the
- * lightweight loading treatment (which just polls progress over IPC). The
- * sidebar disables the Dashboard nav item for the same reason; this guard also
- * covers a restored "#/dashboard" hash on launch, before the user can click in.
+ * The dashboard body must mount even while the initial collector import is
+ * pending. Its first live DB read releases main-process startup work that then
+ * starts collectors; gating this page on collector completion creates a
+ * renderer/main-process readiness cycle.
  */
 export function DashboardPage() {
-  const ready = useDashboardReady();
-
-  if (!ready) {
-    return (
-      <PageShell fullWidth title="Welcome to Closedloop">
-        <DashboardLoading analyticsPct={0} />
-      </PageShell>
-    );
-  }
-
   return (
     <DesktopInsightsProvider>
       <FirstLaunchDashboard />

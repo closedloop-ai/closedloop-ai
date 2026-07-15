@@ -38,6 +38,22 @@ export const BranchHeadShaSource = {
 export type BranchHeadShaSource =
   (typeof BranchHeadShaSource)[keyof typeof BranchHeadShaSource];
 
+/**
+ * Explicit set-once push evidence for a branch (PRD-510 FR2 / PLN-1099 Phase 2).
+ * `firstPushedAt` is stamped by the earliest verified push; `pushSource` records
+ * which producer supplied it. Deliberately NEVER derived from the volatile
+ * `BranchHeadShaSource` (the `stale_push` trap) or from row existence — a synced
+ * row means "observed", not "pushed" (PRD-510 D3). Drives the FR12 display
+ * predicate. `session` = a C1-verified in-session push (desktop sync); `webhook`
+ * = a GitHub push / pull_request event.
+ */
+export const BranchPushSource = {
+  Session: "session",
+  Webhook: "webhook",
+} as const;
+export type BranchPushSource =
+  (typeof BranchPushSource)[keyof typeof BranchPushSource];
+
 export const BranchFileCacheStatus = {
   Absent: "absent",
   Scheduled: "scheduled",
@@ -106,8 +122,13 @@ export type DocumentDetail = {
 export type PullRequestDetail = {
   id?: string | null;
   branchArtifactId?: string | null;
-  repositoryId: string;
-  githubId: string;
+  // Nullable for desktop-produced PRs in non-App repos (FEA-2732 / PRD-510 D2):
+  // no installation-repo id and no GitHub node id until App adoption / `gh`
+  // enrichment supplies them. `repositoryFullName` is the producer-independent
+  // repo identity carried for these repo-less rows.
+  repositoryId: string | null;
+  repositoryFullName?: string | null;
+  githubId: string | null;
   number: number;
   title?: string | null;
   htmlUrl?: string | null;

@@ -1,7 +1,7 @@
 /**
  * @file migration-runner.test.ts
- * @description FEA-1791 / PLN-886 Phase 2 — exercises the desktop migration
- * runner against a real on-disk libSQL database, covering every path the runner
+ * @description Exercises the desktop migration runner against a real on-disk
+ * libSQL database, covering every path the runner
  * must get right: fresh install, baselining a pre-runner install (including an
  * older legacy schema), applying a pending migration, transactional rollback of
  * a failed migration, and refusal on checksum drift or a downgraded app.
@@ -15,7 +15,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openLibsqlDatabase } from "../src/main/database/libsql-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
 import {
   type EmbeddedMigration,
   type MigrationDb,
@@ -84,7 +84,7 @@ const tempDirs: string[] = [];
 async function freshDb(): Promise<MigrationDb> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "migration-runner-"));
   tempDirs.push(dir);
-  const { db } = await openLibsqlDatabase(path.join(dir, "widgets.sqlite"));
+  const { db } = await openMigrationDatabase(path.join(dir, "widgets.sqlite"));
   // The libSQL handle structurally satisfies MigrationDb (exec/query/transaction).
   return db;
 }

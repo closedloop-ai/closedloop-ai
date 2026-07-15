@@ -30,7 +30,7 @@ describe("POST /documents/batch-update-status", () => {
       const request = createMockRequest({
         url: "http://localhost:3002/api/documents/batch-update-status",
         method: "POST",
-        body: { documentIds: [], status: DocumentStatus.InProgress },
+        body: { documentIds: [], status: DocumentStatus.InReview },
       });
 
       const response = await POST(request, createMockRouteContext({}));
@@ -61,7 +61,7 @@ describe("POST /documents/batch-update-status", () => {
       const request = createMockRequest({
         url: "http://localhost:3002/api/documents/batch-update-status",
         method: "POST",
-        body: { documentIds: ["not-a-uuid"], status: DocumentStatus.Done },
+        body: { documentIds: ["not-a-uuid"], status: DocumentStatus.Approved },
       });
 
       const response = await POST(request, createMockRouteContext({}));
@@ -123,7 +123,7 @@ describe("POST /documents/batch-update-status", () => {
         method: "POST",
         body: {
           documentIds: ids,
-          status: DocumentStatus.Done,
+          status: DocumentStatus.Approved,
         },
       });
 

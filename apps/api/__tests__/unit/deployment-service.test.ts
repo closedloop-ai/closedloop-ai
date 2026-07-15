@@ -232,7 +232,8 @@ describe("deploymentService", () => {
       expect(mockDb.artifact.findMany).toHaveBeenCalledWith({
         where: { organizationId: ORG_ID, type: ArtifactType.DEPLOYMENT },
         include: { deployment: true },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 100,
       });
     });
 
@@ -256,8 +257,43 @@ describe("deploymentService", () => {
           status: "success",
         },
         include: { deployment: true },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 100,
       });
+    });
+
+    it("caps take at the max limit even when a larger limit is requested", async () => {
+      const mockDb = {
+        artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mockWithDbCall(mockDb);
+
+      await deploymentService.list({ organizationId: ORG_ID, limit: 500 });
+
+      expect(mockDb.artifact.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 100 })
+      );
+    });
+
+    it("applies the requested limit and cursor when paginating", async () => {
+      const mockDb = {
+        artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mockWithDbCall(mockDb);
+
+      await deploymentService.list({
+        organizationId: ORG_ID,
+        limit: 25,
+        cursor: "dep-cursor",
+      });
+
+      expect(mockDb.artifact.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 25,
+          cursor: { id: "dep-cursor" },
+          skip: 1,
+        })
+      );
     });
   });
 

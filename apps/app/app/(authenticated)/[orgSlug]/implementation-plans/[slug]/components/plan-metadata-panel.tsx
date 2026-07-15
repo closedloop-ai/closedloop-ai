@@ -129,19 +129,10 @@ function LoopStatusBadge({ status }: { status: GenerationStatus["status"] }) {
     return <Badge variant="success">Completed</Badge>;
   }
   if (status === "FAILURE") {
-    // Use destructive's semantic tokens but keep the existing LIGHT tint:
-    // the `destructive` variant renders a solid red fill (bg-destructive
-    // text-white), which would make this pill visually heavier than its
-    // success/info/warning siblings. Override with the variant's light
-    // tokens to preserve the original light pill and sibling consistency.
-    return (
-      <Badge
-        className="border-destructive/25 bg-destructive/12 text-destructive"
-        variant="destructive"
-      >
-        Failed
-      </Badge>
-    );
+    // Use the `error` variant (a light destructive tint) rather than
+    // `destructive` (a solid red fill), keeping this pill visually consistent
+    // with its success/info/warning siblings.
+    return <Badge variant="error">Failed</Badge>;
   }
   if (status === "RUNNING") {
     return <Badge variant="info">Running</Badge>;

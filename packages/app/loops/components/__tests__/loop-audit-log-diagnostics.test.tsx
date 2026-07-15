@@ -11,8 +11,8 @@
  */
 
 import type {
-  LoopEvent,
   LoopEventsPaginatedResponse,
+  StoredLoopEvent,
 } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,7 +59,7 @@ const UNKNOWN_SKILL_SUMMARY_REGEX =
 const RAW_RUNNER_ERROR_REGEX = /^RUNNER_ERROR$/;
 const GENERIC_RUNNER_ERROR_SUMMARY_REGEX = /^Runner failed:/;
 
-function makeResponse(events: LoopEvent[]): {
+function makeResponse(events: StoredLoopEvent[]): {
   data: LoopEventsPaginatedResponse;
   isLoading: false;
   error: null;
@@ -71,14 +71,18 @@ function makeResponse(events: LoopEvent[]): {
   };
 }
 
-const BASE_ERROR_EVENT: LoopEvent = {
+const BASE_ERROR_EVENT: StoredLoopEvent = {
+  id: "evt-base",
+  storedAt: "2026-01-01T00:00:00.000Z",
   type: "error",
   code: "SOME_ERROR",
   message: "Something went wrong",
   timestamp: "2026-01-01T00:00:00.000Z",
 };
 
-const FULL_DIAG_ERROR_EVENT: LoopEvent = {
+const FULL_DIAG_ERROR_EVENT: StoredLoopEvent = {
+  id: "evt-full-diag",
+  storedAt: "2026-01-01T00:00:00.000Z",
   type: "error",
   code: "CONTEXT_LIMIT_EXCEEDED",
   message: "Context limit hit",
@@ -115,7 +119,13 @@ describe("LoopAuditLog EventRow — error expandability", () => {
 
   it("error row renders runner failure reason from result subcode", () => {
     vi.mocked(useLoopEventsPaginated).mockReturnValue(
-      makeResponse([RUNNER_RATE_LIMIT_EVENT]) as any
+      makeResponse([
+        {
+          id: "evt-rate-limit",
+          storedAt: "2026-01-01T00:00:00.000Z",
+          ...RUNNER_RATE_LIMIT_EVENT,
+        },
+      ]) as any
     );
 
     render(<LoopAuditLog loopId="loop-1" />);
@@ -127,7 +137,13 @@ describe("LoopAuditLog EventRow — error expandability", () => {
 
   it("error row renders unknown-skill runner subcode as specific plugin guidance", () => {
     vi.mocked(useLoopEventsPaginated).mockReturnValue(
-      makeResponse([RUNNER_UNKNOWN_SKILL_EVENT]) as any
+      makeResponse([
+        {
+          id: "evt-unknown-skill",
+          storedAt: "2026-01-01T00:00:00.000Z",
+          ...RUNNER_UNKNOWN_SKILL_EVENT,
+        },
+      ]) as any
     );
 
     render(<LoopAuditLog loopId="loop-unknown-skill" />);

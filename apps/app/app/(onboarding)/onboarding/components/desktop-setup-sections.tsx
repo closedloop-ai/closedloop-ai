@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Input } from "@repo/design-system/components/ui/input";
@@ -439,34 +443,34 @@ function DownloadAction({
   if (electronDetected) {
     if (isElectronOutdated && runningVersion && latestVersion) {
       return (
-        <div className="space-y-3 rounded-md border border-warning/40 bg-warning/12 px-3 py-2 text-sm text-warning-foreground">
-          <div className="flex items-start gap-2">
-            <AlertTriangleIcon className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
+        <Alert variant="warning">
+          <AlertTriangleIcon />
+          <AlertDescription>
             <span>
               Closedloop Desktop version {runningVersion} is running. Version{" "}
               {latestVersion} is available.
             </span>
-          </div>
-          <Button
-            asChild
-            className="w-full border-warning/40 bg-background text-foreground hover:bg-warning/12 hover:text-foreground"
-            size="sm"
-            variant="outline"
-          >
-            <a
-              aria-disabled={!downloadUrl}
-              className={cn(!downloadUrl && "pointer-events-none opacity-50")}
-              download
-              href={downloadUrl ?? "#"}
-              onClick={downloadUrl ? undefined : (e) => e.preventDefault()}
-              rel="noopener noreferrer"
-              target="_blank"
+            <Button
+              asChild
+              className="w-full border-warning/40 bg-background text-foreground hover:bg-warning/12 hover:text-foreground"
+              size="sm"
+              variant="outline"
             >
-              <DownloadIcon className="h-4 w-4" />
-              Download latest version
-            </a>
-          </Button>
-        </div>
+              <a
+                aria-disabled={!downloadUrl}
+                className={cn(!downloadUrl && "pointer-events-none opacity-50")}
+                download
+                href={downloadUrl ?? "#"}
+                onClick={downloadUrl ? undefined : (e) => e.preventDefault()}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                <DownloadIcon className="h-4 w-4" />
+                Download latest version
+              </a>
+            </Button>
+          </AlertDescription>
+        </Alert>
       );
     }
 

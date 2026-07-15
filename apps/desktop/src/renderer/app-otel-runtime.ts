@@ -7,7 +7,13 @@ import {
 } from "@opentelemetry/sdk-trace-web";
 import { sanitizeDesktopException } from "../shared/exception-sanitizer";
 import {
+  buildRenderCommitBridgeRecord,
+  type RenderCommitEvent,
+  RendererRenderPhase,
+} from "../shared/render-commit-event";
+import {
   DesktopOtelSignal,
+  RENDERER_RENDER_COMMIT_SAMPLE_RATE,
   type RendererOtelBridgePayload,
   type RendererOtelBridgeRecord,
   type RendererOtelExportResult,
@@ -22,6 +28,7 @@ import {
 export type RendererOtelRuntime = {
   start: () => Promise<void>;
   reportException: (input: RendererExceptionReportInput) => void;
+  reportRenderCommit: (input: RenderCommitEvent) => void;
   shutdown: () => Promise<void>;
 };
 
@@ -34,6 +41,10 @@ export type CreateRendererOtelRuntimeOptions = {
   exportTelemetry?: (
     payload: RendererOtelBridgePayload
   ) => Promise<RendererOtelExportResult>;
+  /** Head sampler for non-`mount` render commits (seam for deterministic
+   * tests). Returns true to keep. Defaults to a `RENDERER_RENDER_COMMIT_SAMPLE_RATE`
+   * Bernoulli draw. */
+  renderCommitSampler?: () => boolean;
 };
 
 const RENDERER_BOOTSTRAP_RECORD: RendererOtelBridgeRecord = {
@@ -44,11 +55,15 @@ const RENDERER_BOOTSTRAP_RECORD: RendererOtelBridgeRecord = {
 
 export function createRendererOtelRuntime({
   exportTelemetry,
+  renderCommitSampler,
 }: CreateRendererOtelRuntimeOptions): RendererOtelRuntime {
   let provider: WebTracerProvider | null = null;
   let startPromise: Promise<void> | null = null;
   let terminalNoop = false;
   let started = false;
+  const shouldKeepRenderCommit =
+    renderCommitSampler ??
+    (() => Math.random() < RENDERER_RENDER_COMMIT_SAMPLE_RATE);
 
   return {
     start() {
@@ -75,6 +90,30 @@ export function createRendererOtelRuntime({
         return;
       }
       const record = rendererExceptionToBridgeRecord(input);
+      exportTelemetry({ records: [record] })
+        .then((result) => {
+          if (isTerminalRendererOtelResult(result)) {
+            terminalNoop = true;
+          }
+        })
+        .catch(() => {
+          terminalNoop = true;
+        });
+    },
+    reportRenderCommit(input) {
+      if (!exportTelemetry || terminalNoop) {
+        return;
+      }
+      // Head-sample before building a record: `mount` is always kept (rare +
+      // most diagnostic), every other phase is sampled. Sampling here keeps the
+      // bridge's 8-batches/s rate limit well clear of being the throttle.
+      if (
+        input.phase !== RendererRenderPhase.Mount &&
+        !shouldKeepRenderCommit()
+      ) {
+        return;
+      }
+      const record = buildRenderCommitBridgeRecord(input);
       exportTelemetry({ records: [record] })
         .then((result) => {
           if (isTerminalRendererOtelResult(result)) {

@@ -4,6 +4,8 @@ import {
   buildDocumentUrl,
   buildDocumentUrlFromRecord,
   buildLoopUrl,
+  buildPaginatedPayload,
+  extractArrayItems,
   setSessionOrgSlug,
   withErrorHandling,
 } from "../tools/tool-utils.js";
@@ -31,6 +33,33 @@ describe("withErrorHandling", () => {
     expect(result.content[0]?.text).toContain("Technical details:");
   });
 
+  it("redacts raw upstream details/result from technical details", async () => {
+    const result = await withErrorHandling(() =>
+      Promise.reject(
+        new McpApiError("Query failed", {
+          code: "PROCESS_FAILED",
+          timestamp: "2026-07-04T00:00:00.000Z",
+          details: {
+            category: "git_command_failed",
+            internalPath: "/srv/app/secrets/config.json",
+            sqlFragment: "SELECT * FROM users WHERE token = 'sk_live_abc'",
+          },
+        })
+      )
+    );
+
+    const text = result.content[0]?.text ?? "";
+    expect(result.isError).toBe(true);
+    // Safe scalar metadata is preserved.
+    expect(text).toContain("Technical details:");
+    expect(text).toContain("PROCESS_FAILED");
+    expect(text).toContain("2026-07-04T00:00:00.000Z");
+    // Raw upstream `details` payload is redacted.
+    expect(text).not.toContain("/srv/app/secrets/config.json");
+    expect(text).not.toContain("SELECT * FROM users");
+    expect(text).not.toContain("internalPath");
+  });
+
   it("maps legacy thrown Error values to fallback friendly output", async () => {
     const result = await withErrorHandling(() =>
       Promise.reject(new Error("legacy raw failure"))
@@ -39,6 +68,54 @@ describe("withErrorHandling", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("Operation failed");
     expect(result.content[0]?.text).toContain("legacy raw failure");
+  });
+});
+
+describe("extractArrayItems", () => {
+  it("returns a bare array unchanged", () => {
+    expect(extractArrayItems([1, 2, 3])).toEqual([1, 2, 3]);
+  });
+
+  it("unwraps a { data: [] } envelope", () => {
+    expect(extractArrayItems({ data: ["a", "b"] })).toEqual(["a", "b"]);
+  });
+
+  it("includes the received type and payload sample for object shapes", () => {
+    expect(() => extractArrayItems({ items: [1, 2] })).toThrow(
+      'received type "object" (sample: {"items":[1,2]})'
+    );
+  });
+
+  it("reports null and primitive payloads with their type", () => {
+    expect(() => extractArrayItems(null)).toThrow(
+      'received type "null" (sample: null)'
+    );
+    expect(() => extractArrayItems("nope")).toThrow(
+      'received type "string" (sample: "nope")'
+    );
+  });
+
+  it("truncates an oversized payload sample", () => {
+    const big = { data: "x".repeat(500), note: "y".repeat(500) };
+    let message = "";
+    try {
+      extractArrayItems(big);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('received type "object"');
+    expect(message).toContain("...[truncated]");
+  });
+});
+
+describe("buildPaginatedPayload", () => {
+  it("surfaces the received-shape context when the payload is not a list", () => {
+    expect(() =>
+      buildPaginatedPayload(
+        { unexpected: true },
+        { mapItem: (item: unknown) => item }
+      )
+    ).toThrow('received type "object" (sample: {"unexpected":true})');
   });
 });
 

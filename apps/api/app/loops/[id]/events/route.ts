@@ -3,6 +3,7 @@ import type {
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
   LoopEventType,
+  StoredLoopEvent,
 } from "@repo/api/src/types/loop";
 import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
@@ -12,6 +13,7 @@ import {
   conflictResponse,
   errorResponse,
   forbiddenResponse,
+  logLoopIngestFailure,
   parseBody,
   scheduleLogFlushAfter,
   successResponse,
@@ -25,6 +27,7 @@ import { IngestRunnerEventErrorCode } from "../../loop-ingest-types";
 import { loopsService, scheduleRunnerHeartbeatBump } from "../../service";
 import {
   listLoopEventsQueryValidator,
+  listLoopEventsSinceQueryValidator,
   loopEventPayloadValidator,
   normalizeLoopEvent,
   TERMINAL_LOOP_STATUSES,
@@ -103,7 +106,7 @@ function mapEventHandlingError(error: unknown): Response | null {
 }
 
 export const GET = withAuth<
-  LoopEvent[] | LoopEventsPaginatedResponse,
+  StoredLoopEvent[] | LoopEventsPaginatedResponse,
   "/loops/[id]/events"
 >(async ({ user }, request, params) => {
   try {
@@ -114,6 +117,26 @@ export const GET = withAuth<
 
     const url = new URL(request.url);
     const rawQuery = Object.fromEntries(url.searchParams.entries());
+
+    // Incremental (keyset) poll: `since`/`sinceId` are the composite cursor of
+    // the newest event the client holds. Return only the delta so an active
+    // loop's 3s poll no longer re-ships its full, ever-growing event history on
+    // every request.
+    if (rawQuery.since !== undefined) {
+      const parsedSince = listLoopEventsSinceQueryValidator.safeParse(rawQuery);
+      if (!parsedSince.success) {
+        const msg = parsedSince.error.issues.map((i) => i.message).join(", ");
+        return errorResponse(msg, new Error(msg), 400);
+      }
+      const events = await loopsService.getEventsSince(
+        id,
+        user.organizationId,
+        new Date(parsedSince.data.since),
+        parsedSince.data.sinceId,
+        parsedSince.data.limit
+      );
+      return successResponse(events);
+    }
 
     // If no pagination/filter params provided, return the flat array for
     // backward compatibility (used by SSE polling and existing consumers)
@@ -162,8 +185,12 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> {
+  // Hoisted so the outer catch can stitch the failure to its loop/org in
+  // Datadog — see `loop.event_ingest_failed` below.
+  let loopId: string | undefined;
+  let organizationId: string | undefined;
   try {
-    const { id: loopId } = await params;
+    ({ id: loopId } = await params);
 
     const claims = await authenticateLoopRunnerRequest(
       request,
@@ -173,6 +200,7 @@ export async function POST(
     if (claims instanceof Response) {
       return claims;
     }
+    organizationId = claims.organizationId;
 
     const nonce = extractEventNonce(request);
     if (nonce instanceof Response) {
@@ -267,6 +295,11 @@ export async function POST(
 
     return successResponse({ received: true as const });
   } catch (error) {
+    logLoopIngestFailure("loop.event_ingest_failed", {
+      error,
+      loopId,
+      organizationId,
+    });
     return errorResponse("Failed to record loop event", error);
   }
 }

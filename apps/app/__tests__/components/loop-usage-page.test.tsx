@@ -30,7 +30,7 @@ vi.mock("next/image", () => ({
 }));
 
 import { useLoopUsage } from "@repo/app/loops/hooks/use-loops";
-import LoopUsagePage from "@/app/(authenticated)/[orgSlug]/loops/usage/page";
+import LoopUsagePage from "@/app/(authenticated)/[orgSlug]/loops/usage/page-client";
 
 const SUMMARY_CARD_TITLES =
   /Total Loops|Input Tokens|Output Tokens|Cache Tokens|Estimated Cost/;

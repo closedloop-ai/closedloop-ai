@@ -24,6 +24,7 @@ import type {
   SessionSortKey,
 } from "@repo/app/agents/lib/session-sort-group";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useSharedDateRange } from "@repo/app/shared/hooks/use-shared-date-range";
 import {
   type DateRange,
   getStartDateForRange,
@@ -32,12 +33,14 @@ import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { keepPreviousData } from "@tanstack/react-query";
-import { Coins, Loader2, MonitorDot } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import {
+  Profiler,
   type ReactNode,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
@@ -46,6 +49,7 @@ import {
   type LocalSessionSourceStatus,
   normalizeAgentMonitorLocalSessionSourceStatus,
 } from "../../../shared/local-session-source-status";
+import { RendererRenderView } from "../../../shared/render-commit-event";
 import { desktopSessionDetailHashHref } from "../../shared-agent-sessions/session-hrefs";
 import {
   DASHBOARD_GRID_CLASS_NAME,
@@ -53,6 +57,11 @@ import {
 } from "../layout/page-shell";
 import { AgentCoachingTips } from "./agent-coaching-tips";
 import { formatSessionDateRange } from "./format-session-date-range";
+import {
+  resolveSessionsListCause,
+  type SessionsListCauseInputs,
+  useRenderCommitInstrumentation,
+} from "./use-render-commit-instrumentation";
 
 const PAGE_SIZE = 25;
 const PAGE_PARAM = "page";
@@ -71,15 +80,9 @@ export function SessionsView() {
   const [facetFilters, setFacetFilters] = useState<SessionFacetFilters>(
     DEFAULT_SESSION_FACET_FILTERS
   );
-  const {
-    sortKey,
-    sortDir,
-    dateRange,
-    visibleColumns,
-    setSort,
-    setDateRange,
-    toggleColumn,
-  } = useSessionsViewState("sessions:desktop");
+  const { dateRange, setDateRange } = useSharedDateRange("desktop");
+  const { sortKey, sortDir, visibleColumns, setSort, toggleColumn } =
+    useSessionsViewState("sessions:desktop");
   const localSessionSourceStatus = useLocalSessionSourceStatus();
   const canReadLocalSessions =
     localSessionSourceStatus === LOCAL_SESSION_SOURCE_STATUSES.ready;
@@ -94,6 +97,16 @@ export function SessionsView() {
     },
     [navigation, pathname, searchParams]
   );
+
+  // Reset pagination when dateRange changes — covers both local toolbar changes
+  // AND cross-tab StorageEvent updates from Dashboard/Branches.
+  const dateRangeRef = useRef(dateRange);
+  useEffect(() => {
+    if (dateRangeRef.current !== dateRange) {
+      dateRangeRef.current = dateRange;
+      setPage(0);
+    }
+  }, [dateRange, setPage]);
 
   // Memoized: `getStartDateForRange` returns a fresh `new Date().toISOString()`
   // each call, so an unmemoized value would change every render → new query key
@@ -112,6 +125,12 @@ export function SessionsView() {
       startDate,
       statuses: facetFilters.statuses,
       repositories: facetFilters.repositories,
+      harnesses: facetFilters.harnesses,
+      models: facetFilters.models,
+      autonomyTiers: facetFilters.autonomyTiers,
+      costBuckets: facetFilters.costBuckets,
+      changePresence: facetFilters.changePresence,
+      prAssociation: facetFilters.prAssociation,
       ...(sortKey ? { sortBy: sortKey, sortDir } : {}),
     },
     {
@@ -137,7 +156,14 @@ export function SessionsView() {
   // Usage/analytics are held until the list settles so expensive metric/facet
   // reads cannot block the user-visible table result on cold start or search.
   const facetsActive =
-    facetFilters.statuses.length > 0 || facetFilters.repositories.length > 0;
+    facetFilters.statuses.length > 0 ||
+    facetFilters.repositories.length > 0 ||
+    facetFilters.harnesses.length > 0 ||
+    facetFilters.models.length > 0 ||
+    facetFilters.autonomyTiers.length > 0 ||
+    facetFilters.costBuckets.length > 0 ||
+    facetFilters.changePresence.length > 0 ||
+    facetFilters.prAssociation.length > 0;
   const facetUsageQuery = useAgentSessionUsage(
     { search, startDate },
     {
@@ -151,6 +177,12 @@ export function SessionsView() {
       startDate,
       statuses: facetFilters.statuses,
       repositories: facetFilters.repositories,
+      harnesses: facetFilters.harnesses,
+      models: facetFilters.models,
+      autonomyTiers: facetFilters.autonomyTiers,
+      costBuckets: facetFilters.costBuckets,
+      changePresence: facetFilters.changePresence,
+      prAssociation: facetFilters.prAssociation,
     },
     {
       enabled: canFetchAuxiliaryData && facetsActive,
@@ -197,6 +229,26 @@ export function SessionsView() {
   });
   const isListRefreshingWithPreviousData =
     sessionsQuery.isPlaceholderData && sessionsQuery.isFetching;
+
+  // FEA-1998: render-commit timing for the sessions list. The cause is derived
+  // from which of these tracked inputs changed since the previous commit; the
+  // item count is the number of rows being committed.
+  const renderCommitInputs: SessionsListCauseInputs = {
+    page,
+    search,
+    statuses: facetFilters.statuses,
+    repositories: facetFilters.repositories,
+    sortKey,
+    sortDir,
+    dateRange: String(dateRange),
+    isBackgroundRefetch: isListRefreshingWithPreviousData,
+  };
+  const onRenderCommit = useRenderCommitInstrumentation({
+    view: RendererRenderView.SessionsList,
+    itemCount: renderModel.sessions.length,
+    causeInputs: renderCommitInputs,
+    resolveCause: resolveSessionsListCause,
+  });
   const tableLoadingLabel = getSessionsTableLoadingLabel({
     displayState,
     hasData: renderModel.hasRenderableData,
@@ -260,6 +312,7 @@ export function SessionsView() {
           onDateRangeChange={handleDateRangeChange}
           onFiltersChange={handleFiltersChange}
           onToggleColumn={toggleColumn}
+          readSource={sessionsQuery.data?.readSource}
           usage={renderModel.usage}
           visibleColumns={visibleColumns}
         />
@@ -283,38 +336,39 @@ export function SessionsView() {
             <MetricCard
               className={DASHBOARD_METRIC_CARD_CLASS_NAME}
               detail={metricDetail}
-              icon={MonitorDot}
               label="Total Sessions"
               value={totalSessionsValue}
             />
             <MetricCard
               className={DASHBOARD_METRIC_CARD_CLASS_NAME}
               detail={metricDetail}
-              icon={Coins}
               label="Total Tokens"
               value={totalTokensValue}
             />
           </div>
         </div>
 
-        <SessionsTableBody
-          hasData={renderModel.hasRenderableData}
-          hostScroll
-          isError={displayState === "unavailable" || sessionsQuery.isError}
-          isLoading={displayState === "starting" || sessionsQuery.isLoading}
-          loadingLabel={tableLoadingLabel}
-          onSort={handleSort}
-          sessions={renderModel.sessions}
-          sortBy={sortKey}
-          sortDir={sortDir}
-          visibleColumns={visibleColumns}
-        />
+        <Profiler id="sessions_list" onRender={onRenderCommit}>
+          <SessionsTableBody
+            hasData={renderModel.hasRenderableData}
+            hostScroll
+            isError={displayState === "unavailable" || sessionsQuery.isError}
+            isLoading={displayState === "starting" || sessionsQuery.isLoading}
+            loadingLabel={tableLoadingLabel}
+            onSort={handleSort}
+            sessions={renderModel.sessions}
+            sortBy={sortKey}
+            sortDir={sortDir}
+            visibleColumns={visibleColumns}
+          />
+        </Profiler>
       </div>
 
       {/* Fixed footer — page controls, always visible (8px horizontal padding). */}
       {!tableLoadingLabel && renderModel.totalPages > 1 ? (
-        <div className="shrink-0 border-t px-2 py-2">
+        <div className="shrink-0 overflow-x-auto border-t px-2 py-2">
           <TablePagination
+            className="min-w-max"
             onPageChange={setPage}
             page={page}
             totalPages={renderModel.totalPages}

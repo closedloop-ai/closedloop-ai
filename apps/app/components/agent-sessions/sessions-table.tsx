@@ -1,6 +1,7 @@
 "use client";
 
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
+import { SessionRowActionsMenu } from "@repo/app/agents/components/sessions/session-row-actions-menu";
 import { SessionsTable as SharedSessionsTable } from "@repo/app/agents/components/sessions/sessions-table";
 import {
   agentSessionToSessionTableRow,
@@ -36,6 +37,7 @@ export function SessionsTable({
   const hrefById = new Map(
     items.map((item) => [item.id, getSessionHref(item)])
   );
+  const itemById = new Map(items.map((item) => [item.id, item]));
 
   return (
     <SharedSessionsTable
@@ -46,6 +48,10 @@ export function SessionsTable({
           {row.name}
         </Link>
       )}
+      renderRowActions={(row) => {
+        const item = itemById.get(row.id);
+        return item ? <SessionRowActionsMenu item={item} /> : null;
+      }}
       sortBy={sortBy}
       sortDir={sortDir}
       visibleColumns={visibleColumns}

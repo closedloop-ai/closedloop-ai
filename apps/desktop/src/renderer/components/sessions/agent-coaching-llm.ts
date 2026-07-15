@@ -7,7 +7,13 @@ import {
   type AgentCoachingTip,
 } from "./agent-coaching-types";
 
-const AGENTIC_DEVELOPMENT_SIGNALS = [
+/**
+ * Built-in best-practice signals — the DEFAULT coaching knowledge. An
+ * installed, active coaching pack (see agent-coaching-packs.ts) supplies its
+ * own `signals` which REPLACE these for the prompt; with no pack active, these
+ * apply. Exported so the default is one canonical source.
+ */
+export const AGENTIC_DEVELOPMENT_SIGNALS = [
   "Claude Code: use explicit config, fallback-model, compaction, and checkpoint habits to keep long sessions recoverable.",
   "Claude Code: use closest-directory skills and workflows when repeated local patterns emerge, and keep nested subagents bounded.",
   "Claude Code: prefer batched or cached tool loading and avoid prompt-cache churn from needless setting or context changes.",
@@ -21,8 +27,16 @@ const AGENTIC_DEVELOPMENT_SIGNALS = [
 
 export function buildAgentCoachingLlmRequest(
   input: AgentCoachingInput,
-  seedTips: AgentCoachingTip[]
+  seedTips: AgentCoachingTip[],
+  // The active coaching pack's signals override the built-in defaults; callers
+  // pass an empty array when a pack is "active" but carries no signals — guard
+  // against that by falling back to the defaults so the prompt is never empty.
+  bestPracticeSignals: string[] = AGENTIC_DEVELOPMENT_SIGNALS
 ): AgentCoachingLlmRequest {
+  const signals =
+    bestPracticeSignals.length > 0
+      ? bestPracticeSignals
+      : AGENTIC_DEVELOPMENT_SIGNALS;
   // Permanently-dismissed tips are never regenerated (matches the local model's
   // dismissed-forever rule).
   const excludeTipIds = [
@@ -37,7 +51,7 @@ export function buildAgentCoachingLlmRequest(
     generationMode: "non_deterministic_high_reasoning",
     reasoningEffort: "high",
     temperature: 0.8,
-    bestPracticeSignals: AGENTIC_DEVELOPMENT_SIGNALS,
+    bestPracticeSignals: signals,
     groundedMetrics: summarizeLookback(input),
     localEvidence: {
       analytics: input.analytics,

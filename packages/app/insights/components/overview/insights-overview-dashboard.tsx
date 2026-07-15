@@ -2,7 +2,7 @@
 
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
 import type {
-  InsightsPeriod,
+  InsightsGitHubProvenance,
   InsightsScope,
 } from "@repo/api/src/types/insights";
 import {
@@ -12,25 +12,42 @@ import {
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { DegradedState } from "@repo/app/agents/components/shared/degraded-state";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
+import { SessionSortKey } from "@repo/app/agents/lib/session-sort-group";
+import { useInsightsDataSource } from "@repo/app/insights/data/insights-data-source";
+import { useDashboardRange } from "@repo/app/insights/hooks/use-dashboard-range";
 import {
   useAgentsInsights,
   useDeliveryInsights,
   useUtilizationInsights,
 } from "@repo/app/insights/hooks/use-insights";
+import { resolveMissingSourceTileAvailability } from "@repo/app/insights/lib/tile-availability";
+import type { TileDescriptor } from "@repo/app/insights/lib/tile-catalog";
+import { DateRangeFilter } from "@repo/app/shared/components/date-range-filter";
+import { FeatureFlagged } from "@repo/app/shared/feature-flags/feature-flagged";
+import {
+  type DateRange,
+  getStartDateForRange,
+} from "@repo/app/shared/lib/format-utils";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { Clock3Icon, LayersIcon } from "lucide-react";
+import { useMemo } from "react";
+import type { InsightsSectionData } from "../tile-content";
+import { AI_IMPACT_FEATURE_FLAG_KEY, AiImpactCard } from "./ai-impact-card";
 import { DashboardCard } from "./dashboard-card";
 import { DashboardRowContent } from "./dashboard-rows";
 import { DASHBOARD_ROWS } from "./dashboard-tiles";
 
-// The overview dashboard is a 90-day window: every widget — KPI totals, trend
-// sparklines, and the activity heatmap — uses a rolling 90-day window so the
-// metrics and time-series visuals stay bounded and readable (the all-time
-// corpus produces an unreadable ~200-column heatmap and noisy trends).
-const PERIOD: InsightsPeriod = "90";
-const PERIOD_LABEL = "Last 90 days";
+// FEA-2232: the overview window is user-driven via the shared date-range picker
+// (defaults to 90d). The selection is persisted under a dashboard-specific
+// localStorage key, independent of the Sessions / Branches tabs. KPI totals
+// cover the full selected range; trend sparklines stay capped at 90 days by the
+// insights service, which the "all" caption reflects.
+const DASHBOARD_RANGE_SURFACE = "web";
 const RECENT_SESSIONS_LIMIT = 8;
+// Match the Sessions page default window so "Recent Sessions" is a strict
+// prefix of that list (same lastActivityAt window + ordering); see FEA-2180.
+const RECENT_SESSIONS_RANGE: DateRange = "7d";
 
 export type InsightsOverviewDashboardProps = {
   /** Route href for a session row; each surface owns its URL shape. */
@@ -50,10 +67,29 @@ export function InsightsOverviewDashboard({
   getSessionHref,
   scope = InsightsScopeValues.Me,
 }: Readonly<InsightsOverviewDashboardProps>) {
-  const delivery = useDeliveryInsights(PERIOD, scope);
-  const utilization = useUtilizationInsights(PERIOD, scope);
-  const agents = useAgentsInsights(PERIOD, scope);
-  const sessionsQuery = useAgentSessions({ limit: RECENT_SESSIONS_LIMIT });
+  const source = useInsightsDataSource();
+  // FEA-2232: user-driven window (persisted, dashboard-local selection).
+  const { dateRange, setDateRange, period, periodLabel, deltaLabel } =
+    useDashboardRange(DASHBOARD_RANGE_SURFACE);
+  const delivery = useDeliveryInsights(period, scope, undefined);
+  const utilization = useUtilizationInsights(period, scope, undefined);
+  const agents = useAgentsInsights(period, scope, undefined);
+  // Memoized: getStartDateForRange returns a fresh ms-precision ISO string per
+  // call, so an unmemoized value would change the query key every render and
+  // drive a refetch/skeleton-flash loop (same reason as the Sessions page).
+  const startDate = useMemo(
+    () => getStartDateForRange(RECENT_SESSIONS_RANGE),
+    []
+  );
+  // Mirror the Sessions page default view exactly — same window, same sort —
+  // so "Recent Sessions" is a strict prefix of that list on every surface
+  // (FEA-2180). Both must sort by last activity, not start time / cursor order.
+  const sessionsQuery = useAgentSessions({
+    limit: RECENT_SESSIONS_LIMIT,
+    startDate,
+    sortBy: SessionSortKey.LastActivity,
+    sortDir: "desc",
+  });
 
   const analyticsLoaded =
     delivery.isSuccess && utilization.isSuccess && agents.isSuccess;
@@ -63,11 +99,37 @@ export function InsightsOverviewDashboard({
   const analyticsError =
     delivery.isError || utilization.isError || agents.isError;
 
-  const sections = {
-    [InsightsSection.Delivery]: delivery.data,
-    [InsightsSection.Utilization]: utilization.data,
-    [InsightsSection.Agents]: agents.data,
-  };
+  const sections = useMemo(
+    () => ({
+      [InsightsSection.Delivery]: delivery.data,
+      [InsightsSection.Utilization]: utilization.data,
+      [InsightsSection.Agents]: agents.data,
+    }),
+    [agents.data, delivery.data, utilization.data]
+  );
+  const sourceGetTileAvailability = source.getTileAvailability;
+  const getTileAvailability = useMemo(
+    () => (tile: TileDescriptor) => {
+      const payloadAvailability = sections[tile.section]?.tileAvailability;
+      const payloadGitHubProvenance = getSectionGitHubProvenance(
+        sections[tile.section]
+      );
+      if (!sourceGetTileAvailability) {
+        return resolveMissingSourceTileAvailability({
+          tileId: tile.id,
+          section: tile.section,
+        });
+      }
+      return sourceGetTileAvailability({
+        tileId: tile.id,
+        section: tile.section,
+        scope,
+        payloadAvailability,
+        payloadGitHubProvenance,
+      });
+    },
+    [scope, sections, sourceGetTileAvailability]
+  );
 
   const recentItems = sessionsQuery.data?.items ?? [];
   const sessionsTotal = sessionsQuery.data?.total ?? 0;
@@ -123,17 +185,33 @@ export function InsightsOverviewDashboard({
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex min-w-0 flex-col gap-5">
+      {/* FEA-2232: window picker — drives the KPI/chart insights only; Recent
+          Sessions keeps its own 7d window (RECENT_SESSIONS_RANGE). */}
+      <div className="flex min-w-0 justify-start overflow-x-auto sm:justify-end">
+        <DateRangeFilter onChange={setDateRange} value={dateRange} />
+      </div>
       {visibleRows.map((row) => (
-        <div data-tour={row.tour} key={row.tour}>
+        <div className="min-w-0" data-tour={row.tour} key={row.tour}>
           <DashboardRowContent
             autonomySeries={agents.data?.charts.autonomyTrend}
+            deltaLabel={deltaLabel}
+            getTileAvailability={getTileAvailability}
+            githubConnectHref={source.githubConnectHref}
             heatmap={utilization.data?.charts.activityHeatmap}
             modelSeries={agents.data?.charts.modelUsageOverTime}
-            periodLabel={PERIOD_LABEL}
+            onConnectGitHub={source.onConnectGitHub}
+            periodLabel={periodLabel}
             row={row}
             sections={sections}
           />
+          {row.tour === "stats" ? (
+            <FeatureFlagged flag={AI_IMPACT_FEATURE_FLAG_KEY}>
+              <div className="mt-5">
+                <AiImpactCard sections={sections} />
+              </div>
+            </FeatureFlagged>
+          ) : null}
           {row.tour === recentSessionsAnchor ? (
             <div className="mt-5">
               <RecentSessions
@@ -197,7 +275,7 @@ function RecentSessions({
 function DashboardLoading() {
   return (
     <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3 xl:grid-cols-5">
         {Array.from({ length: 5 }, (_, i) => i).map((i) => (
           <Skeleton className="h-[104px] rounded-[1.25rem]" key={i} />
         ))}
@@ -207,4 +285,13 @@ function DashboardLoading() {
       <Skeleton className="h-[340px] rounded-[1.25rem]" />
     </div>
   );
+}
+
+function getSectionGitHubProvenance(
+  section: InsightsSectionData[InsightsSection] | undefined
+): InsightsGitHubProvenance | undefined {
+  if (!(section && "githubProvenance" in section)) {
+    return undefined;
+  }
+  return section.githubProvenance;
 }

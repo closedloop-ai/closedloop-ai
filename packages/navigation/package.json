@@ -19,6 +19,6 @@
     "jsdom": "^29.1.1",
     "react-dom": "19.2.5",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.9"
   }
 }

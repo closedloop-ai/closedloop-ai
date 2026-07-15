@@ -1,6 +1,7 @@
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../../../test/deferred.js";
 import { DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
 import { DesktopFeatureFlagProvider } from "../desktop-feature-flag-provider";
 
@@ -111,14 +112,4 @@ function installDesktopApi({
       onFlagsChanged: vi.fn(),
     },
   });
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, reject, resolve };
 }

@@ -98,6 +98,12 @@ export default function SessionsPage() {
       statuses: facetFilters.statuses,
       userIds: facetFilters.userIds,
       repositories: facetFilters.repositories,
+      harnesses: facetFilters.harnesses,
+      models: facetFilters.models,
+      autonomyTiers: facetFilters.autonomyTiers,
+      costBuckets: facetFilters.costBuckets,
+      changePresence: facetFilters.changePresence,
+      prAssociation: facetFilters.prAssociation,
       userId: selectedUserId ?? undefined,
     }),
     [startDate, facetFilters, selectedUserId]
@@ -211,6 +217,7 @@ export default function SessionsPage() {
               onDateRangeChange={handleDateRangeChange}
               onFiltersChange={handleFiltersChange}
               onToggleColumn={toggleColumn}
+              readSource={sessionsQuery.data?.readSource}
               usage={facetUsageQuery.data}
               visibleColumns={visibleColumns}
             />
@@ -222,7 +229,7 @@ export default function SessionsPage() {
             className="min-h-0 flex-1 overflow-auto"
             ref={setScrollContainer}
           >
-            <div className="flex flex-col gap-4 px-4 pt-3 pb-4">
+            <div className="sticky left-0 flex flex-col gap-4 px-4 pt-3 pb-4">
               {selectedUserId ? (
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary">User filtered</Badge>
@@ -239,8 +246,9 @@ export default function SessionsPage() {
           </main>
 
           {totalPages > 1 ? (
-            <div className="border-t px-6 py-3">
+            <div className="overflow-x-auto border-t px-4 py-3 sm:px-6">
               <TablePagination
+                className="min-w-max"
                 onPageChange={replacePage}
                 page={effectivePageIndex}
                 totalPages={totalPages}

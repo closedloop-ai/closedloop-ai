@@ -6,17 +6,15 @@ import {
   SUMMARY_CARD_CLASS,
   SummaryCardRow,
 } from "@repo/app/shared/components/summary-card-row";
-import { formatCost, formatNumber } from "@repo/app/shared/lib/format-utils";
+import {
+  formatCost,
+  formatLoc,
+  formatNumber,
+} from "@repo/app/shared/lib/format-utils";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
+import type { UseQueryOptions } from "@tanstack/react-query";
 import {
-  CheckCheckIcon,
-  CircleDollarSignIcon,
-  CoinsIcon,
-  FileDiffIcon,
-  GitBranchIcon,
-  type LucideIcon,
-} from "lucide-react";
-import {
+  type BranchesQueryIdentity,
   type BranchQueryFilters,
   useBranchAnalytics,
 } from "../hooks/use-branches";
@@ -42,7 +40,6 @@ type CardSpec = {
   key: string;
   label: string;
   detail: string;
-  icon: LucideIcon;
   info: { what: string; how: string };
   select: (analytics: BranchAnalytics) => BranchKpi;
   format: (value: number) => string;
@@ -53,19 +50,17 @@ const CARDS: CardSpec[] = [
     key: "spend",
     label: "AI spend",
     detail: "estimated cost in range",
-    icon: CircleDollarSignIcon,
     info: {
       what: "Total estimated AI cost across your branches.",
       how: "Summed from local session token usage — no GitHub needed.",
     },
     select: (analytics) => analytics.totalSpendUsd,
-    format: (value) => formatCost(value),
+    format: formatCost,
   },
   {
     key: "value-per-dollar",
     label: "Value per $",
     detail: "net LOC per dollar",
-    icon: CoinsIcon,
     info: {
       what: "Net lines of code delivered per dollar spent.",
       how: "Net LOC ÷ estimated cost (needs LOC enrichment).",
@@ -79,22 +74,20 @@ const CARDS: CardSpec[] = [
     key: "active-branches",
     label: "Active branches",
     detail: "in progress",
-    icon: GitBranchIcon,
     info: {
       what: "Branches still in progress (not merged or closed).",
       how: "Count by local branch status — no GitHub needed.",
     },
     select: (analytics) => analytics.activeBranchCount,
-    format: (value) => value.toLocaleString(),
+    format: formatNumber,
   },
   {
     key: "merge-rate",
     label: "Merge rate",
-    detail: "of opened PRs",
-    icon: CheckCheckIcon,
+    detail: "of decided PRs",
     info: {
-      what: "Share of opened PRs that get merged.",
-      how: "Merged ÷ opened over the local corpus.",
+      what: "Share of decided PRs (merged or closed) that merged.",
+      how: "Merged ÷ decided (merged + closed) over the local corpus; still-open PRs are excluded until they reach a terminal outcome.",
     },
     select: (analytics) => analytics.mergeRate,
     format: (value) => `${Math.round(value)}%`,
@@ -103,13 +96,12 @@ const CARDS: CardSpec[] = [
     key: "pr-size",
     label: "Median PR size",
     detail: "lines changed",
-    icon: FileDiffIcon,
     info: {
       what: "Median lines changed per merged PR.",
       how: "Median of additions + deletions across merged PRs.",
     },
     select: (analytics) => analytics.medianPrSize,
-    format: (value) => Math.round(value).toLocaleString(),
+    format: formatLoc,
   },
 ];
 
@@ -117,7 +109,10 @@ export function BranchesSummaryCards({
   className,
   cardClassName = SUMMARY_CARD_CLASS,
   filters,
+  queryIdentity,
+  analyticsOptions,
   showDelta = true,
+  onConnectGitHub,
 }: {
   /** Layout for the card container (desktop passes its dashboard grid). */
   className?: string;
@@ -125,14 +120,33 @@ export function BranchesSummaryCards({
   cardClassName?: string;
   /** Time-window (and future facet) filters so the KPIs reflect the window. */
   filters?: BranchQueryFilters;
+  /** Caller-owned cache identity for hosted-web org isolation. */
+  queryIdentity?: BranchesQueryIdentity;
+  /** Surface-owned query behavior such as stale-time and focus refresh. */
+  analyticsOptions?: Omit<
+    UseQueryOptions<BranchAnalytics>,
+    "queryKey" | "queryFn"
+  >;
   /**
    * Whether to show the "vs. prior 30 days" delta. The baseline is fixed at 30
    * days, so the delta is only meaningful when the window itself is 30 days —
    * callers pass `false` for any other window to avoid an apples-to-oranges %.
    */
   showDelta?: boolean;
+  /**
+   * Surface-owned "connect GitHub" action for the gated KPI cards. When
+   * provided, each gated card's connect affordance renders a live CTA that
+   * fires this handler (desktop passes its sign-in → GitHub App connect flow);
+   * when omitted the affordance stays informational only, so the web shell and
+   * any other caller keep today's behavior.
+   */
+  onConnectGitHub?: () => void | Promise<void>;
 }) {
-  const { data } = useBranchAnalytics(filters);
+  const { data, isError, isPending } = useBranchAnalytics(
+    filters,
+    analyticsOptions,
+    queryIdentity
+  );
 
   return (
     <SummaryCardRow className={className}>
@@ -140,8 +154,11 @@ export function BranchesSummaryCards({
         <BranchKpiCard
           card={card}
           cardClassName={cardClassName}
+          isError={isError}
+          isPending={isPending}
           key={card.key}
           kpi={data ? card.select(data) : null}
+          onConnectGitHub={onConnectGitHub}
           showDelta={showDelta}
         />
       ))}
@@ -153,20 +170,50 @@ function BranchKpiCard({
   card,
   cardClassName,
   kpi,
+  isError,
+  isPending,
   showDelta,
+  onConnectGitHub,
 }: {
   card: CardSpec;
   cardClassName: string;
   kpi: BranchKpi | null;
+  isError: boolean;
+  isPending: boolean;
   showDelta: boolean;
+  onConnectGitHub?: () => void | Promise<void>;
 }) {
-  // No analytics yet (loading or an unreachable REST source) — neutral dash.
+  if (isPending) {
+    return (
+      <MetricCard
+        className={cardClassName}
+        detail="Loading"
+        info={card.info}
+        label={card.label}
+        placeholder
+        value="—"
+      />
+    );
+  }
+
+  if (isError) {
+    return (
+      <MetricCard
+        className={cardClassName}
+        detail="Unavailable"
+        info={card.info}
+        label={card.label}
+        placeholder
+        value="—"
+      />
+    );
+  }
+
   if (!kpi) {
     return (
       <MetricCard
         className={cardClassName}
         detail={card.detail}
-        icon={card.icon}
         info={card.info}
         label={card.label}
         placeholder
@@ -183,7 +230,6 @@ function BranchKpiCard({
         delta={delta}
         deltaLabel={delta == null ? undefined : DELTA_LABEL}
         detail={card.detail}
-        icon={card.icon}
         info={card.info}
         label={card.label}
         value={card.format(kpi.value)}
@@ -192,12 +238,13 @@ function BranchKpiCard({
   }
 
   // Gated (needs GitHub) → the connect-GitHub affordance, never a fake number.
+  // A surface that owns a connect handler (desktop) makes this a live CTA; the
+  // web shell and handler-less callers keep the informational-only affordance.
   if (kpi.state === BranchKpiState.Gated) {
     return (
       <MetricCard
         className={cardClassName}
-        detail={<ConnectGitHubIndicator compact />}
-        icon={card.icon}
+        detail={<ConnectGitHubIndicator compact onConnect={onConnectGitHub} />}
         info={card.info}
         label={card.label}
         value="—"
@@ -210,7 +257,6 @@ function BranchKpiCard({
     <MetricCard
       className={cardClassName}
       detail={card.detail}
-      icon={card.icon}
       info={card.info}
       label={card.label}
       value="—"

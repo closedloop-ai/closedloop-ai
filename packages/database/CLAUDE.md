@@ -4,6 +4,8 @@
 
 Explicit migration files for all schema changes. **Never use `prisma db push` for production.**
 
+> ⚠️ **Applying a migration mutates the shared local database — get explicit user permission first.** The rows below marked *"Create + apply"*, plus `pnpm migrate` and `just db-migrate`, **apply** the migration as they create it. The local Postgres is **one instance shared by every git worktree**, so applying from a feature branch writes into the shared migration history and makes every other worktree (e.g. `main`) report drift — Prisma then offers to **reset the schema, wiping all local data**. Default to `--create-only` (generates the migration file, applies nothing) and run an applying command only with the user's explicit go-ahead. To clear drift from an already-applied migration, surgically drop the object and `DELETE` its `_prisma_migrations` row — never accept the reset.
+
 ## Quick Reference
 
 Commands below are explicit about their working directory. Use root commands for daily local setup and direct Prisma commands when authoring migrations.
@@ -33,6 +35,35 @@ either run `prisma migrate resolve --applied <migration>` after verification or
 create a corrective forward-only migration.
 
 **Migration naming:** `add_user_preferences_table`, `add_index_on_artifact_status`, `rename_foo_to_bar`
+
+## Deploy-time migration concurrency (FEA-3062 / FEA-3065)
+
+Every `apps/api` Vercel deploy runs `prisma migrate deploy` (via `@repo/database`'s
+`prebuild` → `scripts/migrate.ts`). Prisma serializes all deploys on ONE hardcoded,
+per-database advisory lock (`pg_advisory_lock(72707369)`, fixed 10s acquire timeout),
+so concurrent deploys on the same physical DB (an api-stage `public` deploy plus a
+burst of `preview_*` deploys on the shared stage instance) can collide → **P1002**
+"Timed out trying to acquire a postgres advisory lock".
+
+Two composed defenses live in `scripts/`:
+- **Primary — serialization gate** (`migration-lock.ts`, `withMigrationSerializeLock`):
+  wraps the migrate step in our OWN bounded blocking advisory lock
+  (`pg_advisory_lock(30650000)` under `statement_timeout`), so only one process runs
+  `prisma migrate deploy` at a time and Prisma's lock stays uncontended.
+- **Backstop — retry** (`migrate-retry.ts`, `MIGRATE_DEPLOY_RETRY`): if the gate
+  fails open (any acquire error, incl. budget timeout), the P1002 advisory-lock retry
+  still re-attempts the migrate.
+
+The gate budget (`MIGRATION_SERIALIZE_LOCK_BUDGET_MS`, 300 s) has a ceiling: it holds
+≈ **10 stacked ~30 s migrates**. Past that a waiter's `statement_timeout` cancels the
+acquire (SQLSTATE 57014), it fails open, and those deploys are back to colliding on
+Prisma's lock + the FEA-3062 retry — i.e. the gate's protection **weakens as preview
+deploy fanout grows**. Safe (fail-open never fails a would-succeed migrate), but if
+concurrent preview volume climbs well past ~10, revisit: raise the budget, or move
+migrate out of the per-preview build (see FEA-3071 / the "single migrator" option).
+
+Do NOT set `PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK` — it removes the serialization that
+protects `_prisma_migrations` when two deploys hit the same schema.
 
 ## Important Notes
 - Commit both schema changes AND generated migration files

@@ -1,6 +1,6 @@
 "use client";
 
-import { useAgents } from "@repo/app/agents/hooks/use-agents";
+import { useAgentComponents } from "@repo/app/agents/hooks/use-agent-components";
 import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
 import { useLocalStorageState } from "@repo/app/shared/hooks/use-local-storage-state";
 import { isAdminRole } from "@repo/app/shared/lib/role-utils";
@@ -41,7 +41,7 @@ export function useAgentOnboarding(): AgentOnboardingState {
   const shouldFetch = !dismissed && isAdmin;
   const bootstrapInProgress = activeLoopId !== null;
 
-  const { data: agentData, isLoading: agentsLoading } = useAgents(
+  const { data: componentData, isLoading: agentsLoading } = useAgentComponents(
     {},
     { enabled: shouldFetch }
   );
@@ -51,7 +51,7 @@ export function useAgentOnboarding(): AgentOnboardingState {
     { enabled: shouldFetch }
   );
 
-  const needsBootstrap = agentData?.total === 0;
+  const needsBootstrap = componentData?.total === 0;
   const hasElectron = computeTargets?.some((t) => t.isOnline) ?? false;
   const hasGitHub = githubStatus?.connected ?? false;
   const prereqsMet = hasElectron && hasGitHub;

@@ -1,9 +1,10 @@
 /**
  * Backfill script: encrypt plaintext integration tokens using AWS KMS.
  *
- * Reads all GoogleIntegration and LinearIntegration rows where
- * accessTokenEncrypted is NULL and writes the encrypted values to the
+ * Reads all GoogleIntegration, LinearIntegration, and SlackIntegration rows
+ * where accessTokenEncrypted is NULL and writes the encrypted values to the
  * encrypted fields. Processes rows in batches to avoid memory issues.
+ * (SlackIntegration has no refresh token, so only accessTokenEncrypted is set.)
  *
  * Usage:
  *   cd apps/api
@@ -177,6 +178,45 @@ async function backfillLinearIntegrations(dryRun: boolean): Promise<void> {
   );
 }
 
+async function backfillSlackIntegrations(dryRun: boolean): Promise<void> {
+  await backfillIntegration(
+    {
+      label: "SlackIntegration",
+      count: () =>
+        withDb((db) =>
+          db.slackIntegration.count({
+            where: { accessTokenEncrypted: null },
+          })
+        ),
+      // SlackIntegration has no refresh token, so refreshToken is always null;
+      // encryptTokenPair skips the refresh half when it is null.
+      findBatch: () =>
+        withDb((db) =>
+          db.slackIntegration
+            .findMany({
+              where: { accessTokenEncrypted: null },
+              select: {
+                id: true,
+                accessToken: true,
+              },
+              take: BATCH_SIZE,
+              orderBy: { id: "asc" },
+            })
+            .then((rows) => rows.map((row) => ({ ...row, refreshToken: null })))
+        ),
+      update: (id, data) =>
+        withDb((db) =>
+          db.slackIntegration.update({
+            where: { id },
+            // Slack rows have no refresh token; only accessTokenEncrypted is set.
+            data: { accessTokenEncrypted: data.accessTokenEncrypted },
+          })
+        ).then(() => undefined),
+    },
+    dryRun
+  );
+}
+
 async function main(): Promise<void> {
   const dryRun = Boolean(process.env.DRY_RUN);
 
@@ -197,6 +237,7 @@ async function main(): Promise<void> {
   try {
     await backfillGoogleIntegrations(dryRun);
     await backfillLinearIntegrations(dryRun);
+    await backfillSlackIntegrations(dryRun);
     console.log("Backfill complete.");
   } catch (error) {
     console.error("Backfill failed:", error);

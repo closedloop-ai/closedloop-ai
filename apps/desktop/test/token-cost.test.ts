@@ -278,6 +278,8 @@ test("unpriced models surface a typed reason, never a wrong number", () => {
     costUsd: null,
     inputCostUsd: null,
     outputCostUsd: null,
+    cacheReadCostUsd: null,
+    cacheWriteCostUsd: null,
     reason: TokenCostNotPricedReason.NoMatch,
   });
 
@@ -351,16 +353,9 @@ test("a Codex-shaped fresh row with cacheRead > input prices without compute_err
 
 // `estimateTokenCost` is the compat wrapper the desktop sync/branch-cost
 // paths call (agent-session-sync-service, branch-usage-projection,
-// shared-branches-api) when a row has no stored cost. Its only consumed field
-// is `costUsd`; these cases pin that the current flagship Anthropic and OpenAI
-// models price to a real, non-zero dollar figure rather than silently falling
-// through to `undefined` (which would zero out a session's cost).
-//
-// NOTE: the wrapper also exposes `cacheCostUsd`, but with the pinned
-// genai-prices engine it is structurally always 0 — the library folds cache
-// read/write cost into `input_price` and returns `total === input + output`, so
-// `max(0, costUsd - inputCostUsd - outputCostUsd)` cancels to 0. No caller reads
-// that field, so these tests deliberately assert only the meaningful `costUsd`.
+// shared-branches-api) when a row has no stored cost. FEA-2344 replaced the
+// residual `cacheCostUsd` with per-component `cacheReadCostUsd` and
+// `cacheWriteCostUsd` derived via library-differencing isolation calls.
 const LEGACY_COST_FIXTURES: Array<{
   name: string;
   model: string;
@@ -381,10 +376,28 @@ test("estimateTokenCost prices a non-zero costUsd for current flagship models", 
     assert.ok(estimate !== undefined, `priced (defined) for: ${name}`);
     assert.equal(typeof estimate.costUsd, "number", `costUsd number: ${name}`);
     assert.ok(estimate.costUsd > 0, `costUsd strictly positive for: ${name}`);
-    // Sanity: the wrapper's grand total never under-reports its parts.
+    assert.equal(
+      estimate.inputCostUsd,
+      0.005,
+      `inputCostUsd pinned for: ${name}`
+    );
+    const expectedCacheWrite = model.startsWith("claude-") ? 0.001_875 : 0.0015;
     assert.ok(
-      estimate.costUsd >= estimate.inputCostUsd + estimate.outputCostUsd,
-      `costUsd covers input+output for: ${name}`
+      Math.abs(estimate.cacheWriteCostUsd - expectedCacheWrite) < 1e-12,
+      `cacheWriteCostUsd pinned for: ${name}: ${estimate.cacheWriteCostUsd} vs ${expectedCacheWrite}`
+    );
+    assert.ok(
+      Math.abs(estimate.cacheReadCostUsd - 0.000_25) < 1e-12,
+      `cacheReadCostUsd pinned for: ${name}: ${estimate.cacheReadCostUsd} vs 0.00025`
+    );
+    const componentSum =
+      estimate.inputCostUsd +
+      estimate.outputCostUsd +
+      estimate.cacheReadCostUsd +
+      estimate.cacheWriteCostUsd;
+    assert.ok(
+      Math.abs(componentSum - estimate.costUsd) < 1e-12,
+      `components sum to costUsd for: ${name}`
     );
   }
 });

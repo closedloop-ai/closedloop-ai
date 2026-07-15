@@ -5,6 +5,10 @@ import type {
   BranchRow,
   BranchUsageSummary,
 } from "@repo/api/src/types/branch";
+import {
+  BranchCommentsState,
+  type BranchPrCommentsResponse,
+} from "@repo/api/src/types/branch";
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
@@ -16,8 +20,10 @@ import { BranchesDataSourceProvider } from "../../data-source/provider";
 import {
   branchesKeys,
   useBranchAnalytics,
+  useBranchComments,
   useBranchDetail,
   useBranches,
+  useBranchTrace,
   useBranchUsage,
 } from "../use-branches";
 
@@ -98,6 +104,7 @@ function makeDetail(id: string): BranchPageDetail {
     commits: [],
     sessions: [],
     mergedTrace: [],
+    leadTime: { firstActivityT: null, lastActivityT: null, idleSpans: [] },
     linkedPrNumbers: [],
     linkedArtifacts: [],
   };
@@ -106,6 +113,8 @@ function makeDetail(id: string): BranchPageDetail {
 type SpyingSource = BranchesDataSource & {
   listSpy: ReturnType<typeof vi.fn>;
   detailSpy: ReturnType<typeof vi.fn>;
+  commentsSpy: ReturnType<typeof vi.fn>;
+  traceSpy: ReturnType<typeof vi.fn>;
   usageSpy: ReturnType<typeof vi.fn>;
   analyticsSpy: ReturnType<typeof vi.fn>;
 };
@@ -115,6 +124,10 @@ function spyingSource(scope = "local"): SpyingSource {
     Promise.resolve({ items: [], total: 0, viewerScope: "self" as const })
   );
   const detailSpy = vi.fn((id: string) => Promise.resolve(makeDetail(id)));
+  const commentsSpy = vi.fn((id: string) =>
+    Promise.resolve(makeCommentsResponse(id))
+  );
+  const traceSpy = vi.fn((_id: string) => Promise.resolve([] as const));
   const usageSpy = vi.fn((_filters: BranchQueryFilters) =>
     Promise.resolve(USAGE_FIXTURE)
   );
@@ -125,12 +138,39 @@ function spyingSource(scope = "local"): SpyingSource {
     scope,
     list: listSpy,
     detail: detailSpy,
+    comments: commentsSpy,
+    trace: traceSpy,
     usage: usageSpy,
     analytics: analyticsSpy,
     listSpy,
     detailSpy,
+    commentsSpy,
+    traceSpy,
     usageSpy,
     analyticsSpy,
+  };
+}
+
+function makeCommentsResponse(branchId: string): BranchPrCommentsResponse {
+  return {
+    branchId,
+    state: BranchCommentsState.UnsyncedUnknown,
+    comments: [],
+    budget: {
+      maxComments: 100,
+      pageSize: 50,
+      maxBodyBytes: 16_384,
+      maxResponseBytes: 524_288,
+      providerTruncated: false,
+      responseTruncated: false,
+      omittedComments: 0,
+      bodyTruncatedCount: 0,
+    },
+    providerProofedAt: null,
+    stale: false,
+    mixedProjection: false,
+    prNumber: null,
+    prUrl: null,
   };
 }
 
@@ -140,24 +180,88 @@ describe("branchesKeys", () => {
       "branches",
       "list",
       "local",
+      "default",
       { owner: "alice" },
     ]);
     expect(branchesKeys.detail("local", "b1")).toEqual([
       "branches",
       "detail",
       "local",
+      "default",
+      "b1",
+    ]);
+    expect(branchesKeys.comments("local", "b1")).toEqual([
+      "branches",
+      "comments",
+      "local",
+      "default",
+      "b1",
+    ]);
+    expect(branchesKeys.trace("local", "b1")).toEqual([
+      "branches",
+      "trace",
+      "local",
+      "default",
       "b1",
     ]);
     expect(branchesKeys.usage("local", {})).toEqual([
       "branches",
       "usage",
       "local",
+      "default",
       {},
     ]);
     expect(branchesKeys.analytics("local", {})).toEqual([
       "branches",
       "analytics",
       "local",
+      "default",
+      {},
+    ]);
+  });
+
+  it("accepts caller-owned cache identity for org-scoped HTTP reads", () => {
+    const identity = { cacheScope: "org:acme" };
+    expect(branchesKeys.list("http", {}, identity)).toEqual([
+      "branches",
+      "list",
+      "http",
+      "org:acme",
+      {},
+    ]);
+    expect(branchesKeys.detail("http", "b1", identity)).toEqual([
+      "branches",
+      "detail",
+      "http",
+      "org:acme",
+      "b1",
+    ]);
+    expect(branchesKeys.comments("http", "b1", identity)).toEqual([
+      "branches",
+      "comments",
+      "http",
+      "org:acme",
+      "b1",
+    ]);
+    expect(branchesKeys.trace("http", "b1", identity)).toEqual([
+      "branches",
+      "trace",
+      "http",
+      "org:acme",
+      "b1",
+    ]);
+    expect(branchesKeys.usage("http", {}, identity)).toEqual([
+      "branches",
+      "usage",
+      "http",
+      "org:acme",
+      {},
+    ]);
+    expect(branchesKeys.analytics("http", {}, identity)).toEqual([
+      "branches",
+      "analytics",
+      "http",
+      "org:acme",
       {},
     ]);
   });
@@ -165,6 +269,8 @@ describe("branchesKeys", () => {
   it("keeps the unscoped prefixes matching every scope for batch invalidation", () => {
     expect(branchesKeys.lists()).toEqual(["branches", "list"]);
     expect(branchesKeys.details()).toEqual(["branches", "detail"]);
+    expect(branchesKeys.commentsRoot()).toEqual(["branches", "comments"]);
+    expect(branchesKeys.traces()).toEqual(["branches", "trace"]);
     expect(branchesKeys.usages()).toEqual(["branches", "usage"]);
     expect(branchesKeys.analyticsRoot()).toEqual(["branches", "analytics"]);
   });
@@ -248,5 +354,121 @@ describe("branch read hooks", () => {
       )
     );
     expect(source.detailSpy).toHaveBeenCalledWith("repo%2Fowner::main");
+  });
+
+  it("disables the trace query for an empty id and delegates for a present id", async () => {
+    const source = spyingSource("local");
+
+    function TraceProbe({ id }: { id: string }) {
+      const trace = useBranchTrace(id);
+      return (
+        <span data-testid="trace">
+          {trace.isSuccess ? `trace:${trace.data.length}` : "trace:none"}
+        </span>
+      );
+    }
+
+    const { rerender } = render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <TraceProbe id="" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    expect(screen.getByTestId("trace")).toHaveTextContent("trace:none");
+    expect(source.traceSpy).not.toHaveBeenCalled();
+
+    rerender(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <TraceProbe id="repo%2Fowner::main" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("trace")).toHaveTextContent("trace:0")
+    );
+    expect(source.traceSpy).toHaveBeenCalledWith("repo%2Fowner::main");
+  });
+
+  it("disables the comments query for an empty id and delegates for a present id", async () => {
+    const source = spyingSource("local");
+
+    function CommentsProbe({ id }: { id: string }) {
+      const comments = useBranchComments(id);
+      return (
+        <span data-testid="comments">
+          {comments.data
+            ? `comments:${comments.data.branchId}`
+            : "comments:none"}
+        </span>
+      );
+    }
+
+    const { rerender } = render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <CommentsProbe id="" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    expect(screen.getByTestId("comments")).toHaveTextContent("comments:none");
+    expect(source.commentsSpy).not.toHaveBeenCalled();
+
+    rerender(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <CommentsProbe id="repo%2Fowner::main" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comments")).toHaveTextContent(
+        "comments:repo%2Fowner::main"
+      )
+    );
+    expect(source.commentsSpy).toHaveBeenCalledWith("repo%2Fowner::main");
+  });
+
+  it("isolates lazy trace reads by caller-owned cache identity", async () => {
+    const source = spyingSource("http");
+
+    function TraceProbe({ cacheScope }: { cacheScope: string }) {
+      const trace = useBranchTrace("branch-1", undefined, { cacheScope });
+      return (
+        <span data-testid="trace">
+          {trace.isSuccess ? `trace:${cacheScope}` : "trace:none"}
+        </span>
+      );
+    }
+
+    const { rerender } = render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <TraceProbe cacheScope="org:acme" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("trace")).toHaveTextContent("trace:org:acme")
+    );
+
+    rerender(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <TraceProbe cacheScope="org:globex" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("trace")).toHaveTextContent("trace:org:globex")
+    );
+    expect(source.traceSpy).toHaveBeenCalledTimes(2);
   });
 });

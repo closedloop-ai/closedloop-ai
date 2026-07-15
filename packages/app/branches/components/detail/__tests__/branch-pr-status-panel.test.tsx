@@ -73,6 +73,32 @@ describe("BranchPrStatusPanel", () => {
     expect(screen.getByText("Approved")).toBeInTheDocument();
   });
 
+  it("uses the linked PR URL for live status when branch repo identity is missing", async () => {
+    const detail = makeBranchDetail({
+      repoFullName: null,
+      prUrl: "https://github.com/octo/repo/pull/42",
+      prNumber: 42,
+      status: "open",
+    });
+    const fetchSpy = mockReviews(
+      jsonResponse(200, {
+        reviewDecision: "APPROVED",
+        approvalCount: 1,
+        changesRequestedCount: 0,
+      })
+    );
+
+    render(renderPanel(detail));
+
+    await waitFor(() =>
+      expect(screen.getByText("1 approval")).toBeInTheDocument()
+    );
+    const url = String(fetchSpy.mock.calls[0]?.[0]);
+    expect(url).toContain("owner=octo");
+    expect(url).toContain("repo=repo");
+    expect(url).toContain("number=42");
+  });
+
   it("gates with a multi-PR notice (no connect CTA) when multiple PRs are linked", () => {
     const detail = makeBranchDetail({
       repoFullName: "octo/repo",

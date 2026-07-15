@@ -3,12 +3,15 @@
 import type {
   AgentsInsightsResponse,
   DeliveryInsightsResponse,
+  InsightsGitHubProvenance,
   InsightsPeriod,
   InsightsScope,
   InsightsSection,
+  InsightsTileAvailabilityMap,
   UtilizationInsightsResponse,
 } from "@repo/api/src/types/insights";
 import { createContext, type ReactNode, useContext } from "react";
+import type { InsightsTileAvailability } from "../lib/tile-availability";
 
 /**
  * Surface-agnostic data port for the Insights page. The web shell implements
@@ -17,8 +20,9 @@ import { createContext, type ReactNode, useContext } from "react";
  * components never know which backend answers — they only read this port.
  *
  * `availableScopes` lets a shell advertise which aggregation scopes it
- * supports: web exposes both `me` and `org`; desktop is personal-only (`me`),
- * so it omits the scope selector entirely.
+ * supports: web exposes `me`/`org` (and teams when available); desktop always
+ * exposes local `me` and may expose cloud-backed `org` when the gateway is
+ * configured.
  *
  * `availableSections` lets a shell advertise which sections it can populate. A
  * shell omits a section it has no data for rather than rendering empty tiles —
@@ -29,18 +33,40 @@ import { createContext, type ReactNode, useContext } from "react";
 export type InsightsDataSource = {
   availableScopes: readonly InsightsScope[];
   availableSections: readonly InsightsSection[];
+  availableTeams?: readonly InsightsTeamOption[];
+  getTileAvailability?: (
+    input: InsightsTileAvailabilityInput
+  ) => InsightsTileAvailability;
+  githubConnectHref?: string;
+  onConnectGitHub?: () => void | Promise<void>;
   getDelivery: (
     period: InsightsPeriod,
-    scope: InsightsScope
+    scope: InsightsScope,
+    teamId?: string
   ) => Promise<DeliveryInsightsResponse>;
   getUtilization: (
     period: InsightsPeriod,
-    scope: InsightsScope
+    scope: InsightsScope,
+    teamId?: string
   ) => Promise<UtilizationInsightsResponse>;
   getAgents: (
     period: InsightsPeriod,
-    scope: InsightsScope
+    scope: InsightsScope,
+    teamId?: string
   ) => Promise<AgentsInsightsResponse>;
+};
+
+export type InsightsTeamOption = {
+  id: string;
+  name: string;
+};
+
+export type InsightsTileAvailabilityInput = {
+  tileId: string;
+  section: InsightsSection;
+  scope: InsightsScope;
+  payloadAvailability?: InsightsTileAvailabilityMap;
+  payloadGitHubProvenance?: InsightsGitHubProvenance;
 };
 
 const InsightsDataSourceContext = createContext<InsightsDataSource | null>(

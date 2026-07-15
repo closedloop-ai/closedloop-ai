@@ -9,7 +9,6 @@ import { BranchKpiState } from "@repo/api/src/types/branch";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
 import { formatCost, formatNumber } from "@repo/app/shared/lib/format-utils";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { GaugeIcon, TimerIcon } from "lucide-react";
 import {
   leadTimeWaterfallSegments,
   locPerDollar,
@@ -68,7 +67,6 @@ export function BranchHeadlineCards({
       <BaselineMetricCard
         baseline={analytics?.locPerDollar}
         detailCaption={valueDetail}
-        icon={GaugeIcon}
         info={{
           what: "Net lines of code delivered per dollar spent.",
           how: "Net LOC ÷ estimated cost. Prefers the connected PR's live LOC.",
@@ -83,7 +81,6 @@ export function BranchHeadlineCards({
       <BaselineMetricCard
         baseline={analytics?.leadTimeForChangeMs}
         detailCaption="First session → merge"
-        icon={TimerIcon}
         info={{
           what: "Wall-clock from the first contributing session to merge.",
           how: "Anchored on the first session, not branch creation.",
@@ -106,14 +103,12 @@ function BaselineMetricCard({
   label,
   value,
   detailCaption,
-  icon,
   info,
   baseline,
 }: {
   label: string;
   value: string;
   detailCaption: string;
-  icon: typeof GaugeIcon;
   info: { what: string; how: string };
   baseline: BranchKpi | undefined;
 }) {
@@ -130,7 +125,6 @@ function BaselineMetricCard({
       detail={
         hasBaseline ? detailCaption : `${detailCaption} · baseline unavailable`
       }
-      icon={icon}
       info={info}
       label={label}
       value={value}

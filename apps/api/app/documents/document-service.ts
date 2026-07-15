@@ -8,13 +8,14 @@ import {
   type Document,
   type DocumentMeta,
   type DocumentMetaMap,
-  DocumentStatus,
   DocumentType,
   type DocumentWithProject,
   type FindDocumentsOptions,
+  fallbackStatusForSubtype,
   type GenerationStatus,
   type RepositorySelectionInput,
   SnapshotSource,
+  statusOptionsForSubtype,
   type UpdateDocumentInput,
 } from "@repo/api/src/types/document";
 import {
@@ -156,7 +157,11 @@ export async function createDocumentRecord(
     latestVersion: 1,
     projectId: resolvedProjectId,
     assigneeId: resolvedAssigneeId,
-    status: documentInput.status ?? DocumentStatus.Draft,
+    // Subtype-aware default: human-created Features default to BACKLOG,
+    // Documents to DRAFT (PRD-495). Agent generators pass an explicit TRIAGE
+    // status so they override this default.
+    status:
+      documentInput.status ?? fallbackStatusForSubtype(documentInput.type),
     repositorySnapshot: resolvedSnapshot,
   });
 
@@ -539,6 +544,26 @@ export const documentService = {
       }
     }
 
+    // Documents and Features carry disjoint status vocabularies on the same
+    // freeform column (PRD-495). The update validator accepts the union; the
+    // valid subset is enforced here against the target artifact's subtype.
+    if (input.status !== undefined) {
+      const existing = await withDb((db) =>
+        db.artifact.findUnique({
+          where: { id, organizationId },
+          select: { subtype: true },
+        })
+      );
+      if (!existing) {
+        throw new Error("Document not found in this organization");
+      }
+      if (!statusOptionsForSubtype(existing.subtype).includes(input.status)) {
+        throw new Error(
+          `Status "${input.status}" is not valid for this ${existing.subtype ?? "document"}`
+        );
+      }
+    }
+
     const { artifact: artifactData, detail: detailData } =
       splitDocumentPayload(input);
     const updated = await withDb((db) =>
@@ -826,7 +851,7 @@ export const documentService = {
    */
   batchUpdateStatus(
     documentIds: string[],
-    status: DocumentStatus,
+    status: string,
     organizationId: string
   ): Promise<string[]> {
     const uniqueIds = [...new Set(documentIds)];
@@ -834,7 +859,7 @@ export const documentService = {
     return withDb.tx(async (tx) => {
       const artifacts = await tx.artifact.findMany({
         where: documentWhere({ id: { in: uniqueIds }, organizationId }),
-        select: { id: true },
+        select: { id: true, subtype: true },
       });
 
       if (artifacts.length !== uniqueIds.length) {
@@ -845,8 +870,27 @@ export const documentService = {
         );
       }
 
+      // Documents and Features carry disjoint status vocabularies on the same
+      // column (PRD-495). Reject the batch if the requested status is invalid
+      // for any target artifact's subtype rather than persisting an
+      // out-of-vocabulary value.
+      const invalidIds = artifacts
+        .filter((a) => !statusOptionsForSubtype(a.subtype).includes(status))
+        .map((a) => a.id);
+      if (invalidIds.length > 0) {
+        throw new Error(
+          `Status "${status}" is not valid for artifact(s): ${invalidIds.join(", ")}`
+        );
+      }
+
       await tx.artifact.updateMany({
-        where: documentWhere({ id: { in: uniqueIds }, organizationId }),
+        // Scope on the DB-verified artifact ids (mirrors batchDelete) rather
+        // than the caller-supplied uniqueIds — self-documenting and robust if
+        // the existence/validation guards above ever change.
+        where: documentWhere({
+          id: { in: artifacts.map((a) => a.id) },
+          organizationId,
+        }),
         data: { status },
       });
 

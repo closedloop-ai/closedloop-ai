@@ -63,3 +63,5 @@ Session Trace derivation helpers that collapse repeated source records must pres
 ## Forward Compatibility
 
 Exported contract values that are intentionally reserved for future producers or consumers must include concise JSDoc explaining the forward-compatibility intent; otherwise remove unused values until they are consumed.
+
+When replacing or bundling GitHub REST pull-request data with GraphQL data, preserve REST-compatible identities and lifecycle coverage expected by downstream API contracts. In particular, map GraphQL `databaseId` to persisted/validated PR `githubId` fields that are compared with REST `pull_request.id`, and include `MERGED` when a shared query feeds callers that filter for merged pull requests.

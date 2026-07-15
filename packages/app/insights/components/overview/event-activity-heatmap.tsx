@@ -1,3 +1,5 @@
+"use client";
+
 import type { ActivityHeatmap } from "@repo/api/src/types/insights";
 import {
   ToggleGroup,
@@ -70,9 +72,16 @@ function formatDay(day: string): string {
 }
 
 /**
- * Hour-of-day (rows, 24h) × day (columns) event-density heatmap for the
- * overview dashboard, with a Both/Agent/Human toggle. "Human" = interactive
- * sessions (submitted a user prompt); "Agent" = headless/`-p` / spawned runs.
+ * Hour-of-day (rows, 24h) × day (columns) turn-density heatmap for the
+ * overview dashboard, with a Both/Agent/Human toggle. Turns are attributed
+ * individually by role (FEA-2641 Fix 4 PM ruling): "Human" = genuine typed
+ * prompts at the hour they were typed (transcript-first; injections and
+ * non-steering commands like /exit excluded); "Agent" = assistant turns,
+ * including a human-steered session's autonomous/subagent stretches at the
+ * hours they actually ran — never inherited from a session-level flag.
+ * Kickoff prompts of headless-SDK sessions (cron-scheduled reviews, fleet
+ * agents, scripted `claude -p` runs) are programmatic, not typed, and count
+ * as Agent.
  * Data comes from the Utilization insights (`charts.activityHeatmap`); renders a
  * graceful empty state without it.
  */
@@ -103,12 +112,20 @@ export function EventActivityHeatmap({
   const palette = (resolvedTheme === "dark" ? DARK_PALETTE : LIGHT_PALETTE)[
     mode
   ];
+  // Redundant, non-color cue (FEA-2508): a density heatmap encodes count as
+  // luminance, so at any given level the three populations share a lightness and
+  // are indistinguishable in grayscale / to color-vision-deficient users by hue
+  // alone. Surface the active population as an icon + text label on the legend so
+  // the ramp is always identifiable without relying on color or on remembering
+  // the toggle state.
+  const active = MODES.find(({ key }) => key === mode) ?? MODES[0];
 
   return (
     <div className="flex flex-col">
       <SectionHeader
         actions={
           <ToggleGroup
+            aria-label="Event type filter"
             onValueChange={(next) => {
               if (next) {
                 setMode(next as Mode);
@@ -126,7 +143,7 @@ export function EventActivityHeatmap({
             ))}
           </ToggleGroup>
         }
-        description={`${periodLabel} · hourly event density`}
+        description={`${periodLabel} · hourly turn density`}
         title="Event Activity"
       />
 
@@ -165,7 +182,7 @@ export function EventActivityHeatmap({
                         borderRadius: 2,
                         background: palette[level(value, max)],
                       }}
-                      title={`${day} ${String(hour).padStart(2, "0")}:00 · ${value} events`}
+                      title={`${day} ${String(hour).padStart(2, "0")}:00 · ${value} turns`}
                     />
                   );
                 })}
@@ -175,7 +192,7 @@ export function EventActivityHeatmap({
             <div />
             {days.map((day, index) => (
               <div
-                className="overflow-visible whitespace-nowrap pt-1 leading-none"
+                className="min-w-0 truncate pt-1 leading-none"
                 key={`label:${day}`}
               >
                 {index % 7 === 0 ? formatDay(day) : ""}
@@ -185,21 +202,27 @@ export function EventActivityHeatmap({
         </div>
       )}
 
-      <div className="flex items-center gap-1.5 pt-3 text-[11px] text-[var(--muted-foreground)]">
-        Less
-        {palette.map((color) => (
-          <span
-            key={color}
-            style={{
-              width: CELL,
-              height: CELL,
-              borderRadius: 2,
-              background: color,
-              display: "inline-block",
-            }}
-          />
-        ))}
-        More
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-3 text-[11px] text-[var(--muted-foreground)]">
+        <span className="flex items-center gap-1 font-medium text-[var(--foreground)]">
+          <active.Icon aria-hidden="true" className="size-3.5" />
+          {active.label}
+        </span>
+        <span className="flex items-center gap-1.5">
+          Less
+          {palette.map((color) => (
+            <span
+              key={color}
+              style={{
+                width: CELL,
+                height: CELL,
+                borderRadius: 2,
+                background: color,
+                display: "inline-block",
+              }}
+            />
+          ))}
+          More
+        </span>
       </div>
     </div>
   );

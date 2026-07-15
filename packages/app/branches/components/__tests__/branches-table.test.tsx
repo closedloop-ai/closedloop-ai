@@ -5,7 +5,7 @@ import {
   BranchRowStatus,
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
-} from "../../lib/branch-sample-data";
+} from "../../lib/branch-row";
 import { BranchesTable } from "../branches-table";
 
 const fullRow: BranchRow = {
@@ -117,13 +117,13 @@ describe("BranchesTable in-scope columns (B4)", () => {
       "Linked Sessions",
       "Changes",
       "Pull request",
+      "Checks",
     ]) {
       expect(screen.getByText(header)).toBeInTheDocument();
     }
     for (const excluded of [
       "Owner",
       "Behind / Ahead",
-      "Check status",
       "Story points",
       "Projects",
       "Tags",
@@ -142,6 +142,7 @@ describe("BranchesTable in-scope columns (B4)", () => {
     expect(screen.getByText("+10")).toBeInTheDocument(); // changes
     expect(screen.getByText("−5")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument(); // linked sessions count
+    expect(screen.getByText("12/12 passing")).toBeInTheDocument();
   });
 
   it("degrades github-live cells to the empty-value affordance when absent", () => {
@@ -169,6 +170,24 @@ describe("BranchesTable row→detail navigation (C2)", () => {
     render(<BranchesTable items={[missingRow]} />);
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.getByText("wip/local")).toBeInTheDocument();
+  });
+
+  it("delegates lead rendering to the platform-owned render seam", () => {
+    render(
+      <BranchesTable
+        getBranchHref={(item) => `#/branches/${item.id}`}
+        items={[missingRow]}
+        renderBranchLink={({ children, className, item }) => (
+          <span className={className} data-branch-id={item.id}>
+            {children}
+          </span>
+        )}
+      />
+    );
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("wip/local").closest("[data-branch-id]")
+    ).toHaveAttribute("data-branch-id", missingRow.id);
   });
 
   it("links EVERY row's lead, including the first, not just later rows", () => {

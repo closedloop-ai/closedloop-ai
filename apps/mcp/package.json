@@ -10,10 +10,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@repo/api": "workspace:*",
     "@repo/database": "workspace:*",
     "@repo/redis": "workspace:*",
+    "posthog-node": "^5.32.1",
     "tsx": "^4.21.0",
     "zod": "^4.3.6"
   },

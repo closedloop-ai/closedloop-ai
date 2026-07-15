@@ -55,6 +55,8 @@ export type ChatPanelProps = {
   welcomeMessage?: string;
   inputPlaceholder?: string;
   contextSlot?: React.ReactNode;
+  /** Content rendered in the chat-input footer slot (e.g. the model picker). */
+  inputFooter?: React.ReactNode;
   notice?: string | null;
   className?: string;
 };
@@ -88,6 +90,7 @@ export function ChatPanel({
   welcomeMessage,
   inputPlaceholder,
   contextSlot,
+  inputFooter,
   notice,
   className,
 }: Readonly<ChatPanelProps>) {
@@ -173,6 +176,7 @@ export function ChatPanel({
       ) : null}
 
       <ChatInput
+        footer={inputFooter}
         isStreaming={isStreaming}
         onChange={onInputChange}
         onSend={onSend}

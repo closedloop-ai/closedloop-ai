@@ -2,6 +2,9 @@ import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  mockFindComputeTargetById,
+  mockGetCommandById,
+  mockIngestCommandEvent,
   mockRegister,
   mockListNonTerminal,
   mockSetOnlineState,
@@ -9,6 +12,9 @@ const {
   mockIsComputeTargetSigningEligible,
   mockIsAgentSessionSyncSupportedForUser,
 } = vi.hoisted(() => ({
+  mockFindComputeTargetById: vi.fn(),
+  mockGetCommandById: vi.fn(),
+  mockIngestCommandEvent: vi.fn(),
   mockRegister: vi.fn(),
   mockListNonTerminal: vi.fn(),
   mockSetOnlineState: vi.fn(),
@@ -20,8 +26,8 @@ const {
 vi.mock("@/lib/desktop-command-store", () => ({
   desktopCommandStore: {
     listNonTerminalDispatchCommands: mockListNonTerminal,
-    ingestCommandEvent: vi.fn(),
-    getCommandById: vi.fn(),
+    ingestCommandEvent: mockIngestCommandEvent,
+    getCommandById: mockGetCommandById,
     countCommandsForTarget: vi.fn().mockResolvedValue(0),
   },
 }));
@@ -32,6 +38,7 @@ vi.mock("@/app/compute-targets/service", () => ({
     updateOwned: vi.fn(),
     setOnlineState: mockSetOnlineState,
     heartbeat: vi.fn().mockResolvedValue(undefined),
+    findById: mockFindComputeTargetById,
   },
   isComputeTargetGatewayConflictResult: (result: {
     ok: boolean;
@@ -76,6 +83,7 @@ vi.mock("@repo/observability/log", () => ({
 
 vi.mock("@repo/observability/telemetry/context", () => ({
   buildTelemetryTraceContext: vi.fn().mockReturnValue({}),
+  ZERO_GATEWAY_SESSION_ID: "zero-gateway-session-id",
 }));
 
 vi.mock("@repo/observability/telemetry/emitter", () => ({
@@ -117,12 +125,16 @@ vi.mock("@/lib/desktop-telemetry-handler", () => ({
   handleTelemetryEvent: vi.fn().mockReturnValue({ ok: true, emits: [] }),
 }));
 
-vi.mock("@/lib/desktop-gateway-wire", () => ({
-  isDesktopCommandEventType: vi.fn(),
-  isTerminalEventData: vi.fn(),
-  toEnvelope: <T extends Record<string, unknown>>(payload: T) => payload,
-  toWireCommandFromStore: vi.fn((cmd: unknown) => cmd),
-}));
+vi.mock("@/lib/desktop-gateway-wire", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/desktop-gateway-wire")>();
+  return {
+    ...actual,
+    isTerminalEventData: vi.fn(),
+    toEnvelope: <T extends Record<string, unknown>>(payload: T) => payload,
+    toWireCommandFromStore: vi.fn((cmd: unknown) => cmd),
+  };
+});
 
 vi.mock("@/lib/type-guards", () => ({
   isRecord: (val: unknown) =>
@@ -237,6 +249,13 @@ describe("relay dispatchSocketEvent desktop.hello — timeout handling", () => {
       reason: "missing_gateway",
     });
     mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
+    mockFindComputeTargetById.mockResolvedValue(null);
+    mockGetCommandById.mockResolvedValue(null);
+    mockIngestCommandEvent.mockResolvedValue({
+      accepted: true,
+      duplicate: false,
+      sequence: 1,
+    });
   });
 
   afterEach(() => {
@@ -306,6 +325,13 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
       reason: "missing_gateway",
     });
     mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
+    mockFindComputeTargetById.mockResolvedValue(null);
+    mockGetCommandById.mockResolvedValue(null);
+    mockIngestCommandEvent.mockResolvedValue({
+      accepted: true,
+      duplicate: false,
+      sequence: 1,
+    });
   });
 
   afterEach(() => {
@@ -390,6 +416,65 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
 
     const ack = await dispatchHello();
 
-    expect(ack.serverCapabilities).toEqual({ agentSessionSync: true });
+    expect(ack.serverCapabilities).toEqual({
+      agentSessionSync: true,
+    });
+  });
+
+  it("emits server capabilities on relay sequence-gap hello acks", async () => {
+    mockIsComputeTargetSigningEligible.mockResolvedValue({
+      status: "eligible",
+    });
+    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
+    mockFindComputeTargetById.mockResolvedValue({
+      id: "target-relay-existing",
+      gatewayId: "gateway-relay-test",
+    });
+    mockIngestCommandEvent.mockResolvedValueOnce({
+      accepted: false,
+      reason: "sequence_gap",
+    });
+    mockGetCommandById.mockResolvedValueOnce({
+      commandId: "cmd-relay-gap",
+      computeTargetId: "target-relay-existing",
+      lastSequenceAcked: 11,
+    });
+
+    const result = await dispatchSocketEvent({
+      event: "desktop.command.event",
+      payload: {
+        commandId: "cmd-relay-gap",
+        data: { partial: true },
+        eventType: "chunk",
+        sequence: 13,
+      },
+      auth: AUTH,
+      targetId: "target-relay-existing",
+      correlation: { gatewaySessionId: "raw-gateway-session-id" },
+      pluginVersion: undefined,
+      relaySocketId: "relay-socket-1",
+      requestArrivedAt: Date.now(),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const helloAck = result.response.emit.find(
+      (emit) => emit.event === "desktop.hello.ack"
+    );
+    expect(helloAck?.payload).toEqual(
+      expect.objectContaining({
+        computeTargetId: "target-relay-existing",
+        resumeFromSequence: { "cmd-relay-gap": 11 },
+        serverCapabilities: {
+          agentSessionSync: true,
+          computeTargetSigning: true,
+        },
+      })
+    );
+    expect(mockFindComputeTargetById).toHaveBeenCalledWith(
+      "target-relay-existing"
+    );
   });
 });

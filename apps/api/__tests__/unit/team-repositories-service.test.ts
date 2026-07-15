@@ -12,6 +12,9 @@ import { AddRepositoryError, teamsService } from "@/app/teams/service";
 import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
+  GitHubInstallationStatus: {
+    ACTIVE: "ACTIVE",
+  },
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 

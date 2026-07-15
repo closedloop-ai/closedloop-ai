@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { type ReactNode, useState } from "react";
 import { GroupSectionHeader } from "./group-section-header";
 import type { SortDirection } from "./sortable-column-header";
@@ -32,6 +32,8 @@ export type GridTableColumn = {
   className?: string;
   /** When true (and `onSort` is provided), the header is a clickable sort control. */
   sortable?: boolean;
+  /** Optional help text shown via an info icon + tooltip in the column header. */
+  tooltip?: string;
 };
 
 /**
@@ -130,6 +132,7 @@ export function GridTable<T>({
           label: column.label,
           sortable: onSort != null && column.sortable === true,
           className: column.className,
+          tooltip: column.tooltip,
         }))}
         gridTemplateColumns={gridTemplateColumns}
         leadingLabel={leadingLabel}

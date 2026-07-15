@@ -8,6 +8,7 @@ import { cookies, headers } from "next/headers";
 import type { ReactNode } from "react";
 import { EngineerTransportBootstrap } from "@/components/engineer/engineer-transport-bootstrap";
 import { env } from "@/env";
+import { FrontendCaptureController } from "@/lib/frontend-capture/frontend-capture-controller";
 import { PreLoopSystemCheckProvider } from "@/lib/system-check/pre-loop-system-check-provider";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { CommandPalette } from "./components/command-palette";
@@ -43,6 +44,10 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
     <CollaborationProviderWrapper>
       <SidebarProvider defaultOpen={sidebarDefaultOpen}>
         <GlobalSidebar envBadge={sidebarEnvBadge}>
+          {/* Outside OnboardingGuard: that guard unmounts its subtree on every
+              onboarding-status refetch (isFetching), which would tear down and
+              restart capture, splitting staff session replay into segments. */}
+          <FrontendCaptureController />
           <OnboardingGuard>
             <UserIdentifier />
             <CommandPalette />

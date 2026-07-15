@@ -78,6 +78,7 @@ describe("resolveGitHubCommentOwner", () => {
       where: {
         installationId: "installation-record-1",
         githubRepoId: "789",
+        removedAt: null,
       },
       select: { id: true },
       take: 2,
@@ -97,6 +98,7 @@ describe("resolveGitHubCommentOwner", () => {
         where: {
           installationId: "installation-record-1",
           githubRepoId: "789",
+          removedAt: null,
         },
       })
     );

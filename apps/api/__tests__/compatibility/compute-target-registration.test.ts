@@ -415,8 +415,8 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
     expect(metricNames).not.toContain("executor_saturation");
 
     expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
-      "fleet_capacity_metrics_query_failed",
-      expect.objectContaining({ event: "fleet_capacity_metrics_query_failed" })
+      "fleet.capacity_metrics.query_failed",
+      expect.objectContaining({ error: expect.any(Error) })
     );
   });
 

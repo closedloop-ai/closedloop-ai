@@ -1,10 +1,13 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { BranchDetail as ArtifactBranchDetail } from "../artifact";
 import {
+  BranchDataState,
   BranchKpiState,
   type BranchPageDetail,
   BranchPhase,
   type BranchPrState,
+  BranchRefreshReason,
+  BranchRefreshStatus,
   BranchStatus,
   BranchViewerScope,
   decodeBranchId,
@@ -40,6 +43,22 @@ describe("branch enums", () => {
     expect(BranchKpiState.Available).toBe("available");
     expect(BranchKpiState.Gated).toBe("gated");
     expect(BranchKpiState.Unavailable).toBe("unavailable");
+  });
+
+  it("pins additive cloud Branches state and refresh values", () => {
+    expect(BranchDataState.AwaitingSync).toBe("awaiting_sync");
+    expect(BranchDataState.NoSessions).toBe("no_sessions");
+    expect(BranchRefreshStatus.Retryable).toBe("retryable");
+    expect(BranchRefreshReason.AlreadyRefreshing).toBe("already_refreshing");
+    expect(BranchRefreshReason.GitHubIdentityRequired).toBe(
+      "github_identity_required"
+    );
+    expect(BranchRefreshReason.GitHubIdentityExpired).toBe(
+      "github_identity_expired"
+    );
+    expect(BranchRefreshReason.GitHubIdentityInsufficientScope).toBe(
+      "github_identity_insufficient_scope"
+    );
   });
 });
 

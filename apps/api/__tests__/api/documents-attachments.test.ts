@@ -70,6 +70,8 @@ vi.mock("@/app/documents/attachments-service", () => ({
     DocumentNotFound: "document_not_found",
     NotOwned: "not_owned",
   },
+  ATTACHMENT_NOT_FOUND_ERROR: "Attachment not found",
+  DOCUMENT_NOT_FOUND_ERROR: "Document not found",
   INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR: "Invalid inline attachment upload",
   attachmentsService: {
     deleteAttachment: vi.fn(),

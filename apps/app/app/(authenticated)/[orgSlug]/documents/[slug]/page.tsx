@@ -1,7 +1,7 @@
 import { getRoutePrefixForType } from "@repo/api/src/types/document";
 import { auth } from "@repo/auth/server";
 import { notFound, redirect } from "next/navigation";
-import { env } from "@/env";
+import { resolveApiOrigin } from "@/lib/api-origin";
 
 /**
  * Catch-all artifact redirect route.
@@ -35,7 +35,7 @@ export default async function ArtifactRedirectPage({
 
     if (token) {
       const response = await fetch(
-        `${env.NEXT_PUBLIC_API_URL}/documents/by-slug/${encodeURIComponent(slug)}`,
+        `${resolveApiOrigin()}/documents/by-slug/${encodeURIComponent(slug)}`,
         {
           headers: {
             Authorization: `Bearer ${token}`,

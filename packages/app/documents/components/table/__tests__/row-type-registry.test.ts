@@ -1,5 +1,10 @@
-import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import {
@@ -12,35 +17,10 @@ import {
   makeArtifact,
   makeFeatureArtifact,
   makePlanArtifact,
+  makeRawArtifact,
 } from "@repo/app/shared/test-fixtures/documents";
 import { makeProject } from "@repo/app/shared/test-fixtures/project";
 import { describe, expect, it } from "vitest";
-
-function makeRawArtifact(
-  type: ArtifactType,
-  overrides: Partial<Artifact> = {}
-): Artifact {
-  return {
-    id: "art-1",
-    organizationId: "org-1",
-    projectId: "proj-1",
-    type,
-    subtype: null,
-    name: "Artifact",
-    slug: null,
-    status: "active",
-    priority: null,
-    assigneeId: null,
-    assignee: null,
-    dueDate: null,
-    externalUrl: null,
-    sortOrder: null,
-    createdAt: new Date("2026-06-01T00:00:00.000Z"),
-    createdById: null,
-    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
-    ...overrides,
-  };
-}
 
 describe("getRowTypeConfig", () => {
   it("returns null for project rows (not artifacts)", () => {
@@ -98,6 +78,7 @@ describe("getRowTypeConfig", () => {
     expect(config?.editable).toBe(false);
     expect(config?.deletable).toBe(true);
     expect(config?.statusIcon).toBe("complete");
+    expect(config?.statusLabel).toBe("Merged");
     // Branch deletes only remove the Closedloop record — the dialog copy
     // must say so and must not imply the GitHub PR/branch is touched.
     expect(config?.deleteDialogTitle).toBe("Pull Request from Closedloop");
@@ -129,15 +110,45 @@ describe("getRowTypeConfig", () => {
     expect(iconFor("completed")).toBe("complete");
     expect(iconFor("failed")).toBe("wont-do");
     expect(iconFor("error")).toBe("wont-do");
+    expect(iconFor(SESSION_STATUS.ABANDONED)).toBe("wont-do");
     expect(iconFor("waiting")).toBe("in-review");
     expect(iconFor("active")).toBe("in-progress");
     expect(iconFor("some-new-harness-state")).toBe("in-progress");
+  });
+
+  it("maps branch statuses onto status labels", () => {
+    const labelFor = (status: string) =>
+      getRowTypeConfig({
+        kind: "branch",
+        data: makeRawArtifact(ArtifactType.Branch, { status }),
+      })?.statusLabel;
+
+    expect(labelFor(GitHubPRState.Open)).toBe("Open");
+    expect(labelFor(GitHubPRState.Merged)).toBe("Merged");
+    expect(labelFor(GitHubPRState.Closed)).toBe("Closed");
+    expect(labelFor("ACTIVE")).toBe("Active");
+  });
+
+  it("maps free-form session statuses onto status labels", () => {
+    const labelFor = (status: string) =>
+      getRowTypeConfig({
+        kind: "session",
+        data: makeRawArtifact(ArtifactType.Session, { status }),
+      })?.statusLabel;
+
+    expect(labelFor(SESSION_STATUS.COMPLETED)).toBe("Completed");
+    expect(labelFor(SESSION_STATUS.WAITING)).toBe("Waiting");
+    expect(labelFor(SESSION_STATUS.ACTIVE)).toBe("Active");
+    expect(labelFor(SESSION_STATUS.ERROR)).toBe("Failed");
+    expect(labelFor(SESSION_STATUS.ABANDONED)).toBe("Abandoned");
+    expect(labelFor("some-new-harness-state")).toBe("Some new harness state");
   });
 });
 
 describe("isTerminalSessionStatus", () => {
   it("pattern-matches terminal variants the same way the status-icon mapper does", () => {
     expect(isTerminalSessionStatus("completed")).toBe(true);
+    expect(isTerminalSessionStatus(SESSION_STATUS.ABANDONED)).toBe(true);
     expect(isTerminalSessionStatus("failed")).toBe(true);
     expect(isTerminalSessionStatus("error")).toBe(true);
     expect(isTerminalSessionStatus("execution_failed")).toBe(true);
@@ -149,16 +160,49 @@ describe("isTerminalSessionStatus", () => {
 
 describe("isRowItemCompleted", () => {
   it("evaluates completion against each row kind's status vocabulary", () => {
+    // Documents hide only on EXECUTED / OBSOLETE — an APPROVED document is still
+    // in flight (awaiting execution) and stays visible.
     expect(
       isRowItemCompleted({
         kind: "document",
-        data: makeArtifact({ status: DocumentStatus.Done }),
+        data: makeArtifact({ status: DocumentStatus.Approved }),
+      })
+    ).toBe(false);
+    expect(
+      isRowItemCompleted({
+        kind: "document",
+        data: makeArtifact({ status: DocumentStatus.Executed }),
       })
     ).toBe(true);
     expect(
       isRowItemCompleted({
         kind: "document",
-        data: makeArtifact({ status: DocumentStatus.InProgress }),
+        data: makeArtifact({ status: DocumentStatus.Obsolete }),
+      })
+    ).toBe(true);
+    expect(
+      isRowItemCompleted({
+        kind: "document",
+        data: makeArtifact({ status: DocumentStatus.Draft }),
+      })
+    ).toBe(false);
+    // Features keep their own terminal vocabulary (DONE / CANCELED).
+    expect(
+      isRowItemCompleted({
+        kind: "document",
+        data: makeFeatureArtifact({ status: FeatureStatus.Done }),
+      })
+    ).toBe(true);
+    expect(
+      isRowItemCompleted({
+        kind: "document",
+        data: makeFeatureArtifact({ status: FeatureStatus.Canceled }),
+      })
+    ).toBe(true);
+    expect(
+      isRowItemCompleted({
+        kind: "document",
+        data: makeFeatureArtifact({ status: FeatureStatus.InProgress }),
       })
     ).toBe(false);
     expect(
@@ -184,6 +228,14 @@ describe("isRowItemCompleted", () => {
         kind: "session",
         data: makeRawArtifact(ArtifactType.Session, {
           status: "execution_failed",
+        }),
+      })
+    ).toBe(true);
+    expect(
+      isRowItemCompleted({
+        kind: "session",
+        data: makeRawArtifact(ArtifactType.Session, {
+          status: SESSION_STATUS.ABANDONED,
         }),
       })
     ).toBe(true);

@@ -1,5 +1,10 @@
 import { HarnessType } from "@repo/api/src/types/compute-target";
-import type { Loop, LoopEvent, LoopWithUser } from "@repo/api/src/types/loop";
+import type {
+  Loop,
+  LoopDetail,
+  LoopEvent,
+  LoopWithUser,
+} from "@repo/api/src/types/loop";
 import {
   LoopCommand,
   LoopErrorCode,
@@ -80,12 +85,19 @@ export function createMockLoop(overrides: Partial<Loop> = {}): Loop {
 
 /**
  * Factory for creating mock LoopWithUser objects.
+ *
+ * The `useLoop` detail hook returns `LoopDetail`, which augments `LoopWithUser`
+ * with the `primaryPullRequest` projection the loop-detail container reads.
+ * Accept that field in overrides so detail-view tests can exercise the
+ * document-projected PR path without a separate factory.
+ *
  * Use this across all test files that need loop-with-user test data.
  */
 export function createMockLoopWithUser(
-  overrides: Partial<LoopWithUser> = {}
+  overrides: Partial<LoopWithUser & Pick<LoopDetail, "primaryPullRequest">> = {}
 ): LoopWithUser {
-  const { user, computeTarget, ...loopOverrides } = overrides;
+  const { user, computeTarget, primaryPullRequest, ...loopOverrides } =
+    overrides;
   return {
     ...createMockLoop(loopOverrides),
     user: {
@@ -97,6 +109,7 @@ export function createMockLoopWithUser(
       ...user,
     },
     computeTarget: computeTarget ?? null,
+    primaryPullRequest: primaryPullRequest ?? null,
     ...overrides,
   };
 }

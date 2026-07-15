@@ -7,8 +7,7 @@ import type { RouteParams } from "@repo/navigation/navigation-adapter";
  * org-relative routes (web session detail is /[orgSlug]/sessions/[id] →
  * desktop /sessions/:id, param `id`) so shared components link — and read
  * route params — identically on both surfaces. Web routes with a desktop
- * analog under a different desktop id get alias entries (e.g. /my-tasks →
- * the kanban view).
+ * analog under a different desktop id get alias entries.
  *
  * An href with no entry here is *unmapped*: the adapter's navigate guard
  * drops it (see handleUnmappedHref in desktop-adapter.tsx).
@@ -17,16 +16,9 @@ export const NavId = {
   Dashboard: "dashboard",
   Sessions: "sessions",
   Branches: "branches",
-  Kanban: "kanban",
-  Activity: "activity",
+  Agents: "agents",
   Insights: "insights",
-  Workflows: "workflows",
-  Packs: "packs",
-  Skills: "skills",
-  Tools: "tools",
-  Subagents: "subagents",
   Plans: "plans",
-  PullRequests: "pull-requests",
   Approvals: "approvals",
   Requests: "requests",
   Diagnostics: "diagnostics",
@@ -43,7 +35,8 @@ export const DEFAULT_NAV_ID: NavId = NavId.Sessions;
 export type RouteMatch =
   | { kind: "nav"; navId: NavId; params: RouteParams }
   | { kind: "session-detail"; sessionId: string; params: RouteParams }
-  | { kind: "branch-detail"; branchId: string; params: RouteParams };
+  | { kind: "branch-detail"; branchId: string; params: RouteParams }
+  | { kind: "agent-detail"; agentSlug: string; params: RouteParams };
 
 /** Resolves an org-relative path (no query) to a renderer view, or null. */
 export function matchRoute(path: string): RouteMatch | null {
@@ -71,6 +64,10 @@ export function branchDetailHref(branchId: string): string {
   return `/branches/${encodeURIComponent(branchId)}`;
 }
 
+export function agentDetailHref(slug: string): string {
+  return `/agents/${encodeURIComponent(slug)}`;
+}
+
 function isNavId(value: string | null): value is NavId {
   return value !== null && (NAV_IDS as readonly string[]).includes(value);
 }
@@ -79,6 +76,15 @@ function isNavId(value: string | null): value is NavId {
 export function normalizeNavId(value: string | null): NavId {
   if (value === "analytics") {
     return NavId.Insights;
+  }
+  // Legacy Packs Lab nav ids → Agents workspace (FEA-2923 / T-16.4).
+  if (
+    value === "packs" ||
+    value === "skills" ||
+    value === "tools" ||
+    value === "subagents"
+  ) {
+    return NavId.Agents;
   }
   return isNavId(value) ? value : DEFAULT_NAV_ID;
 }
@@ -139,17 +145,52 @@ const ROUTE_DEFINITIONS: RouteDefinition[] = [
       params,
     }),
   },
-  // Web-canonical aliases: hrefs shared components emit for views the
-  // desktop hosts under a different nav id.
+  // Agent component detail (FEA-2923 / T-5.1). Param is `id` (the component
+  // slug) to mirror the /branches/:id and /sessions/:id precedent. Listed
+  // before the NAV_IDS spread so /agents/:id (2 segments) never shadows
+  // /agents (1 segment, from the spread).
+  {
+    pattern: "/agents/:id",
+    toMatch: (params) => ({
+      kind: "agent-detail",
+      agentSlug: params.id,
+      params,
+    }),
+  },
+  // Legacy aliases: retired routes redirect to Sessions so stale hashes and
+  // bookmarks degrade gracefully instead of being silently dropped.
+  {
+    pattern: "/kanban",
+    toMatch: () => ({ kind: "nav", navId: NavId.Sessions, params: {} }),
+  },
   {
     pattern: "/my-tasks",
-    toMatch: () => ({ kind: "nav", navId: NavId.Kanban, params: {} }),
+    toMatch: () => ({ kind: "nav", navId: NavId.Sessions, params: {} }),
   },
   // Legacy alias: the insights view shipped as "analytics" first; old hashes
   // and main-process navigation messages may still say analytics.
   {
     pattern: "/analytics",
     toMatch: () => ({ kind: "nav", navId: NavId.Insights, params: {} }),
+  },
+  // Legacy Packs Lab aliases (FEA-2923 / T-16.4): the deprecated Packs, Skills,
+  // Tools, and SubAgents routes redirect to the unified Agents workspace so
+  // stale hashes and bookmarks degrade gracefully.
+  {
+    pattern: "/packs",
+    toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
+  },
+  {
+    pattern: "/skills",
+    toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
+  },
+  {
+    pattern: "/tools",
+    toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
+  },
+  {
+    pattern: "/subagents",
+    toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
   },
   ...NAV_IDS.map<RouteDefinition>((navId) => ({
     pattern: hrefForNavId(navId),

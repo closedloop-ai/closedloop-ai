@@ -29,8 +29,10 @@ type ArtifactScalarsForPrInfo = Pick<
 type PullRequestDetailForInfo = {
   id?: string | null;
   branchArtifactId?: string | null;
-  repositoryId: string;
-  githubId: string;
+  // FEA-2732: nullable for desktop-produced PRs in non-App repos (no
+  // installation-repo id / GitHub node id until App adoption).
+  repositoryId: string | null;
+  githubId: string | null;
   number: number;
   title?: string | null;
   htmlUrl?: string | null;

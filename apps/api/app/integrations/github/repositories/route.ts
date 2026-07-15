@@ -2,7 +2,8 @@ import {
   type GetRepositoriesResponse,
   GitHubRepositorySource,
 } from "@repo/api/src/types/github";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isPublicGithubReposEnabled } from "@/lib/public-github-repos-feature";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { publicRepositoryService } from "../public-repositories/service";
 import { githubService } from "../service";
@@ -15,14 +16,24 @@ import { githubService } from "../service";
  * Returns an array of repository objects with id, fullName, name, owner, private,
  * githubRepoId, and source ("installation" | "public").
  */
-export const GET = withAuth<
+export const GET = withAnyAuth<
   GetRepositoriesResponse,
   "/integrations/github/repositories"
->(async ({ user }) => {
+>(async ({ clerkUserId, user }) => {
   try {
+    // Public repositories are a flag-gated feature: only merge them in when the
+    // rollout is enabled for this principal, failing closed so the dark-launched
+    // rows never leak to callers outside the flag (FEA-2764).
+    const publicReposEnabled = await isPublicGithubReposEnabled({
+      clerkUserId,
+      userId: user.id,
+    });
+
     const [installationRepos, publicRepos] = await Promise.all([
       githubService.getRepositories(user.organizationId),
-      publicRepositoryService.getPublicRepositories(user.organizationId),
+      publicReposEnabled
+        ? publicRepositoryService.getPublicRepositories(user.organizationId)
+        : Promise.resolve([]),
     ]);
 
     const installationEntries: GetRepositoriesResponse = installationRepos.map(

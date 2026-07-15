@@ -115,3 +115,9 @@ export const RENDERER_OTEL_MAX_STRING_BYTES = 4096;
 export const RENDERER_OTEL_MAX_BATCH_BYTES = 64 * 1024;
 export const RENDERER_OTEL_RATE_LIMIT_WINDOW_MS = 1000;
 export const RENDERER_OTEL_RATE_LIMIT_MAX_BATCHES = 8;
+
+// FEA-1998: fraction of render commits sampled into wide events. `mount` commits
+// always bypass this (rare + most diagnostic); `update`/`nested-update` commits
+// are head-sampled here, in the renderer, before a record is ever built — so
+// the sanitizer rate limit (8 batches/s) is never the throttle in practice.
+export const RENDERER_RENDER_COMMIT_SAMPLE_RATE = 0.1;

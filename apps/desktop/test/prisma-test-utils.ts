@@ -1,9 +1,8 @@
 /**
  * @file prisma-test-utils.ts
- * @description FEA-1791 / PLN-886 Phase 3 — shared helpers for the desktop
- * Prisma tests. Post SQLite migration: builds the Prisma factory over an
- * ephemeral on-disk libSQL database whose schema is created by the SAME
- * migration runner the production boot uses, and reuses the PRODUCTION
+ * @description Shared helpers for the desktop Prisma tests. Builds the Prisma
+ * factory over an ephemeral on-disk libSQL database whose schema is created by
+ * the SAME migration runner the production boot uses, and reuses the PRODUCTION
  * `createWriteQueue` so the test queue can't drift from the real one.
  */
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,12 +13,13 @@ import {
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
 } from "../src/main/database/baseline-schema.js";
 import {
-  openLibsqlDatabase,
+  openMigrationDatabase,
   type SqliteClient,
-} from "../src/main/database/libsql-executor.js";
+} from "../src/main/database/migration-executor.js";
 import { runDesktopMigrations } from "../src/main/database/migration-runner.js";
 import { MIGRATIONS } from "../src/main/database/migrations-manifest.js";
 import {
+  type CreateDesktopPrismaOptions,
   createDesktopPrisma,
   type DesktopPrisma,
   type WriteSerializer,
@@ -64,10 +64,11 @@ export type RawDb = {
  * `createWriteQueue`.
  */
 export async function openTestPrisma(
-  queue: WriteSerializer = createWriteQueue()
+  queue: WriteSerializer = createWriteQueue(),
+  options?: CreateDesktopPrismaOptions
 ): Promise<OpenTestPrisma> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "prisma-test-"));
-  const { db, config } = await openLibsqlDatabase(
+  const { db, config } = await openMigrationDatabase(
     path.join(dir, "agent-dashboard.sqlite")
   );
   await runDesktopMigrations(db, {
@@ -75,7 +76,7 @@ export async function openTestPrisma(
     baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
     baselineMigrations: BASELINE_MIGRATIONS,
   });
-  const prisma = createDesktopPrisma(config, queue);
+  const prisma = await createDesktopPrisma(config, queue, options);
   return {
     db,
     prisma,

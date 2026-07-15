@@ -1,5 +1,9 @@
 import { request } from "node:http";
 import {
+  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+  type DesktopAgentSessionsAck,
+} from "@repo/api/src/types/agent-session";
+import {
   afterAll,
   afterEach,
   beforeAll,
@@ -348,6 +352,57 @@ describe("POST /dispatch", () => {
       "desktop.command",
       expect.anything()
     );
+  });
+
+  it("forwards a plain accepted ack for desktop agent-session sync (FEA-2718 dropped pendingFragments)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        const requestBody = JSON.parse(String(init.body)) as {
+          event: string;
+          payload?: { targetId?: string };
+        };
+        if (requestBody.event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT) {
+          return new Response(
+            JSON.stringify({
+              targetId: "target-fragments",
+              gatewaySessionId: "gateway-target-fragments",
+              emit: [],
+              // Even if a stale cloud still returned a pendingFragments flag, the
+              // relay forwards only the plain accepted ack.
+              ack: { accepted: true, pendingFragments: true },
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            targetId: requestBody.payload?.targetId,
+            gatewaySessionId: `gateway-${requestBody.payload?.targetId}`,
+            emit: [],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      })
+    );
+    const socket = createMockRelaySocket("socket-fragments");
+    await registerSocketTarget(socket, "target-fragments");
+    const handler = socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT);
+    if (!handler) {
+      throw new Error("Expected desktop.agent-sessions handler");
+    }
+
+    const ack = await new Promise<DesktopAgentSessionsAck>((resolve) => {
+      handler({ schemaVersion: 1, sessions: [] }, resolve);
+    });
+
+    expect(ack).toEqual({ accepted: true });
   });
 });
 

@@ -23,6 +23,10 @@ import {
 } from "@repo/app/shared/lib/format-utils";
 import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import { TagChips } from "@repo/app/tags/components/tag-chip";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   type Column,
@@ -309,9 +313,11 @@ export function LoopsTable() {
 
   if (error) {
     return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message ?? "Failed to load loops"}
-      </div>
+      <Alert variant="error">
+        <AlertDescription>
+          {error.message ?? "Failed to load loops"}
+        </AlertDescription>
+      </Alert>
     );
   }
 

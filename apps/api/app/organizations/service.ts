@@ -7,6 +7,7 @@ import type {
 import { type Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { clerkService } from "@/lib/auth/clerk-service";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 
 /**
  * Organizations service - handles database operations for organization management
@@ -174,11 +175,7 @@ export const organizationsService = {
       // Handle race condition: concurrent requests may both attempt to create
       // the same org. If a unique constraint violation occurs (P2002), the org
       // was created by another request — just fetch it.
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        (error as { code: string }).code === "P2002"
-      ) {
+      if (getPrismaErrorCode(error) === "P2002") {
         const retried = await organizationsService.findByClerkId(clerkOrgId);
         if (retried) {
           return retried;

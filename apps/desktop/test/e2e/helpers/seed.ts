@@ -28,12 +28,19 @@ export type SeedSession = {
   userText?: string;
   /** First assistant reply text (defaults to a generic reply). */
   assistantText?: string;
-  /** ISO timestamp for the user turn (defaults to a fixed 2026 date). */
+  /** ISO timestamp for the user turn (defaults to a fresh timestamp). */
   timestamp?: string;
   /** Working directory recorded on the user turn. */
   cwd?: string;
   /** Git branch recorded on the user turn. */
   gitBranch?: string;
+  /**
+   * Append a successful `git push` tool-use turn for `gitBranch`. FEA-2531:
+   * the Branches surface shows push-evidenced branches only, so a transcript
+   * that should surface its branch there must contain real push evidence —
+   * a start branch alone is a read and never displays.
+   */
+  pushBranch?: boolean;
 };
 
 /**
@@ -52,7 +59,7 @@ export function seedClaudeTranscripts(
 
   for (const session of sessions) {
     const transcriptPath = path.join(projectDir, `${session.sessionId}.jsonl`);
-    const timestamp = session.timestamp ?? "2026-06-18T18:00:00.000Z";
+    const timestamp = session.timestamp ?? recentTranscriptTimestamp();
     const lines = [
       {
         type: "user",
@@ -87,6 +94,48 @@ export function seedClaudeTranscripts(
         },
       },
     ];
+    if (session.pushBranch) {
+      const branch = session.gitBranch ?? "main";
+      const toolUseId = `toolu_seed_push_${session.sessionId}`;
+      lines.push(
+        {
+          type: "assistant",
+          timestamp: bumpSeconds(timestamp, 10),
+          gitBranch: branch,
+          message: {
+            model: "claude-opus-4-5",
+            usage: {
+              input_tokens: 8,
+              output_tokens: 4,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+            content: [
+              {
+                type: "tool_use",
+                id: toolUseId,
+                name: "Bash",
+                input: { command: `git push -u origin ${branch}` },
+              },
+            ],
+          },
+        },
+        {
+          type: "user",
+          timestamp: bumpSeconds(timestamp, 15),
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: toolUseId,
+                content: `branch '${branch}' set up to track 'origin/${branch}'.`,
+              },
+            ],
+          },
+        }
+      );
+    }
     fs.writeFileSync(
       transcriptPath,
       `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
@@ -141,4 +190,8 @@ export function seedPendingApprovals(
 function bumpSeconds(iso: string, seconds: number): string {
   const ms = Date.parse(iso);
   return new Date(ms + seconds * 1000).toISOString();
+}
+
+function recentTranscriptTimestamp(): string {
+  return new Date(Date.now() - 60_000).toISOString();
 }

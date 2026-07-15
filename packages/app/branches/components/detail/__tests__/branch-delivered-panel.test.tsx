@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { makeBranchDetail } from "../../../__tests__/branch-fixtures";
 import { BranchDeliveredPanel } from "../branch-delivered-panel";
@@ -6,6 +6,8 @@ import { BranchDeliveredPanel } from "../branch-delivered-panel";
 const WHAT_DELIVERED = "What was delivered";
 const NO_ARTIFACTS_RE = /no linked artifacts/i;
 const NO_PR_DESC_RE = /no pull request opened yet/i;
+const SHOW_FULL_RE = /show full description/i;
+const SHOW_LESS_RE = /show less/i;
 
 describe("BranchDeliveredPanel", () => {
   it("renders the 'What was delivered' header and the linked-artifacts box (box 1)", () => {
@@ -54,6 +56,23 @@ describe("BranchDeliveredPanel", () => {
 
     expect(screen.getByText("This PR does the work.")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("exposes the description toggle's collapsed/expanded state via aria-expanded", () => {
+    const detail = makeBranchDetail({
+      prNumber: 7,
+      prBody: "This PR does the work.",
+    });
+    render(<BranchDeliveredPanel detail={detail} />);
+
+    const toggle = screen.getByRole("button", { name: SHOW_FULL_RE });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: SHOW_LESS_RE })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
   });
 
   it("shows the no-PR empty state in box 2 while box 1 stays the artifacts box", () => {

@@ -1,5 +1,5 @@
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import figma from "@figma/code-connect";
-import { Button } from "@repo/design-system/components/ui/button";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=6716-46634";

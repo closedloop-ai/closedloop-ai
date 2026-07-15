@@ -6,14 +6,15 @@ import type {
 } from "@repo/api/src/types/branch";
 import { BranchStatus as BranchStatusEnum } from "@repo/api/src/types/branch";
 import { formatNumber } from "@repo/app/shared/lib/format-utils";
+import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
 import {
   ChevronRightIcon,
   GitBranchIcon,
   GitPullRequestIcon,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { BRANCH_STATUS_CONFIG } from "../lib/branch-row";
 import { toRenderStatus } from "../lib/branch-row-adapter";
-import { BRANCH_STATUS_CONFIG } from "../lib/branch-sample-data";
 import type { PreferredBranchLoc } from "../lib/live-overlays/use-preferred-branch-loc";
 
 /**
@@ -82,7 +83,7 @@ function buildPropertyRows({
     ],
     [
       "Branch",
-      <span className="font-mono" key="branch">
+      <span className="font-mono" key="branch" title={detail.branchName}>
         {detail.branchName}
       </span>,
     ],
@@ -93,10 +94,12 @@ function buildPropertyRows({
           No PR yet
         </span>
       ) : (
-        <span className="sd3-pp" key="pr">
+        <span className="sd3-pp" key="pr" title={formatPrTitle(detail)}>
           <GitPullRequestIcon aria-hidden className="size-3.5" />
           <span className="font-mono">#{detail.prNumber}</span>
-          {detail.prTitle ? <span>{detail.prTitle}</span> : null}
+          {detail.prTitle ? (
+            <span className="min-w-0 truncate">{detail.prTitle}</span>
+          ) : null}
         </span>
       ),
     ],
@@ -110,7 +113,7 @@ function buildPropertyRows({
     [
       "Repository",
       detail.repoFullName ? (
-        <span className="font-mono" key="repo">
+        <span className="font-mono" key="repo" title={detail.repoFullName}>
           {detail.repoFullName}
         </span>
       ) : (
@@ -137,14 +140,10 @@ export function BranchPropertiesPanel({
     <section className="prd-props-section sd3-props bq-props" data-open={open}>
       {/* biome-ignore lint/a11y/useSemanticElements: matches the session detail's role="button" properties header for design parity (FEA-1769). */}
       <div
+        aria-expanded={open}
         className="prd-props-header"
         onClick={() => setOpen((value) => !value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setOpen((value) => !value);
-          }
-        }}
+        onKeyDown={activateOnEnterOrSpace(() => setOpen((value) => !value))}
         role="button"
         tabIndex={0}
       >
@@ -175,9 +174,9 @@ export function BranchPropertiesPanel({
             <span className="sd3-status-dot" style={{ background: dot }} />
             {statusLabel}
           </span>
-          <span className="sd3-pp font-mono">
+          <span className="sd3-pp font-mono" title={detail.branchName}>
             <GitBranchIcon aria-hidden className="size-3" />
-            {detail.branchName}
+            <span className="min-w-0 truncate">{detail.branchName}</span>
           </span>
           {detail.prNumber == null ? null : (
             <span className="sd3-pp font-mono">
@@ -189,4 +188,10 @@ export function BranchPropertiesPanel({
       )}
     </section>
   );
+}
+
+function formatPrTitle(detail: BranchPageDetail): string {
+  return detail.prTitle
+    ? `#${detail.prNumber} ${detail.prTitle}`
+    : `#${detail.prNumber}`;
 }

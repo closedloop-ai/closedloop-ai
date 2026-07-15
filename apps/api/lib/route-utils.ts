@@ -1,11 +1,35 @@
 import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
-import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { emitRequestCompletedSpan } from "@repo/observability/telemetry/request-completed";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import type { z } from "zod";
+
+/**
+ * Extract the bearer token from an `Authorization: Bearer <token>` header.
+ * Returns `null` when the header is absent or not a bearer scheme. Shared by the
+ * auth middlewares (API-key, desktop-session) so token extraction stays
+ * identical across them.
+ */
+export function getBearerToken(request: Request): string | null {
+  const authHeader = request.headers.get("authorization");
+  return authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+}
+
+/**
+ * Parse an `afterSequence` reconnect cursor from a raw request value (query
+ * param or `Last-Event-ID` header). Returns the cursor when it is a
+ * non-negative integer, otherwise `undefined`. Shared by the SSE routes that
+ * resume an event stream from the last-seen sequence.
+ */
+export function parseSequenceCursor(raw: string | null): number | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
 
 /**
  * Standard route params type for [id] routes.
@@ -21,6 +45,11 @@ export type ParseBodyResult<T> =
   | { body: T; errorResponse: null }
   | { body: null; errorResponse: NextResponse<ApiResult<never>> };
 
+export type ParseBodyOptions = {
+  /** Maximum allowed UTF-8 request body size in bytes. */
+  maxBytes?: number;
+};
+
 /**
  * Result of parsing a request query params.
  */
@@ -34,10 +63,24 @@ export type ParseParamsResult<T> =
  */
 export async function parseBody<T extends z.ZodType>(
   request: Request,
-  validator: T
+  validator: T,
+  options: ParseBodyOptions = {}
 ): Promise<ParseBodyResult<z.infer<T>>> {
   try {
-    const rawBody = await request.json();
+    const bodyText = await request.text();
+    if (
+      options.maxBytes !== undefined &&
+      new TextEncoder().encode(bodyText).byteLength > options.maxBytes
+    ) {
+      return {
+        body: null,
+        errorResponse: NextResponse.json(failure("Request body too large"), {
+          status: 413,
+        }),
+      };
+    }
+
+    const rawBody = JSON.parse(bodyText) as unknown;
     const parseResult = validator.safeParse(rawBody);
 
     if (!parseResult.success) {
@@ -51,8 +94,7 @@ export async function parseBody<T extends z.ZodType>(
 
     return { body: parseResult.data, errorResponse: null };
   } catch (error) {
-    const errorMessage = parseError(error);
-    log.error("Failed to parse request body:", { error: errorMessage });
+    log.error("Failed to parse request body:", { error });
     scheduleLogFlush();
     return {
       body: null,
@@ -100,6 +142,21 @@ export function parseQueryParams<T extends z.ZodType>(
 }
 
 /**
+ * Parse repository child-route limit values with the shared route cap.
+ * Returns `NaN` when the caller should reject an invalid user-provided limit.
+ */
+export function parseRepositoryRouteLimit(
+  value: string | null,
+  defaultLimit: number
+): number {
+  const parsed = value ? Number.parseInt(value, 10) : defaultLimit;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return Number.NaN;
+  }
+  return Math.min(Math.max(1, parsed), 100);
+}
+
+/**
  * Create a standardized error response with sanitized logging.
  * Calls scheduleLogFlush() internally — callers must not add a redundant flush.
  */
@@ -109,8 +166,7 @@ export function errorResponse(
   status = 500,
   metadata?: ErrorResponseMetadata
 ): NextResponse<ApiResult<never>> {
-  const errorMessage = parseError(error);
-  log.error(message, { error: errorMessage });
+  log.error(message, { error });
   scheduleLogFlush();
   return NextResponse.json(failure(message, metadata), { status });
 }
@@ -167,6 +223,17 @@ export function forbiddenResponse(
  */
 export function deleteResponse(): NextResponse<ApiResult<{ deleted: true }>> {
   return NextResponse.json(success({ deleted: true }));
+}
+
+/**
+ * Create a payload-too-large response (HTTP 413).
+ * Use when a request or asset exceeds an enforced size/entry budget.
+ */
+export function payloadTooLargeResponse(
+  message: string,
+  metadata?: ErrorResponseMetadata
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure(message, metadata), { status: 413 });
 }
 
 /**
@@ -241,6 +308,28 @@ export function logRequestCompleted(
     durationMs,
   });
   scheduleLogFlush();
+}
+
+/**
+ * Emit the correlated ingest-failure log line shared by the loop event-ingest
+ * routes (`/loops/[id]/events` and `/loops/[id]/manual-events`). Both stitch
+ * the failure to its loop/org in Datadog with the same field shape; centralizing
+ * it here keeps that shape defined once. `eventName` is the route-specific
+ * metric name (e.g. `loop.event_ingest_failed`, `loop.manual_event_ingest_failed`).
+ */
+export function logLoopIngestFailure(
+  eventName: string,
+  fields: {
+    error: unknown;
+    loopId: string | undefined;
+    organizationId: string | undefined;
+  }
+): void {
+  log.error(eventName, {
+    error: fields.error,
+    loopId: fields.loopId,
+    organizationId: fields.organizationId,
+  });
 }
 
 type ErrorResponseMetadata = {

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  formatCompact,
   formatCost,
+  formatLoc,
   formatNumber,
   formatTokenCount,
   getDurationScaleMinutes,
@@ -263,6 +265,130 @@ describe("formatCost", () => {
   describe("undefined value", () => {
     it("treats undefined as 0 and returns $0.00", () => {
       expect(formatCost(undefined)).toBe("$0.00");
+    });
+  });
+});
+
+describe("formatCompact", () => {
+  describe("sub-thousand values", () => {
+    it("returns zero as '0'", () => {
+      expect(formatCompact(0)).toBe("0");
+    });
+
+    it("returns small values as rounded integers", () => {
+      expect(formatCompact(42)).toBe("42");
+      expect(formatCompact(999)).toBe("999");
+    });
+
+    it("rounds fractional sub-thousand values", () => {
+      expect(formatCompact(42.7)).toBe("43");
+    });
+  });
+
+  describe("kilo tier (1k–999k)", () => {
+    it("formats exactly 1000 as '1k' (trailing .0 stripped)", () => {
+      expect(formatCompact(1000)).toBe("1k");
+    });
+
+    it("formats values with fractional part", () => {
+      expect(formatCompact(1800)).toBe("1.8k");
+      expect(formatCompact(1500)).toBe("1.5k");
+    });
+
+    it("strips trailing .0 for round values", () => {
+      expect(formatCompact(2000)).toBe("2k");
+      expect(formatCompact(10_000)).toBe("10k");
+    });
+
+    it("formats upper boundary", () => {
+      expect(formatCompact(999_000)).toBe("999k");
+    });
+  });
+
+  describe("mega tier (1M–999M)", () => {
+    it("formats exactly 1_000_000 as '1M'", () => {
+      expect(formatCompact(1_000_000)).toBe("1M");
+    });
+
+    it("formats values with fractional part", () => {
+      expect(formatCompact(1_500_000)).toBe("1.5M");
+    });
+
+    it("strips trailing .0 for round values", () => {
+      expect(formatCompact(2_000_000)).toBe("2M");
+    });
+  });
+
+  describe("giga tier (1B+)", () => {
+    it("formats exactly 1_000_000_000 as '1B'", () => {
+      expect(formatCompact(1_000_000_000)).toBe("1B");
+    });
+
+    it("formats values with fractional part", () => {
+      expect(formatCompact(24_100_000_000)).toBe("24.1B");
+    });
+  });
+
+  describe("negative values", () => {
+    it("formats negative kilo values", () => {
+      expect(formatCompact(-1800)).toBe("-1.8k");
+    });
+
+    it("formats negative mega values", () => {
+      expect(formatCompact(-2_000_000)).toBe("-2M");
+    });
+
+    it("formats negative sub-thousand values", () => {
+      expect(formatCompact(-500)).toBe("-500");
+    });
+  });
+});
+
+describe("formatLoc", () => {
+  describe("below threshold (< 1000)", () => {
+    it("formats zero", () => {
+      expect(formatLoc(0)).toBe("0");
+    });
+
+    it("formats small values as comma-separated integers", () => {
+      expect(formatLoc(500)).toBe("500");
+      expect(formatLoc(892)).toBe("892");
+      expect(formatLoc(999)).toBe("999");
+    });
+
+    it("rounds fractional values below threshold", () => {
+      expect(formatLoc(42.7)).toBe("43");
+    });
+  });
+
+  describe("at or above threshold (>= 1000)", () => {
+    it("formats exactly 1000 as '1 KLOC' (trailing .0 stripped)", () => {
+      expect(formatLoc(1000)).toBe("1 KLOC");
+    });
+
+    it("formats values with fractional KLOC", () => {
+      expect(formatLoc(1500)).toBe("1.5 KLOC");
+      expect(formatLoc(12_500)).toBe("12.5 KLOC");
+    });
+
+    it("strips trailing .0 for round KLOC values", () => {
+      expect(formatLoc(2000)).toBe("2 KLOC");
+      expect(formatLoc(12_000)).toBe("12 KLOC");
+    });
+
+    it("formats very large values", () => {
+      expect(formatLoc(100_000)).toBe("100 KLOC");
+      expect(formatLoc(1_000_000)).toBe("1000 KLOC");
+    });
+  });
+
+  describe("negative values", () => {
+    it("formats negative values below threshold as integers", () => {
+      expect(formatLoc(-500)).toBe("-500");
+    });
+
+    it("formats negative values at or above threshold as KLOC", () => {
+      expect(formatLoc(-1500)).toBe("-1.5 KLOC");
     });
   });
 });

@@ -1,3 +1,4 @@
+import { clampMarkerLabel } from "@repo/api/src/session-trace/derivation";
 import type { SessionMarker } from "./agent-session-sync-contract.js";
 import { parseIsoMs, roundNumber } from "./session-marker-utils.js";
 
@@ -208,7 +209,7 @@ function buildCandidate(input: {
     timestampMs: input.timestamp.ms,
     x: roundNumber(Math.max(0, Math.min(100, x))),
     t: input.timestamp.value,
-    label: input.label,
+    label: clampMarkerLabel(input.label),
     tl: nearestTimelineIndex(input.timestamp.ms, input.timelineMs),
   };
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { BranchKpiState } from "@repo/api/src/types/branch";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -12,9 +13,14 @@ import {
   PinIcon,
   Trash2Icon,
 } from "lucide-react";
+// Insights reuses the existing cross-surface GitHub connect affordance so copy
+// and desktop/web CTA behavior stay aligned with Branches.
+import { ConnectGitHubIndicator } from "../../branches/components/connect-github-indicator";
+import type { InsightsTileAvailability } from "../lib/tile-availability";
 import { type TileDescriptor, TileKind } from "../lib/tile-catalog";
 import { InfoTip } from "./info-tip";
 import { KpiMetricTile } from "./kpi-stat-tile";
+import { ResizeButtons } from "./resize-buttons";
 import {
   InsightsChartContent,
   type InsightsSectionData,
@@ -33,6 +39,9 @@ export function InsightsTile({
   showDragHandle = false,
   showResizeControls = false,
   variant = "compact",
+  availability,
+  githubConnectHref,
+  onConnectGitHub,
 }: {
   tile: TileDescriptor;
   sections: InsightsSectionData;
@@ -52,13 +61,22 @@ export function InsightsTile({
    * cell.
    */
   variant?: "compact" | "section";
+  availability?: InsightsTileAvailability;
+  githubConnectHref?: string;
+  onConnectGitHub?: () => void | Promise<void>;
 }) {
   const isSection = variant === "section";
+  const bodyOverride = renderTileAvailabilityOverride({
+    availability,
+    githubConnectHref,
+    onConnectGitHub,
+  });
   // KPI tiles render as the design-system MetricCard composite with the pin /
   // info / drag affordances overlaid; chart tiles use the titled card shell.
   if (tile.kind === TileKind.Kpi) {
     return (
       <KpiMetricTile
+        bodyOverride={bodyOverride}
         kpi={selectKpi(tile, sections)}
         onEditTile={onEditTile}
         onResizeWidth={onResizeWidth}
@@ -68,6 +86,7 @@ export function InsightsTile({
         showResizeControls={showResizeControls}
         tileId={tile.id}
         title={tile.title}
+        unitLabel={tile.unitLabel}
       />
     );
   }
@@ -145,40 +164,45 @@ export function InsightsTile({
       <CardContent
         className={isSection ? "min-h-0 flex-1 px-6" : "min-h-0 flex-1 p-3"}
       >
-        <InsightsChartContent
-          comparisonLabel={comparisonLabel}
-          comparisonSections={comparisonSections}
-          sections={sections}
-          tile={tile}
-        />
+        {bodyOverride ?? (
+          <InsightsChartContent
+            comparisonLabel={comparisonLabel}
+            comparisonSections={comparisonSections}
+            sections={sections}
+            tile={tile}
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function ResizeButtons({ onResize }: { onResize: (width: number) => void }) {
+export function renderTileAvailabilityOverride({
+  availability,
+  githubConnectHref,
+  onConnectGitHub,
+}: {
+  availability: InsightsTileAvailability | undefined;
+  githubConnectHref: string | undefined;
+  onConnectGitHub: (() => void | Promise<void>) | undefined;
+}) {
+  if (!availability || availability.state === BranchKpiState.Available) {
+    return null;
+  }
+  if (availability.state === BranchKpiState.Gated) {
+    return (
+      <div className="grid h-full min-h-24 place-items-center px-3">
+        <ConnectGitHubIndicator
+          compact
+          connectHref={githubConnectHref}
+          onConnect={onConnectGitHub}
+        />
+      </div>
+    );
+  }
   return (
-    <div className="insights-widget-control hidden items-center rounded border p-0.5 md:flex">
-      {[
-        { label: "1/2", width: 6 },
-        { label: "Full", width: 12 },
-      ].map((option) => (
-        <Button
-          className="h-6 px-1.5 text-[10px]"
-          key={option.width}
-          onClick={(event) => {
-            event.stopPropagation();
-            onResize(option.width);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          size="sm"
-          type="button"
-          variant="ghost"
-        >
-          {option.label}
-        </Button>
-      ))}
+    <div className="grid h-full min-h-24 place-items-center px-3 text-center text-muted-foreground text-xs">
+      This GitHub metric is unavailable for the selected scope.
     </div>
   );
 }

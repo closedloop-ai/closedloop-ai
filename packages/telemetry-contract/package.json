@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/telemetry-contract",
-  "version": "0.5.0",
+  "version": "0.10.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -36,6 +36,26 @@
       "require": {
         "types": "./dist/app-exception-origin.d.cts",
         "default": "./dist/app-exception-origin.cjs"
+      }
+    },
+    "./collector-tail-sampling-policy": {
+      "import": {
+        "types": "./dist/collector-tail-sampling-policy.d.ts",
+        "default": "./dist/collector-tail-sampling-policy.js"
+      },
+      "require": {
+        "types": "./dist/collector-tail-sampling-policy.d.cts",
+        "default": "./dist/collector-tail-sampling-policy.cjs"
+      }
+    },
+    "./ipc": {
+      "import": {
+        "types": "./dist/ipc.d.ts",
+        "default": "./dist/ipc.js"
+      },
+      "require": {
+        "types": "./dist/ipc.d.cts",
+        "default": "./dist/ipc.cjs"
       }
     },
     "./resource": {
@@ -156,6 +176,9 @@
     "./schemas/permission.schema.json": {
       "default": "./dist/schemas/permission.schema.json"
     },
+    "./schemas/ipc.schema.json": {
+      "default": "./dist/schemas/ipc.schema.json"
+    },
     "./samples/validate-perf-jsonl.sh": {
       "default": "./dist/samples/validate-perf-jsonl.sh"
     }
@@ -167,16 +190,24 @@
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
-    "build": "tsup && pnpm run generate:schemas && pnpm run check:schemas && pnpm run copy:samples",
+    "build": "pnpm run build:code && pnpm run build:artifacts",
+    "build:code": "tsup",
+    "build:artifacts": "pnpm run generate:schemas && pnpm run check:schemas && pnpm run check:collector-allowlist && pnpm run check:collector-posthog-routing && pnpm run check:collector-tail-sampling && pnpm run copy:samples",
     "generate:schemas": "tsx scripts/generate-json-schemas.ts",
+    "generate:collector-allowlist": "tsx scripts/generate-collector-allowlist.ts",
+    "generate:collector-posthog-routing": "tsx scripts/generate-collector-posthog-routing.ts",
+    "generate:collector-tail-sampling": "tsx scripts/generate-collector-tail-sampling.ts",
     "check:schemas": "tsx scripts/check-json-schemas.ts",
-    "check:schema-update": "tsx scripts/check-schema-update-gates.ts",
+    "check:collector-allowlist": "tsx scripts/check-collector-allowlist.ts",
+    "check:collector-posthog-routing": "tsx scripts/check-collector-posthog-routing.ts",
+    "check:collector-tail-sampling": "tsx scripts/check-collector-tail-sampling.ts",
+    "verify:collector-tail-sampling": "tsx scripts/verify-collector-tail-sampling.ts",
     "copy:samples": "tsx scripts/copy-samples.ts",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false",
     "test": "vitest run",
     "test:types": "tsc --noEmit --project tsconfig.type-tests.json",
     "test:samples:source": "tsx scripts/test-perf-jsonl-sample.ts --mode source",
-    "test:samples": "tsx scripts/test-perf-jsonl-sample.ts --mode dist",
+    "test:samples": "pnpm run build:artifacts && tsx scripts/test-perf-jsonl-sample.ts --mode dist",
     "test:package-resolution": "pnpm run build && tsx scripts/test-package-resolution.ts",
     "test:package-content": "pnpm run build && tsx scripts/test-package-content.ts",
     "validate": "pnpm run test:samples:source && pnpm run typecheck && pnpm run test && pnpm run test:types && pnpm run build && pnpm run test:samples && pnpm run test:package-resolution && pnpm run test:package-content"

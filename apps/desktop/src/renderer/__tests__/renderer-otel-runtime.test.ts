@@ -3,6 +3,11 @@ import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes
 import { trace } from "@opentelemetry/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  RendererRenderCause,
+  RendererRenderPhase,
+  RendererRenderView,
+} from "../../shared/render-commit-event";
+import {
   DesktopOtelSignal,
   RendererOtelAllowedAttributeKey,
   type RendererOtelBridgePayload,
@@ -182,6 +187,188 @@ describe("renderer OTel runtime", () => {
 
     expect(() =>
       runtime.reportException({ error: new Error("bridge unavailable") })
+    ).not.toThrow();
+    await flushMicrotasks();
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("renderer render-commit telemetry", () => {
+  const baseEvent = {
+    view: RendererRenderView.SessionsList,
+    cause: RendererRenderCause.Paginate,
+    itemCount: 25,
+    actualMs: 8.27,
+    baseMs: 14.55,
+  } as const;
+
+  it("exports a mount commit as a Log wide event even when sampling would drop it", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
+    const runtime = createRendererOtelRuntime({
+      exportTelemetry,
+      renderCommitSampler: () => false,
+    });
+
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Mount,
+      cause: RendererRenderCause.Mount,
+    });
+    await flushMicrotasks();
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+    expect(exportTelemetry.mock.calls[0]?.[0].records[0]).toEqual({
+      signal: DesktopOtelSignal.Log,
+      instrumentationScope: { name: "closedloop-desktop-renderer" },
+      name: "desktop.renderer.render_commit.sessions_list",
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Values]: [8.3, 14.6],
+        [RendererOtelAllowedAttributeKey.Count]: 25,
+        [RendererOtelAllowedAttributeKey.Mode]: "mount",
+        [RendererOtelAllowedAttributeKey.Status]: "mount",
+      },
+    });
+  });
+
+  it("drops a sampled-out update commit", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
+    const runtime = createRendererOtelRuntime({
+      exportTelemetry,
+      renderCommitSampler: () => false,
+    });
+
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Update,
+    });
+    await flushMicrotasks();
+
+    expect(exportTelemetry).not.toHaveBeenCalled();
+  });
+
+  it("keeps a sampled-in update commit", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
+    const runtime = createRendererOtelRuntime({
+      exportTelemetry,
+      renderCommitSampler: () => true,
+    });
+
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Update,
+    });
+    await flushMicrotasks();
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+    expect(exportTelemetry.mock.calls[0]?.[0].records[0]).toMatchObject({
+      name: "desktop.renderer.render_commit.sessions_list",
+      attributes: { [RendererOtelAllowedAttributeKey.Mode]: "paginate" },
+    });
+  });
+
+  it("head-samples nested-update commits like ordinary updates (only mount bypasses)", async () => {
+    const dropped = vi.fn<ExportTelemetry>(async () => okResult());
+    const droppedRuntime = createRendererOtelRuntime({
+      exportTelemetry: dropped,
+      renderCommitSampler: () => false,
+    });
+    droppedRuntime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.NestedUpdate,
+    });
+    await flushMicrotasks();
+    expect(dropped).not.toHaveBeenCalled();
+
+    const kept = vi.fn<ExportTelemetry>(async () => okResult());
+    const keptRuntime = createRendererOtelRuntime({
+      exportTelemetry: kept,
+      renderCommitSampler: () => true,
+    });
+    keptRuntime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.NestedUpdate,
+    });
+    await flushMicrotasks();
+    expect(kept).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the default Math.random sampler when none is injected", async () => {
+    const randomSpy = vi.spyOn(Math, "random");
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
+    const runtime = createRendererOtelRuntime({ exportTelemetry });
+
+    // Below the 0.1 rate → kept.
+    randomSpy.mockReturnValue(0.05);
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Update,
+    });
+    await flushMicrotasks();
+    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+
+    // At/above the 0.1 rate → dropped.
+    randomSpy.mockReturnValue(0.5);
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Update,
+    });
+    await flushMicrotasks();
+    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not export render commits when the bridge is missing", async () => {
+    const runtime = createRendererOtelRuntime({
+      renderCommitSampler: () => true,
+    });
+
+    expect(() =>
+      runtime.reportRenderCommit({
+        ...baseEvent,
+        phase: RendererRenderPhase.Mount,
+      })
+    ).not.toThrow();
+    await flushMicrotasks();
+  });
+
+  it("stops exporting render commits after a terminal bridge result", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => ({
+      ok: false,
+      reason: RendererOtelExportFailureReason.Unavailable,
+    }));
+    const runtime = createRendererOtelRuntime({
+      exportTelemetry,
+      renderCommitSampler: () => true,
+    });
+
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Mount,
+    });
+    await flushMicrotasks();
+    runtime.reportRenderCommit({
+      ...baseEvent,
+      phase: RendererRenderPhase.Mount,
+    });
+    await flushMicrotasks();
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows bridge rejections from render-commit reporting", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(() =>
+      Promise.reject(new Error("bridge unavailable"))
+    );
+    const runtime = createRendererOtelRuntime({
+      exportTelemetry,
+      renderCommitSampler: () => true,
+    });
+
+    expect(() =>
+      runtime.reportRenderCommit({
+        ...baseEvent,
+        phase: RendererRenderPhase.Mount,
+      })
     ).not.toThrow();
     await flushMicrotasks();
 

@@ -227,7 +227,6 @@ import {
   getBranchViewData,
   resolveBranchViewMissingContextFailure,
   resolveBranchViewSyncPreflightContext,
-  syncBranchViewData,
   syncBranchViewDataWithRequest,
 } from "./service";
 
@@ -2292,7 +2291,7 @@ describe("resolveBranchViewSyncPreflightContext", () => {
   });
 });
 
-describe("syncBranchViewData", () => {
+describe("syncBranchViewDataWithRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStartBranchSync.mockResolvedValue({
@@ -2343,7 +2342,7 @@ describe("syncBranchViewData", () => {
     mockListPullRequestIssueComments.mockResolvedValue([]);
     mockListPullRequestReviews.mockResolvedValue([]);
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: { artifactId: "branch-artifact-1" },
       gitHubPullRequest: { id: "pr-detail-1" },
@@ -2379,7 +2378,7 @@ describe("syncBranchViewData", () => {
       throttleReason: BranchViewSyncThrottleReason.InFlight,
     });
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",
@@ -2416,7 +2415,7 @@ describe("syncBranchViewData", () => {
       throttleReason: BranchViewSyncThrottleReason.InFlight,
     });
 
-    const result = await syncBranchViewData(currentPrContext(null));
+    const result = await syncBranchViewDataWithRequest(currentPrContext(null));
 
     expect(result).toEqual({
       synced: false,
@@ -2464,7 +2463,7 @@ describe("syncBranchViewData", () => {
   });
 
   it("fails closed before file-cache mutation when current PR relation is stale", async () => {
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",
@@ -2618,7 +2617,7 @@ describe("syncBranchViewData", () => {
     mockListPullRequestIssueComments.mockResolvedValue([]);
     mockListPullRequestReviews.mockResolvedValue([]);
 
-    const result = await syncBranchViewData(currentPrContext());
+    const result = await syncBranchViewDataWithRequest(currentPrContext());
 
     expect(result).toEqual({
       synced: true,
@@ -2653,7 +2652,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 1, patchBytes: 12 },
     });
 
-    const result = await syncBranchViewData(currentPrContext());
+    const result = await syncBranchViewDataWithRequest(currentPrContext());
 
     expect(result).toEqual({
       synced: false,
@@ -2689,7 +2688,7 @@ describe("syncBranchViewData", () => {
       error: 500,
     });
 
-    const result = await syncBranchViewData(currentPrContext());
+    const result = await syncBranchViewDataWithRequest(currentPrContext());
 
     expect(result).toEqual({
       synced: false,
@@ -2723,7 +2722,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 1, patchBytes: 12 },
     });
 
-    const result = await syncBranchViewData(currentPrContext());
+    const result = await syncBranchViewDataWithRequest(currentPrContext());
 
     expect(result).toEqual({
       synced: false,
@@ -2762,7 +2761,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 0, patchBytes: 0 },
     });
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",
@@ -2822,7 +2821,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 0, patchBytes: 0 },
     });
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",
@@ -2870,7 +2869,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 0, patchBytes: 0 },
     });
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",
@@ -2908,7 +2907,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 0, patchBytes: 0 },
     });
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",
@@ -2956,7 +2955,7 @@ describe("syncBranchViewData", () => {
       value: { throttled: false, fileCount: 0, patchBytes: 0 },
     });
 
-    const result = await syncBranchViewData({
+    const result = await syncBranchViewDataWithRequest({
       externalLink: { id: "branch-artifact-1", organizationId: "org-1" },
       branch: {
         artifactId: "branch-artifact-1",

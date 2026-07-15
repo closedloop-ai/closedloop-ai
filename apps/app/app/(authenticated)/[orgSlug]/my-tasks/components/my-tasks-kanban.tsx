@@ -12,8 +12,16 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { DocumentStatus } from "@repo/api/src/types/document";
+import {
+  type ArtifactStatus,
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
+import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
+import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
+import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
 import { documentKeys } from "@repo/app/documents/hooks/document-keys";
 import { useUpdateDocument } from "@repo/app/documents/hooks/use-documents";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
@@ -21,10 +29,7 @@ import {
   getDocumentRoute,
   withOrgSlug,
 } from "@repo/app/documents/lib/document-navigation";
-import {
-  DOCUMENT_STATUS_TO_ICON,
-  DOCUMENT_TYPE_ICONS,
-} from "@repo/app/projects/lib/project-constants";
+import { DOCUMENT_TYPE_ICONS } from "@repo/app/projects/lib/project-constants";
 import { AssigneeAvatar } from "@repo/app/shared/components/assignee-avatar";
 import { useElementViewportHeight } from "@repo/app/shared/hooks/use-element-viewport-height";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
@@ -32,7 +37,6 @@ import {
   KanbanBoardLayout,
   KanbanColumn,
 } from "@repo/design-system/components/ui/layout/kanban-board";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { Link } from "@repo/navigation/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckSquareIcon, TerminalIcon } from "lucide-react";
@@ -41,16 +45,47 @@ import { useOrgSlug } from "@/hooks/use-org-slug";
 import { buildArtifactListParams, DISPLAY_GROUPS } from "../utils";
 import { KanbanArtifactCard } from "./kanban-artifact-card";
 
-/** Map column (droppable) id to the status to set when an artifact is dropped there */
-const COLUMN_TO_STATUS: Record<string, DocumentStatus> = {
-  draft: DocumentStatus.Draft,
-  in_progress: DocumentStatus.InProgress,
-  in_review: DocumentStatus.InReview,
-  approved: DocumentStatus.Approved,
-  executed: DocumentStatus.Executed,
-  done: DocumentStatus.Done,
-  obsolete: DocumentStatus.Obsolete,
-};
+/**
+ * Resolve the status to set when an artifact is dropped on a column. The board
+ * mixes Documents and Features with disjoint vocabularies (PRD-495), so the
+ * target depends on the dragged artifact's type. Returns null when a column has
+ * no valid target for that type (e.g. a Document dropped on "To Do"); the drop
+ * is then a no-op.
+ */
+function columnTargetStatus(
+  columnKey: string,
+  artifactType: DocumentRowData["type"]
+): ArtifactStatus | null {
+  const isFeature = artifactType === DocumentType.Feature;
+  switch (columnKey) {
+    case "backlog":
+      return isFeature ? FeatureStatus.Backlog : DocumentStatus.Draft;
+    case "todo":
+      return isFeature ? FeatureStatus.Todo : null;
+    case "in_progress":
+      return isFeature ? FeatureStatus.InProgress : null;
+    case "in_review":
+      return isFeature ? FeatureStatus.InReview : DocumentStatus.InReview;
+    case "blocked":
+      return isFeature
+        ? FeatureStatus.Blocked
+        : DocumentStatus.ChangesRequested;
+    case "approved":
+      return isFeature ? null : DocumentStatus.Approved;
+    case "executed":
+      return isFeature ? null : DocumentStatus.Executed;
+    case "done":
+      // Documents have no "done"; their terminal sign-off is the dedicated
+      // "approved" column. Returning Approved here would set the status then
+      // re-render the card into the approved column (a visual teleport), so a
+      // Document dropped on "done" is a no-op (PRD-495).
+      return isFeature ? FeatureStatus.Done : null;
+    case "closed":
+      return isFeature ? FeatureStatus.Canceled : DocumentStatus.Obsolete;
+    default:
+      return null;
+  }
+}
 
 type MyTasksKanbanProps = {
   artifacts: DocumentRowData[];
@@ -105,25 +140,35 @@ export function MyTasksKanban({
         setActiveId(null);
         return;
       }
-      const overId = String(over.id);
-      let newStatus: DocumentStatus | undefined = COLUMN_TO_STATUS[overId];
-      if (!newStatus) {
-        const targetArtifact = artifacts.find(
-          (i: DocumentRowData) => i.id === overId
-        );
-        if (targetArtifact) {
-          newStatus = targetArtifact.status;
-        }
-      }
-      if (!newStatus) {
-        setActiveId(null);
-        return;
-      }
       const artifactId = String(active.id);
       const artifact = artifacts.find(
         (i: DocumentRowData) => i.id === artifactId
       );
-      if (!artifact || artifact.status === newStatus) {
+      if (!artifact) {
+        setActiveId(null);
+        return;
+      }
+      // `over` is either a column droppable id or another artifact's id. Resolve
+      // it to a column, then pick the target status for THIS artifact's type
+      // (Documents and Features have disjoint vocabularies — PRD-495).
+      const overId = String(over.id);
+      let columnKey: string | undefined = DISPLAY_GROUPS.find(
+        (g) => g.key === overId
+      )?.key;
+      if (!columnKey) {
+        const targetArtifact = artifacts.find(
+          (i: DocumentRowData) => i.id === overId
+        );
+        if (targetArtifact) {
+          columnKey = DISPLAY_GROUPS.find((g) =>
+            g.statuses.includes(targetArtifact.status)
+          )?.key;
+        }
+      }
+      const newStatus = columnKey
+        ? columnTargetStatus(columnKey, artifact.type)
+        : null;
+      if (!newStatus || artifact.status === newStatus) {
         setActiveId(null);
         return;
       }
@@ -226,7 +271,7 @@ type KanbanColumnProps = {
   groupLabel: string;
   items: DocumentRowData[];
   lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
-  status: DocumentStatus;
+  status: ArtifactStatus;
 };
 
 function MyTasksKanbanColumn({
@@ -244,7 +289,7 @@ function MyTasksKanbanColumn({
         className="w-[270px] rounded-md bg-muted/30 shadow-none"
         count={items.length}
         highlighted={isOver}
-        icon={<StatusIcon size={16} status={DOCUMENT_STATUS_TO_ICON[status]} />}
+        icon={<ArtifactStatusIcon size={16} status={status} />}
         title={groupLabel}
       >
         <div className="flex flex-col gap-1.5">
@@ -288,10 +333,19 @@ function getKanbanArtifactCardProps(
           disableLink={disableAvatarLink}
           disableTooltip
         />
-        <StatusIcon
-          size={16}
-          status={DOCUMENT_STATUS_TO_ICON[artifact.status]}
-        />
+        {/* The card knows its artifact type, so render the exact vocabulary's
+            icon (Documents and Features diverge on IN_REVIEW — PRD-495). */}
+        {artifact.type === DocumentType.Feature ? (
+          <FeatureStatusIcon
+            size={16}
+            status={artifact.status as FeatureStatus}
+          />
+        ) : (
+          <DocumentStatusIcon
+            size={16}
+            status={artifact.status as DocumentStatus}
+          />
+        )}
       </div>
     ),
   };

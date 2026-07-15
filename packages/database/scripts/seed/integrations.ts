@@ -116,6 +116,7 @@ export async function seedIntegrationEntities(
         create: {
           id: pullRequestDetailId,
           branchArtifactId,
+          organizationId,
           repositoryId: githubRepositoryId,
           githubId: githubPrPlaceholder,
           number: 1,

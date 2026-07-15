@@ -1,6 +1,6 @@
 /**
  * @file prisma-migrations-agreement.test.ts
- * @description Phase 1 CI guard: asserts the committed migration history and
+ * @description CI guard: asserts the committed migration history and
  * prisma/schema.prisma agree — the desktop equivalent of
  * `prisma migrate diff --from-migrations --to-schema --exit-code`, using an
  * on-disk libSQL database as the shadow so no external server is needed (the
@@ -27,7 +27,7 @@ import {
   legacyMigrationSortKeys,
   migrationSortKey,
 } from "../scripts/migration-order.mjs";
-import { openLibsqlDatabase } from "../src/main/database/libsql-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
 import { ModelPricingSource } from "../src/main/model-pricing/model-pricing-fixture.js";
 import {
   snapshotSchema,
@@ -48,12 +48,12 @@ test.after(async () => {
   );
 });
 
-type SqliteDb = Awaited<ReturnType<typeof openLibsqlDatabase>>["db"];
+type SqliteDb = Awaited<ReturnType<typeof openMigrationDatabase>>["db"];
 
 async function openShadowDb(): Promise<SqliteDb> {
   const dir = await mkdtempAsync(path.join(os.tmpdir(), "migrations-agree-"));
   tempDirs.push(dir);
-  const { db } = await openLibsqlDatabase(path.join(dir, "shadow.sqlite"));
+  const { db } = await openMigrationDatabase(path.join(dir, "shadow.sqlite"));
   return db;
 }
 

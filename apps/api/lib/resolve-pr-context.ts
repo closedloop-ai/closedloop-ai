@@ -3,12 +3,6 @@ import "server-only";
 import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
-type ParsedPullRequestIdentity = {
-  owner: string;
-  repo: string;
-  pullNumber: number;
-};
-
 export const BranchViewContextCredentialMode = {
   PinnedActiveOnly: "pinned_active_only",
   RenderRead: "render_read",
@@ -35,29 +29,6 @@ type BranchRepositoryCredential = {
   credentialSource: BranchViewContextCredentialSource;
 };
 
-export function matchesParsedPullRequestIdentity(
-  parsedIdentity: ParsedPullRequestIdentity,
-  candidate: {
-    repositoryFullName: string | null;
-    pullNumber: number;
-  }
-): boolean {
-  if (!candidate.repositoryFullName) {
-    return false;
-  }
-
-  return (
-    normalizeRepositoryFullName(candidate.repositoryFullName) ===
-      normalizeRepositoryFullName(
-        `${parsedIdentity.owner}/${parsedIdentity.repo}`
-      ) && candidate.pullNumber === parsedIdentity.pullNumber
-  );
-}
-
-function normalizeRepositoryFullName(fullName: string): string {
-  return fullName.trim().toLowerCase();
-}
-
 function parseRepositoryFullName(
   fullName: string
 ): { owner: string; repo: string } | null {
@@ -81,14 +52,18 @@ export type PrContext = {
   };
   prMetadata: {
     number: number;
-    githubId?: string;
+    // FEA-2732: nullable for desktop-produced PRs with no GitHub node id yet.
+    githubId?: string | null;
     headBranch: string;
     baseBranch: string;
     state: string;
   } | null;
   branch: {
     artifactId: string;
-    repositoryId: string;
+    // Null for desktop-produced branches in non-App repos (PRD-510 D2/FR8):
+    // branch identity keys on (organizationId, repositoryFullName, branchName)
+    // rather than an installation-repo id.
+    repositoryId: string | null;
     branchName: string;
     baseBranch: string | null;
     baseBranchSource: string | null;
@@ -130,9 +105,10 @@ export type PrContext = {
   // artifacts during the additive migration window.
   gitHubPullRequest: {
     id: string;
-    repositoryId: string;
+    // FEA-2732: nullable for desktop-produced PRs in non-App repos.
+    repositoryId: string | null;
     documentId: string | null;
-    githubId: string;
+    githubId: string | null;
     headSha: string | null;
     number: number;
     title: string | null;
@@ -233,7 +209,8 @@ type BranchArtifactContextRow = {
   createdBy: { githubUsername: string | null } | null;
   branch: {
     artifactId: string;
-    repositoryId: string;
+    // Null for desktop-produced branches in non-App repos (PRD-510 D2/FR8).
+    repositoryId: string | null;
     branchName: string;
     baseBranch: string | null;
     baseBranchSource: string | null;
@@ -273,8 +250,9 @@ type BranchArtifactContextRow = {
       id: string;
       artifactId: string | null;
       branchArtifactId: string;
-      repositoryId: string;
-      githubId: string;
+      // FEA-2732: nullable for desktop-produced PRs in non-App repos.
+      repositoryId: string | null;
+      githubId: string | null;
       number: number;
       title: string | null;
       htmlUrl: string | null;
@@ -284,6 +262,7 @@ type BranchArtifactContextRow = {
       lastVerifiedAt: Date | null;
       lastRefreshAttemptAt: Date | null;
     } | null;
+    // Null for non-App branches: no installation-repo relation exists.
     repository: {
       id: string;
       githubRepoId: string | null;
@@ -294,13 +273,13 @@ type BranchArtifactContextRow = {
         organizationId: string | null;
         status: string;
       };
-    };
+    } | null;
   } | null;
 };
 
 type BranchRepositoryRow = NonNullable<
-  BranchArtifactContextRow["branch"]
->["repository"];
+  NonNullable<BranchArtifactContextRow["branch"]>["repository"]
+>;
 
 async function resolveBranchArtifactContext(
   artifact: BranchArtifactContextRow,
@@ -312,9 +291,16 @@ async function resolveBranchArtifactContext(
     return null;
   }
 
+  // Non-App branch (PRD-510 D2/FR8): no installation-repo relation, so no GitHub
+  // App credential can be resolved. Branch View / provider reads are unavailable.
+  const repository = branch.repository;
+  if (!repository) {
+    return null;
+  }
+
   const credential = await resolveBranchRepositoryCredential(
     artifact.id,
-    branch.repository,
+    repository,
     organizationId,
     options.credentialMode ?? BranchViewContextCredentialMode.PinnedActiveOnly
   );
@@ -429,7 +415,7 @@ async function resolveBranchArtifactContext(
     repositoryId: branch.repositoryId,
     credentialRepositoryId: credential.repositoryId,
     credentialSource: credential.credentialSource,
-    githubRepoId: branch.repository.githubRepoId,
+    githubRepoId: repository.githubRepoId,
     pinnedRepositoryId: branch.repositoryId,
     installationId: credential.installationId,
     owner: repoIdentity.owner,

@@ -6,11 +6,10 @@
  * filesystem scanner; invocation history is sourced from the existing `events`
  * table and never duplicated here (FEA-1224 architectural constraint).
  *
- * Operates on the shared SQLite DB handle (async query API). Mirrors the
- * structure of the original CJS pack-store.js with composite-key upserts in
- * place of monotonic versioning.
+ * Runs on the single DesktopPrisma client. Mirrors the structure of the original
+ * CJS pack-store.js with composite-key upserts in place of monotonic versioning.
  *
- * Schema lives in sqlite.ts SQLITE_SCHEMA — no ensurePackSchema() here.
+ * Schema is owned by Prisma + the migration runner — no ensurePackSchema() here.
  *
  * Part of CLOSEDLOOP pack-observability (FEA-1224 / PLN-651, parent PRD-364).
  */
@@ -21,7 +20,7 @@ import type {
   SkillInvocation,
   SkillWithInvocations,
 } from "../../shared/agent-db-contract.js";
-import type { DesktopPrisma } from "../database/prisma-client.js";
+import type { DbHostPrisma, DesktopPrisma } from "../database/prisma-client.js";
 
 // Every pack-store function — reads AND writes — runs on the single
 // DesktopPrisma client. Writes (upserts) use the typed delegates
@@ -278,7 +277,7 @@ function toSkillInvocation(row: SkillInvocationRow): SkillInvocation {
  * avoids picking one arbitrary value and presenting it as authoritative.
  */
 export async function listPacks(
-  prisma: DesktopPrisma
+  prisma: DbHostPrisma
 ): Promise<InstalledPack[]> {
   const rows = await prisma.client.$queryRawUnsafe<PackListRow[]>(
     `SELECT
@@ -324,7 +323,7 @@ interface SkillRow extends Record<string, unknown> {
  * path), skills, and project associations. Tombstoned installs are excluded.
  */
 export async function getPack(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   packId: string
 ): Promise<InstalledPackDetail | null> {
   const installs = await prisma.client.agentPack.findMany({
@@ -357,7 +356,7 @@ export async function getPack(
 
 // getPack always passes a concrete packId, so the prior null-safe
 // `pack_id IS NOT DISTINCT FROM $1` is a plain equality here.
-export function listSkillsForPack(prisma: DesktopPrisma, packId: string) {
+export function listSkillsForPack(prisma: DbHostPrisma, packId: string) {
   return prisma.client.skill.findMany({
     where: { packId, uninstalledAt: null },
     select: {
@@ -375,13 +374,22 @@ export function listSkillsForPack(prisma: DesktopPrisma, packId: string) {
 // Skill invocation queries
 // ────────────────────────────────────────────────────────────────────────────
 
-// Shared SQL fragment: extract the skill-name token from a UserPromptSubmit
-// event's `data` field (stored as TEXT, cast to jsonb). Claude Code records
-// slash-command invocations as UserPromptSubmit events where
-// data->'prompt' = "/<skill-name> [args...]" (no PreToolUse / tool_name='Skill'
-// event is fired). We pull the first whitespace-delimited token after the
-// leading slash. Path-like prompts (e.g. "/Users/foo/...") are filtered out
-// by requiring the extracted token to contain no slash characters.
+// Shared SQL fragment: extract the leading `/<name>` token from a
+// UserPromptSubmit event's `data` field (stored as TEXT, cast to jsonb).
+//
+// NOTE (FEA-3048): this is a legacy prompt-based matcher on the standalone
+// Skills page — NOT the Agents-workspace component-usage rollup. The earlier
+// comment here wrongly claimed Claude fires "no tool_name='Skill' event" for a
+// skill; in fact Claude DOES fire a first-class `Skill` tool call
+// (`{"type":"tool_use","name":"Skill","input":{"skill":"<name>"}}`), which the
+// Agents-workspace rollup now keys off (see insertSkillUsage in write-core.ts).
+// This page still keys off the `/<name>` prompt token because it maps calls
+// back to the `skills` inventory table by name; the `Skill`-tool-based path is
+// the SoT for the Agents workspace usage counts.
+//
+// We pull the first whitespace-delimited token after the leading slash.
+// Path-like prompts (e.g. "/Users/foo/...") are filtered out by requiring the
+// extracted token to contain no slash characters.
 //
 // PG equivalent of the SQLite `instr / substr / json_extract` pattern:
 //   - json_extract(data,'$.prompt') → (data::jsonb->>'prompt')
@@ -418,7 +426,7 @@ interface SkillWithInvocationsRow extends SkillRow {
  * Codex patch (default 'claude' for legacy rows).
  */
 export async function listSkills(
-  prisma: DesktopPrisma
+  prisma: DbHostPrisma
 ): Promise<SkillWithInvocations[]> {
   const rows = await prisma.client.$queryRawUnsafe<SkillWithInvocationsRow[]>(
     `SELECT
@@ -444,7 +452,13 @@ export async function listSkills(
        FROM events e
        JOIN sessions sess ON sess.id = e.session_id
        WHERE e.event_type = 'UserPromptSubmit'
-         AND json_extract(e.data, '$.prompt') LIKE '/_%'
+         -- FEA-3048 (root cause 4): match "leading slash followed by 1+ chars"
+         -- WITHOUT relying on the bare underscore LIKE wildcard (which, with no
+         -- ESCAPE clause, silently matches any character). Anchor on the literal
+         -- slash and require length > 1 so a bare slash is excluded but the
+         -- intent is explicit and escape-safe.
+         AND json_extract(e.data, '$.prompt') LIKE '/%'
+         AND length(json_extract(e.data, '$.prompt')) > 1
        GROUP BY skill_name, harness
      ) inv ON inv.skill_name = s.name AND inv.harness = s.harness
      WHERE s.uninstalled_at IS NULL
@@ -474,7 +488,7 @@ interface SkillInvocationRow extends Record<string, unknown> {
  * the calls that match the install row the user clicked on.
  */
 export async function listSkillInvocations(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   name: string,
   { limit = 50, offset = 0, harness = null as string | null } = {}
 ): Promise<SkillInvocation[]> {
@@ -508,7 +522,10 @@ export async function listSkillInvocations(
      FROM events e
      JOIN sessions sess ON sess.id = e.session_id
      WHERE e.event_type = 'UserPromptSubmit'
-       AND ${prompt} LIKE '/_%'
+       -- FEA-3048 (root cause 4): escape-safe "leading slash + 1+ chars" (see
+       -- listSkills) instead of the bare underscore LIKE wildcard.
+       AND ${prompt} LIKE '/%'
+       AND length(${prompt}) > 1
        AND (
          CASE
            WHEN instr(${tail}, ' ') > 0
@@ -541,7 +558,7 @@ export async function listSkillInvocations(
  * Returns Map<pack_id, string[]>.
  */
 export async function collectPackPaths(
-  prisma: DesktopPrisma
+  prisma: DbHostPrisma
 ): Promise<Map<string, string[]>> {
   const out = new Map<string, Set<string>>();
 
@@ -700,7 +717,7 @@ interface PackSessionRow extends Record<string, unknown> {
  * Sorted by last activity in that session, descending.
  */
 export async function listPackSessions(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   packId: string,
   { limit = 25, offset = 0 } = {}
 ): Promise<PackSessionRow[]> {

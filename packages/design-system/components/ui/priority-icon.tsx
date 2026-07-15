@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 
 type PriorityLevel = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 

@@ -6,6 +6,7 @@ import {
   asRecord,
   buildLoopUrl,
   buildPaginatedPayload,
+  buildQuery,
   describeIdOrSlug,
   MAX_PAGE_LIMIT,
   readString,
@@ -46,13 +47,7 @@ export function registerListLoops(
     },
     ({ documentId, status, limit, offset }) =>
       withErrorHandling(async () => {
-        const query: Record<string, string> = {};
-        if (documentId !== undefined) {
-          query.documentId = documentId;
-        }
-        if (status !== undefined) {
-          query.status = status;
-        }
+        const query = buildQuery({ documentId, status });
 
         const loops = await apiClient.get<unknown[]>("/loops", query);
         const payload = buildPaginatedPayload(loops, {

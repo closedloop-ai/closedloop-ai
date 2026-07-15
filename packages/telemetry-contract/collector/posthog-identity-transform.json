@@ -1,0 +1,7 @@
+{
+  "$generatedBy": "packages/telemetry-contract/scripts/generate-collector-posthog-routing.ts",
+  "$doNotEdit": "Generated from TelemetryAttribute.AppInstallationId and PosthogIdentityAttribute.DistinctId; run `pnpm --filter @closedloop-ai/telemetry-contract generate:collector-posthog-routing` to regenerate (FEA-2184).",
+  "processorName": "transform/posthog_identity",
+  "sourceKey": "app.installation.id",
+  "targetKey": "posthog.distinct_id"
+}

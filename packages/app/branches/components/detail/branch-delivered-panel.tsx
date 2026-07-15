@@ -111,6 +111,7 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
             {body}
           </div>
           <button
+            aria-expanded={open}
             className="bq-ctx-more"
             onClick={() => setOpen((value) => !value)}
             type="button"

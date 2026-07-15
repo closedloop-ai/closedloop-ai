@@ -104,6 +104,7 @@ export type TokenAnalytics = {
   totalOutputTokens: number;
   totalCacheReadTokens: number;
   totalCacheWriteTokens: number;
+  windowDays: number;
   byModel: Array<{
     model: string;
     inputTokens: number;
@@ -115,6 +116,7 @@ export type TokenAnalytics = {
     day: string;
     inputTokens: number;
     outputTokens: number;
+    estimatedCostUsd?: number;
   }>;
 };
 

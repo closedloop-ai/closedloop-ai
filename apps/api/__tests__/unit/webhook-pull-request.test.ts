@@ -139,6 +139,9 @@ describe("handlePullRequest", () => {
       },
       pullRequestDetail: {
         findUnique: vi.fn(),
+        // FEA-2732: the handler adopts a desktop repo-less row by D2 identity
+        // before falling back; default to "no repo-less row" here.
+        findFirst: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockResolvedValue({ id: "pr-detail-id" }),
         update: vi.fn(),
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -152,7 +155,9 @@ describe("handlePullRequest", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       branchDetail: {
-        findUnique: vi.fn().mockResolvedValue(null),
+        // D2: (repository_id, branch_name) is no longer unique — the handler
+        // resolves an existing branch via findFirst.
+        findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn(),
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
@@ -196,6 +201,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-123",
         installation: { organizationId: "org-uuid-123" },
       });
@@ -242,6 +248,117 @@ describe("handlePullRequest", () => {
     });
   });
 
+  // FEA-2732 regression: a desktop-synced row can already occupy this
+  // (repo, PR#) with repositoryId set but githubId still null (a session
+  // referenced an existing PR before any webhook fired). findPullRequestDetail
+  // matches it, so the repo-less adopt is skipped and the githubId is never
+  // stamped. Before the fix, applyPrAction's githubId-keyed update threw P2025
+  // ("record to update not found") and rolled back the entire webhook tx.
+  describe("desktop-created row with a null githubId (FEA-2732)", () => {
+    it("stamps githubId in place, keyed by the row id, before the action update", async () => {
+      const repository = createRepository(789);
+      const pullRequest = createPullRequest({
+        number: 77,
+        title: "Existing PR first synced from desktop",
+        state: "closed",
+        merged: true,
+        closed_at: "2026-03-01T12:00:00Z",
+        merged_at: "2026-03-01T12:00:00Z",
+        merge_commit_sha: "abc789",
+      });
+
+      const event: PullRequestClosedEvent = {
+        action: "closed",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any;
+
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
+        id: "repo-uuid-123",
+        installation: { organizationId: "org-uuid-123" },
+      });
+
+      // The matched row is an App-repo row (repositoryId set) with no githubId.
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+        ...makePrDetailRow({
+          id: "pr-detail-null-gid",
+          artifactId: "artifact-pr-null-gid",
+          organizationId: "org-uuid-123",
+        }),
+        githubId: null,
+      });
+      mockTx.artifact.update.mockResolvedValue({});
+
+      // Must not throw (the P2025 rollback is what this fix prevents).
+      await handlePullRequest(event);
+
+      // The fix: adopt in place by stamping githubId keyed on the stable primary
+      // key, not on the still-null githubId.
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { id: "pr-detail-null-gid" },
+        data: { githubId: String(pullRequest.id) },
+      });
+      // The lifecycle action update still runs — the tx was not rolled back.
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { githubId: String(pullRequest.id) },
+        })
+      );
+    });
+
+    it("does not issue an id-keyed stamp when the matched row already has a githubId", async () => {
+      const repository = createRepository(789);
+      const pullRequest = createPullRequest({
+        number: 78,
+        title: "App-owned PR",
+        state: "closed",
+        merged: false,
+        closed_at: "2026-03-01T13:00:00Z",
+        merged_at: null,
+        merge_commit_sha: null,
+      });
+
+      const event: PullRequestClosedEvent = {
+        action: "closed",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any;
+
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
+        id: "repo-uuid-123",
+        installation: { organizationId: "org-uuid-123" },
+      });
+
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue({
+        ...makePrDetailRow({
+          id: "pr-detail-app",
+          artifactId: "artifact-pr-app",
+          organizationId: "org-uuid-123",
+        }),
+        githubId: String(pullRequest.id),
+      });
+      mockTx.artifact.update.mockResolvedValue({});
+
+      await handlePullRequest(event);
+
+      // The githubId-backfill stamp (its distinctive signature: id-keyed with a
+      // githubId-only data payload) must not fire — other id-keyed updates from
+      // the normal lifecycle are unrelated and allowed.
+      expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalledWith({
+        where: { id: "pr-detail-app" },
+        data: { githubId: String(pullRequest.id) },
+      });
+    });
+  });
+
   describe("closed action with merged=false", () => {
     it("updates state to CLOSED and creates GITHUB_PR_CLOSED event", async () => {
       const repository = createRepository(789);
@@ -265,6 +382,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-123",
         installation: { organizationId: "org-uuid-123" },
       });
@@ -325,6 +443,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-456",
         installation: { organizationId: "org-uuid-456" },
       });
@@ -383,6 +502,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-sync",
         installation: { organizationId: "org-uuid-sync" },
       });
@@ -400,12 +520,13 @@ describe("handlePullRequest", () => {
 
       await handlePullRequest(event);
 
-      const currentPrUpsert =
-        mockTx.pullRequestDetail.upsert.mock.calls[0]?.[0];
-      expect(currentPrUpsert.create).not.toHaveProperty("prState");
-      expect(currentPrUpsert.create).not.toHaveProperty("isDraft");
-      expect(currentPrUpsert.update).not.toHaveProperty("prState");
-      expect(currentPrUpsert.update).not.toHaveProperty("isDraft");
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { id: "artifact-pr-sync" },
+        data: expect.objectContaining({
+          prState: "OPEN",
+          isDraft: false,
+        }),
+      });
       expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
         where: { artifactId: "artifact-pr-sync" },
         data: expect.objectContaining({
@@ -424,6 +545,7 @@ describe("handlePullRequest", () => {
       });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-sync",
         installation: { organizationId: "org-uuid-sync" },
       });
@@ -473,6 +595,7 @@ describe("handlePullRequest", () => {
       });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-sync",
         installation: { organizationId: "org-uuid-sync" },
       });
@@ -480,7 +603,7 @@ describe("handlePullRequest", () => {
       mockTx.pullRequestDetail.upsert.mockResolvedValueOnce({
         id: "incoming-pr-detail-id",
       });
-      mockTx.branchDetail.findUnique.mockResolvedValueOnce({
+      mockTx.branchDetail.findFirst.mockResolvedValueOnce({
         artifactId: "branch-artifact-sync",
         currentPullRequestDetailId: "foreign-terminal-pr-detail-id",
         checksStatus: "PASSING",
@@ -515,9 +638,15 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.pullRequestDetail.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { githubId: String(pullRequest.id) },
+          where: {
+            repositoryId_number: {
+              repositoryId: "repo-uuid-sync",
+              number: pullRequest.number,
+            },
+          },
           create: expect.objectContaining({
             branchArtifactId: "branch-artifact-sync",
+            githubId: String(pullRequest.id),
             repositoryId: "repo-uuid-sync",
           }),
         })
@@ -562,6 +691,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-sync",
         installation: { organizationId: "org-uuid-sync" },
       });
@@ -617,6 +747,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-draft",
         installation: { organizationId: "org-uuid-draft" },
       });
@@ -663,6 +794,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-ready",
         installation: { organizationId: "org-uuid-ready" },
       });
@@ -713,6 +845,51 @@ describe("handlePullRequest", () => {
 
       expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
       expect(mockTx.artifact.update).not.toHaveBeenCalled();
+    });
+
+    it("pins active repository lookup to non-tombstoned installation repositories", async () => {
+      const repository = createRepository(999);
+      const pullRequest = createPullRequest({
+        number: 51,
+        title: "Tombstoned repo PR",
+      });
+
+      const event: PullRequestClosedEvent = {
+        action: "closed",
+        number: pullRequest.number,
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any;
+
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
+
+      await handlePullRequest(event);
+
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith({
+        where: {
+          githubRepoId: String(repository.id),
+          fullName: repository.full_name,
+          removedAt: null,
+          installation: {
+            installationId: "99",
+            status: GitHubInstallationStatus.ACTIVE,
+          },
+        },
+        select: {
+          id: true,
+          fullName: true,
+          installation: {
+            select: { organizationId: true, installationId: true },
+          },
+        },
+      });
+      for (const writeMock of pullRequestWebhookWriteMocks()) {
+        expect(writeMock).not.toHaveBeenCalled();
+      }
     });
   });
 
@@ -874,6 +1051,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-exists",
         installation: { organizationId: "org-uuid-exists" },
       });
@@ -936,6 +1114,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: "repo-uuid-tx",
         installation: { organizationId: "org-uuid-tx" },
       });
@@ -958,7 +1137,7 @@ describe("handlePullRequest", () => {
         {
           id: "artifact-doc-tx",
           subtype: "IMPLEMENTATION_PLAN",
-          status: DocumentStatus.InProgress,
+          status: DocumentStatus.Draft,
         },
       ]);
 
@@ -984,6 +1163,7 @@ describe("handlePullRequest", () => {
 
     function setupRepoMock() {
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        fullName: "acme/widgets",
         id: REPO_ID,
         installation: { organizationId: ORG_ID },
       });
@@ -1154,7 +1334,11 @@ describe("handlePullRequest", () => {
       );
 
       expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(1);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(2);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(event.pull_request.id) },
+        data: expect.objectContaining({ prState: "OPEN" }),
+      });
       expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
     });
 
@@ -1179,7 +1363,7 @@ describe("handlePullRequest", () => {
           artifactId: "legacy-pr-artifact",
           branchArtifactId: null,
         });
-      mockTx.branchDetail.findUnique.mockResolvedValueOnce(null);
+      mockTx.branchDetail.findFirst.mockResolvedValueOnce(null);
 
       const pullRequest = createPullRequest({
         id: 9006,
@@ -1347,7 +1531,11 @@ describe("handlePullRequest", () => {
       expect(mockTx.artifactLink.create).not.toHaveBeenCalled();
 
       expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(1);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(2);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
+        where: { githubId: String(event.pull_request.id) },
+        data: expect.objectContaining({ prState: "OPEN" }),
+      });
     });
 
     it("does not let a stale non-current PR event re-point the branch current PR", async () => {

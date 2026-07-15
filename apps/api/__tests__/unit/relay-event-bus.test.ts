@@ -68,6 +68,114 @@ describe("relayEventBus", () => {
     unsubscribe();
   });
 
+  it("replays only result events after the reconnect cursor", () => {
+    const operationId = "op-cursor";
+    const events = [
+      { operationId, event: { content: "a" }, sequence: 1 },
+      { operationId, event: { content: "b" }, sequence: 2 },
+      { operationId, result: { status: "ok" }, done: true, sequence: 3 },
+    ];
+    for (const event of events) {
+      relayEventBus.publishResult(operationId, event);
+    }
+
+    const received: unknown[] = [];
+    const unsubscribe = relayEventBus.subscribeResults(
+      operationId,
+      (event) => {
+        received.push(event);
+      },
+      { afterSequence: 2 }
+    );
+
+    // Sequences 1 and 2 were already processed by the client; only 3 replays.
+    expect(received).toEqual([events[2]]);
+    unsubscribe();
+  });
+
+  it("replays events without a sequence even when a cursor is set", () => {
+    const operationId = "op-cursor-no-seq";
+    const withSeq = { operationId, event: { content: "seen" }, sequence: 1 };
+    const withoutSeq = { operationId, event: { content: "new" } };
+
+    relayEventBus.publishResult(operationId, withSeq);
+    relayEventBus.publishResult(operationId, withoutSeq);
+
+    const received: unknown[] = [];
+    const unsubscribe = relayEventBus.subscribeResults(
+      operationId,
+      (event) => {
+        received.push(event);
+      },
+      { afterSequence: 1 }
+    );
+
+    // The sequenced event is suppressed; the unsequenced one arrived after it
+    // (past the cursor position) and is still delivered.
+    expect(received).toEqual([withoutSeq]);
+    unsubscribe();
+  });
+
+  it("suppresses unsequenced events streamed before the reconnect cursor", () => {
+    const operationId = "op-cursor-no-seq-before";
+    const before = { operationId, event: { content: "before" } };
+    const acked = { operationId, event: { content: "acked" }, sequence: 2 };
+    const after = { operationId, event: { content: "after" } };
+
+    relayEventBus.publishResult(operationId, before);
+    relayEventBus.publishResult(operationId, acked);
+    relayEventBus.publishResult(operationId, after);
+
+    const received: unknown[] = [];
+    const unsubscribe = relayEventBus.subscribeResults(
+      operationId,
+      (event) => {
+        received.push(event);
+      },
+      { afterSequence: 2 }
+    );
+
+    // `before` was streamed before the acknowledged sequence 2, so it must not
+    // be redelivered; only the unsequenced event after the cursor replays.
+    expect(received).toEqual([after]);
+    unsubscribe();
+  });
+
+  it("suppresses unsequenced events before the cursor when the anchoring sequenced event was shifted off", () => {
+    // Simulate a backlog that has been trimmed by shift(): the client last saw
+    // sequence 3 but those early sequenced events are no longer in the backlog.
+    // Unsequenced events that arrived before sequence 4 must not be replayed.
+    const operationId = "op-cursor-shifted";
+    // seq 1-3 have been shifted off; the surviving backlog starts here:
+    const earlyUnsequenced = {
+      operationId,
+      event: { content: "early-no-seq" },
+    };
+    const seq4 = { operationId, event: { content: "d" }, sequence: 4 };
+    const lateUnsequenced = { operationId, event: { content: "late-no-seq" } };
+    const seq5 = { operationId, event: { content: "e" }, sequence: 5 };
+
+    relayEventBus.publishResult(operationId, earlyUnsequenced);
+    relayEventBus.publishResult(operationId, seq4);
+    relayEventBus.publishResult(operationId, lateUnsequenced);
+    relayEventBus.publishResult(operationId, seq5);
+
+    const received: unknown[] = [];
+    const unsubscribe = relayEventBus.subscribeResults(
+      operationId,
+      (event) => {
+        received.push(event);
+      },
+      { afterSequence: 3 }
+    );
+
+    // earlyUnsequenced was delivered before seq 4 (the first new-sequence event),
+    // so it must be suppressed even though seq 1-3 are gone from the backlog.
+    // seq4, lateUnsequenced, and seq5 are all past the cursor and must replay.
+    expect(received).toEqual([seq4, lateUnsequenced, seq5]);
+    unsubscribe();
+  });
+
   it("closes active target connections on demand", () => {
     const targetId = "target-close";
     const onClose = vi.fn();

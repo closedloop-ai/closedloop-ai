@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { keys } from "./keys";
+import { redactLogValue } from "./redact";
 import { resolveServerVersion } from "./telemetry/context";
 import { KNOWN_ORIGINS, ORIGIN, type Origin } from "./telemetry/origin";
 
@@ -232,15 +233,20 @@ function buildEntry(
   };
 }
 
-// JSON.stringify replacer that preserves Error instances. Without it, Errors
-// in meta (e.g. `log.error("failed", { error })`) serialize to `{}` and the
-// name/message/stack are lost from both the structured console line and the
-// Datadog intake payload.
-function jsonReplacer(_key: string, value: unknown): unknown {
+// JSON.stringify replacer for the structured console line and the Datadog
+// intake payload. Two jobs:
+//   1. Preserve Error instances — without it, Errors in meta (e.g.
+//      `log.error("failed", { error })`) serialize to `{}` and the
+//      name/message/stack are lost. The expanded object is re-visited by the
+//      replacer, so its message/stack still pass through redaction below.
+//   2. Redact secrets/PII — apply the shared redactLogValue so any apiKey,
+//      token, password, authorization, cookie, credential, or email a caller
+//      puts in meta is scrubbed before it leaves the process to Datadog.
+function jsonReplacer(key: string, value: unknown): unknown {
   if (value instanceof Error) {
     return { name: value.name, message: value.message, stack: value.stack };
   }
-  return value;
+  return redactLogValue(key, value);
 }
 
 // If the second arg is a plain object, use it as structured meta.

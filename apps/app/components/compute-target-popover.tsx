@@ -16,6 +16,11 @@ import { resolveEffectiveComputeTargetSelection } from "@repo/app/loops/lib/comp
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useIsMounted } from "@repo/app/shared/hooks/use-is-mounted";
 import { useUser } from "@repo/auth/client";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Popover,
@@ -47,7 +52,7 @@ import {
 } from "@/hooks/queries/use-compute-targets";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
-const SSE_MAX_RECONNECT_ATTEMPTS = 3;
+const SSE_MAX_RECONNECT_ATTEMPTS = 10;
 
 /**
  * Returns whether the SSE stream is degraded (all reconnect attempts exhausted).
@@ -276,52 +281,52 @@ export function ComputeTargetPopover({
         </div>
 
         {isDegraded && (
-          <div className="mb-2 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/12 px-3 py-2 text-warning-foreground">
-            <AlertTriangleIcon className="size-3.5 shrink-0" />
-            <p className="text-xs">
+          <Alert className="mb-2" variant="warning">
+            <AlertTriangleIcon />
+            <AlertDescription>
               Live status updates unavailable. Reconnect attempts exhausted.
-            </p>
-          </div>
+            </AlertDescription>
+          </Alert>
         )}
 
         {/* T-4.5: offline warning banner -- shown when preference is Local but all targets are offline */}
         {isLocal && shouldShowAllOffline && (
-          <div className="mb-2 rounded-md border border-warning/30 bg-warning/12 px-3 py-2 text-warning-foreground">
-            <div className="mb-1.5 flex items-center gap-2">
-              <AlertTriangleIcon className="size-3.5 shrink-0" />
-              <p className="font-medium text-xs">Desktop app is offline</p>
-            </div>
-            <p className="mb-2 text-xs">
-              Your local compute target is not reachable. Switch to Cloud or
-              relaunch the desktop app.
-            </p>
-            <div
-              className="flex flex-col gap-2"
-              data-testid="offline-remediation-actions"
-            >
-              <Button
-                className="h-7 w-full text-xs"
-                onClick={handleSelectCloud}
-                size="sm"
-                variant="outline"
+          <Alert className="mb-2" variant="warning">
+            <AlertTriangleIcon />
+            <AlertTitle>Desktop app is offline</AlertTitle>
+            <AlertDescription>
+              <p>
+                Your local compute target is not reachable. Switch to Cloud or
+                relaunch the desktop app.
+              </p>
+              <div
+                className="flex w-full flex-col gap-2"
+                data-testid="offline-remediation-actions"
               >
-                <CloudIcon className="size-3 shrink-0" />
-                Switch to Cloud
-              </Button>
-              {/* Gate on having at least one registered ComputeTarget (user has previously installed the app) */}
-              {targets.length > 0 && (
                 <Button
                   className="h-7 w-full text-xs"
-                  onClick={handleLaunchDesktopApp}
+                  onClick={handleSelectCloud}
                   size="sm"
                   variant="outline"
                 >
-                  <PowerIcon className="size-3 shrink-0" />
-                  Launch Desktop App
+                  <CloudIcon className="size-3 shrink-0" />
+                  Switch to Cloud
                 </Button>
-              )}
-            </div>
-          </div>
+                {/* Gate on having at least one registered ComputeTarget (user has previously installed the app) */}
+                {targets.length > 0 && (
+                  <Button
+                    className="h-7 w-full text-xs"
+                    onClick={handleLaunchDesktopApp}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <PowerIcon className="size-3 shrink-0" />
+                    Launch Desktop App
+                  </Button>
+                )}
+              </div>
+            </AlertDescription>
+          </Alert>
         )}
 
         <div
@@ -444,25 +449,23 @@ export function ComputeTargetPopover({
 
         {/* T-4.4: download prompt -- popover stays open, preference NOT changed */}
         {showDownloadPrompt && shouldShowNotInstalled && (
-          <div className="mt-2 rounded-md border border-info/30 bg-info/10 px-3 py-2 text-info">
-            <div className="mb-1.5 flex items-center gap-2">
-              <DownloadIcon className="size-3.5 shrink-0" />
-              <p className="font-medium text-xs">Install Desktop App</p>
-            </div>
-            <p className="mb-2 text-xs">
-              Local compute requires the Closedloop Desktop app.
-            </p>
-            {/* TODO: Get desktop app download URL from product team */}
-            <Button
-              className="h-7 w-full text-xs"
-              disabled
-              size="sm"
-              variant="outline"
-            >
-              <DownloadIcon className="size-3 shrink-0" />
-              Download Closedloop Desktop
-            </Button>
-          </div>
+          <Alert className="mt-2" variant="info">
+            <DownloadIcon />
+            <AlertTitle>Install Desktop App</AlertTitle>
+            <AlertDescription>
+              <p>Local compute requires the Closedloop Desktop app.</p>
+              {/* TODO: Get desktop app download URL from product team */}
+              <Button
+                className="h-7 w-full text-xs"
+                disabled
+                size="sm"
+                variant="outline"
+              >
+                <DownloadIcon className="size-3 shrink-0" />
+                Download Closedloop Desktop
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
       </PopoverContent>
     </Popover>

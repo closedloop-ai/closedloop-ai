@@ -1,3 +1,4 @@
+import { mapNullableRollupStateToChecksStatus } from "@repo/api/src/github-checks-status";
 import type {
   BranchViewCheck,
   BranchViewCheckProjection,
@@ -14,13 +15,18 @@ import type {
   StatusCheckRollupCheck,
   StatusCheckRollupResult,
 } from "@repo/github";
-import { mapNullableRollupStateToChecksStatus } from "@/lib/github-checks-status";
+import { getCheckRunRetryResetData } from "@/lib/branch-status-check-retry";
+import {
+  type GitHubFetchProvenance,
+  gitHubFetchProvenanceData,
+} from "@/lib/github-fetch-provenance";
 
 type PersistBranchStatusChecksInput = {
   branchArtifactId: string;
   organizationId: string;
   headSha: string;
   rollup: StatusCheckRollupResult;
+  fetchProvenance?: GitHubFetchProvenance;
 };
 
 export type PersistBranchStatusChecksResult =
@@ -78,6 +84,7 @@ export async function persistBranchStatusChecksFromRollup(
   }
 
   if (!input.rollup.ok) {
+    const fetchProvenance = gitHubFetchProvenanceData(input.fetchProvenance);
     const update = await tx.branchDetail.updateMany({
       where: guardedCurrentHeadWhere(input),
       data: {
@@ -86,6 +93,7 @@ export async function persistBranchStatusChecksFromRollup(
           BranchViewChecksProviderState.ProviderUnavailable,
         checksDetailUnavailableReason: input.rollup.reason,
         checksDetailUpdatedAt: new Date(),
+        ...fetchProvenance,
       },
     });
     if (update.count === 0) {
@@ -107,6 +115,7 @@ export async function persistBranchStatusChecksFromRollup(
       ? BranchViewChecksProviderState.NoChecks
       : BranchViewChecksProviderState.Available;
   const providerKeys = input.rollup.checks.map((check) => check.id);
+  const fetchProvenance = gitHubFetchProvenanceData(input.fetchProvenance);
 
   const update = await tx.branchDetail.updateMany({
     where: guardedCurrentHeadWhere(input),
@@ -118,6 +127,7 @@ export async function persistBranchStatusChecksFromRollup(
       checksDetailProviderState: providerState,
       checksDetailUnavailableReason: null,
       checksDetailUpdatedAt: new Date(),
+      ...fetchProvenance,
     },
   });
   if (update.count === 0) {
@@ -135,7 +145,8 @@ export async function persistBranchStatusChecksFromRollup(
     tx,
     input.branchArtifactId,
     input.headSha,
-    input.rollup.checks
+    input.rollup.checks,
+    input.fetchProvenance
   );
 
   return {
@@ -182,6 +193,7 @@ export function getBranchStatusChecksResetData() {
     checksDetailProviderState: null,
     checksDetailUnavailableReason: null,
     checksDetailUpdatedAt: null,
+    ...getCheckRunRetryResetData(),
   };
 }
 
@@ -235,12 +247,14 @@ async function upsertStatusChecks(
   tx: TransactionClient,
   branchArtifactId: string,
   headSha: string,
-  checks: StatusCheckRollupCheck[]
+  checks: StatusCheckRollupCheck[],
+  fetchProvenance: GitHubFetchProvenance | undefined
 ): Promise<void> {
   if (checks.length === 0) {
     return;
   }
 
+  const provenance = gitHubFetchProvenanceData(fetchProvenance);
   const values = checks.map(
     (check) => Prisma.sql`(
       ${branchArtifactId}::uuid,
@@ -253,6 +267,12 @@ async function upsertStatusChecks(
       ${check.conclusion},
       ${check.targetUrl},
       ${check.position},
+      ${provenance.fetchCredentialType ?? null},
+      ${provenance.fetchCredentialOwnerId ?? null}::uuid,
+      ${provenance.fetchMechanism ?? null},
+      ${provenance.fetchTrigger ?? null},
+      ${provenance.fetchObservedAt ?? null},
+      ${provenance.fetchResultReason ?? null},
       now(),
       now()
     )`
@@ -270,6 +290,12 @@ async function upsertStatusChecks(
       conclusion,
       target_url,
       position,
+      fetch_credential_type,
+      fetch_credential_owner_id,
+      fetch_mechanism,
+      fetch_trigger,
+      fetch_observed_at,
+      fetch_result_reason,
       created_at,
       updated_at
     )
@@ -283,6 +309,12 @@ async function upsertStatusChecks(
       conclusion = EXCLUDED.conclusion,
       target_url = EXCLUDED.target_url,
       position = EXCLUDED.position,
+      fetch_credential_type = EXCLUDED.fetch_credential_type,
+      fetch_credential_owner_id = EXCLUDED.fetch_credential_owner_id,
+      fetch_mechanism = EXCLUDED.fetch_mechanism,
+      fetch_trigger = EXCLUDED.fetch_trigger,
+      fetch_observed_at = EXCLUDED.fetch_observed_at,
+      fetch_result_reason = EXCLUDED.fetch_result_reason,
       updated_at = now()
   `);
 }

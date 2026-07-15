@@ -36,7 +36,7 @@ export function createLightPlanFixture(
   };
 }
 
-export function createLightPlanVersionFixture(
+function createLightPlanVersionFixture(
   overrides: Partial<LightPlanVersion> = {}
 ): LightPlanVersion {
   return {

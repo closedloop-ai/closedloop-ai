@@ -872,6 +872,9 @@ describe("BranchDiffView target line navigation", () => {
     expect(screen.getByTestId("inline-comment-composer").closest("tr")).toBe(
       screen.getByTestId("right-line-2").closest("tr")
     );
+    expect(
+      screen.getByRole("textbox", { name: "Inline comment" })
+    ).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "  Inline feedback  " },
@@ -1546,6 +1549,9 @@ describe("BranchDiffView target line navigation", () => {
     // The reply is nested in the root thread, not rendered as its own card.
     expect(screen.getAllByTestId("inline-comment-RIGHT-2")).toHaveLength(1);
 
+    expect(
+      screen.getByRole("textbox", { name: "Reply to comment" })
+    ).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("Reply..."), {
       target: { value: "Thanks, fixing now" },
     });

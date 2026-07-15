@@ -3,7 +3,7 @@
     "parser": "react",
     "include": ["figma/**/*.figma.tsx"],
     "paths": {
-      "@repo/design-system/*": "./*"
+      "@closedloop-ai/design-system/*": "./*"
     }
   }
 }

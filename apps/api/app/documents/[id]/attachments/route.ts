@@ -10,6 +10,7 @@ import { isMcpAttachmentUploadEnabled } from "@/app/documents/attachment-upload-
 import {
   type AttachmentUploadError,
   attachmentsService,
+  DOCUMENT_NOT_FOUND_ERROR,
   INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR,
 } from "@/app/documents/attachments-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -132,7 +133,7 @@ export const POST = withAnyAuth<
 
     return successResponse(result.value);
   } catch (error) {
-    if (error instanceof Error && error.message === "Document not found") {
+    if (error instanceof Error && error.message === DOCUMENT_NOT_FOUND_ERROR) {
       return notFoundResponse("Document");
     }
     if (
@@ -170,7 +171,10 @@ export const GET = withAnyAuth<FileAttachment[], "/documents/[id]/attachments">(
 
       return successResponse(attachments);
     } catch (error) {
-      if (error instanceof Error && error.message === "Document not found") {
+      if (
+        error instanceof Error &&
+        error.message === DOCUMENT_NOT_FOUND_ERROR
+      ) {
         return notFoundResponse("Document");
       }
       return errorResponse("Failed to list attachments", error);

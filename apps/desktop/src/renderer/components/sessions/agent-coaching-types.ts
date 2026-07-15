@@ -3,7 +3,10 @@ import type {
   EventWithSession,
   WorkflowQueryData,
 } from "../../../shared/agent-db-contract";
+import type { CoachingPackInfo } from "../../../shared/coaching-pack-contract";
 import type { DesktopApi } from "../../types/desktop-api";
+
+export type { CoachingPackInfo } from "../../../shared/coaching-pack-contract";
 
 /**
  * Max coaching tips surfaced (and requested from the LLM seam) per day. Shared
@@ -83,14 +86,34 @@ export type AgentCoachingInput = {
   feedback: AgentCoachingFeedbackEvent[];
 };
 
+/**
+ * One load pass: the day's tips plus the coaching pack that powered them. The
+ * pack is returned alongside the tips (rather than fetched separately) so the
+ * "Powered by …" badge and the signals that actually generated the tips come
+ * from the same resolution — no second IPC round-trip, no divergence window.
+ * `activePack` is null when the built-in signals are in effect.
+ */
+export type AgentCoachingLoadResult = {
+  tips: AgentCoachingTip[];
+  activePack: CoachingPackInfo | null;
+};
+
 export type AgentCoachingApi = {
-  loadTips: () => Promise<AgentCoachingTip[]>;
+  loadTips: () => Promise<AgentCoachingLoadResult>;
   recordFeedback: (event: AgentCoachingFeedbackEvent) => Promise<void>;
   /**
    * Install a user-reviewed drafted artifact via the local harness. Returns the
    * harness's confirmation output. Absent when no harness install seam is wired.
    */
   installArtifact?: (draft: string, harness?: string) => Promise<string>;
+  /**
+   * The active coaching pack powering tips (for the "Powered by …" badge), or
+   * null when the built-in signals are in effect. Optional so existing api
+   * fakes (and any pre-pack caller) keep working — absent means "no badge".
+   * `loadTips` returns the same value, so the component reads it from there;
+   * this remains for callers that want the pack without generating tips.
+   */
+  loadActivePack?: () => Promise<CoachingPackInfo | null>;
 };
 
 /**
@@ -151,4 +174,10 @@ export type AgentCoachingDesktopApi = Pick<
     DesktopApi["db"],
     "getAnalytics" | "getWorkflowData" | "getEventFeed" | "getAllSkills"
   >;
+  /**
+   * The active coaching pack, or null for built-in signals. Optional so older
+   * preload bridges (and test fakes) that predate coaching packs simply fall
+   * back to the built-in defaults.
+   */
+  getCoachingPack?: () => Promise<CoachingPackInfo | null>;
 };

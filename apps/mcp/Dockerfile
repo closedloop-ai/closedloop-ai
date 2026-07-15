@@ -16,6 +16,10 @@ WORKDIR /app
 
 # Copy workspace root files needed for pnpm install (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# pnpm-workspace.yaml declares workspace patchedDependencies (e.g. the
+# desktop-only @libsql/client patch); pnpm resolves the patch files at install
+# time even when the patched package is outside this filter's closure.
+COPY patches/ patches/
 RUN corepack prepare --activate
 COPY tsconfig.json ./
 
@@ -40,8 +44,8 @@ RUN pnpm --filter @repo/database exec prisma generate --no-hints --schema=./pris
 # Copy MCP source code
 COPY apps/mcp/src/ apps/mcp/src/
 
-# Build shared packages required at runtime, then MCP itself.
-RUN pnpm --filter @closedloop-ai/loops-api build
+# @closedloop-ai/loops-api is consumed from source (its exports resolve to ./src/*.ts),
+# so there is nothing to pre-build; runtime tsx resolves it directly. Build MCP itself.
 RUN pnpm --filter mcp build
 
 # ---------------------------------------------------------------------------
@@ -55,6 +59,8 @@ WORKDIR /app
 
 # Copy workspace root files (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Workspace patchedDependencies patch files — required by pnpm install (see builder stage).
+COPY patches/ patches/
 RUN corepack prepare --activate
 COPY tsconfig.json ./
 
@@ -78,14 +84,25 @@ RUN pnpm install --frozen-lockfile --filter mcp... --prod --ignore-scripts
 # Copy MCP source so runtime tsx can resolve workspace deep imports consistently.
 COPY --from=builder /app/apps/mcp/src/ apps/mcp/src/
 
-# Copy shared workspace packages needed at runtime for module resolution
+# Copy shared workspace packages needed at runtime for module resolution.
+# loops-api is consumed from source (exports -> ./src/*.ts), resolved by tsx.
 COPY --from=builder /app/packages/api/src/ packages/api/src/
-COPY --from=builder /app/packages/loops-api/dist/ packages/loops-api/dist/
+COPY --from=builder /app/packages/loops-api/src/ packages/loops-api/src/
 COPY --from=builder /app/packages/database/ packages/database/
 COPY --from=builder /app/packages/redis/src/ packages/redis/src/
 
 ENV NODE_ENV=production
 ENV MCP_PORT=3010
+# Disable pnpm's pre-run deps-status check. Deps are fully baked into this image
+# at build time (stage 2 `pnpm install --frozen-lockfile --filter mcp... --prod`),
+# so the check is pointless at runtime — and harmful: the `pnpm exec` CMD below
+# triggers `verify-deps-before-run`, which evaluated all workspace projects at
+# container start, decided node_modules was stale, and launched a network
+# `pnpm install --production` inside the running task. In prod that install was
+# OOM-killed (SIGKILL) before the health check passed, so ECS never stabilized
+# and rolled the deploy back (FEA-2653). A production container must never
+# install dependencies at boot.
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
 
 EXPOSE 3010
 

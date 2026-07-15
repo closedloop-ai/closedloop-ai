@@ -4,13 +4,16 @@
   "main": "./index.ts",
   "types": "./index.ts",
   "scripts": {
-    "analyze": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "db:generate": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "analyze": "node scripts/ensure-prisma-client.mjs",
     "prebuild": "tsx scripts/migrate.ts",
-    "build": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "build": "node scripts/ensure-prisma-client.mjs",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "generate:rds-ca": "tsx scripts/generate-rds-ca-bundle.ts",
+    "check:rds-ca": "tsx scripts/generate-rds-ca-bundle.ts --check",
     "seed": "tsx scripts/seed.ts",
-    "pretest": "pnpm --filter @closedloop-ai/loops-api build && prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "pretest": "node scripts/ensure-prisma-client.mjs",
     "test": "pnpm test:unit",
     "test:unit": "vitest run --exclude '**/integration/**'",
     "test:integration": "vitest run --config vitest.config.integration.ts --no-file-parallelism"
@@ -32,10 +35,10 @@
     "@types/node": "^25.9.1",
     "@types/pg": "8.20.0",
     "bufferutil": "^4.1.0",
-    "dotenv": "^17.3.1",
+    "dotenv": "^17.4.2",
     "prisma": "~7.8.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.9"
   }
 }

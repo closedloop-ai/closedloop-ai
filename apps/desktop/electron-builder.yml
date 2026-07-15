@@ -26,6 +26,13 @@ extraResources:
     to: command-packs
     filter:
       - "**/*"
+  # Bundled coaching packs (overridable best-practice signal sets for Agent
+  # Coaching Tips). agent-coaching-packs.ts seeds these into userData on first
+  # run and the active pack's signals replace the built-in defaults.
+  - from: resources/coaching-packs
+    to: coaching-packs
+    filter:
+      - "**/*"
 
 mac:
   icon: resources/icon.icns
@@ -39,16 +46,12 @@ mac:
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Default off so anyone can produce a local (ad-hoc-signed) build without Apple
-  # credentials. Official signed releases enable notarization and provide the
-  # Apple signing env vars (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID,
-  # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID); see scripts/run-electron-builder.mjs.
-  notarize: false
+  notarize: true
 
 publish:
   provider: generic
-  # Packaged clients read the public API updater feed. Override for a
-  # self-hosted/alternative update server.
+  # Packaged clients read the public API updater feed. The API authenticates
+  # to GitHub server-side and serves only Desktop updater metadata/assets.
   url: https://api.closedloop.ai/desktop/updates
 
 directories:

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "claude-code-token-coach",
+  "displayName": "Claude Code Token Coach",
+  "version": "1.0.0",
+  "description": "Token-optimization coaching pack. Replaces the built-in agentic-development signals with the Token Coach rubric (cache efficiency, targeted reads, output discipline, context hygiene, model right-sizing, and tool-error reduction) so coaching tips push concrete, quantified token savings.",
+  "signals": [
+    "Cache efficiency is the single biggest lever: a cache read costs ~10% of a normal input token and a cache write ~25% more, so keep the stable prefix (system prompt, CLAUDE.md, tool defs, earlier turns) put. Churning it — swapping MCP servers mid-session, editing CLAUDE.md mid-task, frequent restarts — forces expensive full re-writes. Coach toward a steady prefix and quantify cache-read share.",
+    "Targeted reads beat whole-file reads: prefer ranged/offset Reads and Grep-to-locate over re-scanning entire large files. Quantify how many input tokens repeated full reads cost and recommend reading only the needed span.",
+    "Output-size discipline matters because generated tokens are the most expensive: ask for diffs or specific functions instead of whole files echoed back, and flag turns that emit large unnecessary output.",
+    "Context discipline is the most user-controlled lever: /clear between unrelated tasks resets context to near zero, and /compact <focus note> before forced auto-compaction avoids a lossy, token-heavy compaction. Coach on peak per-session input and compaction count.",
+    "Model right-sizing: top-tier models cost ~5x a mid-tier model on input, output, and cache. Default to the mid tier, escalate only for genuinely hard reasoning, and use the smallest tier for trivial edits. Present as 'consider', estimate the savings for structurally trivial top-tier turns, never a verdict.",
+    "Tool error rate: every failed tool call re-sends context for the call, the error, and the retry. Reduce malformed edits and stale references; prefer one correct call over speculative ones.",
+    "Native search over shell: Grep/Glob/Read are scoped and cache-friendlier than unbounded cat/grep/find/ls via Bash. Suggest a CLAUDE.md steering line when shell search is frequent.",
+    "Avoid redundant reads: a second Read of the same path with no intervening edit re-sends the file for no new information. Trust the prior read unless the file changed on disk.",
+    "Parallel batching: independent tool calls issued in one message share a single round-trip; serializing them re-bills the context per call. Coach toward batching independent calls.",
+    "Subagent offloading: a subagent's noisy exploration stays in its own context and only the conclusion returns. For broad multi-file exploration, delegate and return only conclusions."
+  ]
+}

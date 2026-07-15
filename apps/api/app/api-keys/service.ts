@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type {
   ApiKey,
   ApiKeyScope,
@@ -10,6 +10,8 @@ import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
 import { ApiKeySource, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import type { VerifiedApiKeyContextWithMetadata } from "@/lib/auth/api-key-context";
+import { hashToken } from "@/lib/auth/token-hash";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 
 const FULL_ACCESS_SCOPES = [
   "read",
@@ -59,10 +61,6 @@ type VerifyApiKeyOptions = {
 
 function createPlaintextKey(): string {
   return `sk_live_${randomBytes(32).toString("hex")}`;
-}
-
-function hashApiKey(plaintextKey: string): string {
-  return createHash("sha256").update(plaintextKey).digest("hex");
 }
 
 function defaultDesktopManagedKeyName(gatewayId: string): string {
@@ -118,7 +116,7 @@ export const apiKeysService = {
     input: CreateApiKeyInput
   ): Promise<CreateApiKeyResponse> {
     const plaintextKey = createPlaintextKey();
-    const hash = hashApiKey(plaintextKey);
+    const hash = hashToken(plaintextKey);
 
     const record = await withDb((db) =>
       db.apiKey.create({
@@ -154,7 +152,7 @@ export const apiKeysService = {
     input: RotateDesktopManagedKeyInput
   ): Promise<CreateApiKeyResponse> {
     const plaintextKey = createPlaintextKey();
-    const hash = hashApiKey(plaintextKey);
+    const hash = hashToken(plaintextKey);
     const now = new Date();
 
     try {
@@ -190,7 +188,7 @@ export const apiKeysService = {
         plaintext: plaintextKey,
       };
     } catch (error) {
-      if ((error as { code?: string }).code === "P2002") {
+      if (getPrismaErrorCode(error) === "P2002") {
         throw new DesktopManagedKeyRotationConflictError();
       }
       throw error;
@@ -254,7 +252,7 @@ export const apiKeysService = {
     plaintextKey: string,
     options: VerifyApiKeyOptions = {}
   ): Promise<VerifiedApiKeyContextWithMetadata | null> {
-    const hash = hashApiKey(plaintextKey);
+    const hash = hashToken(plaintextKey);
     const now = new Date();
 
     const record = await withDb((db) =>

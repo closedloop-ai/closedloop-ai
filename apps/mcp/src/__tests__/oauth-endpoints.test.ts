@@ -13,7 +13,10 @@ import type { VerifiedApiKeyContext } from "../api-key-contract.js";
 
 const verifyApiKeyMock = vi.fn();
 const checkApiReachableMock = vi.fn();
+const dbQueryRawMock = vi.fn();
+const READY_DB_TIMEOUT_ENV_KEY = "MCP_READY_DB_TIMEOUT_MS";
 const DYNAMIC_CLIENT_ID_REGEX = /^dyn_[a-f0-9]{32}$/;
+const READY_DB_QUERY_STRINGS = ["SELECT 1"] as const;
 const revokedTokenStore = new Map<string, Date>();
 const rateLimitStore = new Map<
   string,
@@ -30,7 +33,7 @@ const authCodeStore = new Map<
   string,
   {
     id: string;
-    code: string;
+    codeFingerprint: string;
     encryptedApiKey: string;
     keyId: string;
     userId: string;
@@ -79,6 +82,8 @@ const apiKeyStore = new Map<
 >();
 let forceNextRefreshRotateConflict = false;
 let forceNextRefreshCreateFailure = false;
+let forceNextWithDbTxFailure: Error | undefined;
+let lastWithDbTxOptions: { maxWait?: number; timeout?: number } | undefined;
 
 vi.mock("../api-client.js", () => {
   return {
@@ -90,6 +95,7 @@ vi.mock("../api-client.js", () => {
 
 vi.mock("@repo/database", () => {
   const dbMock = {
+    $queryRaw: dbQueryRawMock,
     oAuthRevokedToken: {
       deleteMany: vi.fn(
         ({ where }: { where: { expiresAt: { lte: Date } } }) => {
@@ -234,13 +240,13 @@ vi.mock("@repo/database", () => {
           const expiryClause = where.OR.find((entry) => "expiresAt" in entry) as
             | { expiresAt: { lte: Date } }
             | undefined;
-          for (const [code, record] of authCodeStore.entries()) {
+          for (const [fingerprint, record] of authCodeStore.entries()) {
             const expired = expiryClause
               ? record.expiresAt <= expiryClause.expiresAt.lte
               : false;
             const consumed = record.consumedAt !== null;
             if (expired || consumed) {
-              authCodeStore.delete(code);
+              authCodeStore.delete(fingerprint);
             }
           }
           return { count: 0 };
@@ -251,7 +257,7 @@ vi.mock("@repo/database", () => {
           data,
         }: {
           data: {
-            code: string;
+            codeFingerprint: string;
             encryptedApiKey: string;
             keyId: string;
             userId: string;
@@ -266,7 +272,7 @@ vi.mock("@repo/database", () => {
         }) => {
           const record = {
             id: `ac_${Math.random().toString(36).slice(2, 10)}`,
-            code: data.code,
+            codeFingerprint: data.codeFingerprint,
             encryptedApiKey: data.encryptedApiKey,
             keyId: data.keyId,
             userId: data.userId,
@@ -280,12 +286,12 @@ vi.mock("@repo/database", () => {
             consumedAt: null,
             createdAt: new Date(),
           };
-          authCodeStore.set(data.code, record);
+          authCodeStore.set(data.codeFingerprint, record);
           return record;
         }
       ),
-      findUnique: vi.fn(({ where }: { where: { code: string } }) => {
-        return authCodeStore.get(where.code) ?? null;
+      findUnique: vi.fn(({ where }: { where: { codeFingerprint: string } }) => {
+        return authCodeStore.get(where.codeFingerprint) ?? null;
       }),
       updateMany: vi.fn(
         ({
@@ -475,7 +481,16 @@ vi.mock("@repo/database", () => {
     async <T>(fn: (db: typeof dbMock) => Promise<T> | T): Promise<T> =>
       fn(dbMock),
     {
-      tx: async <T>(fn: (db: typeof dbMock) => Promise<T>): Promise<T> => {
+      tx: async <T>(
+        fn: (db: typeof dbMock) => Promise<T>,
+        options?: { maxWait?: number; timeout?: number }
+      ): Promise<T> => {
+        lastWithDbTxOptions = options;
+        if (forceNextWithDbTxFailure) {
+          const error = forceNextWithDbTxFailure;
+          forceNextWithDbTxFailure = undefined;
+          throw error;
+        }
         const snapshot = structuredClone({
           revokedTokens: [...revokedTokenStore.entries()],
           rateLimits: [...rateLimitStore.entries()],
@@ -528,6 +543,12 @@ function codeChallengeFor(verifier: string): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+// Mirrors getTokenFingerprint() in ../index.ts: authorization codes are stored
+// and looked up by their SHA-256 hex fingerprint, not the raw value.
+function fingerprintOf(code: string): string {
+  return createHash("sha256").update(code, "utf8").digest("hex");
 }
 
 type HandlerFn = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -627,14 +648,7 @@ function asServerResponse(response: MockResponse): ServerResponse {
   return response as unknown as ServerResponse;
 }
 
-beforeAll(async () => {
-  process.env.INTERNAL_API_SECRET = "test-internal-secret";
-  process.env.MCP_OAUTH_CLIENT_ID = "closedloop-mcp";
-  process.env.MCP_OAUTH_TOKEN_TTL_SECONDS = "3600";
-  process.env.MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS = "2592000";
-  process.env.MCP_OAUTH_REDIRECT_URIS = "http://localhost:7777/callback";
-  process.env.MCP_MAX_REQUEST_BODY_BYTES = "2048";
-
+async function loadMcpTestables(): Promise<void> {
   const mod = await import("../index.js");
   handleOAuthAuthorize = mod.__testables.handleOAuthAuthorize as HandlerFn;
   handleOAuthToken = mod.__testables.handleOAuthToken as HandlerFn;
@@ -646,6 +660,52 @@ beforeAll(async () => {
   ) => Promise<boolean>;
   resetInMemorySecurityState = mod.__testables
     .resetInMemorySecurityState as () => void;
+}
+
+async function importDispatchWithReadyDbTimeout(
+  value?: string
+): Promise<(req: IncomingMessage, res: ServerResponse) => Promise<boolean>> {
+  const previousValue = process.env[READY_DB_TIMEOUT_ENV_KEY];
+  setOptionalEnvValue(READY_DB_TIMEOUT_ENV_KEY, value);
+  vi.resetModules();
+  const mod = await import("../index.js");
+  setOptionalEnvValue(READY_DB_TIMEOUT_ENV_KEY, previousValue);
+  return mod.__testables.dispatchHttpRequest as (
+    req: IncomingMessage,
+    res: ServerResponse
+  ) => Promise<boolean>;
+}
+
+function setOptionalEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    Reflect.deleteProperty(process.env, key);
+    return;
+  }
+  process.env[key] = value;
+}
+
+function isReadyDbQuery(query: TemplateStringsArray): boolean {
+  return (
+    query.length === READY_DB_QUERY_STRINGS.length &&
+    query[0] === READY_DB_QUERY_STRINGS[0] &&
+    query.raw.length === READY_DB_QUERY_STRINGS.length &&
+    query.raw[0] === READY_DB_QUERY_STRINGS[0]
+  );
+}
+
+function getReadyDbQuery(): TemplateStringsArray | undefined {
+  return dbQueryRawMock.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+}
+
+beforeAll(async () => {
+  process.env.INTERNAL_API_SECRET = "test-internal-secret";
+  process.env.MCP_OAUTH_CLIENT_ID = "closedloop-mcp";
+  process.env.MCP_OAUTH_TOKEN_TTL_SECONDS = "3600";
+  process.env.MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS = "2592000";
+  process.env.MCP_OAUTH_REDIRECT_URIS = "http://localhost:7777/callback";
+  process.env.MCP_MAX_REQUEST_BODY_BYTES = "2048";
+
+  await loadMcpTestables();
 });
 
 afterAll(() => {
@@ -661,6 +721,10 @@ beforeEach(() => {
   apiKeyStore.clear();
   forceNextRefreshRotateConflict = false;
   forceNextRefreshCreateFailure = false;
+  forceNextWithDbTxFailure = undefined;
+  lastWithDbTxOptions = undefined;
+  dbQueryRawMock.mockReset();
+  dbQueryRawMock.mockResolvedValue([{ "?column?": 1 }]);
   verifyApiKeyMock.mockReset();
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);
@@ -1573,7 +1637,7 @@ describe("OAuth endpoints", () => {
     const code = redirect.searchParams.get("code");
     expect(code).toBeTruthy();
 
-    const storedRecord = authCodeStore.get(code ?? "");
+    const storedRecord = authCodeStore.get(fingerprintOf(code ?? ""));
     expect(storedRecord).toBeTruthy();
     if (storedRecord) {
       storedRecord.expiresAt = new Date(Date.now() - 1000);
@@ -1936,6 +2000,160 @@ describe("OAuth endpoints", () => {
     expect(res.statusCode).toBe(413);
     const json = JSON.parse(res.body) as { error: string };
     expect(json.error).toBe("payload_too_large");
+  });
+
+  it("returns ready when api and db readiness checks pass", async () => {
+    dbQueryRawMock.mockImplementation((query: TemplateStringsArray) => {
+      if (!isReadyDbQuery(query)) {
+        throw new Error("Unexpected readiness query");
+      }
+      return [{ "?column?": 1 }];
+    });
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: "ready",
+      checks: {
+        api: "reachable",
+        db: "reachable",
+      },
+    });
+    expect(dbQueryRawMock).toHaveBeenCalledTimes(1);
+    const readyDbQuery = getReadyDbQuery();
+    expect(readyDbQuery).toBeDefined();
+    expect(readyDbQuery).toMatchObject(READY_DB_QUERY_STRINGS);
+    expect(readyDbQuery?.raw).toMatchObject(READY_DB_QUERY_STRINGS);
+    expect(lastWithDbTxOptions).toEqual({ maxWait: 2000, timeout: 2000 });
+  });
+
+  it("uses the default ready db timeout when the env value is absent", async () => {
+    const dispatchHttpRequest = await importDispatchWithReadyDbTimeout();
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequest(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(lastWithDbTxOptions).toEqual({ maxWait: 2000, timeout: 2000 });
+  });
+
+  it("uses the default ready db timeout when the env value is invalid", async () => {
+    const dispatchHttpRequest =
+      await importDispatchWithReadyDbTimeout("not-a-timeout");
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequest(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(lastWithDbTxOptions).toEqual({ maxWait: 2000, timeout: 2000 });
+  });
+
+  it("uses a valid ready db timeout env override", async () => {
+    const dispatchHttpRequest = await importDispatchWithReadyDbTimeout("750");
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequest(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(lastWithDbTxOptions).toEqual({ maxWait: 750, timeout: 750 });
+  });
+
+  it("keeps health liveness-only without db readiness", async () => {
+    const req = createMockRequest({ method: "GET", url: "/health" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ status: "ok" });
+    expect(JSON.parse(res.body)).not.toHaveProperty("checks");
+    expect(dbQueryRawMock).not.toHaveBeenCalled();
+  });
+
+  it("returns not ready when api readiness fails but db is reachable", async () => {
+    checkApiReachableMock.mockResolvedValueOnce(false);
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: "not_ready",
+      checks: {
+        api: "unreachable",
+        db: "reachable",
+      },
+    });
+  });
+
+  it("returns not ready when db readiness query fails", async () => {
+    dbQueryRawMock.mockRejectedValueOnce(new Error("db unavailable"));
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: "not_ready",
+      checks: {
+        api: "reachable",
+        db: "unreachable",
+      },
+    });
+  });
+
+  it("returns not ready when db readiness times out at the transaction boundary", async () => {
+    forceNextWithDbTxFailure = new Error("Transaction timed out");
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(dbQueryRawMock).not.toHaveBeenCalled();
+    expect(lastWithDbTxOptions).toEqual({ maxWait: 2000, timeout: 2000 });
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: "not_ready",
+      checks: {
+        api: "reachable",
+        db: "unreachable",
+      },
+    });
+  });
+
+  it("returns not ready when api and db readiness both fail", async () => {
+    checkApiReachableMock.mockResolvedValueOnce(false);
+    dbQueryRawMock.mockRejectedValueOnce(new Error("db unavailable"));
+    const req = createMockRequest({ method: "GET", url: "/ready" });
+    const res = createMockResponse();
+
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({
+      status: "not_ready",
+      checks: {
+        api: "unreachable",
+        db: "unreachable",
+      },
+    });
   });
 
   it("returns 413 when mcp request content-length exceeds size limit", async () => {

@@ -1,7 +1,7 @@
 "use client";
 
-import { TabsList, TabsTrigger } from "@repo/design-system/components/ui/tabs";
-import { cn } from "@repo/design-system/lib/utils";
+import { TabsList, TabsTrigger } from "@closedloop-ai/design-system/components/ui/tabs";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { ComponentProps } from "react";
 
 export function UnderlineTabsList({

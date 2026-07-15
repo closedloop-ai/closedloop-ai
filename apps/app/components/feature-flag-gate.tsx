@@ -22,7 +22,7 @@ export function FeatureFlagGate({ flag, children }: FeatureFlagGateProps) {
 
   const result = useFeatureFlag(flag);
 
-  if (!mounted) {
+  if (!(mounted && result)) {
     return null;
   }
 

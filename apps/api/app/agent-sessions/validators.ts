@@ -1,3 +1,7 @@
+import {
+  AGENT_SESSION_VIEWER_SCOPE_OPTIONS,
+  AgentSessionViewerScope,
+} from "@repo/api/src/types/agent-session";
 import { z } from "zod";
 
 const isoDateQuerySchema = z
@@ -39,7 +43,7 @@ export const AGENT_SESSION_SORT_COLUMNS = [
   "lastActivity",
 ] as const;
 
-export const baseAgentSessionQuerySchema = z.object({
+const baseAgentSessionQueryShape = {
   startDate: isoDateQuerySchema.optional(),
   endDate: isoDateQuerySchema.optional(),
   harness: optionalNonEmptyStringSchema,
@@ -50,16 +54,44 @@ export const baseAgentSessionQuerySchema = z.object({
   userId: optionalUuidSchema,
   userIds: uuidArrayQuerySchema,
   repositories: stringArrayQuerySchema,
+  // Multi-select harness/model facets, plus autonomy-tier + cost-bucket ids.
+  // Unknown tier/bucket ids are harmless — the service maps only the canonical
+  // ids (see @repo/api/src/agent-session-filters) and ignores the rest.
+  harnesses: stringArrayQuerySchema,
+  models: stringArrayQuerySchema,
+  autonomyTiers: stringArrayQuerySchema,
+  costBuckets: stringArrayQuerySchema,
+  // Change-presence ids ("has_changes"/"no_changes") and pull-request
+  // association ids ("has_pr"/"no_pr"). Unknown ids are harmless — the service
+  // maps only the canonical ids (see @repo/api/src/agent-session-filters).
+  changePresence: stringArrayQuerySchema,
+  prAssociation: stringArrayQuerySchema,
+  viewerScope: z.enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS).optional(),
   teamId: optionalUuidSchema,
   projectId: optionalUuidSchema,
-});
+} as const;
 
-export const agentSessionListQuerySchema = baseAgentSessionQuerySchema.extend({
+const rawBaseAgentSessionQuerySchema = z.object(baseAgentSessionQueryShape);
+const rawAgentSessionListQuerySchema = rawBaseAgentSessionQuerySchema.extend({
   limit: z.coerce.number().int().positive().max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
   sortBy: z.enum(AGENT_SESSION_SORT_COLUMNS).optional(),
   sortDir: z.enum(["asc", "desc"]).optional(),
 });
+const legacyTeamIdQueryPreprocessor = z
+  .object({
+    viewerScope: z.enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS).optional(),
+    teamId: optionalUuidSchema,
+  })
+  .passthrough();
+
+export const baseAgentSessionQuerySchema = z
+  .preprocess(applyLegacyTeamIdScope, rawBaseAgentSessionQuerySchema)
+  .superRefine(refineTeamScopeQuery);
+
+export const agentSessionListQuerySchema = z
+  .preprocess(applyLegacyTeamIdScope, rawAgentSessionListQuerySchema)
+  .superRefine(refineTeamScopeQuery);
 
 export type AgentSessionListQuery = z.infer<typeof agentSessionListQuerySchema>;
 export type AgentSessionUsageQuery = z.infer<
@@ -67,3 +99,44 @@ export type AgentSessionUsageQuery = z.infer<
 >;
 export type AgentSessionSortColumn =
   (typeof AGENT_SESSION_SORT_COLUMNS)[number];
+
+function applyLegacyTeamIdScope(value: unknown): unknown {
+  const parsed = legacyTeamIdQueryPreprocessor.safeParse(value);
+  if (
+    !parsed.success ||
+    parsed.data.teamId === undefined ||
+    parsed.data.viewerScope !== undefined
+  ) {
+    return value;
+  }
+  return { ...parsed.data, viewerScope: AgentSessionViewerScope.Team };
+}
+
+function refineTeamScopeQuery(
+  params: {
+    viewerScope?: AgentSessionViewerScope;
+    teamId?: string;
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (
+    params.viewerScope === AgentSessionViewerScope.Team &&
+    params.teamId === undefined
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "teamId is required when viewerScope is team",
+      path: ["teamId"],
+    });
+  }
+  if (
+    params.viewerScope !== AgentSessionViewerScope.Team &&
+    params.teamId !== undefined
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "teamId requires viewerScope team",
+      path: ["teamId"],
+    });
+  }
+}

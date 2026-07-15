@@ -27,6 +27,7 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { log } from "@repo/observability/log";
 import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
 import {
@@ -35,6 +36,7 @@ import {
 } from "@/lib/compute-target-signing-eligibility";
 import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
 import { parseJsonObject } from "@/lib/json-schema";
+import { purgeTranscriptObjectsBestEffort } from "@/lib/transcript-object-purge";
 
 export const COMPUTE_TARGET_STALE_MS = 90_000;
 export const DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION = 1;
@@ -877,6 +879,9 @@ export const computeTargetsService = {
         where: {
           organizationId,
           userId,
+          // FEA-2923: exclude the synthetic per-org "cloud" sentinel target
+          // (owns backfilled cloud-authored agent_components; not a real device).
+          isCloudSentinel: false,
         },
         orderBy: [{ isOnline: "desc" }, { updatedAt: "desc" }],
       })
@@ -1006,18 +1011,18 @@ export const computeTargetsService = {
     }
   },
 
-  deleteOwned(
+  async deleteOwned(
     id: string,
     organizationId: string,
     userId: string
   ): Promise<boolean> {
-    return withDb.tx(async (tx) => {
+    const outcome = await withDb.tx(async (tx) => {
       const target = await tx.computeTarget.findFirst({
         where: { id, organizationId, userId },
         select: { id: true },
       });
       if (!target) {
-        return false;
+        return { deleted: false, transcriptKeys: [] as string[] };
       }
       // SESSION artifacts reference the compute target with onDelete: Restrict
       // (FEA-1699), so the parent artifacts must be removed first — that cascades
@@ -1031,12 +1036,68 @@ export const computeTargetsService = {
           session: { is: { computeTargetId: id } },
         },
       });
+      // Collect the transcript objects' storage keys before dropping the rows
+      // that carry them: the raw JSONL bytes live in the transcripts bucket,
+      // separate from the row metadata, so once these rows are gone there is no
+      // DB record of which objects to purge. The best-effort purge runs after
+      // the transaction commits (below) so an S3 failure can never roll back or
+      // corrupt the FK-ordering delete.
+      const transcripts = await tx.sessionTranscript.findMany({
+        where: { computeTargetId: id },
+        select: { objectStorageKey: true },
+      });
+      // session_transcript rows reference the compute target with
+      // onDelete: Restrict, so they must be removed explicitly before the
+      // target row. Deleting the SESSION artifacts above only NULLs their
+      // sessionDetailId (that FK is SetNull) — the transcript rows survive
+      // with the RESTRICT link intact, which would otherwise make the final
+      // computeTarget delete throw a P2003 and leave the target undeletable.
+      await tx.sessionTranscript.deleteMany({
+        where: { computeTargetId: id },
+      });
       // deleteMany keeps deletion idempotent under concurrency: a parallel
       // delete that wins the race yields count 0 here (-> 404) instead of the
       // P2025 a singular delete would throw.
       const deleted = await tx.computeTarget.deleteMany({ where: { id } });
-      return deleted.count > 0;
+      return {
+        deleted: deleted.count > 0,
+        transcriptKeys: transcripts
+          .map((t) => t.objectStorageKey)
+          .filter((key): key is string => key.length > 0),
+      };
     });
+
+    // Purge the transcript objects only after the row delete has committed, so
+    // the RESTRICT-FK ordering fix (the reason this method deletes transcripts
+    // before the target) is never rolled back by a storage failure. Best-effort:
+    // an S3 error is logged with the orphaned keys for follow-up cleanup rather
+    // than turned into a delete failure — the target is already gone. The shared
+    // helper defers the `@repo/aws` import (which begins with `import
+    // "server-only"`) so this module — statically imported by the desktop
+    // gateway socket server and loaded under tsx by `server:import-smoke` — keeps
+    // the S3 dependency off its eager load graph.
+    if (outcome.deleted) {
+      await purgeTranscriptObjectsBestEffort(
+        outcome.transcriptKeys,
+        "[compute-targets] failed to purge transcript objects after target delete",
+        { computeTargetId: id, organizationId }
+      );
+    } else if (outcome.transcriptKeys.length > 0) {
+      // Transcript rows were deleted (e.g. in a concurrent race that already
+      // removed the compute-target row) but the target row itself was already
+      // gone when deleteMany ran, so deleted=false. The transcript S3 objects
+      // were NOT purged — log them so orphaned objects are observable.
+      log.warn(
+        "[compute-targets] transcript rows deleted but compute target row was already gone; S3 objects may be orphaned",
+        {
+          computeTargetId: id,
+          organizationId,
+          objectStorageKeys: outcome.transcriptKeys,
+        }
+      );
+    }
+
+    return outcome.deleted;
   },
 
   async heartbeat(
@@ -1109,7 +1170,15 @@ export const computeTargetsService = {
   ): Promise<boolean> {
     const target = await withDb((db) =>
       db.computeTarget.findFirst({
-        where: { organizationId, userId },
+        where: {
+          organizationId,
+          userId,
+          // FEA-2923: exclude the synthetic per-org "cloud" sentinel target so
+          // a "has a real device?" gate is not satisfied by the sentinel that
+          // owns cloud-authored agent components. Matches the exclusion in
+          // listByOwner / listAvailableForOrg / the compliance denominator.
+          isCloudSentinel: false,
+        },
         select: { id: true },
       })
     );
@@ -1141,6 +1210,9 @@ export const computeTargetsService = {
       db.computeTarget.findMany({
         where: {
           organizationId,
+          // FEA-2923: exclude the synthetic per-org "cloud" sentinel target so
+          // it never appears as a selectable dispatch target.
+          isCloudSentinel: false,
           OR: [{ userId }, { isSharedWithOrg: true }],
         },
         include: {

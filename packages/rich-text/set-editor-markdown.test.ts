@@ -25,4 +25,18 @@ describe("setEditorMarkdown", () => {
     setEditorMarkdown(null, "# Hello");
     await Promise.resolve();
   });
+
+  it("does not dispatch setContent when the editor is destroyed before the microtask flushes", async () => {
+    const setContent = vi.fn();
+    const editor = { isDestroyed: false, commands: { setContent } } as never;
+
+    setEditorMarkdown(editor, "# Hello");
+
+    // Editor unmounts between the null-guard and the deferred flush.
+    (editor as { isDestroyed: boolean }).isDestroyed = true;
+
+    await Promise.resolve();
+
+    expect(setContent).not.toHaveBeenCalled();
+  });
 });

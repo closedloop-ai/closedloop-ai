@@ -44,12 +44,12 @@ export const DASHBOARD_ROWS: DashboardRow[] = [
   // How hands-off the work was. Rendered by <AutonomyTrendChart/> — not a
   // catalog tile.
   { tour: "autonomy", tileIds: [] },
-  // Shipping velocity + per-repository breakdown.
-  { tour: "prs", tileIds: ["chart:prTrend", "chart:prByRepo"] },
-  // Token share by model + session status distribution.
+  // Shipping velocity.
+  { tour: "prs", tileIds: ["chart:prTrend"] },
+  // Spend by model + per-repository PR breakdown.
   {
     tour: "distribution",
-    tileIds: ["chart:modelBreakdown", "chart:sessionsByStatus"],
+    tileIds: ["chart:modelBreakdown", "chart:prByRepo"],
   },
 ];
 

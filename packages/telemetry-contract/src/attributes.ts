@@ -3,6 +3,7 @@ export const TelemetryAttribute = {
   ServiceName: "service.name",
   ServiceVersion: "service.version",
   AppInstallationId: "app.installation.id",
+  AppOrganizationId: "app.organization.id",
   DeploymentEnvironmentName: "deployment.environment.name",
   ExceptionType: "exception.type",
   ExceptionMessage: "exception.message",
@@ -34,11 +35,46 @@ export const TelemetryAttribute = {
   GenAiPermissionDecision: "gen_ai.permission.decision",
   GenAiPermissionSource: "gen_ai.permission.source",
   HarnessName: "harness.name",
+  IpcOperation: "ipc.operation",
+  IpcPayloadBytes: "ipc.payload_bytes",
+  IpcResultCount: "ipc.result_count",
+  IpcSessionCount: "ipc.session_count",
 } as const;
 
 /** Literal union of all published telemetry attribute names. */
 export type TelemetryAttributeName =
   (typeof TelemetryAttribute)[keyof typeof TelemetryAttribute];
+
+/**
+ * Canonical, sorted, de-duplicated projection of every published telemetry
+ * attribute name — the single source of truth the keyless-telemetry OTel
+ * Collector's `redaction` allow-list is generated from (FEA-2170). Sorting is
+ * lexicographic so the generated collector artifacts are deterministic and
+ * diff-stable. The codegen, the drift guard, and FEA-2163's strict
+ * per-attribute validation import this rather than re-deriving it, so there is
+ * exactly one in-process projection.
+ */
+export const CollectorAllowedAttributeKeys: readonly TelemetryAttributeName[] =
+  [...new Set(Object.values(TelemetryAttribute))].sort();
+
+/**
+ * Marker attribute keys whose presence on a span designates it a *product
+ * signal* — a GenAI generation the keyless-telemetry OTel Collector fans out to
+ * PostHog (PRD-481 C3 / FEA-1991) **in addition to** the Datadog ops leg.
+ *
+ * PostHog's OTLP ingestion is traces-only and AI-observability-shaped (spans
+ * become `$ai_generation` events), so the product-funnel signal we route there
+ * is the GenAI span, identified by its required discriminator
+ * `gen_ai.request.model`. This is the single source of truth the generated
+ * `filter/product_signals` Collector fragment is derived from (FEA-1991): the
+ * codegen and its drift guard import this rather than hard-coding the marker, so
+ * a discriminator rename can never silently break PostHog routing. Sorted and
+ * de-duplicated so the generated fragment is deterministic and diff-stable.
+ */
+export const CollectorProductSignalAttributeKeys: readonly TelemetryAttributeName[] =
+  [
+    ...new Set<TelemetryAttributeName>([TelemetryAttribute.GenAiRequestModel]),
+  ].sort();
 
 /** Ownership buckets for OTel-native and ClosedLoop compatibility attributes. */
 export const TelemetryAttributeOwnership = {
@@ -60,6 +96,7 @@ export const ResourceTelemetryAttributes = [
 /** App-level identity, deployment, lifecycle, and exception attributes. */
 export const AppTelemetryAttributes = [
   TelemetryAttribute.AppInstallationId,
+  TelemetryAttribute.AppOrganizationId,
   TelemetryAttribute.DeploymentEnvironmentName,
   TelemetryAttribute.ExceptionType,
   TelemetryAttribute.ExceptionMessage,
@@ -119,6 +156,16 @@ export const SyncTelemetryAttributes = [
   TelemetryAttribute.SyncLatencyMs,
 ] as const;
 
+/** Desktop IPC perf wide-event attributes allowed by the ipc schema (FEA-1997). */
+export const IpcTelemetryAttributes = [
+  TelemetryAttribute.IpcOperation,
+  TelemetryAttribute.DurationMs,
+  TelemetryAttribute.IpcPayloadBytes,
+  TelemetryAttribute.IpcResultCount,
+  TelemetryAttribute.IpcSessionCount,
+  TelemetryAttribute.ErrorType,
+] as const;
+
 /** Attributes sourced from the pinned OpenTelemetry semantic conventions. */
 export const OtelTelemetryAttributes = [
   TelemetryAttribute.ServiceName,
@@ -144,6 +191,7 @@ export const OtelTelemetryAttributes = [
 
 /** Compatibility attributes owned by ClosedLoop until OTel parity exists. */
 export const ClosedLoopCompatibilityAttribute = {
+  AppOrganizationId: TelemetryAttribute.AppOrganizationId,
   AppExceptionOrigin: TelemetryAttribute.AppExceptionOrigin,
   AppOperatingMode: TelemetryAttribute.AppOperatingMode,
   AppLifecycleEvent: TelemetryAttribute.AppLifecycleEvent,
@@ -160,6 +208,10 @@ export const ClosedLoopCompatibilityAttribute = {
   GenAiPermissionDecision: TelemetryAttribute.GenAiPermissionDecision,
   GenAiPermissionSource: TelemetryAttribute.GenAiPermissionSource,
   HarnessName: TelemetryAttribute.HarnessName,
+  IpcOperation: TelemetryAttribute.IpcOperation,
+  IpcPayloadBytes: TelemetryAttribute.IpcPayloadBytes,
+  IpcResultCount: TelemetryAttribute.IpcResultCount,
+  IpcSessionCount: TelemetryAttribute.IpcSessionCount,
 } as const;
 
 /** Literal union of ClosedLoop compatibility telemetry attributes. */
@@ -168,6 +220,12 @@ export type ClosedLoopCompatibilityAttribute =
 
 /** Producer inventory explaining each compatibility attribute source. */
 export const CompatibilityAttributeProducerMapping = {
+  [TelemetryAttribute.AppOrganizationId]: {
+    producer: "apps/desktop/src/main (desktop OTel SDK, FEA-1996)",
+    sourceField: "organizationId",
+    reason:
+      "Desktop attaches the authenticated organization id to app-lifecycle telemetry as a ClosedLoop compatibility field (multiplayer attribution); there is no pinned OTel semantic convention for organization identity, and the value is only ever set when an API key is present.",
+  },
   [TelemetryAttribute.AppExceptionOrigin]: {
     producer: "apps/desktop/src/main (desktop OTel SDK, FEA-1986)",
     sourceField: "exceptionOrigin",
@@ -259,6 +317,34 @@ export const CompatibilityAttributeProducerMapping = {
     reason:
       "Runtime-tool discriminator identifying the producing harness (claude/codex/cursor/copilot/opencode). Distinct from the CLOTS agent.name logical-actor attribute; no pinned OTel semantic convention owns it, so it stays a ClosedLoop compatibility field.",
   },
+  [TelemetryAttribute.IpcOperation]: {
+    producer:
+      "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts (Agent Dashboard IPC perf wide events, FEA-1997)",
+    sourceField: "operation",
+    reason:
+      "Discriminator naming the instrumented Agent Dashboard IPC handler (list/detail/usage). No pinned OTel semantic convention owns Electron IPC handler identity, so it stays a ClosedLoop compatibility field.",
+  },
+  [TelemetryAttribute.IpcPayloadBytes]: {
+    producer:
+      "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts (Agent Dashboard IPC perf wide events, FEA-1997)",
+    sourceField: "payloadBytes",
+    reason:
+      "Serialized response byte size of an IPC perf wide event. No pinned OTel semantic convention owns IPC payload size, so it stays a ClosedLoop compatibility field.",
+  },
+  [TelemetryAttribute.IpcResultCount]: {
+    producer:
+      "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts (Agent Dashboard IPC perf wide events, FEA-1997)",
+    sourceField: "resultCount",
+    reason:
+      "Row/record count returned by an IPC call. No pinned OTel semantic convention owns this query-shape dimension, so it stays a ClosedLoop compatibility field.",
+  },
+  [TelemetryAttribute.IpcSessionCount]: {
+    producer:
+      "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts (Agent Dashboard IPC perf wide events, FEA-1997)",
+    sourceField: "sessionCount",
+    reason:
+      "Total local-store session count — the fleet dimension that exposes the many-sessions perf cliff. No pinned OTel semantic convention owns it, so it stays a ClosedLoop compatibility field.",
+  },
 } as const satisfies Record<
   ClosedLoopCompatibilityAttribute,
   { producer: string; sourceField: string; reason: string }
@@ -269,6 +355,8 @@ export const TelemetryAttributeOwnershipByName = {
   [TelemetryAttribute.ServiceName]: TelemetryAttributeOwnership.Otel,
   [TelemetryAttribute.ServiceVersion]: TelemetryAttributeOwnership.Otel,
   [TelemetryAttribute.AppInstallationId]: TelemetryAttributeOwnership.Otel,
+  [TelemetryAttribute.AppOrganizationId]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.DeploymentEnvironmentName]:
     TelemetryAttributeOwnership.Otel,
   [TelemetryAttribute.ExceptionType]: TelemetryAttributeOwnership.Otel,
@@ -313,6 +401,14 @@ export const TelemetryAttributeOwnershipByName = {
   [TelemetryAttribute.GenAiPermissionSource]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.HarnessName]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.IpcOperation]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.IpcPayloadBytes]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.IpcResultCount]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.IpcSessionCount]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
 } as const satisfies Record<
   TelemetryAttributeName,

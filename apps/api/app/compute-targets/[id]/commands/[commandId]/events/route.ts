@@ -3,7 +3,11 @@ import { NextResponse } from "next/server";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { authorizeBranchViewLocalEventRead } from "@/lib/branch-view-local-authorization";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
-import { errorResponse, successResponse } from "@/lib/route-utils";
+import {
+  errorResponse,
+  parseSequenceCursor,
+  successResponse,
+} from "@/lib/route-utils";
 import {
   createSseResponse,
   createSseStream,
@@ -168,13 +172,9 @@ export async function GET(
       url.searchParams.get("stream") === "true" ||
       request.headers.get("accept")?.includes("text/event-stream") === true;
 
-    const afterSequenceParam = url.searchParams.get("afterSequence");
-    const afterSequenceRaw =
-      afterSequenceParam === null ? Number.NaN : Number(afterSequenceParam);
-    const afterSequence =
-      Number.isInteger(afterSequenceRaw) && afterSequenceRaw >= 0
-        ? afterSequenceRaw
-        : undefined;
+    const afterSequence = parseSequenceCursor(
+      url.searchParams.get("afterSequence")
+    );
 
     if (!streamRequested) {
       const replayAuthError = await authorizeLocalEventRead(localAuthInput);

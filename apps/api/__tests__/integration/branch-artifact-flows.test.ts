@@ -4,9 +4,15 @@ import {
   BranchBaseBranchSource,
   BranchFileCacheStatus,
   BranchHeadShaSource,
+  BranchPushSource,
   BranchSyncStatus,
   LinkType,
 } from "@repo/api/src/types/artifact";
+import {
+  BranchCommentsState,
+  BranchDataState,
+  BranchStatus,
+} from "@repo/api/src/types/branch";
 import {
   BRANCH_VIEW_IN_FLIGHT_STALE_MS,
   BranchViewCheckKind,
@@ -28,6 +34,7 @@ import {
 } from "@repo/api/src/types/github";
 import type { LoopDetail } from "@repo/api/src/types/loop";
 import { LoopBranchMaterializationRole } from "@repo/api/src/types/loop-body";
+import { Result, Status } from "@repo/api/src/types/result";
 import {
   ArtifactSubtype,
   ArtifactType,
@@ -47,6 +54,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as postPullRequestAlias } from "@/app/artifact-links/pull-requests/route";
 import { GET as getBranchView } from "@/app/branch-view/[externalLinkId]/route";
 import { POST as syncBranchView } from "@/app/branch-view/[externalLinkId]/sync/route";
+import { branchCommentsService } from "@/app/branches/branch-comments-service";
+import { stampBranchFirstPush } from "@/app/branches/branch-push-state";
+import { branchReadService } from "@/app/branches/branch-read-service";
+import { branchService } from "@/app/branches/branch-service";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
 import { deploymentService } from "@/app/deployments/deployment-service";
 import { GET as getDocumentPullRequests } from "@/app/documents/[id]/pull-request/route";
@@ -321,7 +332,9 @@ function pushEvent(
     branchName: string;
     before: string;
     after: string;
+    created?: boolean;
     deleted?: boolean;
+    pushedAt?: string;
   }
 ): PushEvent {
   return {
@@ -333,7 +346,7 @@ function pushEvent(
       name: ctx.repositoryFullName.split("/")[1],
       full_name: ctx.repositoryFullName,
       default_branch: "main",
-      pushed_at: "2026-05-15T00:00:00Z",
+      pushed_at: input.pushedAt ?? "2026-05-15T00:00:00Z",
     },
     commits: [
       {
@@ -346,6 +359,7 @@ function pushEvent(
       },
     ],
     installation: { id: Number(ctx.installationId.replace(/\D/g, "") || 1) },
+    created: input.created ?? false,
     deleted: input.deleted ?? false,
   } as unknown as PushEvent;
 }
@@ -420,12 +434,10 @@ function freshPullRequest(
 
 async function findBranchArtifact(repositoryId: string, branchName: string) {
   const branch = await withDb((db) =>
-    db.branchDetail.findUnique({
+    db.branchDetail.findFirst({
       where: {
-        repositoryId_branchName: {
-          repositoryId,
-          branchName,
-        },
+        repositoryId,
+        branchName,
       },
       include: {
         artifact: true,
@@ -515,6 +527,8 @@ async function seedBranchWithCurrentPr(
         )}`,
         branch: {
           create: {
+            organizationId: ctx.organizationId,
+            repositoryFullName: ctx.repositoryFullName,
             repositoryId: ctx.repositoryId,
             branchName,
             baseBranch: "main",
@@ -538,6 +552,7 @@ async function seedBranchWithCurrentPr(
   const prDetail = await withDb((db) =>
     db.pullRequestDetail.create({
       data: {
+        organizationId: ctx.organizationId,
         branchArtifactId: artifact.id,
         repositoryId: ctx.repositoryId,
         githubId: input.githubId ?? `${input.prNumber ?? 87_000}`,
@@ -1856,6 +1871,122 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
     });
   });
 
+  it("preserves historical branch and PR rows while tombstoned repositories block active callers until reconnect", async () => {
+    await autoRollbackTransaction(async () => {
+      const ctx = await setupContext();
+      const branchName = "FEA-2605-tombstone-lifecycle";
+      const seeded = await seedBranchWithCurrentPr(ctx, {
+        branchName,
+        lastRefreshAttemptAt: null,
+        lastVerifiedAt: null,
+        prNumber: 2605,
+        title: "Tombstone lifecycle PR",
+      });
+      const loop = await withDb((db) =>
+        db.loop.create({
+          data: {
+            organizationId: ctx.organizationId,
+            userId: ctx.userId,
+            artifactId: ctx.sourceArtifactId,
+            status: LoopStatus.RUNNING,
+            command: LoopCommand.EXECUTE,
+            repo: { fullName: ctx.repositoryFullName, branch: "main" },
+            additionalRepos: [],
+            metadata: {
+              branchMaterialization: {
+                schemaVersion: 1,
+                branches: [
+                  {
+                    role: LoopBranchMaterializationRole.Primary,
+                    repositoryFullName: ctx.repositoryFullName,
+                    baseBranch: "main",
+                    branchName,
+                  },
+                ],
+              },
+            },
+          },
+          select: { id: true },
+        })
+      );
+
+      await githubService.removeRepositories(ctx.installationRecordId, [
+        String(ctx.githubRepoId),
+      ]);
+
+      const tombstoned = await withDb((db) =>
+        db.gitHubInstallationRepository.findUnique({
+          where: { id: ctx.repositoryId },
+          select: { id: true, removedAt: true },
+        })
+      );
+      expect(tombstoned).toMatchObject({ id: ctx.repositoryId });
+      expect(tombstoned?.removedAt).toBeInstanceOf(Date);
+
+      const historical = await withDb((db) =>
+        db.branchDetail.findUnique({
+          where: { artifactId: seeded.artifactId },
+          include: { currentPullRequestDetail: true },
+        })
+      );
+      expect(historical?.repositoryId).toBe(ctx.repositoryId);
+      expect(historical?.currentPullRequestDetail?.repositoryId).toBe(
+        ctx.repositoryId
+      );
+
+      const view = await expectSuccess<BranchViewData>(
+        await getBranchView(
+          branchViewRequest(seeded.artifactId),
+          routeContext({ externalLinkId: seeded.artifactId })
+        )
+      );
+      expect(view.currentPullRequest).toMatchObject({
+        number: 2605,
+        title: "Tombstone lifecycle PR",
+      });
+      await flushWaitUntil();
+      expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
+      expect(mockCompareBranchFileChanges).not.toHaveBeenCalled();
+      expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+
+      const rejectedCallback = await createLoopBranchArtifact({
+        loopId: loop.id,
+        organizationId: ctx.organizationId,
+        body: {
+          repositoryFullName: ctx.repositoryFullName,
+          branchName,
+          defaultBranch: "main",
+          baseBranch: "main",
+          headSha: "abc123def456abc123def456abc123def456abcd",
+        },
+      });
+      expect(rejectedCallback).toEqual(Result.err(Status.Forbidden));
+
+      const reconnected = await githubService.syncRepositories(
+        ctx.installationRecordId,
+        [
+          {
+            githubRepoId: String(ctx.githubRepoId),
+            fullName: ctx.repositoryFullName,
+            name: ctx.repositoryFullName.split("/")[1] ?? "repo",
+            owner: "owner",
+            private: false,
+          },
+        ]
+      );
+      expect(reconnected).toHaveLength(1);
+      expect(reconnected[0]?.id).toBe(ctx.repositoryId);
+
+      const activeAgain = await withDb((db) =>
+        db.gitHubInstallationRepository.findUnique({
+          where: { id: ctx.repositoryId },
+          select: { removedAt: true },
+        })
+      );
+      expect(activeAgain?.removedAt).toBeNull();
+    });
+  });
+
   it("does not relink stale branch artifacts owned by another organization", async () => {
     await autoRollbackTransaction(async () => {
       const activeCtx = await setupContext();
@@ -1973,6 +2104,7 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
       const activePr = await withDb((db) =>
         db.pullRequestDetail.create({
           data: {
+            organizationId: ctx.organizationId,
             branchArtifactId: stale.artifactId,
             repositoryId: ctx.repositoryId,
             githubId: "active-pr-collision-3128",
@@ -2080,6 +2212,8 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
             externalUrl: `https://github.com/${ctx.repositoryFullName}/tree/other-org-pr-collision`,
             branch: {
               create: {
+                organizationId: otherOrganizationId,
+                repositoryFullName: ctx.repositoryFullName,
                 repositoryId: ctx.repositoryId,
                 branchName: "other-org-pr-collision",
                 baseBranch: "main",
@@ -2092,6 +2226,7 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
       const otherPr = await withDb((db) =>
         db.pullRequestDetail.create({
           data: {
+            organizationId: otherOrganizationId,
             branchArtifactId: otherArtifact.id,
             repositoryId: ctx.repositoryId,
             githubId: "active-cross-org-pr-collision-6128",
@@ -2202,6 +2337,8 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
             externalUrl: `https://github.com/${ctx.repositoryFullName}/tree/foreign-current-pointer`,
             branch: {
               create: {
+                organizationId: otherOrganizationId,
+                repositoryFullName: ctx.repositoryFullName,
                 repositoryId: ctx.repositoryId,
                 branchName: "foreign-current-pointer",
                 baseBranch: "main",
@@ -2214,6 +2351,7 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
       const foreignPr = await withDb((db) =>
         db.pullRequestDetail.create({
           data: {
+            organizationId: otherOrganizationId,
             branchArtifactId: otherArtifact.id,
             repositoryId: ctx.repositoryId,
             githubId: "foreign-current-pointer-7128",
@@ -2264,7 +2402,7 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
     });
   });
 
-  it("does not split PR state when an active branch collision blocks relink", async () => {
+  it("prevents a duplicate branch row for the same D2 identity (PRD-510 D2 — no PR-state split)", async () => {
     await autoRollbackTransaction(async () => {
       const ctx = await setupContext();
       const branchName = "FEA-1128-branch-collision";
@@ -2273,6 +2411,12 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
         prNumber: 4128,
         title: "Active branch collision",
       });
+      // Pre-D2, a re-installed/duplicate repo could own a SECOND branch row for
+      // the same (org, repoFullName, branchName) under a different repositoryId,
+      // splitting PR state across two rows. The D2 identity key now makes that
+      // row structurally impossible: the duplicate insert is rejected, so a
+      // single row owns the branch's PR state. (Reconciling the stale
+      // installation repo itself is Phase 2 reconciliation work.)
       const oldInstallation = await withDb((db) =>
         db.gitHubInstallation.create({
           data: {
@@ -2301,39 +2445,23 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
       if (!staleRepository) {
         throw new Error("Failed to seed stale repository");
       }
-      const stale = await seedBranchWithCurrentPr(
-        {
-          ...ctx,
-          installationId: oldInstallation.installationId,
-          repositoryId: staleRepository.id,
-        },
-        {
-          branchName,
-          prNumber: 5128,
-          title: "Stale branch collision",
-        }
-      );
 
-      await githubService.syncRepositories(ctx.installationRecordId, [
-        {
-          githubRepoId: String(ctx.githubRepoId),
-          fullName: ctx.repositoryFullName,
-          name: ctx.repositoryFullName.split("/")[1] ?? "repo",
-          owner: "owner",
-          private: false,
-        },
-      ]);
-
-      const untouched = await withDb((db) =>
-        db.branchDetail.findUnique({
-          where: { artifactId: stale.artifactId },
-          include: { currentPullRequestDetail: true },
-        })
-      );
-      expect(untouched?.repositoryId).toBe(staleRepository.id);
-      expect(untouched?.currentPullRequestDetail?.repositoryId).toBe(
-        staleRepository.id
-      );
+      // The stale repo shares (org, repoFullName, branchName) with the active
+      // branch, so the D2 unique index rejects the duplicate with P2002.
+      await expect(
+        seedBranchWithCurrentPr(
+          {
+            ...ctx,
+            installationId: oldInstallation.installationId,
+            repositoryId: staleRepository.id,
+          },
+          {
+            branchName,
+            prNumber: 5128,
+            title: "Stale branch collision",
+          }
+        )
+      ).rejects.toMatchObject({ code: "P2002" });
     });
   });
 
@@ -2429,6 +2557,482 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
         }),
       ]);
       await flushWaitUntil();
+    });
+  });
+
+  it("shows an existing local branch only after a matching repository-scoped push webhook", async () => {
+    await autoRollbackTransaction(async () => {
+      const ctx = await setupContext();
+      const branchName = "FEA-2527-existing-local";
+      const headSha = "same-head-sha";
+      const sidecarFullName = `${ctx.repositoryFullName}-sidecar`;
+      const sidecarRepository = await withDb((db) =>
+        db.gitHubInstallationRepository.create({
+          data: {
+            installationId: ctx.installationRecordId,
+            githubRepoId: `${ctx.githubRepoId}-sidecar`,
+            fullName: sidecarFullName,
+            name: sidecarFullName.split("/")[1] ?? "sidecar",
+            owner: sidecarFullName.split("/")[0] ?? "owner",
+            private: false,
+          },
+          select: { id: true },
+        })
+      );
+      const primaryResult = await branchService.upsertBranchArtifact({
+        organizationId: ctx.organizationId,
+        repositoryId: ctx.repositoryId,
+        repositoryFullName: ctx.repositoryFullName,
+        branchName,
+        defaultBranch: "main",
+        projectId: ctx.projectId,
+        baseBranch: "main",
+        baseBranchSource: BranchBaseBranchSource.HarnessInput,
+        headSha,
+        headShaSource: BranchHeadShaSource.ExplicitSync,
+      });
+      const sidecarResult = await branchService.upsertBranchArtifact({
+        organizationId: ctx.organizationId,
+        repositoryId: sidecarRepository.id,
+        repositoryFullName: sidecarFullName,
+        branchName,
+        defaultBranch: "main",
+        projectId: ctx.projectId,
+        baseBranch: "main",
+        baseBranchSource: BranchBaseBranchSource.HarnessInput,
+        headSha,
+        headShaSource: BranchHeadShaSource.ExplicitSync,
+      });
+      expect(primaryResult.ok).toBe(true);
+      expect(sidecarResult.ok).toBe(true);
+      if (!(primaryResult.ok && sidecarResult.ok)) {
+        throw new Error("Expected local branch materialization to succeed");
+      }
+
+      expect(
+        await branchReadService.getBranchDetail(
+          ctx.organizationId,
+          primaryResult.value.id
+        )
+      ).toBeNull();
+      expect(
+        await branchReadService.getBranchDetail(
+          ctx.organizationId,
+          sidecarResult.value.id
+        )
+      ).toBeNull();
+      await expect(
+        branchCommentsService.getBranchComments(
+          ctx.organizationId,
+          primaryResult.value.id
+        )
+      ).resolves.toBeNull();
+      let list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([]);
+
+      mockCompareBranchFileChanges.mockResolvedValueOnce([]);
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: "parent-head-sha",
+          after: headSha,
+          pushedAt: "2026-05-15T01:00:00Z",
+        })
+      );
+      await flushWaitUntil();
+
+      const pushedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(pushedBranch).toMatchObject({
+        artifactId: primaryResult.value.id,
+        headSha,
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        lastPushBeforeSha: "parent-head-sha",
+      });
+      list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([
+        expect.objectContaining({
+          id: primaryResult.value.id,
+          branchName,
+          dataState: BranchDataState.NoSessions,
+          prNumber: null,
+          sessionIds: [],
+          status: BranchStatus.Open,
+        }),
+      ]);
+      await expect(
+        branchReadService.getBranchDetail(
+          ctx.organizationId,
+          primaryResult.value.id
+        )
+      ).resolves.toMatchObject({
+        id: primaryResult.value.id,
+        branchName,
+        dataState: BranchDataState.NoSessions,
+      });
+      await expect(
+        branchCommentsService.getBranchComments(
+          ctx.organizationId,
+          primaryResult.value.id
+        )
+      ).resolves.toMatchObject({
+        branchId: primaryResult.value.id,
+        state: BranchCommentsState.UnsyncedUnknown,
+        prNumber: null,
+        prUrl: null,
+      });
+      await expect(
+        branchReadService.listBranches(ctx.organizationId, {
+          limit: 50,
+          offset: 0,
+          repository: [sidecarFullName],
+          search: branchName,
+          status: [BranchStatus.Open],
+        })
+      ).resolves.toMatchObject({ items: [] });
+      await expect(
+        branchReadService.getBranchDetail(
+          ctx.organizationId,
+          sidecarResult.value.id
+        )
+      ).resolves.toBeNull();
+      await expect(
+        branchCommentsService.getBranchComments(
+          ctx.organizationId,
+          sidecarResult.value.id
+        )
+      ).resolves.toBeNull();
+    });
+  });
+
+  it("ignores wrong-repository current PR rows when listing local branches", async () => {
+    await autoRollbackTransaction(async () => {
+      const ctx = await setupContext();
+      const branchName = "FEA-2527-wrong-repo-pr";
+      const headSha = "local-only-head-sha";
+      const sidecarFullName = `${ctx.repositoryFullName}-wrong-pr`;
+      const sidecarRepository = await withDb((db) =>
+        db.gitHubInstallationRepository.create({
+          data: {
+            installationId: ctx.installationRecordId,
+            githubRepoId: `${ctx.githubRepoId}-wrong-pr`,
+            fullName: sidecarFullName,
+            name: sidecarFullName.split("/")[1] ?? "wrong-pr",
+            owner: sidecarFullName.split("/")[0] ?? "owner",
+            private: false,
+          },
+          select: { id: true },
+        })
+      );
+      const localResult = await branchService.upsertBranchArtifact({
+        organizationId: ctx.organizationId,
+        repositoryId: ctx.repositoryId,
+        repositoryFullName: ctx.repositoryFullName,
+        branchName,
+        defaultBranch: "main",
+        projectId: ctx.projectId,
+        baseBranch: "main",
+        baseBranchSource: BranchBaseBranchSource.HarnessInput,
+        headSha,
+        headShaSource: BranchHeadShaSource.HarnessInput,
+      });
+      expect(localResult.ok).toBe(true);
+      if (!localResult.ok) {
+        throw new Error("Expected local branch materialization to succeed");
+      }
+
+      await withDb((db) =>
+        db.pullRequestDetail.create({
+          data: {
+            organizationId: ctx.organizationId,
+            branchArtifactId: localResult.value.id,
+            repositoryId: sidecarRepository.id,
+            githubId: "wrong-repo-current-pr-2527",
+            number: 2527,
+            title: "Foreign searchable PR",
+            htmlUrl: `https://github.com/${sidecarFullName}/pull/2527`,
+            prState: GitHubPRState.OPEN,
+            isCurrent: true,
+          },
+        })
+      );
+
+      await expect(
+        branchReadService.getBranchDetail(
+          ctx.organizationId,
+          localResult.value.id
+        )
+      ).resolves.toBeNull();
+      await expect(
+        branchReadService.listBranches(ctx.organizationId, {
+          limit: 50,
+          offset: 0,
+          repository: [ctx.repositoryFullName],
+          search: "Foreign searchable PR",
+          status: [BranchStatus.Open],
+        })
+      ).resolves.toMatchObject({
+        items: [],
+        total: 0,
+      });
+    });
+  });
+
+  it("re-lists a push-only branch when GitHub deletes and recreates the ref", async () => {
+    await autoRollbackTransaction(async () => {
+      const ctx = await setupContext();
+      const branchName = "FEA-2528-delete-recreate";
+      const zeroSha = "0000000000000000000000000000000000000000";
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: zeroSha,
+          after: "head-before-delete",
+          created: true,
+          pushedAt: "2026-05-15T00:00:00Z",
+        })
+      );
+      await flushWaitUntil();
+      const initialBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(initialBranch.deletedAt).toBeNull();
+
+      let list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([
+        expect.objectContaining({
+          branchName,
+          dataState: BranchDataState.NoSessions,
+          prNumber: null,
+          sessionIds: [],
+          status: BranchStatus.Open,
+        }),
+      ]);
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: "head-before-delete",
+          after: zeroSha,
+          deleted: true,
+          pushedAt: "2026-05-15T01:00:00Z",
+        })
+      );
+      const tombstonedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(tombstonedBranch.deletedAt).toEqual(expect.any(Date));
+      list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([]);
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: zeroSha,
+          after: "head-before-delete",
+          created: true,
+          pushedAt: "2026-05-15T00:00:00Z",
+        })
+      );
+      await flushWaitUntil();
+      const stillTombstonedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(stillTombstonedBranch).toMatchObject({
+        deletedAt: expect.any(Date),
+        headSha: "head-before-delete",
+        lastPushBeforeSha: zeroSha,
+      });
+      list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([]);
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: zeroSha,
+          after: "head-after-recreate",
+          created: true,
+          pushedAt: "2026-05-15T02:00:00Z",
+        })
+      );
+      await flushWaitUntil();
+      const recreatedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(recreatedBranch).toMatchObject({
+        deletedAt: null,
+        headSha: "head-after-recreate",
+        lastPushBeforeSha: zeroSha,
+      });
+      list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([
+        expect.objectContaining({
+          branchName,
+          dataState: BranchDataState.NoSessions,
+          prNumber: null,
+          sessionIds: [],
+          status: BranchStatus.Open,
+        }),
+      ]);
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: "head-before-delete",
+          after: zeroSha,
+          deleted: true,
+          pushedAt: "2026-05-15T01:00:00Z",
+        })
+      );
+      const stillRecreatedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(stillRecreatedBranch).toMatchObject({
+        deletedAt: null,
+        headSha: "head-after-recreate",
+        lastPushBeforeSha: zeroSha,
+      });
+      list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([
+        expect.objectContaining({
+          branchName,
+          dataState: BranchDataState.NoSessions,
+          prNumber: null,
+          sessionIds: [],
+          status: BranchStatus.Open,
+        }),
+      ]);
+    });
+  });
+
+  it("re-lists a delete-first branch when a later GitHub create push arrives", async () => {
+    await autoRollbackTransaction(async () => {
+      const ctx = await setupContext();
+      const branchName = "FEA-2528-delete-first-recreate";
+      const zeroSha = "0000000000000000000000000000000000000000";
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: "head-before-delete",
+          after: zeroSha,
+          deleted: true,
+          pushedAt: "2026-05-15T01:00:00Z",
+        })
+      );
+      const tombstonedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(tombstonedBranch).toMatchObject({
+        deletedAt: expect.any(Date),
+        headSha: null,
+      });
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: zeroSha,
+          after: "stale-created-head",
+          created: true,
+          pushedAt: "2026-05-15T00:00:00Z",
+        })
+      );
+      const stillTombstonedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(stillTombstonedBranch).toMatchObject({
+        deletedAt: expect.any(Date),
+        headSha: null,
+      });
+
+      await handlePush(
+        pushEvent(ctx, {
+          branchName,
+          before: zeroSha,
+          after: "head-after-recreate",
+          created: true,
+          pushedAt: "2026-05-15T02:00:00Z",
+        })
+      );
+      await flushWaitUntil();
+      const recreatedBranch = await findBranchArtifact(
+        ctx.repositoryId,
+        branchName
+      );
+      expect(recreatedBranch).toMatchObject({
+        deletedAt: null,
+        headSha: "head-after-recreate",
+        lastPushBeforeSha: zeroSha,
+      });
+
+      const list = await branchReadService.listBranches(ctx.organizationId, {
+        limit: 50,
+        offset: 0,
+        repository: [ctx.repositoryFullName],
+        search: branchName,
+        status: [BranchStatus.Open],
+      });
+      expect(list.items).toEqual([
+        expect.objectContaining({
+          branchName,
+          dataState: BranchDataState.NoSessions,
+          prNumber: null,
+          sessionIds: [],
+          status: BranchStatus.Open,
+        }),
+      ]);
     });
   });
 
@@ -3407,12 +4011,10 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
         101
       );
       const branch = await withDb((db) =>
-        db.branchDetail.findUnique({
+        db.branchDetail.findFirst({
           where: {
-            repositoryId_branchName: {
-              repositoryId: ctx.repositoryId,
-              branchName: "FEA-1116-missing-head",
-            },
+            repositoryId: ctx.repositoryId,
+            branchName: "FEA-1116-missing-head",
           },
         })
       );
@@ -3607,6 +4209,174 @@ describe.skipIf(!hasDatabase)("branch artifact API integration flows", () => {
           }),
         }),
       ]);
+    });
+  });
+
+  // PLN-1099 Phase 2: explicit push state (`firstPushedAt`/`pushSource`) is
+  // set-once by the EARLIEST verified evidence and converges across producers
+  // (webhook + desktop session) in any delivery order, never derived from
+  // `headShaSource` or row existence.
+  describe("push-state reconciliation (PRD-510 FR2)", () => {
+    const ZERO_SHA = "0".repeat(40);
+
+    it("push webhook stamps firstPushedAt + pushSource=webhook, set-once across re-delivery", async () => {
+      await autoRollbackTransaction(async () => {
+        const ctx = await setupContext();
+        const branchName = "FEA-2129-webhook-pushed";
+
+        await handlePush(
+          pushEvent(ctx, {
+            branchName,
+            before: ZERO_SHA,
+            after: "sha-1",
+            created: true,
+            pushedAt: "2026-05-15T10:00:00Z",
+          })
+        );
+        await flushWaitUntil();
+        let branch = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(branch.firstPushedAt?.toISOString()).toBe(
+          "2026-05-15T10:00:00.000Z"
+        );
+        expect(branch.pushSource).toBe(BranchPushSource.Webhook);
+
+        // A later sequential push must NOT move the earliest stamp forward.
+        await handlePush(
+          pushEvent(ctx, {
+            branchName,
+            before: "sha-1",
+            after: "sha-2",
+            pushedAt: "2026-05-16T10:00:00Z",
+          })
+        );
+        await flushWaitUntil();
+        branch = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(branch.firstPushedAt?.toISOString()).toBe(
+          "2026-05-15T10:00:00.000Z"
+        );
+        expect(branch.pushSource).toBe(BranchPushSource.Webhook);
+      });
+    });
+
+    it("a branch-delete push neither stamps nor clears push state", async () => {
+      await autoRollbackTransaction(async () => {
+        const ctx = await setupContext();
+        const branchName = "FEA-2129-delete-nostamp";
+
+        await handlePush(
+          pushEvent(ctx, {
+            branchName,
+            before: ZERO_SHA,
+            after: "sha-1",
+            created: true,
+            pushedAt: "2026-05-15T10:00:00Z",
+          })
+        );
+        await flushWaitUntil();
+
+        await handlePush(
+          pushEvent(ctx, {
+            branchName,
+            before: "sha-1",
+            after: ZERO_SHA,
+            deleted: true,
+            pushedAt: "2026-05-17T10:00:00Z",
+          })
+        );
+        await flushWaitUntil();
+
+        const branch = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(branch.firstPushedAt?.toISOString()).toBe(
+          "2026-05-15T10:00:00.000Z"
+        );
+        expect(branch.pushSource).toBe(BranchPushSource.Webhook);
+        expect(branch.deletedAt).not.toBeNull();
+      });
+    });
+
+    it("desktop session push then a LATER webhook push keeps the earliest stamp (session wins)", async () => {
+      await autoRollbackTransaction(async () => {
+        const ctx = await setupContext();
+        const branchName = "FEA-2129-session-first";
+
+        // Desktop producer: create the branch row un-pushed (no head), then a
+        // C1-verified in-session push stamps session evidence at T1.
+        const created = await branchService.upsertBranchArtifact({
+          organizationId: ctx.organizationId,
+          repositoryId: ctx.repositoryId,
+          repositoryFullName: ctx.repositoryFullName,
+          branchName,
+          defaultBranch: "main",
+          projectId: ctx.projectId,
+        });
+        expect(created.ok).toBe(true);
+        const seeded = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(seeded.firstPushedAt).toBeNull();
+        await withDb((db) =>
+          stampBranchFirstPush(
+            db,
+            seeded.artifactId,
+            new Date("2026-05-15T09:00:00Z"),
+            BranchPushSource.Session
+          )
+        );
+
+        // A later webhook push (T2 > T1) must not override the session stamp.
+        await handlePush(
+          pushEvent(ctx, {
+            branchName,
+            before: ZERO_SHA,
+            after: "sha-1",
+            created: true,
+            pushedAt: "2026-05-15T12:00:00Z",
+          })
+        );
+        await flushWaitUntil();
+
+        const branch = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(branch.firstPushedAt?.toISOString()).toBe(
+          "2026-05-15T09:00:00.000Z"
+        );
+        expect(branch.pushSource).toBe(BranchPushSource.Session);
+      });
+    });
+
+    it("a webhook push then an EARLIER session push lets the session earliest-win", async () => {
+      await autoRollbackTransaction(async () => {
+        const ctx = await setupContext();
+        const branchName = "FEA-2129-webhook-first";
+
+        await handlePush(
+          pushEvent(ctx, {
+            branchName,
+            before: ZERO_SHA,
+            after: "sha-1",
+            created: true,
+            pushedAt: "2026-05-15T12:00:00Z",
+          })
+        );
+        await flushWaitUntil();
+        let branch = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(branch.firstPushedAt?.toISOString()).toBe(
+          "2026-05-15T12:00:00.000Z"
+        );
+        expect(branch.pushSource).toBe(BranchPushSource.Webhook);
+
+        // The desktop later syncs a session whose push happened earlier (T1<T2).
+        await withDb((db) =>
+          stampBranchFirstPush(
+            db,
+            branch.artifactId,
+            new Date("2026-05-15T09:00:00Z"),
+            BranchPushSource.Session
+          )
+        );
+        branch = await findBranchArtifact(ctx.repositoryId, branchName);
+        expect(branch.firstPushedAt?.toISOString()).toBe(
+          "2026-05-15T09:00:00.000Z"
+        );
+        expect(branch.pushSource).toBe(BranchPushSource.Session);
+      });
     });
   });
 });

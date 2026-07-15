@@ -2,6 +2,7 @@ import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { ArrowRightIcon, CheckIcon, ChevronLeftIcon } from "lucide-react";
 import {
   type CSSProperties,
+  type HTMLAttributes,
   type ReactNode,
   useCallback,
   useEffect,
@@ -124,6 +125,15 @@ export function Tour({
     };
   }, [active, step]);
 
+  // Move focus into the callout when the tour opens or advances a step, so
+  // screen readers announce the dialog (via its `aria-label`) and keyboard
+  // focus leaves the page behind the scrim instead of staying trapped there.
+  useEffect(() => {
+    if (active && step) {
+      calloutRef.current?.focus();
+    }
+  }, [active, step]);
+
   const close = useCallback(
     (reason: "done" | "skip") => onClose(reason),
     [onClose]
@@ -185,6 +195,22 @@ export function Tour({
       ? "transform .44s cubic-bezier(.4,0,.2,1), opacity .44s ease"
       : "none",
     pointerEvents: skip ? "none" : "auto",
+  };
+
+  // Expose each callout as a modal dialog to assistive tech and let Escape
+  // dismiss the tour. Focus is moved into the container (see the effect above),
+  // so an `onKeyDown` here catches Escape from anywhere inside the callout.
+  const dialogProps: HTMLAttributes<HTMLDivElement> = {
+    role: "dialog",
+    "aria-modal": true,
+    "aria-label": step.title,
+    tabIndex: -1,
+    onKeyDown: (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        startSkip();
+      }
+    },
   };
 
   const dots = (
@@ -273,8 +299,10 @@ export function Tour({
         >
           <div
             ref={calloutRef}
+            {...dialogProps}
             style={{
               ...cardChrome,
+              outline: "none",
               width: 472,
               maxWidth: "100%",
               padding: "22px 24px 18px",
@@ -475,8 +503,10 @@ export function Tour({
       ) : (
         <div
           ref={calloutRef}
+          {...dialogProps}
           style={{
             ...cardChrome,
+            outline: "none",
             position: "fixed",
             right: DOCK,
             bottom: DOCK,

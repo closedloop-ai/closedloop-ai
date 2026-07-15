@@ -1,12 +1,12 @@
 /**
  * @file pr-store-conversion.test.ts
- * @description FEA-1791 (PLN-886 follow-up) — pr-store READS converted to the
- * single DesktopPrisma client via TYPED delegates: `artifact` /
- * `sessionArtifactLink` findMany/count/groupBy, using the `artifactLinks.some`
- * and `artifact` relation filters to express the prior `session_artifact_links`
- * join. Only the listPrSessions OUTER query stays on `$queryRawUnsafe` (a
- * cross-table grouped aggregation — MAX(observed_at)/MIN(harness) off the joined
- * artifact + session columns — with no single typed-delegate form).
+ * @description pr-store READS run on the single DesktopPrisma client via TYPED
+ * delegates: `artifact` / `sessionArtifactLink` findMany/count/groupBy, using
+ * the `artifactLinks.some` and `artifact` relation filters to express the
+ * `session_artifact_links` join. Only the listPrSessions OUTER query stays on
+ * `$queryRawUnsafe` (a cross-table grouped aggregation —
+ * MAX(observed_at)/MIN(harness) off the joined artifact + session columns — with
+ * no single typed-delegate form).
  *
  * FEA-1899 moved PR reads onto the canonical `artifacts` table
  * (kind='pull_request') joined through the pure `session_artifact_links`

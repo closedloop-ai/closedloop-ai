@@ -113,6 +113,7 @@ async function main() {
   // cannot occur AFTER a destructive `--reset` has wiped the target org but
   // before it is reseeded.
   const { runSeed } = await import("./seed/index");
+  const { seedCuratedCatalogItems } = await import("./seed/curated-catalog");
 
   const url = guardResult.url;
   const urlForLocalhostCheck = new URL(url.toString());
@@ -282,6 +283,10 @@ async function main() {
         console.log(line);
       }
     }
+
+    // Seed global/curated items first (organizationId IS NULL, never org-reset).
+    // T-22.4: registers the bundled Token Coach as a curated CatalogItem.
+    await seedCuratedCatalogItems(prisma);
 
     await runSeed(prisma, context, plan);
 

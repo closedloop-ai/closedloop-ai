@@ -1,6 +1,9 @@
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import { describe, expect, test } from "vitest";
-import { getLatestContentForAttachmentWarnings } from "../document-editor-scaffold";
+import {
+  getLatestContentForAttachmentWarnings,
+  resolveActiveRoomId,
+} from "../document-editor-scaffold";
 
 const selectedHistoricalContent = "Historical version has no inline ref.";
 const savedLatestContent =
@@ -73,5 +76,49 @@ describe("getLatestContentForAttachmentWarnings", () => {
         latestDraftContent,
       })
     ).toBe(latestDraftContent);
+  });
+});
+
+describe("resolveActiveRoomId (FEA-2404 Liveblocks mount-race gate)", () => {
+  const roomId = "org-1:FEA-1762";
+
+  test("does not connect the room while the current user is still loading", () => {
+    expect(
+      resolveActiveRoomId({
+        liveblocksRoomId: roomId,
+        isUserLoading: true,
+        hasCurrentUser: false,
+      })
+    ).toBeNull();
+  });
+
+  test("does not connect the room when there is no current user yet", () => {
+    expect(
+      resolveActiveRoomId({
+        liveblocksRoomId: roomId,
+        isUserLoading: false,
+        hasCurrentUser: false,
+      })
+    ).toBeNull();
+  });
+
+  test("connects the room once the user/org context is ready", () => {
+    expect(
+      resolveActiveRoomId({
+        liveblocksRoomId: roomId,
+        isUserLoading: false,
+        hasCurrentUser: true,
+      })
+    ).toBe(roomId);
+  });
+
+  test("stays room-less when the artifact has no room even if ready", () => {
+    expect(
+      resolveActiveRoomId({
+        liveblocksRoomId: null,
+        isUserLoading: false,
+        hasCurrentUser: true,
+      })
+    ).toBeNull();
   });
 });

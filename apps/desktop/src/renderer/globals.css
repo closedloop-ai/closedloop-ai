@@ -134,6 +134,19 @@
     opacity: 0.45;
   }
 }
+/* `ob-shimmer`: a sheen swept across a determinate progress rail. It runs on the
+   compositor thread, so the rail keeps moving even when the main thread is
+   blocked during the first-launch import (reads as "loading", not "hung"). The
+   swept element is a quarter-width sheen, so it travels four track widths to
+   clear the right edge. */
+@keyframes ob-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   /* The reveal/tour gate their own auto-start on this query in JS; this is the

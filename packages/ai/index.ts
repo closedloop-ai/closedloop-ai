@@ -1,3 +1,4 @@
 /** biome-ignore-all lint/performance/noBarrelFile: needs further investigation */
 export * from "ai";
-export { agents, type PRDAgentUIMessage } from "./lib/agents";
+export type { PRDAgentUIMessage } from "./lib/agents";
+export { escapeXmlClosingTags } from "./lib/prompt-utils";

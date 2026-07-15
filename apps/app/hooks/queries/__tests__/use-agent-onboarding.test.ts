@@ -35,8 +35,11 @@ describe("useAgentOnboarding", () => {
     localStorage.clear();
     mockMembership.role = "org:admin";
     mockApiClient.get.mockImplementation((path: string) => {
-      if (path.startsWith("/agents")) {
-        return Promise.resolve({ agents: [], total: 0 });
+      // useAgentOnboarding fetches component inventory via useAgentComponents,
+      // which calls GET /agent-components and returns AgentComponentListResponse
+      // ({ items, total, hasMore }). needsBootstrap keys off `total === 0`.
+      if (path.startsWith("/agent-components")) {
+        return Promise.resolve({ items: [], total: 0, hasMore: false });
       }
       if (path === "/integrations/github") {
         return Promise.resolve({ connected: true, installation: {} });
@@ -68,10 +71,11 @@ describe("useAgentOnboarding", () => {
 
   test("shouldShow is false when org has agents", async () => {
     mockApiClient.get.mockImplementation((path: string) => {
-      if (path.startsWith("/agents")) {
+      if (path.startsWith("/agent-components")) {
         return Promise.resolve({
-          agents: [{ id: "a1", name: "Test Agent" }],
+          items: [{ id: "a1", name: "Test Agent" }],
           total: 1,
+          hasMore: false,
         });
       }
       if (path === "/integrations/github") {
@@ -150,8 +154,8 @@ describe("useAgentOnboarding", () => {
 
   test("prereqsMet is false when GitHub is not connected", async () => {
     mockApiClient.get.mockImplementation((path: string) => {
-      if (path.startsWith("/agents")) {
-        return Promise.resolve({ agents: [], total: 0 });
+      if (path.startsWith("/agent-components")) {
+        return Promise.resolve({ items: [], total: 0, hasMore: false });
       }
       if (path === "/integrations/github") {
         return Promise.resolve({ connected: false });
@@ -176,8 +180,8 @@ describe("useAgentOnboarding", () => {
 
   test("prereqsMet is false when no compute target is online", async () => {
     mockApiClient.get.mockImplementation((path: string) => {
-      if (path.startsWith("/agents")) {
-        return Promise.resolve({ agents: [], total: 0 });
+      if (path.startsWith("/agent-components")) {
+        return Promise.resolve({ items: [], total: 0, hasMore: false });
       }
       if (path === "/integrations/github") {
         return Promise.resolve({ connected: true, installation: {} });

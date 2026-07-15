@@ -31,6 +31,26 @@ describe("parseHelloPayload", () => {
     });
   });
 
+  it("preserves desktop client and gateway protocol versions", () => {
+    expect(
+      parseHelloPayload({
+        ...legacyHello,
+        desktopClientVersion: "2.3.4",
+        gatewayProtocolVersion: "0.1.0",
+      })
+    ).toMatchObject({
+      desktopClientVersion: "2.3.4",
+      gatewayProtocolVersion: "0.1.0",
+    });
+  });
+
+  it("leaves desktop client and gateway protocol versions undefined when absent", () => {
+    expect(parseHelloPayload(legacyHello)).toMatchObject({
+      desktopClientVersion: undefined,
+      gatewayProtocolVersion: undefined,
+    });
+  });
+
   it("preserves string gateway IDs without format validation", () => {
     expect(
       parseHelloPayload({

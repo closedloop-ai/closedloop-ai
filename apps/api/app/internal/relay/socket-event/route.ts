@@ -1,4 +1,5 @@
 import { log } from "@repo/observability/log";
+import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { NextResponse } from "next/server";
 import { validateInternalSecret } from "@/lib/internal-auth";
 import { scheduleLogFlush } from "@/lib/route-utils";
@@ -66,6 +67,11 @@ export async function POST(request: Request): Promise<Response> {
     log.error("Internal relay socket-event handler failed", {
       event,
       computeTargetId: targetId ?? correlation.computeTargetId ?? null,
+      gatewaySessionIdHash: redactGatewaySessionId(
+        correlation.gatewaySessionId
+      ),
+      requestId: correlation.requestId,
+      relaySocketId,
       error,
     });
     scheduleLogFlush();

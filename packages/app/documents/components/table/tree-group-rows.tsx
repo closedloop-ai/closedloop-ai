@@ -1,6 +1,5 @@
 "use client";
 
-import { DocumentType } from "@repo/api/src/types/document";
 import {
   DocumentRow,
   type DocumentRowItem,
@@ -15,13 +14,6 @@ import {
 import { SortableTreeGroup } from "@repo/app/documents/components/table/sortable-tree-group";
 import type { DocumentColumn } from "@repo/app/shared/hooks/use-column-visibility";
 import type { ReactNode } from "react";
-
-function isPlanItem(item: DocumentRowItem): boolean {
-  return (
-    item.kind === "document" &&
-    item.data.type === DocumentType.ImplementationPlan
-  );
-}
 
 type TreeGroupRowsProps = {
   group: DisplayGroup;
@@ -57,8 +49,9 @@ export function TreeGroupRows({
   rankInteractionMode,
 }: TreeGroupRowsProps) {
   const { root, children } = group;
-  // Plans are always expanded, regardless of stored expansion state.
-  const isOpen = isPlanItem(root) || isGroupExpanded(group.groupKey);
+  // Every group — Plans included — honors its stored expansion state so any
+  // row with children can be collapsed.
+  const isOpen = isGroupExpanded(group.groupKey);
   const hasChildren = children.length > 0;
 
   const collectVisibleChildren = (
@@ -70,11 +63,9 @@ export function TreeGroupRows({
       visible.push({ item, depth });
       const hasNestedChildren =
         (item.children && item.children.length > 0) ?? false;
-      // Plans are always expanded — there is only one Plan per PRD/Feature, so
-      // collapsing its branches adds no information.
-      const shouldExpand =
-        hasNestedChildren &&
-        (isPlanItem(item) || isGroupExpanded(item.data.id));
+      // Any nested item with children is independently collapsible and honors
+      // its own stored expansion state.
+      const shouldExpand = hasNestedChildren && isGroupExpanded(item.data.id);
       if (shouldExpand && item.children) {
         visible.push(...collectVisibleChildren(item.children, depth + 1));
       }
@@ -92,10 +83,10 @@ export function TreeGroupRows({
     const itemHasChildren = isChild
       ? (item.children?.length ?? 0) > 0
       : hasChildren;
-    const itemIsPlan = isPlanItem(item);
-    // Plans never render a chevron — they are auto-expanded — but their slot is
-    // still reserved so column alignment is preserved.
-    const showChevron = itemHasChildren && !itemIsPlan;
+    // Any row with children is collapsible — Plans included — so it renders a
+    // chevron and honors its stored expansion state, just like PRDs and
+    // Features.
+    const showChevron = itemHasChildren;
     const itemIsExpanded = isChild
       ? showChevron && isGroupExpanded(item.data.id)
       : showChevron && isOpen;

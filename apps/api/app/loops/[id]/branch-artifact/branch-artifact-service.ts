@@ -117,6 +117,7 @@ export async function createLoopBranchArtifact({
     db.gitHubInstallationRepository.findFirst({
       where: {
         fullName: allowedRepo.fullName,
+        removedAt: null,
         installation: {
           organizationId,
           status: GitHubInstallationStatus.ACTIVE,

@@ -1,4 +1,5 @@
 import type { ApiKeyProvenance } from "./api-key-store.js";
+import { asRecord } from "./api-response-utils.js";
 import type { DesktopCommandEvent } from "./cloud-protocol.js";
 import type { DesktopPopSigner } from "./desktop-pop.js";
 import type { DesktopPopUnavailableReporter } from "./desktop-pop-sign-utils.js";
@@ -89,11 +90,4 @@ function assertManagedSigningReady(
     );
   }
   throw new Error(SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value as Record<string, unknown>;
 }

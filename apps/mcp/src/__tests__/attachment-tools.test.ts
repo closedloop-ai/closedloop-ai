@@ -103,6 +103,88 @@ describe("attachment MCP tools", () => {
     );
   });
 
+  it("list-attachments wraps the API array in a pagination envelope with mapped items", async () => {
+    const { apiClient, handlers, server } = createToolHarness();
+    apiClient.get.mockResolvedValue([
+      {
+        id: "attachment-1",
+        artifactId: "doc-1",
+        filename: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 2048,
+        purpose: AttachmentPurpose.Inline,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdById: "user-1",
+        previewUrl: "https://s3.example.com/preview",
+      },
+    ]);
+
+    registerListAttachments(server, apiClient);
+    const result = await handlers.get("list-attachments")?.({
+      entityId: "FEA-42",
+    });
+
+    expect(JSON.parse(result?.content[0].text ?? "{}")).toEqual({
+      total: 1,
+      offset: 0,
+      limit: 25,
+      returned: 1,
+      hasMore: false,
+      nextOffset: null,
+      items: [
+        {
+          id: "attachment-1",
+          artifactId: "doc-1",
+          filename: "diagram.png",
+          mimeType: "image/png",
+          sizeBytes: 2048,
+          purpose: AttachmentPurpose.Inline,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          createdById: "user-1",
+          previewUrl: "https://s3.example.com/preview",
+        },
+      ],
+    });
+  });
+
+  it("list-attachments honors limit and offset pagination params", async () => {
+    const { apiClient, handlers, server } = createToolHarness();
+    apiClient.get.mockResolvedValue([
+      { id: "a-1" },
+      { id: "a-2" },
+      { id: "a-3" },
+    ]);
+
+    registerListAttachments(server, apiClient);
+    const result = await handlers.get("list-attachments")?.({
+      entityId: "FEA-42",
+      limit: 1,
+      offset: 1,
+    });
+
+    const payload = JSON.parse(result?.content[0].text ?? "{}");
+    expect(payload.total).toBe(3);
+    expect(payload.offset).toBe(1);
+    expect(payload.limit).toBe(1);
+    expect(payload.returned).toBe(1);
+    expect(payload.hasMore).toBe(true);
+    expect(payload.nextOffset).toBe(2);
+    expect(payload.items).toEqual([
+      {
+        id: "a-2",
+        artifactId: null,
+        filename: null,
+        mimeType: null,
+        sizeBytes: null,
+        purpose: null,
+        createdAt: null,
+        createdById: null,
+        // previewUrl is omitted (not null) for non-image attachments — see
+        // the shaper's mapItem in list-attachments.ts.
+      },
+    ]);
+  });
+
   it("download-attachment gets the encoded attachment path and returns the download URL", async () => {
     const { apiClient, handlers, server } = createToolHarness();
     apiClient.get.mockResolvedValue({

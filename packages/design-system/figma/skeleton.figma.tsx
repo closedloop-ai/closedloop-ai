@@ -1,5 +1,5 @@
+import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import figma from "@figma/code-connect";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=168-2123";

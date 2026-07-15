@@ -4,9 +4,9 @@
  * Centralizes the `_electron.launch` boilerplate that every spec needs: a
  * per-test temp `--user-data-dir` (so persisted profiles/approvals/keys never
  * leak across runs or from a developer's real Desktop state), the standard
- * test env (auto-update off, security warnings silenced), a `pageerror`
- * collector (an unresolved lazy-chunk specifier throws here and blanks the
- * renderer — see branches-page.spec.ts), and deterministic teardown.
+ * test env (auto-update off, security warnings silenced, OTel disabled), a
+ * `pageerror` collector (an unresolved lazy-chunk specifier throws here and
+ * blanks the renderer — see branches-page.spec.ts), and deterministic teardown.
  *
  * Prerequisites:
  *   - The app must be built first: `pnpm -C apps/desktop build`
@@ -32,6 +32,20 @@ const DESKTOP_SETTINGS_FILE = "desktop-settings.json";
 export type LaunchOptions = {
   /** Prefix for the per-test temp user-data dir (defaults to "desktop-e2e-"). */
   userDataPrefix?: string;
+  /**
+   * Reuse an EXISTING user-data dir instead of creating a fresh temp one. Lets a
+   * test boot the app once to create + migrate the SQLite store, close it, seed
+   * rows into that file while the app is DOWN (no cross-process WAL contention),
+   * then relaunch against the SAME dir so the app reads the seeded corpus at boot.
+   * When set, `userDataPrefix` is ignored.
+   */
+  userDataDir?: string;
+  /**
+   * Keep the user-data dir on `cleanup()` instead of removing it — so a caller
+   * driving a multi-launch flow (see `userDataDir`) can seed/relaunch against it
+   * and remove it itself at the end.
+   */
+  keepUserDataDir?: boolean;
   /** Extra env vars layered on top of the standard test env. */
   env?: Record<string, string>;
   /**
@@ -59,9 +73,12 @@ export type LaunchedApp = {
 export async function launchDesktopApp(
   options: LaunchOptions = {}
 ): Promise<LaunchedApp> {
-  const userDataDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), options.userDataPrefix ?? "desktop-e2e-")
-  );
+  const userDataDir =
+    options.userDataDir ??
+    fs.mkdtempSync(
+      path.join(os.tmpdir(), options.userDataPrefix ?? "desktop-e2e-")
+    );
+  fs.mkdirSync(userDataDir, { recursive: true });
 
   seedE2eDesktopSettings(userDataDir);
   options.beforeLaunch?.(userDataDir);
@@ -72,6 +89,15 @@ export async function launchDesktopApp(
       ...process.env,
       CLOSEDLOOP_DISABLE_AUTO_UPDATE: "1",
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
+      // FEA-2199: hard-disable the OTel SDK for E2E. The egress gate
+      // (resolveDesktopTelemetryEgressEnabled) already stops the unpackaged app
+      // from shipping to the prod relay, but this is belt-and-suspenders and
+      // documents intent at the call site: each test launches a fresh
+      // --user-data-dir (a new app.installation.id) and inherits CI's env, so
+      // these short-lived runs must never produce telemetry at all. Without it,
+      // the harness flooded prod Datadog/PostHog with `version=0.0` start/shutdown
+      // pairs. A spec may still opt back in via options.env if it asserts OTel.
+      OTEL_SDK_DISABLED: "1",
       ...options.env,
     },
   });
@@ -85,7 +111,9 @@ export async function launchDesktopApp(
 
   const cleanup = async (): Promise<void> => {
     await closeElectronApp(app);
-    fs.rmSync(userDataDir, { recursive: true, force: true });
+    if (!options.keepUserDataDir) {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
   };
 
   return { app, page, userDataDir, pageErrors, cleanup };
@@ -164,6 +192,15 @@ async function waitForProcessExit(
  * Keep built-app E2E tests local and deterministic. The cloud relay is covered
  * by focused main-process tests; these Electron flows assert renderer and local
  * database behavior and should not depend on external Socket.IO handshakes.
+ *
+ * Seed `agents: true` so specs that navigate to the Agents workspace keep
+ * exercising real content. FEA-2923 registered the shared `"agents"` UI flag in
+ * the desktop registry with a product default of OFF (opt-in Labs toggle). Once
+ * a flag is in the registry, `DesktopFeatureFlagProvider` resolves it from the
+ * persisted setting/registry default instead of the unpackaged-dev fallback, so
+ * without this seed a fresh E2E profile hides AgentsView and specs such as
+ * `agents.spec.ts` / `distribution-flow.spec.ts` time out. Kept in the E2E seed
+ * (not the product default) so releases stay opt-in.
  */
 function seedE2eDesktopSettings(userDataDir: string): void {
   const settingsPath = path.join(userDataDir, DESKTOP_SETTINGS_FILE);
@@ -172,7 +209,11 @@ function seedE2eDesktopSettings(userDataDir: string): void {
     : {};
   fs.writeFileSync(
     settingsPath,
-    JSON.stringify({ ...raw, cloudConnectionEnabled: false }, null, 2),
+    JSON.stringify(
+      { ...raw, cloudConnectionEnabled: false, agents: true },
+      null,
+      2
+    ),
     "utf8"
   );
 }

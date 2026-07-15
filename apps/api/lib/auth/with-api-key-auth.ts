@@ -11,6 +11,7 @@ import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import {
   forbiddenResponse,
+  getBearerToken,
   logRequestCompleted,
   unauthorizedResponse,
 } from "../route-utils";
@@ -144,11 +145,6 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       logRequestCompleted(request, startMs, response?.status ?? 500);
     }
   };
-}
-
-function getBearerToken(request: NextRequest): string | null {
-  const authHeader = request.headers.get("authorization");
-  return authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 }
 
 async function resolveApiKeyContext(

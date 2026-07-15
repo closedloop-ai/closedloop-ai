@@ -29,21 +29,26 @@ export type PreferredBranchLoc = {
  *
  * Shares the `/pr/files` overlay query key with the files panel, so React Query
  * dedupes — one network fetch feeds every detail-page LOC consumer. Identity
- * gating mirrors the files panel: no PR / multiple PRs / non-slug repo → no live
- * data → enrichment fallback (never another branch's cached totals).
+ * gating mirrors the files panel: no PR / multiple PRs / no repo or PR URL
+ * identity → no live data → enrichment fallback (never another branch's cached
+ * totals).
  */
 export function usePreferredBranchLoc(
-  detail: BranchPageDetail | null | undefined
+  detail: BranchPageDetail | null | undefined,
+  options?: { enableLive?: boolean }
 ): PreferredBranchLoc {
   // Called unconditionally (Rules of Hooks) even while `detail` is still loading
   // at the page level — a null identity disables the query until it arrives.
-  const identity = detail
-    ? derivePrIdentity({
-        repoFullName: detail.repoFullName,
-        prNumber: detail.prNumber,
-        multiPrWarning: detail.multiPrWarning,
-      })
-    : null;
+  const enableLive = options?.enableLive ?? true;
+  const identity =
+    enableLive && detail
+      ? derivePrIdentity({
+          repoFullName: detail.repoFullName,
+          prUrl: detail.prUrl,
+          prNumber: detail.prNumber,
+          multiPrWarning: detail.multiPrWarning,
+        })
+      : null;
   const filesQuery = useQuery(livePrFilesOptions(identity));
   const live = identity ? (filesQuery.data ?? null) : null;
 

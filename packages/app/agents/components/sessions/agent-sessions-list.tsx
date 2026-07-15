@@ -27,6 +27,11 @@ export type AgentSessionsListContentProps = {
   onSort?: (column: string, direction: SortDirection) => void;
   /** Render bare so the host owns a single bounded scroll container. */
   hostScroll?: boolean;
+  /**
+   * Per-row overflow (kebab) menu (FEA-2507). This is the primary Sessions
+   * list body, so it defaults on; pass false to suppress the menu.
+   */
+  showRowActions?: boolean;
 };
 
 export function AgentSessionsListContent({
@@ -40,6 +45,7 @@ export function AgentSessionsListContent({
   sortDir,
   onSort,
   hostScroll,
+  showRowActions = true,
 }: AgentSessionsListContentProps) {
   if (isLoading) {
     return <Skeleton className={loadingClassName} />;
@@ -64,6 +70,7 @@ export function AgentSessionsListContent({
       hostScroll={hostScroll}
       items={items}
       onSort={onSort}
+      showRowActions={showRowActions}
       sortBy={sortBy}
       sortDir={sortDir}
       visibleColumns={visibleColumns}

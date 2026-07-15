@@ -102,14 +102,17 @@ export function isTransientConnectionError(err: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Exponential backoff: `baseMs * 2 ** (attempt - 1)`, capped at `MAX_DELAY_MS`.
- * Pure function — safe to unit test directly.
+ * Exponential backoff: `baseMs * 2 ** (attempt - 1)`, capped at `maxMs`
+ * (defaults to `MAX_DELAY_MS`). Pure function — safe to unit test directly.
+ * The advisory-lock deploy path (FEA-3062) passes a larger `maxMs` so a burst
+ * of contending pipelines can wait out a lock held by a peer migrate deploy.
  */
 export function backoffMs(
   attempt: number,
-  baseMs: number = DEFAULT_BASE_DELAY_MS
+  baseMs: number = DEFAULT_BASE_DELAY_MS,
+  maxMs: number = MAX_DELAY_MS
 ): number {
-  return Math.min(baseMs * 2 ** (attempt - 1), MAX_DELAY_MS);
+  return Math.min(baseMs * 2 ** (attempt - 1), maxMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +173,19 @@ export function formatRetryExhaustedLine(input: {
 const defaultSleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Equal-jitter: keep half the computed backoff fixed and randomize the other
+ * half — `delay/2 + random()*delay/2`, floored to an integer. Guarantees at
+ * least half the intended wait (so we still outlast a contended lock) while
+ * de-synchronizing pipelines that failed the advisory-lock acquire at the same
+ * instant, preventing them from re-colliding in lockstep. `random` is injected
+ * so the behaviour stays deterministic under test.
+ */
+export function applyJitter(delayMs: number, random: () => number): number {
+  const half = delayMs / 2;
+  return Math.floor(half + random() * half);
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   isTransient: (e: unknown) => boolean,
@@ -177,11 +193,16 @@ export async function withRetry<T>(
     attempts: number;
     sleep?: (ms: number) => Promise<void>;
     baseDelayMs?: number;
+    maxDelayMs?: number;
+    jitter?: boolean;
+    random?: () => number;
     operation?: string;
   }
 ): Promise<T> {
   const sleep = opts.sleep ?? defaultSleep;
   const baseDelayMs = opts.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+  const maxDelayMs = opts.maxDelayMs ?? MAX_DELAY_MS;
+  const random = opts.random ?? Math.random;
   const operation = opts.operation ?? DEFAULT_RETRY_OPERATION;
   let lastErr: unknown;
 
@@ -220,7 +241,8 @@ export async function withRetry<T>(
           operation,
         })
       );
-      await sleep(backoffMs(attempt, baseDelayMs));
+      const delay = backoffMs(attempt, baseDelayMs, maxDelayMs);
+      await sleep(opts.jitter ? applyJitter(delay, random) : delay);
     }
   }
 
@@ -234,10 +256,22 @@ export async function withRetry<T>(
 
 // Prisma CLI connectivity error. P1001 = "Can't reach database server" — the
 // CLI could not open a connection at all, the transient blip we want to retry.
-// Deliberately narrow: P1000 (auth failed), P1002 (reached-but-timed-out), and
-// every P30xx migration-state code are NOT connectivity and must fall through
-// to fail-fast or the existing recoverMigrateDeployFailure path.
+// Deliberately narrow: P1000 (auth failed) and every P30xx migration-state code
+// are NOT connectivity and must fall through to fail-fast or the existing
+// recoverMigrateDeployFailure path. P1002 is handled separately: a *bare* P1002
+// (reached-but-timed-out) is still non-transient here, but the advisory-lock
+// variant of P1002 is retried via isPrismaAdvisoryLockError below (FEA-3062).
 const PRISMA_UNREACHABLE_CODE_PATTERN = /\bP1001\b/;
+
+// Prisma Migrate serializes every `migrate deploy` on ONE hardcoded, per-database
+// advisory lock (SELECT pg_advisory_lock(72707369)); the acquire has a fixed,
+// non-configurable 10s timeout. When several pipelines migrate the same physical
+// database at once (e.g. an api-stage deploy plus a burst of preview-schema
+// deploys), the loser reports P1002 with a "Timed out trying to acquire a postgres
+// advisory lock" context. This is pure transient contention — the peer releases
+// the lock when its deploy ends — so we retry it rather than failing the build
+// (FEA-3062). Matched on the stable context phrase, independent of the lock key.
+const PRISMA_ADVISORY_LOCK_PATTERN = /acquire a postgres advisory lock/i;
 
 function readSubprocessField(err: Error, field: "stdout" | "stderr"): string {
   const value = (err as Error & Record<string, unknown>)[field];
@@ -272,12 +306,49 @@ export function isPrismaUnreachableError(err: unknown): boolean {
 }
 
 /**
+ * True when a `prisma migrate deploy` subprocess failed because it could not
+ * acquire Prisma's migration advisory lock within the 10s timeout — i.e. a
+ * peer migrate deploy against the same physical database is holding it. Matched
+ * on the Prisma context phrase (not the P1002 code) so a *bare* P1002 with no
+ * advisory-lock context (a genuine reached-but-timed-out connection) is NOT
+ * retried here and is not masked by minutes of retries. (FEA-3062)
+ */
+export function isPrismaAdvisoryLockError(err: unknown): boolean {
+  return PRISMA_ADVISORY_LOCK_PATTERN.test(subprocessErrorOutput(err));
+}
+
+/**
  * Transient-error predicate for the build-time `prisma migrate deploy` step:
  * a dropped pg connection (isTransientConnectionError) OR the Prisma CLI's
- * P1001 "can't reach database server" (isPrismaUnreachableError). Migration-
- * state failures (P3005/P3009/P3018/P0001) are NOT matched — they fall through
- * to recoverMigrateDeployFailure unchanged.
+ * P1001 "can't reach database server" (isPrismaUnreachableError) OR advisory-
+ * lock contention (isPrismaAdvisoryLockError). Migration-state failures
+ * (P3005/P3009/P3018/P0001) are NOT matched — they fall through to
+ * recoverMigrateDeployFailure unchanged.
  */
 export function isTransientMigrateDeployError(err: unknown): boolean {
-  return isTransientConnectionError(err) || isPrismaUnreachableError(err);
+  return (
+    isTransientConnectionError(err) ||
+    isPrismaUnreachableError(err) ||
+    isPrismaAdvisoryLockError(err)
+  );
 }
+
+// Build-time `prisma migrate deploy` retry budget (FEA-3062). As of FEA-3065
+// this is the **fail-open backstop**: the primary defense is the app-side
+// serialization gate (`withMigrationSerializeLock`, migration-lock.ts), which
+// makes Prisma's advisory lock uncontended in the common case; this retry only
+// fires when the gate itself fails open (e.g. its acquire exceeds the budget).
+// Wider than the registry-upsert default so a contended advisory lock can be
+// waited out: the dominant cost is re-attempting the acquire (each attempt
+// itself blocks up to Prisma's 10s lock timeout), so attempts matter more than
+// sleep length. Worst case ≈ 8 acquire attempts (~80s of lock waits) + jittered
+// sleeps capped at 15s ≈ under ~3 min — comfortably inside the ~15-min RDS
+// IAM-token validity window (retries reuse the same IAM-signed URL). Jitter
+// de-synchronizes simultaneous losers so they don't re-collide in lockstep.
+export const MIGRATE_DEPLOY_RETRY = {
+  attempts: 8,
+  baseDelayMs: 500,
+  maxDelayMs: 15_000,
+  jitter: true,
+  operation: "Migrate deploy",
+} as const;

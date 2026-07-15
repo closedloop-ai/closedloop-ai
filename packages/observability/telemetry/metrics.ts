@@ -1,4 +1,5 @@
 import { log } from "../log";
+import { redactGatewaySessionId } from "../redact-correlation";
 import type { FilterToken } from "./filter-tokens";
 import type { Origin } from "./origin";
 
@@ -87,7 +88,18 @@ export type ProtocolMetric = ConnectionStateCountMetric | ProtocolBaseMetric;
 export function emitTelemetryMetric<T extends { metric: string }>(
   metric: T
 ): void {
-  log.info(JSON.stringify({ ...metric, _telemetryMetric: true }));
+  // gatewaySessionId is a session-correlation token that must never be logged
+  // raw. The metric pipeline emits via log.info, so redact to the stable hash
+  // before stringifying; same id in means same hash out, so metric correlation
+  // by session survives.
+  const payload: Record<string, unknown> = {
+    ...metric,
+    _telemetryMetric: true,
+  };
+  if (typeof payload.gatewaySessionId === "string") {
+    payload.gatewaySessionId = redactGatewaySessionId(payload.gatewaySessionId);
+  }
+  log.info(JSON.stringify(payload));
 }
 
 export function emitQueueMetric(metric: QueueMetric): void {

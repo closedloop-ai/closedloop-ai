@@ -48,6 +48,9 @@ test.describe("Branch updatedAt (FEA-2022)", () => {
           slug: SEEDED_SLUG,
           gitBranch: SEEDED_BRANCH,
           timestamp: PAST_TURN_TIMESTAMP,
+          // FEA-2531: the Branches surface is push-evidenced only — the
+          // seeded transcript must actually push the branch to appear there.
+          pushBranch: true,
         },
       ],
       "branch-updatedat-project"

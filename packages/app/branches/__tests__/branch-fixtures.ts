@@ -71,6 +71,7 @@ export function makeBranchDetail(
     commits: [],
     sessions: [],
     mergedTrace: [],
+    leadTime: { firstActivityT: null, lastActivityT: null, idleSpans: [] },
     linkedPrNumbers: [],
     linkedArtifacts: [],
     ...over,

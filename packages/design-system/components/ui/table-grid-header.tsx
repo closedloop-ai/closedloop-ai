@@ -1,5 +1,6 @@
 "use client";
 
+import { InfoIcon } from "lucide-react";
 import { Checkbox } from "./checkbox";
 import {
   DropdownMenu,
@@ -12,7 +13,8 @@ import {
   SortIndicator,
   type SortDirection,
 } from "./sortable-column-header";
-import { cn } from "@repo/design-system/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { ReactNode } from "react";
 
 export type TableGridHeaderColumn = {
@@ -20,7 +22,27 @@ export type TableGridHeaderColumn = {
   label: string;
   sortable?: boolean;
   className?: string;
+  /** Optional help text shown via an info icon + tooltip after the label. */
+  tooltip?: string;
 };
+
+// Info icon + tooltip appended to a column header when `tooltip` is set.
+function HeaderTooltip({ label, text }: { label: string; text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={`${label} help`}
+          className="ml-1 shrink-0 text-muted-foreground/60 hover:text-foreground"
+          type="button"
+        >
+          <InfoIcon className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-56">{text}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 export type TableGridHeaderSortOption = {
   key: string;
@@ -122,6 +144,9 @@ export function TableGridHeader({
               {column.label}
             </span>
           )}
+          {column.tooltip ? (
+            <HeaderTooltip label={column.label} text={column.tooltip} />
+          ) : null}
         </div>
       ))}
 

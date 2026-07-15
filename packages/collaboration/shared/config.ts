@@ -87,6 +87,19 @@ declare global {
         entityUrl: string;
         actorId: string;
       };
+      // Fired when an autonomous Loop reaches terminal success, so the owner
+      // gets an inbox signal that their agent finished even while they're away.
+      $loopCompleted: {
+        loopTitle: string;
+        loopUrl: string;
+      };
+      // Fired when a run transitions into awaiting-input (blocked on the user),
+      // so the owner gets an inbox signal with a deep link to unblock the run
+      // from anywhere — even while they're away from the Active Runs panel.
+      $awaitingInput: {
+        sessionTitle: string;
+        sessionUrl: string;
+      };
     };
   }
 }

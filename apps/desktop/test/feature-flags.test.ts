@@ -35,6 +35,24 @@ function makeStore(seed: Record<string, unknown> = {}): SettingsStore {
 
 // --- getFlag ---
 
+// --- FEA-3152: agents-show-tools-mcps-hooks Labs flag ---
+
+test("registry defines agents-show-tools-mcps-hooks as an off-by-default Labs toggle", () => {
+  const def = FEATURE_FLAGS.find(
+    (f) => f.key === "agents-show-tools-mcps-hooks"
+  );
+  assert.ok(def, "agents-show-tools-mcps-hooks must be registered");
+  assert.equal(def.default, false, "must default to OFF");
+  assert.equal(def.category, "Labs", "must be a Labs-category toggle");
+  // Not hidden from Labs → the SettingsPanel LabsTab (FEATURE_FLAGS filtered by
+  // !hiddenFromLabs) renders it as a user-facing opt-in toggle.
+  assert.notEqual(
+    def.hiddenFromLabs,
+    true,
+    "must be visible in the Labs settings panel"
+  );
+});
+
 test("getFlag returns registry default when key is absent from store", () => {
   const store = makeStore();
   assert.equal(

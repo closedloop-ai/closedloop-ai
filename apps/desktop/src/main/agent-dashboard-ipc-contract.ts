@@ -1,4 +1,5 @@
 import type { SessionPageRequest } from "../shared/agent-db-contract.js";
+import { emptyAgentComponentsListResponse } from "../shared/shared-agent-components-contract.js";
 import {
   emptySharedAgentSessionsAnalytics,
   emptySharedAgentSessionsListResponse,
@@ -15,6 +16,10 @@ import {
   SHARED_BRANCHES_IPC_CHANNELS,
   type SharedBranchesIpcChannel,
 } from "../shared/shared-branches-contract.js";
+import {
+  SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST,
+  type SharedTraceCommentsIpcChannel,
+} from "../shared/shared-trace-comments-contract.js";
 
 export const DESIGN_SYSTEM_DB_IPC_CHANNELS = [
   "desktop:db:get-sessions",
@@ -72,10 +77,16 @@ export const DESIGN_SYSTEM_DB_IPC_CHANNELS = [
   "desktop:db:open-pr",
   // Diagnostics (FEA-1959)
   "desktop:db:get-diagnostics",
+  // Optimization analytics (FEA-2923 / AC-022)
+  "desktop:db:get-component-model-trend",
+  "desktop:db:get-subagent-frequency",
+  "desktop:db:is-skill-loaded",
+  // Agent components local read (FEA-2923 / T-16.3)
+  "desktop:db:list-agent-components",
+  "desktop:db:get-agent-component-detail",
 ] as const;
 
-export type DesignSystemDbIpcChannel =
-  (typeof DESIGN_SYSTEM_DB_IPC_CHANNELS)[number];
+type DesignSystemDbIpcChannel = (typeof DESIGN_SYSTEM_DB_IPC_CHANNELS)[number];
 
 const EMPTY_DASHBOARD_SUMMARY = {
   totalSessions: 0,
@@ -92,6 +103,7 @@ const EMPTY_TOKEN_ANALYTICS = {
   totalOutputTokens: 0,
   totalCacheReadTokens: 0,
   totalCacheWriteTokens: 0,
+  windowDays: 0,
   byModel: [],
   byDay: [],
 };
@@ -179,7 +191,7 @@ const EMPTY_DIAGNOSTICS = {
  * disabled. This keeps the always-loaded design-system renderer from failing on
  * missing IPC handlers without importing SQLite or starting capture services.
  */
-export function resolveDisabledAgentDashboardDbIpcResponse(
+function resolveDisabledAgentDashboardDbIpcResponse(
   channel: DesignSystemDbIpcChannel,
   args: unknown[]
 ): unknown {
@@ -221,6 +233,22 @@ export function resolveDisabledAgentDashboardDbIpcResponse(
       return undefined;
     case "desktop:db:get-diagnostics":
       return EMPTY_DIAGNOSTICS;
+    case "desktop:db:get-component-model-trend":
+      return { componentKind: "", componentKey: "", windowDays: 0, points: [] };
+    case "desktop:db:get-subagent-frequency":
+      return { subagentKey: "", windowDays: 0, points: [] };
+    case "desktop:db:is-skill-loaded":
+      return {
+        skillKey: "",
+        existsInInventory: false,
+        hasUsage: false,
+        totalInvocations: 0,
+        lastUsedAt: null,
+      };
+    case "desktop:db:list-agent-components":
+      return emptyAgentComponentsListResponse();
+    case "desktop:db:get-agent-component-detail":
+      return null;
     default:
       return [];
   }
@@ -232,7 +260,7 @@ export function resolveDisabledAgentDashboardDbIpcResponse(
  * collection/aggregate reads return empty canonical shapes for future mounted
  * shared hooks.
  */
-export function resolveDisabledSharedAgentSessionsIpcResponse(
+function resolveDisabledSharedAgentSessionsIpcResponse(
   channel: SharedAgentSessionsIpcChannel
 ): unknown {
   switch (channel) {
@@ -258,7 +286,7 @@ export function resolveDisabledSharedAgentSessionsIpcResponse(
  * already-exposed `branchesApi` either hits no handler or stays bound to a
  * rejected DB promise.
  */
-export function resolveDisabledSharedBranchesIpcResponse(
+function resolveDisabledSharedBranchesIpcResponse(
   channel: SharedBranchesIpcChannel
 ): unknown {
   switch (channel) {
@@ -266,6 +294,10 @@ export function resolveDisabledSharedBranchesIpcResponse(
       return emptySharedBranchesListResponse();
     case SHARED_BRANCHES_IPC_CHANNELS.detail:
       return null;
+    // PLN-1148 Phase 2: the lazy merged-trace channel returns `MergedTraceItem[]`;
+    // disabled/degraded, that's an empty trace (best-effort, never null).
+    case SHARED_BRANCHES_IPC_CHANNELS.trace:
+      return [];
     case SHARED_BRANCHES_IPC_CHANNELS.usage:
       return emptySharedBranchesUsageSummary();
     case SHARED_BRANCHES_IPC_CHANNELS.analytics:
@@ -273,6 +305,20 @@ export function resolveDisabledSharedBranchesIpcResponse(
     default:
       return emptySharedBranchesListResponse();
   }
+}
+
+/**
+ * Fail shared trace-comment IPC explicitly while the Agent Dashboard DB is
+ * disabled or unavailable. Unlike sessions/branches, returning empty reads here
+ * can hide local-only comments, so every trace-comment operation requires the
+ * local store to be live.
+ */
+function resolveDisabledSharedTraceCommentsIpcResponse(
+  _channel: SharedTraceCommentsIpcChannel
+): unknown {
+  throw new Error(
+    "Trace comments are unavailable because the local store is unavailable."
+  );
 }
 
 /** Minimal injectable surface of Electron's `ipcMain` used to (re)install handlers. */
@@ -309,6 +355,12 @@ export function installDisabledAgentDashboardDbIpcHandlers(
     ipc.removeHandler(channel);
     ipc.handle(channel, () =>
       resolveDisabledSharedBranchesIpcResponse(channel)
+    );
+  }
+  for (const channel of SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST) {
+    ipc.removeHandler(channel);
+    ipc.handle(channel, () =>
+      resolveDisabledSharedTraceCommentsIpcResponse(channel)
     );
   }
 }

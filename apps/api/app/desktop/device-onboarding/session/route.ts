@@ -31,12 +31,17 @@ export async function GET(request: Request) {
     return desktopContractError(404, "DEVICE_SESSION_NOT_FOUND", false);
   }
 
+  // Only non-secret presentation fields are exposed to the browser approval
+  // page. The device-session secret hash, gateway public key, and onboarding
+  // attempt id are deliberately omitted — the browser never needs them and the
+  // desktop completes exchange with its locally held secret + device key.
   return desktopContractSuccess({
     userCode: row.userCode,
     machineName: row.machineName,
     platform: row.platform,
     webAppOrigin: row.webAppOrigin,
     status: row.status,
+    createdAt: row.createdAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
   });
 }

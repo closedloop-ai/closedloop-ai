@@ -65,6 +65,11 @@ export const TelemetryCategory = {
   LoopPerfUnknownEventVariant: "loop.perf.unknown_event_variant",
   // FEA-1969 — desktop genai-prices could not price a model's token usage.
   TokenCostPricingMiss: "token_cost.pricing_miss",
+  // FEA-1999 — desktop SQLite store integrity-health signal.
+  StoreIntegrityFailureDetected: "store.integrity.failure_detected",
+  StoreIntegrityFailurePersistent: "store.integrity.failure_persistent",
+  StoreIntegrityRecovered: "store.integrity.recovered",
+  StoreIntegrityHealthy: "store.integrity.healthy",
 } as const;
 
 export type TelemetryCategory =
@@ -162,6 +167,8 @@ export const DesktopUpdateTrigger = {
   ManualCheck: "manual-check",
   ApplyBeforeDownloaded: "apply-before-downloaded",
   RendererApplyUpdate: "renderer-apply-update",
+  GatewayApplyUpdate: "gateway-apply-update",
+  InstallBlockedReadOnlyVolume: "install-blocked-read-only-volume",
 } as const;
 
 export type DesktopUpdateTrigger =
@@ -218,11 +225,22 @@ export type ErrorClass = (typeof ErrorClass)[keyof typeof ErrorClass];
 // TelemetryTraceContext — shared trace fields (no PII: no machineName, no userId)
 // ---------------------------------------------------------------------------
 
+// gatewaySessionId is hashed (redactGatewaySessionId) before it reaches any
+// log/telemetry sink, so the validated/emitted value is either a raw uuid or the
+// 12-char hex redaction hash. This regex mirrors SHORT_HASH_PATTERN in
+// ../redact-correlation, inlined here so this schema module stays free of
+// node:crypto (and thus safe to import from any runtime).
+const REDACTED_GATEWAY_SESSION_ID_RE = /^[0-9a-f]{12}$/;
+const gatewaySessionIdSchema = z.union([
+  z.uuid(),
+  z.string().regex(REDACTED_GATEWAY_SESSION_ID_RE),
+]);
+
 export const telemetryTraceContextSchema = z.object({
   commandId: z.string(),
   operationId: z.string(),
   computeTargetId: z.string(),
-  gatewaySessionId: z.uuid(),
+  gatewaySessionId: gatewaySessionIdSchema,
   loopSessionId: z.uuid().optional(),
   loopId: z.string().optional(),
   jobId: z.string().optional(),
@@ -504,6 +522,44 @@ const desktopTelemetryDiagnosticsSchema = z.object({
       sessionId: z.string().max(200).optional(),
     })
     .optional(),
+  // FEA-1999 — desktop SQLite store integrity probe result. Typed (not `extra`)
+  // so the fields survive validation and reach Datadog. The producer only ever
+  // emits bounded, content-free fields: `object` is a schema identifier (index
+  // or table name), never row content. `.strip()` drops any unexpected key, and
+  // `issues` is bounded so a corrupt store cannot inflate the payload.
+  storeIntegrity: z
+    .object({
+      healthy: z.boolean(),
+      durationMs: z.number().int().nonnegative(),
+      checksRun: z
+        .array(z.enum(["quick_check", "index_presence", "token_parity"]))
+        .max(8),
+      issueCount: z.number().int().nonnegative(),
+      issues: z
+        .array(
+          z
+            .object({
+              check: z.enum(["quick_check", "index_presence", "token_parity"]),
+              category: z.enum([
+                "missing_index_entry",
+                "wrong_index_entry_count",
+                "non_unique_index_entry",
+                "malformed_structure",
+                "constraint",
+                "missing_index",
+                "token_store_divergence",
+                "other",
+              ]),
+              object: z.string().max(128).optional(),
+              objectType: z.enum(["index", "table", "unknown"]).optional(),
+            })
+            .strip()
+        )
+        .max(64),
+      truncated: z.boolean(),
+    })
+    .strip()
+    .optional(),
   spawnMeta: z
     .object({
       command: z.string(),
@@ -542,7 +598,7 @@ const desktopTelemetryEventInputSchema = z.object({
     commandId: z.string(),
     operationId: z.string(),
     computeTargetId: z.string(),
-    gatewaySessionId: z.uuid().optional(),
+    gatewaySessionId: gatewaySessionIdSchema.optional(),
     sessionId: z.uuid().optional(),
     loopId: z.string().optional(),
     jobId: z.string().optional(),

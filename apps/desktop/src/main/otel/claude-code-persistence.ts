@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DATA_REVISION } from "../collectors/data-revision.js";
+import { DATA_REVISION } from "../collectors/engine/data-revision.js";
 import { deterministicEventId } from "../database/deterministic-event-id.js";
 import type { PrismaClient } from "../database/generated/client.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";

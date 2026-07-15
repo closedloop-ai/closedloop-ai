@@ -38,11 +38,13 @@ const mocks = vi.hoisted(() => {
   return {
     branchFileChangeFindUnique: vi.fn(),
     commentFindFirst: vi.fn(),
+    commentUpdate: vi.fn(),
     createPullRequestReviewCommentWithUserToken: vi.fn(),
     createReplyForReviewCommentWithUserToken: vi.fn(),
     deletePullRequestReviewCommentWithUserToken: vi.fn(),
     resolvePullRequestReviewThreadWithUserToken: vi.fn(),
     getGitHubWriteIdentityStatus: vi.fn(),
+    gitHubCommentProjectionUpdateMany: vi.fn(),
     requireGitHubWriteIdentity: vi.fn(),
     resolveExternalGitHubAuthorInTransaction: vi.fn(),
     unresolvePullRequestReviewThreadWithUserToken: vi.fn(),
@@ -785,6 +787,39 @@ describe("deleteReviewComment", () => {
       transactions: 0,
     });
   });
+
+  it("marks only active GitHub review-comment projections as provider-deleted", async () => {
+    mocks.commentFindFirst.mockResolvedValue(
+      reviewTargetRow({ deletedAt: null, githubDeletedAt: null })
+    );
+    mocks.deletePullRequestReviewCommentWithUserToken.mockResolvedValue(
+      undefined
+    );
+
+    const result = await deleteReviewComment({
+      auth: authContext(),
+      commentId: "comment-1",
+      ctx: prContext(),
+      user: testUser(),
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      action: BranchViewCommentAction.Delete,
+      comment: { commentId: "comment-1", githubCommentId: "123456" },
+    });
+    expect(mocks.gitHubCommentProjectionUpdateMany).toHaveBeenCalledWith({
+      where: {
+        commentId: "comment-1",
+        githubDeletedAt: null,
+      },
+      data: { githubDeletedAt: expect.any(Date) },
+    });
+    expect(mocks.commentUpdate).toHaveBeenCalledWith({
+      where: { id: "comment-1" },
+      data: { deletedAt: expect.any(Date) },
+    });
+  });
 });
 
 describe("resolveReviewThread", () => {
@@ -994,6 +1029,17 @@ function installReviewTargetDb() {
   mocks.getGitHubWriteIdentityStatus.mockResolvedValue(writeIdentityStatus());
   mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
     callback({ comment: { findFirst: mocks.commentFindFirst } })
+  );
+  mocks.withDb.tx.mockImplementation((callback: (db: unknown) => unknown) =>
+    callback({
+      comment: {
+        findFirst: mocks.commentFindFirst,
+        update: mocks.commentUpdate,
+      },
+      gitHubCommentProjection: {
+        updateMany: mocks.gitHubCommentProjectionUpdateMany,
+      },
+    })
   );
 }
 

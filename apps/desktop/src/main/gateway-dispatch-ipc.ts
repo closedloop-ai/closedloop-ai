@@ -28,6 +28,8 @@
 
 import type { RelayResponseEnvelope } from "@repo/shared-platform/relay-request-model";
 import { z } from "zod";
+import { branchIdMatchesRepo } from "../shared/branch-pr-scope.js";
+import { GATEWAY_DISPATCH_RENDERER_SOURCE } from "../shared/gateway-dispatch-channel.js";
 
 /**
  * EXACT-PATH allowlist (CRITICAL-2). v1 only the two slug-based, read-only PR
@@ -36,6 +38,7 @@ import { z } from "zod";
  * `//authority`).
  */
 export const GATEWAY_DISPATCH_ALLOWED_PATHS: ReadonlySet<string> = new Set([
+  "/api/gateway/git/pr/file-diff",
   "/api/gateway/git/pr/files",
   "/api/gateway/git/pr/reviews",
 ]);
@@ -44,6 +47,7 @@ export const GATEWAY_DISPATCH_ALLOWED_PATHS: ReadonlySet<string> = new Set([
 export const GATEWAY_DISPATCH_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 const LOOPBACK_BASE = "http://127.0.0.1";
+const BRANCH_DETAIL_HASH_PATH_REGEX = /^\/branches\/([^/]+)$/;
 
 type GatewayDispatchLogger = {
   info: (tag: string, message: string) => void;
@@ -65,6 +69,7 @@ export type GatewayDispatchDeps = {
 
 /** Minimal shape of an Electron `IpcMainInvokeEvent` this handler reads. */
 type GatewayDispatchEvent = { sender: unknown };
+type GatewayDispatchSenderWithUrl = { getURL?: () => string };
 
 /**
  * Zod schema for the IPC payload (AGENTS.md convention: validate unknown objects
@@ -170,6 +175,13 @@ export function createGatewayDispatchHandler(deps: GatewayDispatchDeps) {
       return errorEnvelope(405, "method not allowed");
     }
 
+    if (
+      pathname === "/api/gateway/git/pr/file-diff" &&
+      !isFileDiffRequestScopedToCurrentBranch(search, event.sender)
+    ) {
+      return errorEnvelope(403, "file diff scope not allowed");
+    }
+
     // 5. HIGH-1 — target port is always the live server port, never the payload.
     const port = deps.getActivePort();
 
@@ -178,6 +190,7 @@ export function createGatewayDispatchHandler(deps: GatewayDispatchDeps) {
     //    verbatim. The `Headers` constructor throws on CRLF in names/values.
     const outboundHeaders = new Headers();
     outboundHeaders.set("x-desktop-gateway-token", deps.getGatewayAuthToken());
+    outboundHeaders.set("x-desktop-source", GATEWAY_DISPATCH_RENDERER_SOURCE);
 
     // 7. Dispatch loopback — reuses the full router/operation/guard stack.
     const targetUrl = `${LOOPBACK_BASE}:${port}${pathname}${search}`;
@@ -209,4 +222,51 @@ export function createGatewayDispatchHandler(deps: GatewayDispatchDeps) {
       return errorEnvelope(502, "gateway dispatch failed");
     }
   };
+}
+
+function isFileDiffRequestScopedToCurrentBranch(
+  search: string,
+  sender: unknown
+): boolean {
+  const params = new URLSearchParams(search);
+  const branchId = params.get("branchId");
+  const owner = params.get("owner");
+  const repo = params.get("repo");
+  if (!(branchId && owner && repo)) {
+    return false;
+  }
+
+  const currentBranchId = readCurrentBranchId(sender);
+  if (currentBranchId !== branchId) {
+    return false;
+  }
+
+  return branchIdMatchesRepo(branchId, owner, repo);
+}
+
+function readCurrentBranchId(sender: unknown): string | null {
+  const maybeSender = sender as GatewayDispatchSenderWithUrl;
+  if (typeof maybeSender.getURL !== "function") {
+    return null;
+  }
+
+  let currentUrl: URL;
+  try {
+    currentUrl = new URL(maybeSender.getURL());
+  } catch {
+    return null;
+  }
+  const hash = currentUrl.hash.startsWith("#")
+    ? currentUrl.hash.slice(1)
+    : currentUrl.hash;
+  const path = hash.split("?")[0] ?? "";
+  const match = BRANCH_DETAIL_HASH_PATH_REGEX.exec(path);
+  if (!match) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
 }

@@ -1,5 +1,5 @@
 import type { Priority } from "@repo/api/src/types/common";
-import type { DocumentStatus } from "@repo/api/src/types/document";
+import type { ArtifactStatus } from "@repo/api/src/types/document";
 import type {
   TableFiltersController,
   TableFiltersState,
@@ -8,18 +8,20 @@ import type {
 
 // Concrete document-domain bindings of the generic design-system table-filter
 // types. The design-system module is domain-agnostic (TStatus/TPriority default
-// to string); the documents surface flavors them with DocumentStatus/Priority.
+// to string); the documents surface flavors them with ArtifactStatus/Priority.
+// The mixed table renders both Documents and Features, so the status binding is
+// the combined ArtifactStatus union (PRD-495).
 export type DocumentTableFiltersState = TableFiltersState<
-  DocumentStatus,
+  ArtifactStatus,
   Priority
 >;
 
 export type DocumentTableFiltersController = TableFiltersController<
-  DocumentStatus,
+  ArtifactStatus,
   Priority
 >;
 
 export type DocumentTableFiltersViewModel = TableFiltersViewModel<
-  DocumentStatus,
+  ArtifactStatus,
   Priority
 >;

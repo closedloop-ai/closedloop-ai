@@ -6,17 +6,39 @@ import type {
   UtilizationInsightsResponse,
 } from "@closedloop-ai/loops-api/insights";
 import type {
+  AgentComponentDetail,
+  AgentComponentListResponse,
+  AgentComponentQueryFilters,
+  ComponentModelTrendResponse,
+  SkillLoadedResponse,
+  SubagentFrequencyResponse,
+} from "@repo/api/src/types/agent-component";
+import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
   AgentSessionListResponse,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import type {
   BranchAnalytics,
   BranchListResponse,
   BranchPageDetail,
   BranchUsageSummary,
+  MergedTraceItem,
 } from "@repo/api/src/types/branch";
+import type {
+  TraceComment,
+  TraceCommentDeleteResult,
+  TraceCommentDraft,
+  TraceCommentReplyDraft,
+  TraceCommentTarget,
+  TraceCommentUpdate,
+} from "@repo/api/src/types/comment";
+import type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
+import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
+import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
+import type { GitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope-constants";
 import type {
   RelayHttpRequestPayload,
   RelayResponseEnvelope,
@@ -57,8 +79,11 @@ import type {
   TokenAnalytics,
   WorkflowQueryData,
 } from "../../shared/agent-db-contract";
+import type { CoachingPackInfo } from "../../shared/coaching-pack-contract";
 import type {
   AgentMonitorHooksResult,
+  DesktopAuthState,
+  DesktopBrowserSignInResult,
   SaveConfigPayload,
 } from "../../shared/contracts";
 import type { DiagnosticsData } from "../../shared/diagnostics-contract";
@@ -72,9 +97,15 @@ import type {
   SharedAgentSessionsQuery,
 } from "../../shared/shared-agent-sessions-contract";
 import type {
+  SharedBranchesDetailRequest,
   SharedBranchesListRequest,
   SharedBranchesQuery,
 } from "../../shared/shared-branches-contract";
+
+export type GitHubResyncNudgeRendererEvent = {
+  body: GitHubResyncNudgeBody | unknown;
+  branchIds?: readonly string[];
+};
 
 export type AgentMonitorUrl = {
   url: string | null;
@@ -90,6 +121,21 @@ export type SandboxInspectResult = {
   suggestedPath: string | undefined;
 };
 
+/**
+ * Success result of `db.coachingInstall(distributionId)` (FEA-2923 / §I).
+ * Mirrors the successful arm of the main-process `CoachingInstallOutcome`
+ * (`packs/required-plugin-installer.ts`): the handler REJECTS on every failure
+ * arm (not found / wrong type / feature-flag off / download-extract-validate
+ * failure), so the renderer only ever resolves with `installed` (pack
+ * copied/activated) or `skipped` (override precedence honored a recorded user
+ * choice — nothing changed). Declared renderer-locally rather than imported
+ * from the main-process module to avoid a renderer→main type dependency.
+ */
+export type CoachingDistributionInstallResult = {
+  status: "installed" | "skipped";
+  installedVersion?: string | null;
+};
+
 export type AgentMonitorHookResult = AgentMonitorHooksResult;
 
 export type DesktopFeatureFlagState = {
@@ -97,6 +143,33 @@ export type DesktopFeatureFlagState = {
   value: boolean;
   source: "env" | "user" | "default";
 };
+
+export type GitHubConnectOpenResult =
+  | { ok: true; url: string }
+  | {
+      ok: false;
+      reason: "untrusted_sender" | "invalid_origin" | "open_failed";
+    };
+
+export type GitHubConnectOpenRequest = {
+  install?: boolean;
+  returnTo?: string;
+};
+
+// Re-exported for the renderer surfaces (e.g. the Account tab) that read the
+// signed-in identity shape from the desktop-api module.
+export type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
+// First-party auth wire contract (FEA-2219). Sourced from the shared
+// `contracts.ts` module rather than re-declared, so the renderer stays in
+// lockstep with the main-process definitions — including the closed
+// `DesktopBrowserSignInFailure` reason set — and re-exported here for the
+// renderer surfaces that import these types from the desktop-api module.
+export type {
+  DesktopAuthState,
+  DesktopAuthStatus,
+  DesktopBrowserSignInFailure,
+  DesktopBrowserSignInResult,
+} from "../../shared/contracts";
 
 export type DesktopApi = {
   /**
@@ -162,6 +235,7 @@ export type DesktopApi = {
   removeAlwaysAllowRule: (ruleId: string) => Promise<unknown>;
   checkForUpdate: () => Promise<unknown>;
   applyUpdate: () => Promise<unknown>;
+  moveToApplications: () => Promise<boolean>;
   isDebugAuthEnabled: () => Promise<boolean>;
   mintDebugToken: (origin?: string) => Promise<unknown>;
   listRunningJobs: () => Promise<unknown>;
@@ -200,12 +274,23 @@ export type DesktopApi = {
   setAgentMonitorHooksEnabled: (
     enabled: boolean
   ) => Promise<AgentMonitorHookResult>;
+  setAgentMonitorImportPaused: (paused: boolean) => Promise<void>;
   getAllFlags: () => Promise<{ flags: DesktopFeatureFlagState[] }>;
   onFlagsChanged?: (callback: () => void) => void;
   /** Run the rendered coaching prompt through the local `claude -p` harness. */
   generateCoachingTips: (prompt: string) => Promise<string>;
   /** Install a reviewed coaching artifact via the chosen local harness. */
   installCoachingArtifact: (draft: string, harness?: string) => Promise<string>;
+  /**
+   * The active coaching pack whose signals override the built-in coaching
+   * best-practice signals, or null when the built-in defaults are in effect.
+   */
+  getCoachingPack: () => Promise<CoachingPackInfo | null>;
+  /**
+   * Install an external coaching-pack folder into the managed store and make it
+   * active (the pack "distribution method"). Returns the installed pack info.
+   */
+  installCoachingPack: (sourceDir: string) => Promise<CoachingPackInfo>;
   /** @deprecated Replaced by in-process dashboard database */
   getAgentMonitorData?: (query: string) => Promise<unknown>;
   /** Local shared Agent Sessions API adapter exposed by the design-system preload. */
@@ -224,9 +309,35 @@ export type DesktopApi = {
   /** Local shared Branches API adapter exposed by the design-system preload. */
   branchesApi: {
     list: (request?: SharedBranchesListRequest) => Promise<BranchListResponse>;
-    detail: (id: string) => Promise<BranchPageDetail | null>;
+    detail: (
+      request: string | SharedBranchesDetailRequest
+    ) => Promise<BranchPageDetail | null>;
+    /** PLN-1148 Phase 2: lazy events-heavy merged trace for the timeline tab. */
+    trace: (id: string) => Promise<MergedTraceItem[]>;
     usage: (request?: SharedBranchesQuery) => Promise<BranchUsageSummary>;
     analytics: (request?: SharedBranchesQuery) => Promise<BranchAnalytics>;
+  };
+  /** Cloud-backed trace comments exposed through main-process IPC. */
+  traceCommentsApi: {
+    list: (target: TraceCommentTarget) => Promise<TraceComment[]>;
+    create: (
+      target: TraceCommentTarget,
+      draft: TraceCommentDraft
+    ) => Promise<TraceComment>;
+    reply: (
+      target: TraceCommentTarget,
+      commentId: string,
+      draft: TraceCommentReplyDraft
+    ) => Promise<TraceComment>;
+    update: (
+      target: TraceCommentTarget,
+      commentId: string,
+      update: TraceCommentUpdate
+    ) => Promise<TraceComment>;
+    delete: (
+      target: TraceCommentTarget,
+      commentId: string
+    ) => Promise<TraceCommentDeleteResult>;
   };
   /** Database IPC channels (typed against the in-process repository shapes). */
   db: {
@@ -265,6 +376,8 @@ export type DesktopApi = {
 
     // Catalog (FEA-1314)
     getCatalog: () => Promise<CatalogEntry[]>;
+    /** Cloud: org-wide analytics for a pack (desktop-team overlay). */
+    getPackAnalytics: (packId: string) => Promise<PackAnalyticsResponse | null>;
     getCatalogEntry: (packId: string) => Promise<CatalogEntry | null>;
     getCatalogReadme: (packId: string) => Promise<string | null>;
     getCatalogContents: (packId: string) => Promise<unknown[] | null>;
@@ -276,6 +389,18 @@ export type DesktopApi = {
       harness: string,
       cwd?: string
     ) => Promise<CatalogMutationResult>;
+    /**
+     * Install an opt-in coaching-pack distribution by distribution id
+     * (FEA-2923 / §I). Routes to the main-process coaching installer, which
+     * resolves the presigned asset from the authoritative cloud response and
+     * copies/activates the pack honoring override precedence. Rejects on any
+     * non-installed outcome (not found, wrong type, feature-flag off, or
+     * download/extract/validate failure) so the opt-in banner can surface an
+     * inline error and keep the row visible.
+     */
+    coachingInstall: (
+      distributionId: string
+    ) => Promise<CoachingDistributionInstallResult>;
     catalogUninstall: (
       packId: string,
       harness: string,
@@ -319,16 +444,95 @@ export type DesktopApi = {
     }) => Promise<PrRecord[]>;
     openPr: (id: string) => Promise<void>;
 
+    // Agent Components (FEA-2923 / T-16.3)
+    listAgentComponents: (
+      filters: AgentComponentQueryFilters
+    ) => Promise<AgentComponentListResponse>;
+    getAgentComponentDetail: (
+      slug: string
+    ) => Promise<AgentComponentDetail | null>;
+
     // Diagnostics (FEA-1959)
     getDiagnostics: () => Promise<DiagnosticsData>;
+
+    // Optimization analytics (FEA-2923 / AC-022)
+    /**
+     * Per-(component, model) token/cost/latency/truncation time series for a
+     * given component over the specified number of trailing days. Joins
+     * `agent_component_session_usage` with `token_events`, `token_usage`, and
+     * `claude_code_api_request` in the local SQLite DB. Returns empty `points`
+     * when the component has no usage in the window.
+     */
+    getComponentModelTrend: (
+      componentKind: string,
+      componentKey: string,
+      model?: string,
+      days?: number
+    ) => Promise<ComponentModelTrendResponse>;
+    /**
+     * Day-bucketed sub-agent pull-in frequency: counts distinct sessions and
+     * total invocations per day for the given `subagentKey` over `days` trailing
+     * days. Reads `agent_component_session_usage` where `component_kind='subagent'`.
+     */
+    getSubagentFrequency: (
+      subagentKey: string,
+      days?: number
+    ) => Promise<SubagentFrequencyResponse>;
+    /**
+     * Checks whether a skill is being loaded (has usage rows) vs. just existing
+     * in the inventory. A skill in `agent_components` with no
+     * `agent_component_session_usage` rows may not be loading correctly.
+     */
+    isSkillLoaded: (skillKey: string) => Promise<SkillLoadedResponse>;
   };
   /** Live DB-change push subscription; returns an unsubscribe fn. */
   onDbChanged: (
     callback: (payload: { sessionId?: string }) => void
   ) => () => void;
+  /** Server-origin GitHub dirty-scope nudge for branch cache invalidation. */
+  onGitHubResyncNudge?: (
+    callback: (payload: GitHubResyncNudgeRendererEvent) => void
+  ) => () => void;
   /** Subscribe to streamed pack install/uninstall output (FEA-1314). */
   onInstallOutput?: (
     callback: (payload: InstallOutputChunk) => void
+  ) => () => void;
+  /**
+   * Subscribe to opt-in distributions surfaced by the main-process
+   * `RequiredPluginInstaller` (FEA-2923 / §I). The renderer presents these for
+   * the user to accept/install themselves. Returns an unsubscribe fn.
+   */
+  onDistributionsOptInAvailable?: (
+    callback: (distributions: OptInDistributionDto[]) => void
+  ) => () => void;
+  /** First-party desktop auth (FEA-2219): current main-process auth state. */
+  getDesktopAuthState: () => Promise<DesktopAuthState>;
+  /**
+   * Begin interactive system-browser sign-in (device-onboarding → exchange).
+   * Resolves on the terminal outcome; intermediate progress arrives via
+   * {@link onDesktopAuthStateChanged}.
+   */
+  beginDesktopSignIn: () => Promise<DesktopBrowserSignInResult>;
+  /** Cancel an in-flight sign-in (no-op when none is running). */
+  cancelDesktopSignIn: () => Promise<void>;
+  /** Sign out: best-effort server revoke + clear keychain + access token. */
+  signOutDesktop: () => Promise<void>;
+  /**
+   * Current access token for `Authorization: Bearer`, or null when signed out
+   * (refreshes on demand). Never persisted in the renderer.
+   */
+  getDesktopAccessToken: () => Promise<string | null>;
+  /** Current cloud GitHub data-connection status, or null when unavailable. */
+  getGitHubIntegrationStatus?: () => Promise<GitHubIntegrationStatus | null>;
+  /** Display identity (name, email, org name) for the signed-in desktop session. */
+  getDesktopIdentity?: () => Promise<DesktopIdentity | null>;
+  /** Open the first-party web GitHub App connect flow from main process. */
+  openGitHubConnect: (
+    request?: GitHubConnectOpenRequest
+  ) => Promise<GitHubConnectOpenResult>;
+  /** Subscribe to auth-state pushes; returns an unsubscribe fn. */
+  onDesktopAuthStateChanged: (
+    callback: (state: DesktopAuthState) => void
   ) => () => void;
 };
 

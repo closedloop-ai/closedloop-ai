@@ -47,6 +47,7 @@ import {
   resetAmbientSystemCheckVisibilityForTests,
   useAmbientSystemCheckVisibility,
 } from "@/lib/system-check/ambient-system-check-visibility-store";
+import { buildHealthCheckErrorResponse } from "@/lib/system-check/health-check-error-response";
 
 /** Stagger delay (ms) between each check row revealing its result */
 const REVEAL_STAGGER = 120;
@@ -202,7 +203,13 @@ export function HealthCheckDialog({
   const alive = mounted && !removed;
   const dialogOpen = alive && !closing && failureDetected;
 
-  const { data, isLoading, refetch, isFetching } = useQuery({
+  const {
+    data,
+    error: healthCheckError,
+    isLoading,
+    refetch,
+    isFetching,
+  } = useQuery({
     ...healthCheckQueryOptions,
     enabled: shouldEnableHealthCheckQuery({
       latestReleaseLoading: isLatestReleaseLoading,
@@ -226,12 +233,18 @@ export function HealthCheckDialog({
     isBlockingMode,
     queryClient,
   ]);
+  const effectiveData = useMemo(
+    () =>
+      healthCheckError ? buildHealthCheckErrorResponse(healthCheckError) : data,
+    [data, healthCheckError]
+  );
   const renderableChecks = useMemo(
-    () => getRenderableHealthChecks(data, expectedMcpUrl),
-    [data, expectedMcpUrl]
+    () => getRenderableHealthChecks(effectiveData, expectedMcpUrl),
+    [effectiveData, expectedMcpUrl]
   );
   const isBlockingInitialLoad = isBlockingMode && data === undefined;
-  const showLoadingChecks = isLoading || isBlockingInitialLoad;
+  const showLoadingChecks =
+    !healthCheckError && (isLoading || isBlockingInitialLoad);
 
   // Auto-dismiss after all checks are revealed and all required pass
   const allRevealed =
@@ -343,24 +356,22 @@ export function HealthCheckDialog({
     setRecheckRevealSuspended(true);
     setRevealedCount(0);
     setShowSuccess(false);
-    const result = await refetch();
-    if (result.error || !result.data) {
-      onRecheckUnavailable?.(
-        result.error instanceof Error
-          ? result.error.message
-          : "Health check returned no data"
-      );
-      // Restart the stagger against the last known rows so failed re-checks do not leave an empty results panel.
+    try {
+      const result = await refetch();
+      if (result.error || !result.data) {
+        onRecheckUnavailable?.(
+          result.error instanceof Error
+            ? result.error.message
+            : "Health check returned no data"
+        );
+        return;
+      }
+      onRecheckResult?.(result.data);
+    } finally {
+      // Restart the stagger after success or failure so failed re-checks cannot leave rows suspended.
       setRecheckRevealSuspended(false);
       setRecheckKey((k) => k + 1);
-      return;
     }
-    onRecheckResult?.(result.data);
-    // Restart the stagger once after the final refetch result. The reveal
-    // effect is suspended while the query data changes so it cannot start a
-    // partial pass and then restart from this key bump.
-    setRecheckRevealSuspended(false);
-    setRecheckKey((k) => k + 1);
   }, [onRecheckClick, onRecheckResult, onRecheckUnavailable, refetch]);
 
   const handleContinue = useCallback(() => {
@@ -436,7 +447,7 @@ export function HealthCheckDialog({
     worktreeCheck && !worktreeCheck.passed && revealedCount >= requiredCount;
 
   // Closedloop plugin check failed — show inline install/enable guidance after reveal.
-  const pluginCheckFailed = data?.checks?.some(
+  const pluginCheckFailed = effectiveData?.checks?.some(
     (c) =>
       (c.id === "claude-plugins" || c.id.startsWith("plugin-")) && !c.passed
   );
@@ -444,7 +455,9 @@ export function HealthCheckDialog({
     pluginCheckFailed && revealedCount >= requiredCount;
 
   // claude-cli check failed — show rich debug info (only after it's revealed)
-  const claudeCliCheck = data?.checks?.find((c) => c.id === "claude-cli");
+  const claudeCliCheck = effectiveData?.checks?.find(
+    (c) => c.id === "claude-cli"
+  );
   const showClaudeCliBlock =
     claudeCliCheck &&
     !claudeCliCheck.passed &&

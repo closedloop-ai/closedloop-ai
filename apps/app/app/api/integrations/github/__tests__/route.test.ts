@@ -3,6 +3,30 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 // Mock dependencies
 const mockAuth = vi.fn();
 const mockCookiesSet = vi.fn();
+const githubUtilsMocks = vi.hoisted(() => ({
+  createGitHubOAuthReturnToCookie: vi.fn(() => "signed-return-to-cookie"),
+  getCanonicalBranchViewReturnPath: vi.fn(
+    (returnTo: string | null, options?: { orgSlug?: string | null }) => {
+      const orgSlug = options?.orgSlug;
+      if (!(returnTo && orgSlug)) {
+        return null;
+      }
+      if (returnTo === "/branches") {
+        return `/${orgSlug}/branches`;
+      }
+      if (returnTo === "/insights") {
+        return `/${orgSlug}/insights`;
+      }
+      if (
+        returnTo === `/${orgSlug}/branches` ||
+        returnTo === `/${orgSlug}/insights`
+      ) {
+        return returnTo;
+      }
+      return null;
+    }
+  ),
+}));
 
 vi.mock("@repo/auth/server", () => ({
   auth: () => mockAuth(),
@@ -37,8 +61,10 @@ vi.mock("../github-utils", () => ({
   GITHUB_OAUTH_STATE_COOKIE: "github_oauth_state",
   GITHUB_OAUTH_RETURN_TO_COOKIE: "github_oauth_return_to",
   GITHUB_OAUTH_RETURN_TO_COOKIE_PATH: "/api/integrations/github",
-  createGitHubOAuthReturnToCookie: () => "signed-return-to-cookie",
-  getCanonicalBranchViewReturnPath: (returnTo: string | null) => returnTo,
+  createGitHubOAuthReturnToCookie:
+    githubUtilsMocks.createGitHubOAuthReturnToCookie,
+  getCanonicalBranchViewReturnPath:
+    githubUtilsMocks.getCanonicalBranchViewReturnPath,
   getErrorRedirectUrl: (code: string) =>
     `http://localhost:3000/settings?github=error&code=${code}`,
   getGitHubCallbackUrl: () =>
@@ -69,7 +95,11 @@ describe("GET /api/integrations/github", () => {
       NEXT_PUBLIC_GITHUB_APP_SLUG: "test-app-slug",
       NEXT_PUBLIC_APP_URL: "http://localhost:3000",
     };
-    mockAuth.mockResolvedValue({ userId: "user-1", orgId: "org-1" });
+    mockAuth.mockResolvedValue({
+      userId: "user-1",
+      orgId: "org-1",
+      orgSlug: "acme",
+    });
   });
 
   test("redirects to standard OAuth URL by default when client_id is set", async () => {
@@ -154,5 +184,103 @@ describe("GET /api/integrations/github", () => {
         path: "/",
       })
     );
+  });
+
+  test("sets signed Branches return cookie for authorize-mode return target", async () => {
+    await GET(createRequest({ returnTo: "/acme/branches" }));
+
+    expect(mockCookiesSet).toHaveBeenCalledWith(
+      "github_oauth_return_to",
+      "signed-return-to-cookie",
+      expect.objectContaining({
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/api/integrations/github",
+      })
+    );
+  });
+
+  test("sets signed Branches return cookie for install mode", async () => {
+    await GET(createRequest({ install: "true", returnTo: "/acme/branches" }));
+
+    expect(mockCookiesSet).toHaveBeenCalledWith(
+      "github_oauth_return_to",
+      "signed-return-to-cookie",
+      expect.objectContaining({
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/api/integrations/github",
+      })
+    );
+  });
+
+  test("sets signed Insights return cookie for install mode", async () => {
+    await GET(createRequest({ install: "true", returnTo: "/acme/insights" }));
+
+    expect(
+      githubUtilsMocks.createGitHubOAuthReturnToCookie
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ returnTo: "/acme/insights" })
+    );
+    expect(mockCookiesSet).toHaveBeenCalledWith(
+      "github_oauth_return_to",
+      "signed-return-to-cookie",
+      expect.objectContaining({
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/api/integrations/github",
+      })
+    );
+  });
+
+  test("canonicalizes desktop Branches return targets with the active org slug", async () => {
+    await GET(createRequest({ returnTo: "/branches" }));
+
+    expect(
+      githubUtilsMocks.createGitHubOAuthReturnToCookie
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ returnTo: "/acme/branches" })
+    );
+    expect(mockCookiesSet).toHaveBeenCalledWith(
+      "github_oauth_return_to",
+      "signed-return-to-cookie",
+      expect.objectContaining({
+        path: "/api/integrations/github",
+      })
+    );
+  });
+
+  test("canonicalizes desktop Insights return targets with the active org slug", async () => {
+    await GET(createRequest({ returnTo: "/insights" }));
+
+    expect(
+      githubUtilsMocks.createGitHubOAuthReturnToCookie
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ returnTo: "/acme/insights" })
+    );
+    expect(mockCookiesSet).toHaveBeenCalledWith(
+      "github_oauth_return_to",
+      "signed-return-to-cookie",
+      expect.objectContaining({
+        path: "/api/integrations/github",
+      })
+    );
+  });
+
+  test("does not set a return cookie for unsafe return targets", async () => {
+    await GET(
+      createRequest({
+        returnTo: "https://evil.example.test/acme/insights",
+      })
+    );
+
+    expect(
+      githubUtilsMocks.createGitHubOAuthReturnToCookie
+    ).not.toHaveBeenCalled();
+    expect(
+      mockCookiesSet.mock.calls.some(
+        ([name]) => name === "github_oauth_return_to"
+      )
+    ).toBe(false);
   });
 });

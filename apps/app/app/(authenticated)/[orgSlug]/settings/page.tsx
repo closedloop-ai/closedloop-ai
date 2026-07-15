@@ -35,8 +35,14 @@ export default async function Page({
 }
 
 const DEFAULT_TAB = "profile";
-const BASE_TABS = ["profile", "organization", "integrations", "api-keys"];
-const ADMIN_TABS = ["admin", "custom-fields", "tags"];
+const BASE_TABS = [
+  "profile",
+  "organization",
+  "integrations",
+  "api-keys",
+  "tags",
+];
+const ADMIN_TABS = ["admin", "custom-fields"];
 
 function getRequestedTab(tab: string | string[] | undefined): string | null {
   if (typeof tab === "string") {

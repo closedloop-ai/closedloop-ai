@@ -4,6 +4,7 @@ import type { PublicRepository } from "@repo/database";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 
 type GitHubRepoApiResponse = {
   id: number;
@@ -255,12 +256,7 @@ export const publicRepositoryService = {
 
       return Result.ok(repo);
     } catch (error: unknown) {
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        error.code === "P2002"
-      ) {
+      if (getPrismaErrorCode(error) === "P2002") {
         return Result.err(Status.Conflict);
       }
       throw error;

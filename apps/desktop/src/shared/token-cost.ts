@@ -34,7 +34,8 @@ export type EstimateTokenCostResult = {
   costUsd: number;
   inputCostUsd: number;
   outputCostUsd: number;
-  cacheCostUsd: number;
+  cacheReadCostUsd: number;
+  cacheWriteCostUsd: number;
 };
 
 export function estimateTokenCost(
@@ -52,13 +53,12 @@ export function estimateTokenCost(
   if (!result.priced || result.costUsd == null) {
     return undefined;
   }
-  const inputCostUsd = result.inputCostUsd ?? 0;
-  const outputCostUsd = result.outputCostUsd ?? 0;
   return {
     costUsd: result.costUsd,
-    inputCostUsd,
-    outputCostUsd,
-    cacheCostUsd: Math.max(0, result.costUsd - inputCostUsd - outputCostUsd),
+    inputCostUsd: result.inputCostUsd ?? 0,
+    outputCostUsd: result.outputCostUsd ?? 0,
+    cacheReadCostUsd: result.cacheReadCostUsd ?? 0,
+    cacheWriteCostUsd: result.cacheWriteCostUsd ?? 0,
   };
 }
 

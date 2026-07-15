@@ -13,6 +13,7 @@ import { mergeDocumentsValidator } from "../validators";
 
 const SAME_PROJECT_ERROR_RE = /same project/i;
 const TEMPLATE_ERROR_RE = /TEMPLATE/i;
+const TOO_LARGE_ERROR_RE = /too large to merge/i;
 
 /**
  * POST /artifacts/merge
@@ -54,7 +55,8 @@ export const POST = withAuth<Document, "/documents/merge">(
       if (
         error instanceof Error &&
         (SAME_PROJECT_ERROR_RE.test(error.message) ||
-          TEMPLATE_ERROR_RE.test(error.message))
+          TEMPLATE_ERROR_RE.test(error.message) ||
+          TOO_LARGE_ERROR_RE.test(error.message))
       ) {
         return badRequestResponse(error.message);
       }

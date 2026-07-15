@@ -9,8 +9,6 @@
  * swept by those persisted-read invalidations. F5's explicit refresh invalidates
  * `branchesOverlayKeys.all()` separately.
  *
- * NOTE: the comment-count/thread overlay (PLN-988 F3/F4) is descoped from this
- * version, so there is no `comments(...)` key here.
  */
 
 const OVERLAY_ROOT = ["branches", "overlay"] as const;
@@ -30,6 +28,25 @@ export const branchesOverlayKeys = {
       owner ?? null,
       repo ?? null,
       prNumber ?? null,
+    ] as const,
+  /** Live per-file PR diff (keyed by PR identity, current path, and rename path). */
+  fileDiff: (
+    owner: string | null | undefined,
+    repo: string | null | undefined,
+    prNumber: number | null | undefined,
+    branchId: string | null | undefined,
+    path: string | null | undefined,
+    previousPath: string | null | undefined
+  ) =>
+    [
+      ...OVERLAY_ROOT,
+      "fileDiff",
+      owner ?? null,
+      repo ?? null,
+      prNumber ?? null,
+      branchId ?? null,
+      path ?? null,
+      previousPath ?? null,
     ] as const,
   /** F2 live merge/check status (keyed by owner/repo slug + PR number). */
   status: (

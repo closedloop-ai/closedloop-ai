@@ -11,7 +11,12 @@ export default defineConfig({
     environment: "node",
     globals: true, // Makes describe, it, expect available globally
     setupFiles: ["./__tests__/setup.ts"],
-    exclude: ["**/node_modules/**", "**/dist/**", "__tests__/compatibility/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "__tests__/compatibility/**",
+      "__tests__/integration/**",
+    ],
     // Cache configuration for faster re-runs
     cache: {
       dir: "../../node_modules/.vitest", // Share cache at monorepo root
@@ -27,11 +32,15 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./"),
-      "@repo": path.resolve(import.meta.dirname, "../../packages"),
+      // The specific loops-api alias MUST precede the catch-all `@repo`: its
+      // subpaths resolve to `packages/loops-api/src/*` (source-consumed, no
+      // dist), whereas the generic `@repo` → `packages` mapping would drop the
+      // `/src` and fail to resolve. Vite matches aliases in declaration order.
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../../packages/loops-api/src"
       ),
+      "@repo": path.resolve(import.meta.dirname, "../../packages"),
       "@closedloop-ai/telemetry-contract": path.resolve(
         import.meta.dirname,
         "../../packages/telemetry-contract/src"

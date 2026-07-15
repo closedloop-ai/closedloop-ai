@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Separator } from "@repo/design-system/components/ui/separator";
@@ -81,9 +85,9 @@ export function TeamModalBody({ state }: TeamModalBodyProps) {
       )}
 
       {error ? (
-        <p className="rounded-md border border-destructive/20 bg-destructive/10 p-2 text-destructive text-sm">
-          {error}
-        </p>
+        <Alert variant="error">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       ) : null}
     </div>
   );

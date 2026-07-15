@@ -1,11 +1,16 @@
 "use client";
 
-import type { Document } from "@repo/api/src/types/document";
+import type {
+  DocumentStatus,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
+import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
+import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
+import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
 import { getDocumentRoute } from "@repo/app/documents/lib/document-navigation";
 import {
-  DOCUMENT_STATUS_LABELS,
-  DOCUMENT_STATUS_TO_ICON,
+  ARTIFACT_STATUS_LABELS,
   DOCUMENT_TYPE_BADGE_LABELS,
   DOCUMENT_TYPE_ICONS,
 } from "@repo/app/projects/lib/project-constants";
@@ -41,8 +46,18 @@ export function ArtifactRow({
   // back to a generic icon/label so the row renders instead of crashing.
   const Icon = DOCUMENT_TYPE_ICONS[artifact.type] ?? TerminalIcon;
   const badgeLabel = DOCUMENT_TYPE_BADGE_LABELS[artifact.type] ?? artifact.type;
-  const statusIconStatus = DOCUMENT_STATUS_TO_ICON[artifact.status];
-  const statusLabel = DOCUMENT_STATUS_LABELS[artifact.status];
+  // Documents and Features carry disjoint status vocabularies (PRD-495), so
+  // render the icon for this artifact's exact type.
+  const statusIcon =
+    artifact.type === DocumentType.Feature ? (
+      <FeatureStatusIcon size={16} status={artifact.status as FeatureStatus} />
+    ) : (
+      <DocumentStatusIcon
+        size={16}
+        status={artifact.status as DocumentStatus}
+      />
+    );
+  const statusLabel = ARTIFACT_STATUS_LABELS[artifact.status];
   const documentRoute = getDocumentRoute(artifact);
   const route = documentRoute ? buildOrgPath(documentRoute) : null;
 
@@ -60,7 +75,7 @@ export function ArtifactRow({
       }
       priority={artifact.priority}
       slug={isDisplayableSlug(artifact.slug) ? artifact.slug : badgeLabel}
-      status={statusIconStatus}
+      statusIcon={statusIcon}
       statusLabel={statusLabel}
       title={artifact.title}
       typeIcon={<Icon className="h-4 w-4 shrink-0 text-muted-foreground" />}

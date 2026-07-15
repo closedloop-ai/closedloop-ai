@@ -158,6 +158,12 @@ export function asTx<T extends Record<string, unknown>>(mock: T) {
  * await processWorkflowCompletion(event, correlationId, true);
  */
 export function mockWithDbTx(mockDb: Record<string, unknown>) {
+  // Provide a default `$queryRaw` so services that issue raw statements inside
+  // the transaction (e.g. `SELECT ... FOR UPDATE` row locks) don't blow up when
+  // the test only stubbed model methods. Tests can still supply their own.
+  if (!("$queryRaw" in mockDb)) {
+    mockDb.$queryRaw = vi.fn().mockResolvedValue([]);
+  }
   getMockWithDb().tx = vi
     .fn()
     .mockImplementation((callback: (tx: unknown) => unknown) =>

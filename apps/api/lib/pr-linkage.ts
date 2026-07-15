@@ -3,6 +3,7 @@ import {
   BranchHeadShaSource,
   LinkType,
 } from "@repo/api/src/types/artifact";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import {
   ArtifactType,
   GitHubInstallationStatus,
@@ -50,6 +51,7 @@ async function resolveRepositoryId(
   const row = await tx.gitHubInstallationRepository.findFirst({
     where: {
       fullName,
+      removedAt: null,
       installation: {
         organizationId,
         status: GitHubInstallationStatus.ACTIVE,
@@ -126,7 +128,11 @@ export async function ensurePrLinkageRecords(
         externalUrl: `https://github.com/${repository.fullName}/tree/${encodeURIComponent(input.headBranch)}`,
         branch: {
           create: {
+            // FR13: write-once org copy from the parent Artifact; D2 identity
+            // via the normalized full name of the resolved installation repo.
+            organizationId: input.organizationId,
             repositoryId: repository.id,
+            repositoryFullName: normalizeRepoFullName(repository.fullName),
             branchName: input.headBranch,
             baseBranch: input.baseBranch,
             baseBranchSource: BranchBaseBranchSource.PullRequestBase,
@@ -138,6 +144,8 @@ export async function ensurePrLinkageRecords(
         },
         pullRequestDetails: {
           create: {
+            // FEA-2732: write-once org SSOT copy from the parent Artifact.
+            organizationId: input.organizationId,
             repositoryId: repository.id,
             githubId: input.githubId,
             number: input.prNumber,

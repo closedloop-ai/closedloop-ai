@@ -26,6 +26,13 @@ describe("DesktopAppCoreProvider", () => {
           list: vi.fn(async () => agentSessionList()),
           usage: vi.fn(async () => agentSessionUsage()),
         },
+        // Agent components IPC (FEA-2923 / T-16.2): provider is now mounted;
+        // add stubs so the data source is constructible even if not exercised
+        // by the session-focused tests here.
+        db: {
+          listAgentComponents: vi.fn(async () => ({ items: [], total: 0 })),
+          getAgentComponentDetail: vi.fn(async () => null),
+        },
       },
     });
   });
@@ -92,7 +99,6 @@ function agentSessionListItem(): AgentSessionListItem {
     harness: "claude",
     id: "provider-session",
     inputTokens: 0,
-    issueId: null,
     lastActivityAt: timestamp,
     model: "gpt-test",
     name: "Provider-wired session",

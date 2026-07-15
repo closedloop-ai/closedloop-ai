@@ -1,0 +1,90 @@
+diff --git a/lib-cjs/sqlite3.js b/lib-cjs/sqlite3.js
+index e8a763adadb90e561ebbd2bdfd3922f9aa5dac23..3b86d2be618c126a0466e1fcf9b58be31c7a65c4 100644
+--- a/lib-cjs/sqlite3.js
++++ b/lib-cjs/sqlite3.js
+@@ -176,17 +176,38 @@ class Sqlite3Client {
+     async transaction(mode = "write") {
+         const db = this.#getDb();
+         executeStmt(db, (0, util_1.transactionModeToBegin)(mode), this.#intMode);
+-        this.#db = null; // A new connection will be lazily created on next use
++        // PATCHED (closedloop): keep the native connection attached instead of
++        // detaching it (`this.#db = null`). Upstream detaches and never closes
++        // the detached connection on commit/rollback, so every transaction
++        // leaks a native connection (fds + memory) until GC AND silently drops
++        // all session PRAGMAs (busy_timeout, query_only, WAL tuning) on the
++        // lazily recreated replacement — the source of the Electron db-host
++        // exit-code-5 crash storm. See libsql-client-ts issue #229 / PR #342.
++        // Safe for this app: every consumer (the Prisma adapter's per-client
++        // mutex, the migration executor's promise chain) fully serializes
++        // statements per client, so nothing can interleave into the open
++        // transaction on the shared connection.
+         return new Sqlite3Transaction(db, this.#intMode);
+     }
+     async executeMultiple(sql) {
+         this.#checkNotClosed();
+         const db = this.#getDb();
++        // PATCHED (closedloop): only roll back a transaction the SCRIPT itself
++        // opened and left dangling. Upstream rolled back whenever
++        // `db.inTransaction`, which was correct only while transaction()
++        // detached the connection. With the shared connection (patch above),
++        // a caller COULD invoke this while it holds an open transaction() —
++        // no current caller does (in-transaction scripts route through
++        // Sqlite3Transaction.executeMultiple, which never had the rollback) —
++        // and upstream's unconditional rollback would silently destroy that
++        // caller's transaction. Guard covered by
++        // test/libsql-single-connection.test.ts.
++        const ownedTransaction = !db.inTransaction;
+         try {
+             return executeMultiple(db, sql);
+         }
+         finally {
+-            if (db.inTransaction) {
++            if (ownedTransaction && db.inTransaction) {
+                 executeStmt(db, "ROLLBACK", this.#intMode);
+             }
+         }
+diff --git a/lib-esm/sqlite3.js b/lib-esm/sqlite3.js
+index 17444d977e87c352069cee287429a9b8317f4214..18ab27b433b4fbe813c93d38f4c1d070ecf1b8b4 100644
+--- a/lib-esm/sqlite3.js
++++ b/lib-esm/sqlite3.js
+@@ -154,17 +154,38 @@ export class Sqlite3Client {
+     async transaction(mode = "write") {
+         const db = this.#getDb();
+         executeStmt(db, transactionModeToBegin(mode), this.#intMode);
+-        this.#db = null; // A new connection will be lazily created on next use
++        // PATCHED (closedloop): keep the native connection attached instead of
++        // detaching it (`this.#db = null`). Upstream detaches and never closes
++        // the detached connection on commit/rollback, so every transaction
++        // leaks a native connection (fds + memory) until GC AND silently drops
++        // all session PRAGMAs (busy_timeout, query_only, WAL tuning) on the
++        // lazily recreated replacement — the source of the Electron db-host
++        // exit-code-5 crash storm. See libsql-client-ts issue #229 / PR #342.
++        // Safe for this app: every consumer (the Prisma adapter's per-client
++        // mutex, the migration executor's promise chain) fully serializes
++        // statements per client, so nothing can interleave into the open
++        // transaction on the shared connection.
+         return new Sqlite3Transaction(db, this.#intMode);
+     }
+     async executeMultiple(sql) {
+         this.#checkNotClosed();
+         const db = this.#getDb();
++        // PATCHED (closedloop): only roll back a transaction the SCRIPT itself
++        // opened and left dangling. Upstream rolled back whenever
++        // `db.inTransaction`, which was correct only while transaction()
++        // detached the connection. With the shared connection (patch above),
++        // a caller COULD invoke this while it holds an open transaction() —
++        // no current caller does (in-transaction scripts route through
++        // Sqlite3Transaction.executeMultiple, which never had the rollback) —
++        // and upstream's unconditional rollback would silently destroy that
++        // caller's transaction. Guard covered by
++        // test/libsql-single-connection.test.ts.
++        const ownedTransaction = !db.inTransaction;
+         try {
+             return executeMultiple(db, sql);
+         }
+         finally {
+-            if (db.inTransaction) {
++            if (ownedTransaction && db.inTransaction) {
+                 executeStmt(db, "ROLLBACK", this.#intMode);
+             }
+         }

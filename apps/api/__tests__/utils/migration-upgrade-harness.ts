@@ -75,7 +75,20 @@ const pg = require("pg") as {
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");
 const databasePackageDir = path.join(repoRoot, "packages/database");
 const sourcePrismaDir = path.join(databasePackageDir, "prisma");
+// localhost is always allowed. These destructive migration-upgrade tests must
+// never touch a real/shared DB, hence the host allowlist. Containerized runners
+// (e.g. the Dagger `test` tier, FEA-2294) reach an ephemeral, throwaway Postgres
+// only by a service hostname, never localhost — so honor an explicit opt-in that
+// names that disposable host. The opt-in is the operator asserting that host is
+// disposable; it must point only at a throwaway DB. Default (no env) stays
+// localhost-only. blockedDatabaseNames below is a backstop that rejects known
+// production-like DB names — NOT a guarantee the opted-in host is safe.
 const localDatabaseHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+const disposableHostOptIn =
+  process.env.MIGRATION_UPGRADE_DISPOSABLE_HOST?.trim();
+if (disposableHostOptIn) {
+  localDatabaseHosts.add(disposableHostOptIn);
+}
 const blockedDatabaseNames = new Set([
   "postgres",
   "template0",

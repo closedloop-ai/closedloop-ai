@@ -12,7 +12,7 @@ A per-route inventory of the desktop renderer's adoption of shared components fr
 
 The desktop renderer (`apps/desktop/src/renderer/`) and the web app (`apps/app/`) share UI primitives through `@closedloop-ai/design-system` as a workspace package. This doc identifies which renderer routes have started adoption, which should follow next, and which are deferred until upstream work lands.
 
-The static parity-drift detector (`apps/desktop/scripts/check-design-system-drift.mjs`, run in CI) reports which design-system exports are not yet consumed by the renderer. Read the detector report alongside this doc for the per-export view; read this doc for the per-route narrative.
+There is no longer an automated per-export drift report: the static parity-drift detector (`apps/desktop/scripts/check-design-system-drift.mjs`) was retired ahead of the TypeScript 7 migration (it was a TS-compiler-API consumer, and its one hard signal duplicated `tsc`). This doc is now the source of truth for adoption — track the per-route narrative here.
 
 ## Foundations already in place
 

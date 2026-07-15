@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { sharedPlatformAliases } from "./vitest-shared-aliases";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -36,17 +36,26 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     envPrefix: "NEXT_PUBLIC_",
+    // Vitest's default include matches `*.spec.ts`, which would collect the
+    // Playwright end-to-end specs under `e2e/` and crash on `test.describe()`
+    // ("Playwright Test did not expect test.describe() to be called here").
+    // Those run under `playwright test` in the e2e job, not vitest — exclude
+    // the directory here while preserving vitest's default excludes.
+    exclude: [...configDefaults.exclude, "e2e/**"],
   },
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./"),
-      // shared-platform subpath aliases (must precede the catch-all @repo).
+      // shared-platform and loops-api subpath aliases must precede the catch-all
+      // `@repo`: these packages are source-consumed (resolve to `.../src/*`), so
+      // the generic `@repo` → `packages` mapping would drop the `/src` and fail.
+      // Vite matches aliases in declaration order.
       ...sharedPlatformAliases,
-      "@repo": path.resolve(import.meta.dirname, "../../packages"),
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../../packages/loops-api/src"
       ),
+      "@repo": path.resolve(import.meta.dirname, "../../packages"),
       // Mock heavy/browser-dependent editor dependencies at the bundler level
       // so they never load sandpack/stitches/CSSOM in jsdom
       "@mdxeditor/editor/style.css": path.resolve(

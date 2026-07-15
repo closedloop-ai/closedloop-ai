@@ -62,7 +62,15 @@ export type TelemetryCategory =
   | "loop.perf.spawn"
   | "loop.perf.parse_failure"
   | "loop.heartbeat.terminal_finalization_suppressed"
-  | "token_cost.pricing_miss";
+  | "token_cost.pricing_miss"
+  // FEA-1999 — desktop SQLite store integrity-health signal. Four cadence
+  // states mirror the healthcheck.* family: a failure is reported once on
+  // detection, re-reported on a heartbeat while it persists, and a recovery /
+  // first-healthy probe emits a clean signal.
+  | "store.integrity.failure_detected"
+  | "store.integrity.failure_persistent"
+  | "store.integrity.recovered"
+  | "store.integrity.healthy";
 
 /**
  * Costing layer that observed an unpriced model (FEA-1969). SSOT for the
@@ -443,7 +451,8 @@ export type DesktopUpdateTelemetryTrigger =
   | "manual-check"
   | "apply-before-downloaded"
   | "renderer-apply-update"
-  | "gateway-apply-update";
+  | "gateway-apply-update"
+  | "install-blocked-read-only-volume";
 
 export type DesktopUpdateDiagnostics = {
   trigger: DesktopUpdateTelemetryTrigger;
@@ -495,6 +504,64 @@ export type PluginUpdateDiagnostics = {
   stderrTail?: string;
 };
 
+/**
+ * FEA-1999 — desktop SQLite store integrity probe.
+ *
+ * Which check produced an issue. `quick_check` is `PRAGMA quick_check(N)` (the
+ * cheap variant, run off the hot path on a reader connection); `index_presence`
+ * is the manifest-vs-`sqlite_master` guard that an expected index is still
+ * present (the FEA-1968-class regression).
+ */
+export type StoreIntegrityCheckName =
+  | "quick_check"
+  | "index_presence"
+  | "token_parity";
+
+/**
+ * A bounded classification of a `PRAGMA quick_check` / index-presence problem.
+ * The raw SQLite error string is NEVER forwarded — it is mapped to one of these
+ * categories so the wire payload can never carry row content.
+ */
+export type StoreIntegrityIssueCategory =
+  | "missing_index_entry"
+  | "wrong_index_entry_count"
+  | "non_unique_index_entry"
+  | "malformed_structure"
+  | "constraint"
+  | "missing_index"
+  | "token_store_divergence"
+  | "other";
+
+/** The kind of database object an issue names (a schema identifier only). */
+export type StoreIntegrityObjectType = "index" | "table" | "unknown";
+
+/**
+ * One redacted integrity issue. `object` is a single `[A-Za-z0-9_]` schema
+ * identifier (an index or table name) extracted from the check output; rowids,
+ * page numbers, and column values are dropped before this is built, so it can
+ * never carry row content.
+ */
+export type StoreIntegrityIssue = {
+  check: StoreIntegrityCheckName;
+  category: StoreIntegrityIssueCategory;
+  object?: string;
+  objectType?: StoreIntegrityObjectType;
+};
+
+/**
+ * The result of one integrity probe run. Carries only bounded, content-free
+ * fields: the health verdict, the probe duration, which checks ran, the issue
+ * count, a capped list of redacted issues, and whether that list was truncated.
+ */
+export type StoreIntegrityDiagnostics = {
+  healthy: boolean;
+  durationMs: number;
+  checksRun: StoreIntegrityCheckName[];
+  issueCount: number;
+  issues: StoreIntegrityIssue[];
+  truncated: boolean;
+};
+
 export type TelemetryDiagnostics = {
   exitCode?: number;
   logTail?: string;
@@ -524,6 +591,7 @@ export type TelemetryDiagnostics = {
   errorStack?: string;
   extra?: Record<string, unknown>;
   tokenCostPricingMiss?: TokenCostPricingMissDiagnostics;
+  storeIntegrity?: StoreIntegrityDiagnostics;
   loopPerf?: LoopPerfEventDiagnostics;
   lifecycle?: {
     command?: LoopCommand;

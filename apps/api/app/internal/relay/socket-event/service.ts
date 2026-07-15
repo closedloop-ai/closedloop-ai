@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { analytics } from "@repo/analytics/server";
 import { DESKTOP_AGENT_SESSIONS_SOCKET_EVENT } from "@repo/api/src/types/agent-session";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
+import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
 import {
   DesktopCommandStatus,
   DesktopHelloNackReason,
 } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { emitConnectionStateEvent } from "@repo/observability/telemetry/emitter";
 import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
@@ -25,6 +27,7 @@ import {
   computeTargetsService,
   isComputeTargetGatewayConflictResult,
 } from "@/app/compute-targets/service";
+import { githubDirtyScopeService } from "@/app/integrations/github/dirty-scope-service";
 import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
 import {
   CommandSigningEligibilityStatus,
@@ -46,12 +49,13 @@ import {
   type WireCommandPayload,
 } from "@/lib/desktop-gateway-types";
 import {
-  isDesktopCommandEventType,
   isTerminalEventData,
+  parseCommandEventPayload,
   toEnvelope,
   toWireCommandFromStore,
 } from "@/lib/desktop-gateway-wire";
 import { publishLegacyRelayEvent } from "@/lib/desktop-relay-event-bridge";
+import { buildDesktopServerCapabilities } from "@/lib/desktop-server-capabilities";
 import { handleTelemetryEvent } from "@/lib/desktop-telemetry-handler";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import { isRecord } from "@/lib/type-guards";
@@ -210,9 +214,13 @@ export async function dispatchSocketEvent(
       };
 
     default:
-      log.warn("Unknown relay socket event", {
+      log.warn("relay.socket.unknown_event", {
         event,
         computeTargetId: targetId ?? correlation.computeTargetId ?? null,
+        gatewaySessionIdHash: redactGatewaySessionId(
+          correlation.gatewaySessionId
+        ),
+        requestId: correlation.requestId,
         errorClass: ErrorClass.Protocol,
       });
       return { ok: true, response: { emit: [] } };
@@ -279,6 +287,9 @@ function parseRelayHelloInput(payload: unknown): RelayHelloInput | null {
         (payload.allowedDirectoriesHash as JsonValue) ?? null,
       socketProtocolVersion: PROTOCOL_VERSION,
       pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
+      desktopClientVersion: (payload.desktopClientVersion as JsonValue) ?? null,
+      gatewayProtocolVersion:
+        (payload.gatewayProtocolVersion as JsonValue) ?? null,
       desktopSecurityUpgradeProtocolVersion:
         desktopSecurityUpgradeProtocolVersion ?? null,
     },
@@ -447,7 +458,10 @@ async function handleHello(
     return helloNackResponse(resolvedTarget.reason);
   }
   if (resolvedTarget.ok === "conflict") {
-    log.warn("Relay hello rejected due to gateway conflict", {
+    log.warn("relay.hello.gateway_conflict", {
+      organizationId: auth.organizationId,
+      userId: auth.userId,
+      computeTargetId: input.computeTargetId,
       gatewayId: input.gatewayId,
       errorClass: ErrorClass.Protocol,
     });
@@ -531,6 +545,10 @@ async function handleHello(
     signingResult.ok &&
     signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
   const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
+  const serverCapabilities = buildDesktopServerCapabilities({
+    agentSessionSyncSupported,
+    commandSigningSupported,
+  });
 
   const pendingCommands = pendingCommandsResult.value;
 
@@ -561,18 +579,7 @@ async function handleHello(
         computeTargetId: targetId,
         sessionId,
         serverTime: new Date().toISOString(),
-        ...(commandSigningSupported || agentSessionSyncSupported
-          ? {
-              serverCapabilities: {
-                ...(commandSigningSupported
-                  ? { computeTargetSigning: true }
-                  : {}),
-                ...(agentSessionSyncSupported
-                  ? { agentSessionSync: true }
-                  : {}),
-              },
-            }
-          : {}),
+        ...(serverCapabilities ? { serverCapabilities } : {}),
         ...(Object.keys(resumeFromSequence).length > 0
           ? { resumeFromSequence }
           : {}),
@@ -590,13 +597,18 @@ async function handleHello(
       maxInFlightCommands: input.maxInFlightCommands,
     })
   );
+  scheduleGitHubDirtyScopeRecoveryDrain({
+    organizationId: auth.organizationId,
+    targetId,
+  });
 
   logRelayHello(auth, helloStart, stageTimings, {
     computeTargetId: targetId,
-    gatewaySessionId: sessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(sessionId),
     outcome: "ack",
     targetCreated,
     pendingCommandCount: pendingCommands.length,
+    serverCapabilities,
   });
 
   return { targetId, gatewaySessionId: sessionId, emit };
@@ -606,27 +618,19 @@ async function handleCommandEvent(
   payload: unknown,
   targetId: string,
   correlation: Partial<CorrelationContext>,
-  _auth: RelayAuthContext | null
+  auth: RelayAuthContext | null
 ): Promise<SocketEventResponse> {
-  if (!isRecord(payload)) {
+  // Validate the full payload (commandId, sequence, eventType, and JSON-compatible
+  // `data`) with the same schema the direct-socket handler uses. A blind
+  // `payload.data as JsonValue` cast would let non-JSON values (undefined, BigInt,
+  // functions, circular references) reach the command store and SSE subscribers,
+  // risking serialization failures or downstream data corruption.
+  const event = parseCommandEventPayload(payload);
+  if (!event) {
     return { emit: [] };
   }
 
-  if (
-    typeof payload.commandId !== "string" ||
-    typeof payload.sequence !== "number"
-  ) {
-    return { emit: [] };
-  }
-
-  const commandId = payload.commandId;
-  const rawEventType = payload.eventType;
-  const data = payload.data as JsonValue;
-  const sequence = payload.sequence;
-
-  if (!isDesktopCommandEventType(rawEventType)) {
-    return { emit: [] };
-  }
+  const { commandId, eventType: rawEventType, data, sequence } = event;
 
   const ctx = buildTelemetryTraceContext({
     ...correlation,
@@ -639,7 +643,7 @@ async function handleCommandEvent(
     eventType: rawEventType,
     sequence,
     computeTargetId: ctx.computeTargetId,
-    gatewaySessionId: ctx.gatewaySessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
     requestId: ctx.requestId,
   });
 
@@ -692,35 +696,104 @@ async function handleCommandEvent(
   }
 
   if (result.reason === "sequence_gap") {
-    log.warn("Relay command event sequence gap", {
+    return await handleCommandSequenceGap({
+      auth,
       commandId,
+      ctx,
       sequence,
-      computeTargetId: ctx.computeTargetId,
-      gatewaySessionId: ctx.gatewaySessionId,
-      requestId: ctx.requestId,
-      errorClass: ErrorClass.Protocol,
     });
-    const command = await desktopCommandStore.getCommandById(commandId);
-    if (command) {
-      return {
-        emit: [
-          {
-            event: "desktop.hello.ack",
-            payload: toEnvelope({
-              computeTargetId: command.computeTargetId,
-              sessionId: randomUUID(),
-              serverTime: new Date().toISOString(),
-              resumeFromSequence: {
-                [commandId]: command.lastSequenceAcked,
-              },
-            }),
-          },
-        ],
-      };
-    }
   }
 
   return { emit: [] };
+}
+
+async function handleCommandSequenceGap(input: {
+  auth: RelayAuthContext | null;
+  commandId: string;
+  ctx: TelemetryTraceContext;
+  sequence: number;
+}): Promise<SocketEventResponse> {
+  const { auth, commandId, ctx, sequence } = input;
+  log.warn("Relay command event sequence gap", {
+    commandId,
+    sequence,
+    computeTargetId: ctx.computeTargetId,
+    gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
+    requestId: ctx.requestId,
+    errorClass: ErrorClass.Protocol,
+  });
+  const command = await desktopCommandStore.getCommandById(commandId);
+  if (!command) {
+    return { emit: [] };
+  }
+  const serverCapabilities = await loadSequenceGapServerCapabilities(
+    auth,
+    command.computeTargetId
+  );
+  return {
+    emit: [
+      {
+        event: "desktop.hello.ack",
+        payload: toEnvelope({
+          computeTargetId: command.computeTargetId,
+          sessionId: randomUUID(),
+          serverTime: new Date().toISOString(),
+          ...(serverCapabilities ? { serverCapabilities } : {}),
+          resumeFromSequence: {
+            [commandId]: command.lastSequenceAcked,
+          },
+        }),
+      },
+    ],
+  };
+}
+
+async function loadSequenceGapServerCapabilities(
+  auth: RelayAuthContext | null,
+  computeTargetId: string
+): Promise<ComputeTargetServerCapabilities | undefined> {
+  if (!auth) {
+    return undefined;
+  }
+  const [targetResult, syncResult] = await Promise.all([
+    runStage(
+      computeTargetsService.findById(computeTargetId),
+      HELLO_OPERATION_TIMEOUT_MS,
+      "computeTargetsService.findById",
+      DesktopHelloNackReason.InternalError
+    ),
+    runStage(
+      isAgentSessionSyncSupportedForUser({
+        userId: auth.userId,
+        clerkUserId: auth.clerkUserId,
+      }),
+      HELLO_OPERATION_TIMEOUT_MS,
+      "isAgentSessionSyncSupportedForUser",
+      DesktopHelloNackReason.InternalError
+    ),
+  ]);
+  const targetGatewayId = targetResult.ok
+    ? targetResult.value?.gatewayId
+    : null;
+  const signingResult = targetGatewayId
+    ? await runStage(
+        isComputeTargetSigningEligible({
+          organizationId: auth.organizationId,
+          userId: auth.userId,
+          clerkUserId: auth.clerkUserId,
+          gatewayId: targetGatewayId,
+        }),
+        HELLO_OPERATION_TIMEOUT_MS,
+        "isComputeTargetSigningEligible",
+        DesktopHelloNackReason.InternalError
+      )
+    : null;
+  return buildDesktopServerCapabilities({
+    agentSessionSyncSupported: syncResult.ok ? syncResult.value : false,
+    commandSigningSupported:
+      signingResult?.ok === true &&
+      signingResult.value.status === CommandSigningEligibilityStatus.Eligible,
+  });
 }
 
 async function handleCommandAck(
@@ -754,16 +827,16 @@ async function handleCommandAck(
     commandId,
     accepted,
     computeTargetId: ctx.computeTargetId,
-    gatewaySessionId: ctx.gatewaySessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
     requestId: ctx.requestId,
   });
 
   const commandContext = getRealDesktopCommandTelemetryContext(ctx);
   if (!commandContext) {
-    log.info("Relay command ack lifecycle context omitted", {
+    log.info("command.ack.lifecycle_context_omitted", {
       commandId,
       computeTargetId: ctx.computeTargetId,
-      gatewaySessionId: ctx.gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
       requestId: ctx.requestId,
       reason: "missing_gateway_session",
     });
@@ -814,7 +887,7 @@ async function handlePresence(
 
   log.info("Relay presence heartbeat", {
     computeTargetId: ctx.computeTargetId,
-    gatewaySessionId: ctx.gatewaySessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
     requestId: ctx.requestId,
   });
 
@@ -823,6 +896,10 @@ async function handlePresence(
     auth.organizationId,
     auth.userId
   );
+  scheduleGitHubDirtyScopeRecoveryDrain({
+    organizationId: auth.organizationId,
+    targetId: auth.targetId,
+  });
 
   emitProtocolMetric({
     metric: "presence_received_latency",
@@ -833,6 +910,34 @@ async function handlePresence(
   });
 
   return { emit: [] };
+}
+
+function scheduleGitHubDirtyScopeRecoveryDrain({
+  organizationId,
+  targetId,
+}: {
+  organizationId: string;
+  targetId: string;
+}): void {
+  waitUntil(
+    Promise.resolve()
+      .then(() =>
+        githubDirtyScopeService.dispatchDue({
+          computeTargetId: targetId,
+          organizationId,
+        })
+      )
+      .catch((error) => {
+        log.warn(
+          "[relaySocketEvent] GitHub dirty-scope recovery drain failed",
+          {
+            computeTargetId: targetId,
+            error,
+            organizationId,
+          }
+        );
+      })
+  );
 }
 
 async function handleDisconnect(
@@ -850,7 +955,7 @@ async function handleDisconnect(
 
   log.info("Relay disconnect received", {
     computeTargetId: ctx.computeTargetId,
-    gatewaySessionId: ctx.gatewaySessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
     requestId: ctx.requestId,
   });
 
@@ -917,10 +1022,9 @@ export async function emitFleetCapacityMetrics({
       ]),
     ]);
   } catch (error) {
-    log.warn("fleet_capacity_metrics_query_failed", {
-      event: "fleet_capacity_metrics_query_failed",
+    log.warn("fleet.capacity_metrics.query_failed", {
       computeTargetId: targetId,
-      error: error instanceof Error ? error.message : String(error),
+      error,
     });
     return;
   }

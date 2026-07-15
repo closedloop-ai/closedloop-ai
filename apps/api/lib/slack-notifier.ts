@@ -146,8 +146,26 @@ export function buildCorrelationId(): string {
  * third caller appears, extract a shared `@repo/slack` `chat.postMessage` core;
  * until then the wire contract is small and stable enough to keep local.
  */
-export async function postToSlack(
+export function postToSlack(
   botToken: string,
+  text: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<PostToSlackResult> {
+  return postToSlackChannel(botToken, SLACK_CHANNEL_ID, text, fetchImpl);
+}
+
+/**
+ * Per-channel variant of `postToSlack` — posts to an explicit `channel` rather
+ * than the global ops-channel constant. Used to deliver engagement messages to
+ * an org's connected workspace (`SlackIntegration.defaultChannelId`) instead of
+ * the single hardcoded ops channel.
+ *
+ * Shares `postToSlack`'s exact wire contract, timeout, and retryable-error
+ * semantics; never throws — always resolves with an ok/error result.
+ */
+export async function postToSlackChannel(
+  botToken: string,
+  channel: string,
   text: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<PostToSlackResult> {
@@ -158,7 +176,7 @@ export async function postToSlack(
         Authorization: `Bearer ${botToken}`,
         "Content-Type": "application/json; charset=utf-8",
       },
-      body: JSON.stringify({ channel: SLACK_CHANNEL_ID, text }),
+      body: JSON.stringify({ channel, text }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 

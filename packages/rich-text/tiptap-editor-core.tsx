@@ -3,7 +3,6 @@
 import "./tiptap-editor.css";
 
 import { cn } from "@repo/design-system/lib/utils";
-import { Extension } from "@tiptap/core";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { Table } from "@tiptap/extension-table";
@@ -11,8 +10,6 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
 import { Markdown } from "@tiptap/markdown";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
-import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef } from "react";
@@ -22,79 +19,16 @@ import {
   type InlineImageUploadPlaceholder,
   insertInlineImageFileForEditor,
 } from "./inline-image-upload";
+import {
+  findInlineImagePlaceholderPosition,
+  InlineImageUploadPlaceholderExtension,
+  inlineImageUploadPlaceholderKey,
+} from "./inline-image-upload-placeholder";
+import { isAllowedLinkUri } from "./link-uri-policy";
 import { MermaidExtension } from "./mermaid-extension";
 import { RichTextToolbar } from "./rich-text-toolbar";
 import { setEditorMarkdown } from "./set-editor-markdown";
 import type { RichTextEditorProps, TiptapEditor } from "./types";
-
-const inlineImageUploadPlaceholderKey = new PluginKey<DecorationSet>(
-  "inlineImageUploadPlaceholder"
-);
-
-const InlineImageUploadPlaceholderExtension = Extension.create({
-  name: "inlineImageUploadPlaceholder",
-
-  addProseMirrorPlugins() {
-    return [
-      new Plugin<DecorationSet>({
-        key: inlineImageUploadPlaceholderKey,
-        state: {
-          init: () => DecorationSet.empty,
-          apply(transaction, decorations) {
-            let nextDecorations = decorations.map(
-              transaction.mapping,
-              transaction.doc
-            );
-            const action = transaction.getMeta(
-              inlineImageUploadPlaceholderKey
-            ) as
-              | { type: "add"; id: string; pos: number; label: string }
-              | { type: "remove"; id: string }
-              | undefined;
-
-            if (action?.type === "add") {
-              const element = document.createElement("span");
-              element.className = "inline-image-upload-placeholder";
-              element.dataset.inlineImageUploadId = action.id;
-              element.textContent = action.label;
-              nextDecorations = nextDecorations.add(transaction.doc, [
-                Decoration.widget(action.pos, element, { id: action.id }),
-              ]);
-            }
-
-            if (action?.type === "remove") {
-              nextDecorations = nextDecorations.remove(
-                nextDecorations.find(
-                  undefined,
-                  undefined,
-                  (spec) => spec.id === action.id
-                )
-              );
-            }
-
-            return nextDecorations;
-          },
-        },
-        props: {
-          decorations(state) {
-            return this.getState(state);
-          },
-        },
-      }),
-    ];
-  },
-});
-
-function findInlineImagePlaceholderPosition(
-  editor: TiptapEditor,
-  uploadId: string
-): number | null {
-  const decorations = inlineImageUploadPlaceholderKey.getState(editor.state);
-  const placeholder = decorations
-    ?.find(undefined, undefined, (spec) => spec.id === uploadId)
-    .at(0);
-  return placeholder?.from ?? null;
-}
 
 export function TiptapEditorCore({
   value,
@@ -189,6 +123,26 @@ export function TiptapEditorCore({
         },
         // Disable built-in history when Liveblocks provides its own undo/redo via Yjs
         ...(liveblocksExtension && { undoRedo: false }),
+        // Pin the link-protocol policy so it can't silently change across
+        // Tiptap upgrades. The bundled Link mark's default allowlist also
+        // permits ftp/tel/sms/etc, so we reject any scheme other than
+        // http(s)/mailto (this also blocks javascript:/data:). Schemeless URLs
+        // — relative paths and in-page #fragments — fall through to Tiptap's
+        // defaultValidate so existing markdown links keep working.
+        // isAllowedUri is the real XSS gate in Tiptap v3 (it guards setLink,
+        // toggleLink, paste, parseHTML and renderHTML), so pinning it here is
+        // true defense-in-depth covering non-toolbar callers (e.g. programmatic
+        // API consumers). HTMLAttributes pins the already-secure default (new
+        // tab + rel="noopener noreferrer nofollow") so it survives upgrades too.
+        link: {
+          protocols: ["http", "https", "mailto"],
+          isAllowedUri: (url, { defaultValidate }) =>
+            isAllowedLinkUri(url, defaultValidate),
+          HTMLAttributes: {
+            rel: "noopener noreferrer nofollow",
+            target: "_blank",
+          },
+        },
       }),
       Markdown.configure({
         markedOptions: {

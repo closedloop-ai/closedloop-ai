@@ -1,7 +1,7 @@
 "use client";
 
-import { Badge } from "@repo/design-system/components/ui/badge";
-import { cn } from "@repo/design-system/lib/utils";
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { Tone } from "../types";
 
 const toneClasses: Record<Tone, string> = {

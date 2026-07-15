@@ -29,7 +29,7 @@ const baseState: DocumentTableFiltersState = {
   assignToMe: false,
   hideCompletedItems: true,
   favoritesOnly: false,
-  statuses: [DocumentStatus.InProgress],
+  statuses: [DocumentStatus.InReview],
   priorities: [Priority.High],
   date: {
     field: TableDateFilterField.UpdatedAt,
@@ -57,14 +57,14 @@ const statusOptions: TableFilterOption<DocumentStatus>[] = [
     icon: <StatusIcon size={16} status="draft" />,
   },
   {
-    id: DocumentStatus.InProgress,
-    label: "In Progress",
+    id: DocumentStatus.InReview,
+    label: "In Review",
     count: 7,
     icon: <StatusIcon size={16} status="active" />,
   },
   {
-    id: DocumentStatus.Done,
-    label: "Done",
+    id: DocumentStatus.Approved,
+    label: "Approved",
     count: 3,
     icon: <StatusIcon size={16} status="completed" />,
   },

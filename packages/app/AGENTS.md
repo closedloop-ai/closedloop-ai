@@ -35,6 +35,14 @@ All modules in this package run in client/renderer contexts. Components, hooks, 
 
 When moving web-owned form, link, or input chrome into shared package components, preserve native browser semantics through adapter-owned props instead of baking route logic into the shared component. For forms, keep progressive-enhancement attributes such as `action`, `method`, and input `name` available to the web adapter and cover the rendered native attributes in tests.
 
+When an entity-detail component owns local UI state such as draft comments, selected anchors, or transient highlights, scope that state to the stable entity identity (`session.id`, `branch.id`, or equivalent trace identity). Reset or key the state when that identity changes, and cover same-component navigation in tests so stale anchors cannot carry across entities.
+
+## Data Visualization / Insights Widgets (design principle)
+
+Every dashboard widget — an insights section, a chart, **any data-based visualization** — must **fire and load independently**: it owns its own query/loading/empty/error state so one slow or failing widget never blocks or blanks the others. A dashboard is a *set* of widgets that may grow or shrink, so it has to **scale horizontally**: adding widgets must not multiply the cost of loading the page.
+
+Because those independent fetches ultimately hit a shared, capacity-bounded backend (the desktop's single db-host SQLite worker; a connection-pooled API), **fan the reads out through a bounded concurrency cap, not all-at-once**. Peak load must stay flat as widgets are added/removed — extra widgets queue and resolve as slots free, they never multiply the backend's peak. A heavy read that ignores this (e.g. an unbounded `json_each` scan over every session's metadata, run once per widget concurrently) can exhaust the worker's heap and crash-loop it, blanking the whole dashboard (see FEA-3056; the desktop cap is `MAX_CONCURRENT_INSIGHTS_READS` in `apps/desktop/src/main/agent-dashboard-design-system-runtime.ts`). Start the cap strict (1) and only raise it if a single read's peak is comfortably under the ceiling; prefer precomputed rollups over re-scanning raw data on every load.
+
 ## Testing
 
 - Tests are colocated in `__tests__/` next to the code.
@@ -52,5 +60,5 @@ When moving web-owned form, link, or input chrome into shared package components
 
 ## Local Gotchas
 
-- **Stale `@closedloop-ai/loops-api` dist:** After pulling changes that touch it, a `tsc` error about a missing exported member means the dist is stale — rebuild with `pnpm turbo build --filter=@closedloop-ai/loops-api`.
+- **Missing `@closedloop-ai/loops-api` export:** `@closedloop-ai/loops-api` is consumed from source (its `exports` resolve to `./src/*.ts`), so a `tsc` error about a missing exported member means the source module itself lacks that export — add it there; there is no `dist` to rebuild.
 - **Stale `apps/app/.next/types`:** A `tsc` error about a missing `…/page.js` for a route you did not touch is a stale generated artifact. Run `rm -rf apps/app/.next/types` and re-typecheck.

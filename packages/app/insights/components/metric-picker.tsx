@@ -25,6 +25,7 @@ import { Switch } from "@repo/design-system/components/ui/switch";
 import { useEffect, useMemo, useState } from "react";
 import type { DashboardTileSettings } from "../hooks/use-dashboard-pins";
 import { SECTION_META } from "../lib/section-meta";
+import type { InsightsTileAvailability } from "../lib/tile-availability";
 import {
   getSectionTiles,
   getTile,
@@ -67,6 +68,9 @@ export function MetricPicker({
   comparisonAvailable,
   comparisonSections,
   comparisonLabel,
+  getTileAvailability,
+  githubConnectHref,
+  onConnectGitHub,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -85,6 +89,9 @@ export function MetricPicker({
   comparisonAvailable: boolean;
   comparisonSections?: InsightsSectionData;
   comparisonLabel?: string;
+  getTileAvailability?: (tile: TileDescriptor) => InsightsTileAvailability;
+  githubConnectHref?: string;
+  onConnectGitHub?: () => void | Promise<void>;
 }) {
   const tiles = useMemo(
     () =>
@@ -328,12 +335,15 @@ export function MetricPicker({
               >
                 <div className="group h-full">
                   <InsightsTile
+                    availability={getTileAvailability?.(selectedTile)}
                     comparisonLabel={
                       selectedComparisonOverlay ? comparisonLabel : undefined
                     }
                     comparisonSections={
                       selectedComparisonOverlay ? comparisonSections : undefined
                     }
+                    githubConnectHref={githubConnectHref}
+                    onConnectGitHub={onConnectGitHub}
                     pinned={isPinned(selectedTile.id)}
                     sections={sections}
                     tile={selectedTile}

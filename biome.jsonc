@@ -644,18 +644,20 @@
         "apps/desktop/src/main/cloud-command-executor.ts",
         "apps/desktop/src/main/collectors/claude/claude-parser.ts",
         "apps/desktop/src/main/collectors/codex/codex-parser.ts",
-        "apps/desktop/src/main/collectors/collector-manager.ts",
+        "apps/desktop/src/main/collectors/engine/collector-manager.ts",
         "apps/desktop/src/main/collectors/copilot/copilot-parser.ts",
         "apps/desktop/src/main/collectors/cursor/cursor-parser.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-parser.ts",
-        "apps/desktop/src/main/collectors/parser-utils.ts",
+        "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
         "apps/desktop/src/main/command-key-target-context.ts",
         "apps/desktop/src/main/database/dashboard-queries.ts",
         "apps/desktop/src/main/database/db-host/db-host-agent-database.ts",
         "apps/desktop/src/main/database/read-stores.ts",
         "apps/desktop/src/main/database/session-trace.ts",
         "apps/desktop/src/main/database/sqlite.ts",
+        "apps/desktop/src/main/database/sync-source.ts",
         "apps/desktop/src/main/database/transcript.ts",
+        "apps/desktop/src/main/database/write-core.ts",
         "apps/desktop/src/main/loop-finalizer.ts",
         "apps/desktop/src/main/loop-heartbeat.ts",
         "apps/desktop/src/main/loop-perf-telemetry.ts",
@@ -727,12 +729,13 @@
         "apps/desktop/src/main/browser-command-key-approval-request.ts",
         "apps/desktop/src/main/cloud-command-executor.ts",
         "apps/desktop/src/main/cloud-socket.ts",
-        "apps/desktop/src/main/collectors/collector-manager.ts",
-        "apps/desktop/src/main/collectors/watcher.ts",
+        "apps/desktop/src/main/collectors/engine/collector-manager.ts",
+        "apps/desktop/src/main/collectors/engine/watcher.ts",
         "apps/desktop/src/main/command-key-reconciler.ts",
         "apps/desktop/src/main/cost-reconciliation-service.ts",
         "apps/desktop/src/main/gateway-recovery.ts",
         "apps/desktop/src/main/index.ts",
+        "apps/desktop/src/main/startup.ts",
         "apps/desktop/src/main/loop-heartbeat.ts",
         "apps/desktop/src/main/loop-scheduler-context.ts",
         "apps/desktop/src/main/loop-sleep-recovery.ts",
@@ -809,9 +812,10 @@
         "apps/desktop/src/main/collectors/copilot/copilot-home.ts",
         "apps/desktop/src/main/collectors/cursor/cursor-home.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-home.ts",
-        "apps/desktop/src/main/collectors/parser-utils.ts",
+        "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
         "apps/desktop/src/main/cost-math.ts",
         "apps/desktop/src/main/database/sqlite.ts",
+        "apps/desktop/src/main/database/write-core.ts",
         "apps/desktop/src/main/decision-table-verification-telemetry.ts",
         "apps/desktop/src/main/desktop-pop.ts",
         "apps/desktop/src/main/loop-finalizer.ts",
@@ -934,7 +938,7 @@
         "apps/desktop/src/main/collectors/codex/codex-parser.ts",
         "apps/desktop/src/main/collectors/cursor/cursor-parser.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-parser.ts",
-        "apps/desktop/src/main/collectors/parser-utils.ts",
+        "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
         "apps/desktop/src/main/command-key-app-lifecycle.ts",
         "apps/desktop/src/main/command-key-target-context.ts",
         "apps/desktop/src/main/decision-table-verification-telemetry.ts",
@@ -1152,7 +1156,7 @@
     {
       "includes": [
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/collectors/collector-manager.ts",
+        "apps/desktop/src/main/collectors/engine/collector-manager.ts",
         "apps/desktop/src/main/loop-finalizer.ts",
         "apps/desktop/src/shared/token-cost.ts",
         "apps/desktop/test/ipc-job-reconciliation-race.test.ts"
@@ -1176,11 +1180,42 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/main/collectors/parser-utils.ts"],
+      "includes": ["apps/desktop/src/main/collectors/parsing/parser-utils.ts"],
       "linter": {
         "rules": {
           "suspicious": {
             "noGlobalIsNan": "off"
+          }
+        }
+      }
+    },
+    {
+      // FEA-2717: the harness parser cores were extracted verbatim from
+      // apps/desktop/src/main/collectors into the shared, surface-agnostic
+      // @repo/lib package (harness slice). Mirror the same lint carve-outs they
+      // carried at their old desktop paths (see the codex/claude/parser-utils
+      // overrides above) so the move stays a behavior-neutral relocation rather
+      // than a lint-driven rewrite.
+      "includes": [
+        "packages/lib/harness/parser-utils.ts",
+        "packages/lib/harness/claude/parse-claude.ts",
+        "packages/lib/harness/codex/parse-codex.ts"
+      ],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          },
+          "performance": {
+            "useTopLevelRegex": "off"
+          },
+          "style": {
+            "noNestedTernary": "off"
+          },
+          "suspicious": {
+            "noGlobalIsNan": "off",
+            "noAssignInExpressions": "off",
+            "noDuplicateElseIf": "off"
           }
         }
       }
@@ -1241,6 +1276,8 @@
         "apps/desktop/src/main/cloud-socket.ts",
         "apps/desktop/src/main/cost-reconciliation-service.ts",
         "apps/desktop/src/main/database/sqlite.ts",
+        "apps/desktop/src/main/database/sync-source.ts",
+        "apps/desktop/src/main/database/write-core.ts",
         "apps/desktop/src/main/loop-finalizer.ts",
         "apps/desktop/src/main/packs/catalog-contents.ts",
         "apps/desktop/src/main/packs/catalog-fetcher.ts",

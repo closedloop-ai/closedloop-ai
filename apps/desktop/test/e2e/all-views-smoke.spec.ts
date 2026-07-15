@@ -1,7 +1,7 @@
 /**
  * E2E smoke test: every top-level nav view mounts and renders without errors.
  *
- * Drives the renderer through all 17 nav ids via hash routing (the sidebar is
+ * Drives the renderer through all nav ids via hash routing (the sidebar is
  * in FOCUS_MODE, so most destinations are only reachable by hash, not click).
  * For each view it asserts:
  *   - the Topbar breadcrumb shows the view's label (a data-independent signal
@@ -33,7 +33,7 @@ type ViewCase = {
 
 // Order mirrors NAV_ENTRIES. Labels come from nav-config; headings from each
 // view's PageShell `title` (<h1>) or panel <h2>. Data-driven views built on
-// shared @repo/app components (Kanban, Activity, Requests) have no stable
+// shared @repo/app components (Activity, Requests) have no stable
 // static heading — the Topbar label + page-error guard cover those.
 const VIEWS: ViewCase[] = [
   {
@@ -42,37 +42,23 @@ const VIEWS: ViewCase[] = [
     // The first-launch dashboard renders its PageShell title as an <h1>.
     heading: { name: "Welcome to Closedloop", level: 1 },
   },
-  { navId: "kanban", label: "My Issues" },
   // Sessions and Branches are full-width, table-led views whose title shows
   // only in the Topbar breadcrumb (no in-body <h1>) — the label assertion
   // covers them, and the page-error guard covers their lazy @repo/app chunks.
   { navId: "sessions", label: "Sessions" },
   { navId: "branches", label: "Branches" },
-  { navId: "activity", label: "Activity" },
   {
     navId: "insights",
     label: "Insights",
     heading: { name: "Agent Monitoring", level: 1 },
   },
-  {
-    navId: "workflows",
-    label: "Workflows",
-    heading: { name: "Workflows", level: 1 },
-  },
-  { navId: "packs", label: "Packs", heading: { name: "Packs", level: 1 } },
-  { navId: "skills", label: "Skills", heading: { name: "Skills", level: 1 } },
-  { navId: "tools", label: "Tools", heading: { name: "Tools", level: 1 } },
-  {
-    navId: "subagents",
-    label: "SubAgents",
-    heading: { name: "SubAgents", level: 1 },
-  },
+  // FEA-2923 / T-16.4: the standalone Packs, Skills, Tools, and SubAgents Lab
+  // views were deprecated and fold into the unified Agents workspace (their nav
+  // ids now redirect to /agents via normalizeNavId). The workspace hosts its
+  // inventory in a tabbed surface with no standalone <h1>, so we assert the
+  // Topbar label only (the page-error guard still covers the mount).
+  { navId: "agents", label: "Agents" },
   { navId: "plans", label: "Plans", heading: { name: "Plans", level: 1 } },
-  {
-    navId: "pull-requests",
-    label: "Pull Requests",
-    heading: { name: "Pull Requests", level: 1 },
-  },
   {
     navId: "approvals",
     label: "Approvals",
@@ -93,7 +79,7 @@ const VIEWS: ViewCase[] = [
 
 test.describe("All views smoke", () => {
   test("every nav view mounts, renders its shell, and throws no page errors", async () => {
-    // One launch drives all 17 views with up to two 15s-timeout assertions
+    // One launch drives all views with up to two 15s-timeout assertions
     // each. The 60s per-test default would be exhausted by a handful of timed-
     // out assertions and Playwright would kill the test mid-loop — defeating
     // the soft-assertion design (one broken view shouldn't mask the rest).

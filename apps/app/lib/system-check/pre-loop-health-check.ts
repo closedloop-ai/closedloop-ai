@@ -14,11 +14,6 @@ import {
   isHealthCheckCacheEntryFresh,
 } from "./health-check-freshness";
 
-/** Maximum time a pre-loop health-check fetch may block a command before fail-open. */
-export const PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS = 5000;
-/** Maximum pre-loop health-check wait when plugin auto-update may run. */
-export const PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS = 45_000;
-
 /** Launch commands currently protected by the pre-loop system-check gate. */
 export const PreLoopCommand = {
   GeneratePlan: "generate_plan",
@@ -122,15 +117,6 @@ export function isPreLoopHealthCheckFresh({
     now,
     requiredOnly: true,
   });
-}
-
-/** Selects the pre-loop health-check timeout for the request mutation mode. */
-export function getPreLoopHealthCheckTimeoutMs(
-  pluginAutoUpdateEnabled = false
-): number {
-  return pluginAutoUpdateEnabled
-    ? PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS
-    : PRE_LOOP_HEALTH_CHECK_TIMEOUT_MS;
 }
 
 /** Extracts required renderable checks that currently fail. */

@@ -18,18 +18,21 @@ import {
   type CollectionMode,
   getActiveCollectionMode,
   type HooksInstalledState,
-} from "../src/main/collectors/collection-mode.js";
-import { CollectorManager } from "../src/main/collectors/collector-manager.js";
-import { createMutualExclusivityMonitor } from "../src/main/collectors/mutual-exclusivity-monitor.js";
+} from "../src/main/collectors/engine/collection-mode.js";
+import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
+import { createMutualExclusivityMonitor } from "../src/main/collectors/engine/mutual-exclusivity-monitor.js";
 import type {
   Harness,
-  HarnessCollector,
   NormalizedSession,
 } from "../src/main/collectors/types.js";
 import {
   COLLECTION_VIOLATION_SESSION_PREFIX,
   openSqliteAgentDatabase,
 } from "../src/main/database/sqlite.js";
+import {
+  makeSession as baseSession,
+  fakeCollector,
+} from "./normalized-session-test-utils.js";
 
 // ---------------------------------------------------------------------------
 // AC-001.1 — getActiveCollectionMode is the single source of truth.
@@ -156,7 +159,10 @@ test("AC-001.2: Codex hooks ⇒ no live watcher, boot import still runs", async 
       onWatcherEmission: (harness, sessionId) =>
         watcherEmissions.push([harness, sessionId]),
       collectors: [
-        fakeCollector("codex", ["codex.jsonl"], [makeSession("codex-session")]),
+        fakeCollector("codex", {
+          sources: ["codex.jsonl"],
+          sessions: [makeSession("codex-session")],
+        }),
       ],
     });
 
@@ -193,11 +199,10 @@ test("AC-001.4: watcher-mode harness imports AND reports a watcher emission", as
       onWatcherEmission: (harness, sessionId) =>
         watcherEmissions.push([harness, sessionId]),
       collectors: [
-        fakeCollector(
-          "claude",
-          ["claude.jsonl"],
-          [makeSession("claude-session")]
-        ),
+        fakeCollector("claude", {
+          sources: ["claude.jsonl"],
+          sessions: [makeSession("claude-session")],
+        }),
       ],
     });
 
@@ -299,16 +304,26 @@ test("AC-001.3: normal operation writes zero violation rows", async () => {
     now: () => "2026-06-16T12:00:00.000Z",
   });
   try {
+    // The monitor invokes onViolation *synchronously* from record() (see
+    // mutual-exclusivity-monitor.ts), so counting callbacks is a deterministic
+    // proxy for "did any DB write get issued" — no arbitrary sleep needed to
+    // prove the negative.
+    let violationCallbacks = 0;
     const monitor = createMutualExclusivityMonitor({
-      onViolation: (harness, sessionId) =>
-        db.recordCollectionModeViolation(harness, sessionId),
+      onViolation: (harness, sessionId) => {
+        violationCallbacks++;
+        return db.recordCollectionModeViolation(harness, sessionId);
+      },
     });
     // Hooks-only for codex, watcher-only for claude — disjoint, no collisions.
     monitor.record("codex", "a", "hooks");
     monitor.record("codex", "b", "hooks");
     monitor.record("claude", "c", "watcher");
-    // Give any erroneous async write a chance to land before asserting zero.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      violationCallbacks,
+      0,
+      "disjoint channels fire no violation callback, so no write is issued"
+    );
     assert.equal((await violationRows(db)).length, 0);
   } finally {
     await db.close();
@@ -352,55 +367,17 @@ async function waitForRows(
   }
 }
 
-function fakeCollector(
-  key: HarnessCollector["key"],
-  sources: string[],
-  sessions: NormalizedSession[]
-): HarnessCollector {
-  return {
-    key,
-    cacheName: key,
-    allowUnscopedSourceAdmission: true,
-    watchRoots: () => [],
-    watchMatch: () => true,
-    listSources: () => sources,
-    parse: async () => sessions,
-  };
-}
-
 function makeSession(sessionId: string): NormalizedSession {
-  return {
+  return baseSession({
     sessionId,
-    name: sessionId,
     cwd: "/sandbox/project",
     model: "gpt-5",
-    version: null,
-    slug: null,
-    gitBranch: null,
     startedAt: "2026-06-16T12:00:00.000Z",
     endedAt: "2026-06-16T12:05:00.000Z",
-    teams: [],
     userMessages: 1,
     assistantMessages: 1,
-    tokensByModel: {},
-    messageTimestamps: [],
-    toolUses: [],
-    plans: [],
-    compactions: [],
-    apiErrors: [],
-    fileModifiedAt: null,
-    turnDurations: [],
     entrypoint: "codex",
-    permissionMode: null,
-    thinkingBlockCount: 0,
-    toolResultErrors: [],
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
-    messages: [],
-    tokenSeries: [],
-    diffStats: null,
-    slashCommands: [],
-    artifacts: { prs: [], issues: [], repo: null },
-  };
+  });
 }
 
 async function waitUntil(predicate: () => boolean): Promise<void> {

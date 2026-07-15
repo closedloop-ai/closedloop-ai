@@ -348,6 +348,14 @@ export class SettingsStore {
     return this.getFlag("commandSigningEnforcementEnabled");
   }
 
+  getLoopCompletedNotificationsEnabled(): boolean {
+    return this.getFlag("loopCompletedNotificationsEnabled");
+  }
+
+  getTranscriptSyncEnabled(): boolean {
+    return this.getFlag("transcriptSyncEnabled");
+  }
+
   getDefaultApprovalTier(): RiskTier {
     return this.store.get(
       "defaultApprovalTier",
@@ -824,15 +832,13 @@ export class SettingsStore {
         partial.onboardingPopupDismissedPermanent
       );
     }
-    // Handle all registered feature flags generically.
+    // Handle all registered feature flags generically. `verboseLogging` is a
+    // registered flag (see feature-flags.ts), so it is persisted by this loop.
     for (const key of FLAG_KEYS) {
       const val = (partial as Record<string, unknown>)[key];
       if (typeof val === "boolean") {
         this.setFlag(key as FlagKey, val);
       }
-    }
-    if (typeof partial.verboseLogging === "boolean") {
-      this.store.set("verboseLogging", partial.verboseLogging);
     }
     if (typeof partial.relayOrigin === "string") {
       this.store.set("relayOrigin", partial.relayOrigin);

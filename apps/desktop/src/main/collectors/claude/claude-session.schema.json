@@ -1,0 +1,548 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://closedloop.ai/schemas/claude-session-record.schema.json",
+  "title": "Claude Code session transcript record",
+  "description": "One JSON object per line of a ~/.claude/projects/**/<session>.jsonl transcript. Reverse-engineered from 9,280 records across 69 files. All records share a common envelope; type-specific fields are enforced via the `type` discriminator. additionalProperties is true because the transcript format evolves across CLI versions.",
+  "type": "object",
+  "required": ["type"],
+  "additionalProperties": true,
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Record-kind discriminator.",
+      "enum": [
+        "assistant",
+        "user",
+        "attachment",
+        "ai-title",
+        "last-prompt",
+        "mode",
+        "permission-mode",
+        "pr-link",
+        "file-history-snapshot",
+        "system",
+        "queue-operation"
+      ]
+    },
+    "sessionId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID of the owning session."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique id of this record."
+    },
+    "parentUuid": {
+      "type": ["string", "null"],
+      "description": "uuid of the preceding record (conversation DAG); null at a root."
+    },
+    "logicalParentUuid": {
+      "type": "string",
+      "description": "Logical parent across compaction/sidechain boundaries."
+    },
+    "leafUuid": {
+      "type": "string",
+      "description": "Pointer to the conversation leaf an ai-title/last-prompt describes."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC write time."
+    },
+    "version": {
+      "type": "string",
+      "description": "Claude Code CLI version that wrote the record."
+    },
+    "userType": {
+      "type": "string",
+      "enum": ["external"],
+      "description": "End-user (external) vs internal."
+    },
+    "isSidechain": {
+      "type": "boolean",
+      "description": "true = subagent branch; false/main thread."
+    },
+    "gitBranch": {
+      "type": "string",
+      "description": "Git branch at record time."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory at record time."
+    },
+    "entrypoint": {
+      "type": "string",
+      "enum": ["cli", "sdk-ts"],
+      "description": "How the session launched."
+    },
+    "message": { "$ref": "#/$defs/message" },
+    "requestId": {
+      "type": "string",
+      "description": "Anthropic API request id for an assistant turn."
+    },
+    "agentId": {
+      "type": "string",
+      "description": "Id of the (sub)agent that produced the record."
+    },
+    "promptId": {
+      "type": "string",
+      "description": "Groups all records generated from one user prompt."
+    },
+    "slug": {
+      "type": "string",
+      "description": "Slug of the active skill/command context."
+    },
+    "sourceToolAssistantUUID": {
+      "type": "string",
+      "description": "Links a tool_result/subagent record to the assistant turn whose tool_use spawned it."
+    },
+    "sourceToolUseID": {
+      "type": "string",
+      "description": "Id of the originating tool_use block."
+    },
+    "toolUseResult": {
+      "description": "Structured payload of a tool execution; shape varies by tool. Can also be a raw string or array.",
+      "oneOf": [
+        { "$ref": "#/$defs/toolUseResult" },
+        { "type": "string" },
+        { "type": "array" }
+      ]
+    },
+    "permissionMode": {
+      "type": "string",
+      "enum": ["default", "acceptEdits", "plan", "bypassPermissions", "auto"],
+      "description": "Active permission mode."
+    },
+    "attachment": { "$ref": "#/$defs/attachment" },
+    "aiTitle": {
+      "type": "string",
+      "description": "AI-generated session title."
+    },
+    "lastPrompt": {
+      "type": "string",
+      "description": "Text of the latest user prompt."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["normal"],
+      "description": "Session mode."
+    },
+    "prUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Pull-request URL."
+    },
+    "prRepository": {
+      "type": "string",
+      "description": "owner/repo of the PR."
+    },
+    "prNumber": { "type": "integer", "description": "PR number." },
+    "snapshot": { "$ref": "#/$defs/snapshot" },
+    "messageId": {
+      "type": "string",
+      "description": "Message a snapshot/record is associated with."
+    },
+    "isSnapshotUpdate": {
+      "type": "boolean",
+      "description": "Whether the snapshot updates a prior one."
+    },
+    "isMeta": {
+      "type": "boolean",
+      "description": "Meta record, not part of the visible conversation."
+    },
+    "subtype": {
+      "type": "string",
+      "enum": [
+        "api_error",
+        "away_summary",
+        "compact_boundary",
+        "informational",
+        "local_command",
+        "turn_duration"
+      ],
+      "description": "System-record subtype."
+    },
+    "promptSource": {
+      "type": "string",
+      "enum": ["typed", "queued", "sdk", "suggestion_accepted", "system"],
+      "description": "Origin of the prompt."
+    },
+    "messageCount": {
+      "type": "integer",
+      "description": "Messages counted (e.g. turn-duration record)."
+    },
+    "durationMs": {
+      "type": "number",
+      "description": "Elapsed milliseconds for a turn/operation."
+    },
+    "origin": { "$ref": "#/$defs/origin" },
+    "content": {
+      "type": "string",
+      "description": "Raw text for system/attachment records that aren't full messages."
+    },
+    "operation": {
+      "type": "string",
+      "enum": ["enqueue", "dequeue", "popAll", "remove"],
+      "description": "Prompt-queue mutation."
+    },
+    "level": {
+      "type": "string",
+      "enum": ["error", "info", "notice", "warning"],
+      "description": "System log level."
+    },
+    "error": {
+      "type": ["string", "object"],
+      "description": "Error message or object (API errors)."
+    },
+    "isApiErrorMessage": {
+      "type": "boolean",
+      "description": "Record represents a surfaced API error."
+    },
+    "apiErrorStatus": {
+      "type": "integer",
+      "description": "HTTP status of an API error."
+    },
+    "retryInMs": { "type": "number", "description": "Retry backoff delay." },
+    "retryAttempt": {
+      "type": "integer",
+      "description": "Current retry attempt number."
+    },
+    "maxRetries": { "type": "integer", "description": "Max retry attempts." },
+    "pendingBackgroundAgentCount": {
+      "type": "integer",
+      "description": "Background agents still pending."
+    },
+    "isVisibleInTranscriptOnly": {
+      "type": "boolean",
+      "description": "Show only in the transcript view."
+    },
+    "isCompactSummary": {
+      "type": "boolean",
+      "description": "Record is a context-compaction summary."
+    },
+    "compactMetadata": { "$ref": "#/$defs/compactMetadata" },
+
+    "attributionAgent": {
+      "type": "string",
+      "description": "Agent responsible for the record."
+    },
+    "attributionSkill": {
+      "type": "string",
+      "description": "Skill that drove the turn."
+    },
+    "attributionPlugin": { "type": "string", "description": "Plugin source." },
+    "attributionMcpTool": {
+      "type": "string",
+      "description": "MCP tool invoked."
+    },
+    "attributionMcpServer": {
+      "type": "string",
+      "description": "MCP server providing the tool."
+    }
+  },
+
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "assistant" } } },
+      "then": { "required": ["message", "uuid", "sessionId"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "user" } } },
+      "then": { "required": ["message", "uuid", "sessionId"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "ai-title" } } },
+      "then": { "required": ["aiTitle"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "last-prompt" } } },
+      "then": {
+        "anyOf": [{ "required": ["lastPrompt"] }, { "required": ["leafUuid"] }]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "permission-mode" } } },
+      "then": { "required": ["permissionMode"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "mode" } } },
+      "then": { "required": ["mode"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "pr-link" } } },
+      "then": { "required": ["prUrl", "prRepository", "prNumber"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "file-history-snapshot" } } },
+      "then": { "required": ["snapshot"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "attachment" } } },
+      "then": { "required": ["attachment"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "queue-operation" } } },
+      "then": { "required": ["operation"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "system" } } },
+      "then": { "required": ["subtype"] }
+    }
+  ],
+
+  "$defs": {
+    "message": {
+      "type": "object",
+      "description": "The chat message itself (present on user/assistant records).",
+      "additionalProperties": true,
+      "required": ["role", "content"],
+      "properties": {
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": {
+          "description": "A plain string (simple user message) or an array of content blocks.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "$ref": "#/$defs/contentBlock" } }
+          ]
+        },
+        "type": { "type": "string", "const": "message" },
+        "id": { "type": "string", "description": "API message id (msg_…)." },
+        "model": {
+          "type": "string",
+          "description": "Model id that generated the turn."
+        },
+        "usage": { "$ref": "#/$defs/usage" },
+        "stop_reason": { "type": ["string", "null"] },
+        "stop_sequence": { "type": ["string", "null"] },
+        "stop_details": { "type": ["object", "null"] },
+        "diagnostics": { "type": ["object", "null"] },
+        "context_management": { "type": ["object", "null"] },
+        "container": { "type": ["object", "null"] }
+      }
+    },
+
+    "contentBlock": {
+      "type": "object",
+      "description": "One block within message.content[].",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "thinking", "tool_use", "tool_result"]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "type": { "const": "text" },
+            "text": { "type": "string" }
+          },
+          "required": ["text"]
+        },
+        {
+          "properties": {
+            "type": { "const": "thinking" },
+            "thinking": { "type": "string" },
+            "signature": { "type": "string" }
+          },
+          "required": ["thinking"]
+        },
+        {
+          "properties": {
+            "type": { "const": "tool_use" },
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "input": { "type": "object" }
+          },
+          "required": ["id", "name", "input"]
+        },
+        {
+          "properties": {
+            "type": { "const": "tool_result" },
+            "tool_use_id": { "type": "string" },
+            "is_error": { "type": "boolean" },
+            "content": {
+              "oneOf": [{ "type": "string" }, { "type": "array" }]
+            }
+          },
+          "required": ["tool_use_id"]
+        }
+      ]
+    },
+
+    "usage": {
+      "type": "object",
+      "description": "Token usage for an assistant turn. Fresh-shape: input_tokens is uncached; cache tokens are reported separately.",
+      "additionalProperties": true,
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "description": "Uncached input tokens."
+        },
+        "output_tokens": {
+          "type": "integer",
+          "description": "Generated tokens."
+        },
+        "cache_read_input_tokens": {
+          "type": "integer",
+          "description": "Tokens served from prompt cache."
+        },
+        "cache_creation_input_tokens": {
+          "type": "integer",
+          "description": "Tokens written to cache."
+        },
+        "cache_creation": {
+          "type": "object",
+          "description": "Cache writes split by TTL.",
+          "additionalProperties": true,
+          "properties": {
+            "ephemeral_5m_input_tokens": { "type": "integer" },
+            "ephemeral_1h_input_tokens": { "type": "integer" }
+          }
+        },
+        "service_tier": { "type": ["string", "null"] },
+        "inference_geo": { "type": ["string", "null"] },
+        "speed": { "type": ["string", "null"] },
+        "server_tool_use": { "type": ["object", "null"] },
+        "iterations": { "type": ["array", "null"] }
+      }
+    },
+
+    "toolUseResult": {
+      "type": "object",
+      "description": "Structured tool result. Properties present depend on the tool that ran; all optional here.",
+      "additionalProperties": true,
+      "properties": {
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" },
+        "interrupted": { "type": "boolean" },
+        "isImage": { "type": "boolean" },
+        "noOutputExpected": { "type": "boolean" },
+        "type": { "type": "string" },
+        "file": { "type": "object" },
+        "filePath": { "type": "string" },
+        "content": {},
+        "originalFile": { "type": "string" },
+        "structuredPatch": { "type": "array" },
+        "userModified": { "type": "boolean" },
+        "oldString": { "type": "string" },
+        "newString": { "type": "string" },
+        "replaceAll": { "type": "boolean" },
+        "status": { "type": "string" },
+        "agentId": { "type": "string" },
+        "agentType": { "type": "string" },
+        "resolvedModel": { "type": "string" },
+        "prompt": { "type": "string" },
+        "usage": { "type": "object" },
+        "toolStats": { "type": "object" },
+        "totalToolUseCount": { "type": "integer" },
+        "totalTokens": { "type": "integer" },
+        "totalDurationMs": { "type": "number" },
+        "task": {},
+        "taskId": { "type": "string" },
+        "statusChange": {},
+        "updatedFields": {},
+        "query": { "type": "string" },
+        "matches": { "type": "array" },
+        "totalMatches": { "type": "integer" },
+        "truncated": { "type": "boolean" },
+        "total_deferred_tools": { "type": "integer" },
+        "numFiles": { "type": "integer" },
+        "filenames": { "type": "array" },
+        "gitOperation": { "type": "string" },
+        "success": { "type": "boolean" },
+        "persistedOutputPath": { "type": "string" },
+        "persistedOutputSize": { "type": "integer" }
+      }
+    },
+
+    "attachment": {
+      "type": "object",
+      "description": "Injected-context payload. Field set depends on attachment.type.",
+      "additionalProperties": true,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string" },
+        "content": {},
+        "itemCount": { "type": "integer" },
+        "isInitial": { "type": "boolean" },
+        "names": { "type": "array" },
+        "addedNames": { "type": "array" },
+        "removedNames": { "type": "array" },
+        "readdedNames": { "type": "array" },
+        "addedLines": { "type": "integer" },
+        "addedBlocks": {},
+        "addedTypes": { "type": "array" },
+        "removedTypes": { "type": "array" },
+        "skillCount": { "type": "integer" },
+        "filename": { "type": "string" },
+        "displayPath": { "type": "string" },
+        "path": { "type": "string" },
+        "snippet": { "type": "string" },
+        "toolUseID": { "type": "string" },
+        "hookName": { "type": "string" },
+        "hookEvent": { "type": "string" },
+        "command": { "type": "string" },
+        "commandMode": { "type": "string" },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" },
+        "exitCode": { "type": "integer" },
+        "durationMs": { "type": "number" },
+        "pendingMcpServers": { "type": "array" },
+        "allowedTools": { "type": "array" },
+        "showConcurrencyNote": { "type": "boolean" },
+        "prompt": { "type": "string" },
+        "origin": {},
+        "newDate": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "planFilePath": { "type": "string" },
+        "planExists": { "type": "boolean" }
+      }
+    },
+
+    "snapshot": {
+      "type": "object",
+      "description": "File-history checkpoint for undo/restore.",
+      "additionalProperties": true,
+      "properties": {
+        "messageId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "trackedFileBackups": { "type": "object" }
+      }
+    },
+
+    "compactMetadata": {
+      "type": "object",
+      "description": "Context-compaction event metadata.",
+      "additionalProperties": true,
+      "properties": {
+        "trigger": { "type": "string" },
+        "preTokens": { "type": "integer" },
+        "postTokens": { "type": "integer" },
+        "preservedMessages": { "type": "integer" },
+        "preservedSegment": {},
+        "preCompactDiscoveredTools": {},
+        "precomputed": {},
+        "durationMs": { "type": "number" }
+      }
+    },
+
+    "origin": {
+      "type": "object",
+      "description": "Provenance of the record.",
+      "additionalProperties": true,
+      "properties": {
+        "kind": { "type": "string" }
+      }
+    }
+  }
+}

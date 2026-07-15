@@ -1,3 +1,4 @@
+import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { StatusMetadataSection } from "@repo/design-system/components/ui/status-metadata-section";
 import type { Meta, StoryObj } from "@storybook/react";
 
@@ -19,13 +20,21 @@ const users = [
 ];
 
 const options = [
-  { value: "draft", label: "Draft", iconStatus: "backlog" as const },
+  {
+    value: "draft",
+    label: "Draft",
+    icon: <StatusIcon size={16} status="backlog" />,
+  },
   {
     value: "in_progress",
     label: "In Progress",
-    iconStatus: "in-progress" as const,
+    icon: <StatusIcon size={16} status="in-progress" />,
   },
-  { value: "done", label: "Done", iconStatus: "complete" as const },
+  {
+    value: "done",
+    label: "Done",
+    icon: <StatusIcon size={16} status="complete" />,
+  },
 ];
 
 const meta = {

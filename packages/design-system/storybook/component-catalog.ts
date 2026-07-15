@@ -494,6 +494,17 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Status Badge"
   },
   {
+    "id": "status-icon-primitives",
+    "label": "Status Icon Primitives",
+    "sourcePath": "packages/design-system/components/ui/status-icon-primitives.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Primitives"
+    ],
+    "storyId": "status-icon-primitives",
+    "storyTitle": "Design System/Primitives/Status Icon Primitives"
+  },
+  {
     "id": "switch",
     "label": "Switch",
     "sourcePath": "packages/design-system/components/ui/switch.tsx",
@@ -1358,17 +1369,6 @@ export const appCoreComponentCatalog =
     "storyTitle": "App Core/Agents/Sessions Controls"
   },
   {
-    "id": "agent-sessions-kanban",
-    "label": "Sessions Kanban",
-    "sourcePath": "packages/app/agents/components/kanban/agent-sessions-kanban.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-sessions-kanban",
-    "storyTitle": "App Core/Agents/Sessions Kanban"
-  },
-  {
     "id": "sessions-table",
     "label": "Sessions Table",
     "sourcePath": "packages/app/agents/components/sessions/sessions-table.tsx",
@@ -1534,17 +1534,6 @@ export const appCoreComponentCatalog =
     "storyTitle": "App Core/Branches/PR Session Swimlane"
   },
   {
-    "id": "branch-trace-playhead",
-    "label": "Trace Playhead",
-    "sourcePath": "packages/app/branches/components/branch-trace-playhead.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Branches"
-    ],
-    "storyId": "branch-trace-playhead",
-    "storyTitle": "App Core/Branches/Trace Playhead"
-  },
-  {
     "id": "compute-preference-card",
     "label": "Compute Preference Card",
     "sourcePath": "packages/app/compute/components/compute-preference-card.tsx",
@@ -1677,6 +1666,17 @@ export const appCoreComponentCatalog =
     "storyTitle": "App Core/Documents/Document Rating Section"
   },
   {
+    "id": "document-status-icon",
+    "label": "Document Status Icon",
+    "sourcePath": "packages/app/documents/components/document-status-icon.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Documents"
+    ],
+    "storyId": "document-status-icon",
+    "storyTitle": "App Core/Documents/Document Status Icon"
+  },
+  {
     "id": "document-type-badge",
     "label": "Document Type Badge",
     "sourcePath": "packages/app/documents/components/document-type-badge.tsx",
@@ -1708,6 +1708,17 @@ export const appCoreComponentCatalog =
     ],
     "storyId": "favorite-button",
     "storyTitle": "App Core/Documents/Favorite Button"
+  },
+  {
+    "id": "feature-status-icon",
+    "label": "Feature Status Icon",
+    "sourcePath": "packages/app/documents/components/feature-status-icon.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Documents"
+    ],
+    "storyId": "feature-status-icon",
+    "storyTitle": "App Core/Documents/Feature Status Icon"
   },
   {
     "id": "judge-result-card-view",
@@ -1743,6 +1754,28 @@ export const appCoreComponentCatalog =
     "storyTitle": "App Core/Documents/Version Actions Toolbar"
   },
   {
+    "id": "kpi-metric-tile",
+    "label": "KPI Metric Tile",
+    "sourcePath": "packages/app/insights/components/kpi-metric-tile.stories.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Insights"
+    ],
+    "storyId": "kpi-metric-tile",
+    "storyTitle": "App Core/Insights/KPI Metric Tile"
+  },
+  {
+    "id": "tile-content",
+    "label": "Tile Content",
+    "sourcePath": "packages/app/insights/components/tile-content.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Insights"
+    ],
+    "storyId": "tile-content",
+    "storyTitle": "App Core/Insights/Tile Content"
+  },
+  {
     "id": "loop-status-badge",
     "label": "Loop Status Badge",
     "sourcePath": "packages/app/loops/components/loop-status-badge.tsx",
@@ -1765,6 +1798,17 @@ export const appCoreComponentCatalog =
     "storyTitle": "App Core/Packs/Pack Card"
   },
   {
+    "id": "pack-detail",
+    "label": "Pack Detail",
+    "sourcePath": "packages/app/packs/components/pack-detail.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Packs"
+    ],
+    "storyId": "pack-detail",
+    "storyTitle": "App Core/Packs/Pack Detail"
+  },
+  {
     "id": "pack-filter-bar",
     "label": "Pack Filter Bar",
     "sourcePath": "packages/app/packs/components/pack-filter-bar.tsx",
@@ -1785,6 +1829,17 @@ export const appCoreComponentCatalog =
     ],
     "storyId": "pack-install-dialog",
     "storyTitle": "App Core/Packs/Pack Install Dialog"
+  },
+  {
+    "id": "packs-workspace",
+    "label": "Packs Workspace",
+    "sourcePath": "packages/app/packs/components/packs-workspace.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Packs"
+    ],
+    "storyId": "packs-workspace",
+    "storyTitle": "App Core/Packs/Packs Workspace"
   },
   {
     "id": "editable-project-description",

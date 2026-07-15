@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
 import { io, type Socket } from "socket.io-client";
 import type { ApiKeyProvenance } from "./api-key-store.js";
 import {
@@ -880,12 +881,9 @@ function parseDesktopCommand(payload: unknown): DesktopCommandEvent | null {
  */
 export function parseServerCapabilities(
   value: unknown
-): { computeTargetSigning?: boolean; agentSessionSync?: boolean } | undefined {
+): ComputeTargetServerCapabilities | undefined {
   const record = asObject(value);
-  const parsed: {
-    computeTargetSigning?: boolean;
-    agentSessionSync?: boolean;
-  } = {};
+  const parsed: ComputeTargetServerCapabilities = {};
   if (record.computeTargetSigning === true) {
     parsed.computeTargetSigning = true;
   }
@@ -951,6 +949,7 @@ export function parseDesktopAgentSessionsAck(
   }
   if (
     event.reason === DesktopAgentSessionsAckReason.FeatureDisabled ||
+    event.reason === DesktopAgentSessionsAckReason.IngestionFailed ||
     event.reason === DesktopAgentSessionsAckReason.RateLimited ||
     event.reason === DesktopAgentSessionsAckReason.ValidationFailed
   ) {

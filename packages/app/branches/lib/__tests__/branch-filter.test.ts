@@ -6,7 +6,7 @@ import {
   branchRepoFilterOptions,
   branchStatusFilterOptions,
   filterBranchRows,
-} from "../branch-sample-data";
+} from "../branch-row";
 
 function row(overrides: Partial<BranchRow>): BranchRow {
   return {

@@ -41,6 +41,7 @@ import {
 } from "@repo/api/src/types/branch-view";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { GitHubFetchTrigger } from "@repo/api/src/types/github-read-model";
 import {
   Result,
   type Result as ServiceResult,
@@ -98,10 +99,16 @@ import {
   type RepositoryArtifactRelinkResult,
   RepositoryArtifactRelinkStatus,
 } from "@/app/integrations/github/service";
+import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   persistBranchStatusChecksFromRollup,
   projectBranchStatusChecks,
 } from "@/lib/branch-status-checks";
+import {
+  gitHubFetchProvenanceData,
+  githubAppGraphqlFetchProvenance,
+  githubAppRestFetchProvenance,
+} from "@/lib/github-fetch-provenance";
 import {
   type PrLifecycleRefreshResult,
   refreshPullRequestLifecycle,
@@ -200,11 +207,11 @@ function isoOrNull(date: Date | null): string | null {
 }
 
 /** Review states we include in fallback/backfill. */
-const VALID_REVIEW_STATES = new Set([
-  "APPROVED",
-  "CHANGES_REQUESTED",
-  "COMMENTED",
-  "DISMISSED",
+const VALID_REVIEW_STATES = new Set<string>([
+  ReviewDecision.Approved,
+  ReviewDecision.ChangesRequested,
+  ReviewDecision.Commented,
+  ReviewDecision.Dismissed,
 ]);
 const UNSAFE_PATH_SEGMENT_PATTERN = /[/?#]/;
 
@@ -221,7 +228,8 @@ export type BranchViewLoadFailure = {
 };
 
 export type BranchViewAuthContext = {
-  authMethod: "session" | "api_key";
+  // desktop_session behaves like session here (it never gates on api-key scopes).
+  authMethod: AuthContext["authMethod"];
   organizationId: string;
   apiKeyScopes?: ApiKeyScope[];
 };
@@ -345,6 +353,7 @@ export async function resolveBranchViewMissingContextFailure(
       });
     }
     if (
+      artifact.branch.repository &&
       artifact.branch.repository.installation.organizationId !== null &&
       artifact.branch.repository.installation.organizationId !== organizationId
     ) {
@@ -545,7 +554,8 @@ type BranchArtifactFallbackRow = {
   createdBy: { githubUsername: string | null } | null;
   branch: {
     artifactId: string;
-    repositoryId: string;
+    // Null for desktop-produced branches in non-App repos (PRD-510 D2/FR8).
+    repositoryId: string | null;
     branchName: string;
     baseBranch: string | null;
     baseBranchSource: string | null;
@@ -573,8 +583,9 @@ type BranchArtifactFallbackRow = {
     lastSyncErrorMessage: string | null;
     currentPullRequestDetail: {
       id: string;
-      repositoryId: string;
-      githubId: string;
+      // Nullable for desktop-produced PRs in non-App repos (FEA-2732).
+      repositoryId: string | null;
+      githubId: string | null;
       number: number;
       title: string | null;
       htmlUrl: string | null;
@@ -584,6 +595,7 @@ type BranchArtifactFallbackRow = {
       lastVerifiedAt?: Date | null;
       lastRefreshAttemptAt?: Date | null;
     } | null;
+    // Null for non-App branches: no installation-repo relation exists.
     repository: {
       fullName: string;
       installation: {
@@ -591,7 +603,7 @@ type BranchArtifactFallbackRow = {
         organizationId: string | null;
         status: string;
       };
-    };
+    } | null;
   } | null;
 };
 
@@ -607,6 +619,21 @@ function buildUnavailablePrContext(
       branch: null,
       gitHubPullRequest: null,
       repositoryId: null,
+      installationId: "",
+      owner: "",
+      repo: "",
+      pullNumber: null,
+    };
+  }
+  // Non-App branch (PRD-510 D2/FR8): no installation-repo, so there is no
+  // owner/repo/installation identity to build a GitHub-backed context from.
+  if (!branch.repository) {
+    return {
+      externalLink: branchViewExternalLink(artifact),
+      prMetadata: null,
+      branch: toPrContextBranch(branch, false),
+      gitHubPullRequest: null,
+      repositoryId: branch.repositoryId,
       installationId: "",
       owner: "",
       repo: "",
@@ -695,7 +722,7 @@ function buildPrContextFromFallbackArtifact(
           }
         : null,
     repositoryId: branch?.repositoryId ?? null,
-    installationId: branch?.repository.installation.installationId ?? "",
+    installationId: branch?.repository?.installation.installationId ?? "",
     owner: repoIdentity.owner,
     repo: repoIdentity.repo,
     pullNumber: currentPr?.number ?? null,
@@ -1982,8 +2009,11 @@ async function upsertBackfillReviews(
   const latestByAuthor = keepLatestReviewPerAuthor(validReviews);
 
   await Promise.all(
-    Array.from(latestByAuthor.values()).map((r) =>
-      tx.gitHubPRReview.upsert({
+    Array.from(latestByAuthor.values()).map((r) => {
+      const fetchProvenance = gitHubFetchProvenanceData(
+        githubAppRestFetchProvenance()
+      );
+      return tx.gitHubPRReview.upsert({
         where: {
           pullRequestId_authorLogin: {
             pullRequestId,
@@ -1999,6 +2029,7 @@ async function upsertBackfillReviews(
           body: r.body,
           htmlUrl: r.html_url,
           submittedAt: new Date(r.submitted_at!),
+          ...fetchProvenance,
         },
         update: {
           githubReviewId: String(r.id),
@@ -2006,9 +2037,10 @@ async function upsertBackfillReviews(
           body: r.body,
           htmlUrl: r.html_url,
           submittedAt: new Date(r.submitted_at!),
+          ...fetchProvenance,
         },
-      })
-    )
+      });
+    })
   );
 }
 
@@ -2217,6 +2249,7 @@ export async function syncCommentsAndReviews(
       threadKind: GitHubCommentThreadKind.IssueComment,
       liveGithubCommentIds: liveIssueCommentIds,
       deletedAt: new Date(),
+      fetchProvenance: githubAppRestFetchProvenance(),
     });
     await softDeleteGitHubCommentProjection(tx, {
       organizationId: ctx.externalLink.organizationId,
@@ -2225,6 +2258,7 @@ export async function syncCommentsAndReviews(
       threadKind: GitHubCommentThreadKind.ReviewThread,
       liveGithubCommentIds: liveReviewCommentIds,
       deletedAt: new Date(),
+      fetchProvenance: githubAppRestFetchProvenance(),
     });
   });
 
@@ -2293,6 +2327,7 @@ async function upsertUnifiedGitHubComments(
       htmlUrl: comment.html_url,
       legacyState: GitHubLegacyCommentState.PENDING,
       lastSyncedAt: new Date(),
+      fetchProvenance: githubAppRestFetchProvenance(),
       comment: {
         githubCommentId: comment.id,
         githubHtmlUrl: comment.html_url,
@@ -2337,6 +2372,7 @@ async function upsertUnifiedGitHubComments(
         comment.review_thread_is_resolved
       ),
       lastSyncedAt: new Date(),
+      fetchProvenance: githubAppRestFetchProvenance(),
       comments: [
         {
           githubCommentId: comment.id,
@@ -2378,14 +2414,6 @@ function gitHubThreadStatusFromReviewThreadResolved(
     return undefined;
   }
   return isResolved ? ThreadStatus.RESOLVED : ThreadStatus.OPEN;
-}
-
-/**
- * User-initiated branch-view sync. File-cache refresh is always branch-owned;
- * PR review/comment reconciliation is additive when a current PR exists.
- */
-export async function syncBranchViewData(ctx: PrContext): Promise<SyncResult> {
-  return await syncBranchViewDataWithRequest(ctx);
 }
 
 export type BranchViewSyncPreflightResult =
@@ -2664,6 +2692,9 @@ async function refreshBranchChecksStatus(
       organizationId: ctx.externalLink.organizationId,
       headSha,
       rollup: rollupResult.value,
+      fetchProvenance: githubAppGraphqlFetchProvenance({
+        trigger: GitHubFetchTrigger.SurfaceOpen,
+      }),
     })
   );
   if (persistResult.status === "skipped") {

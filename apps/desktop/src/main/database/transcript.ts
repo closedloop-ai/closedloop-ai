@@ -2,7 +2,7 @@ import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import {
   recordUsageLine,
   type UsageDedupEntry,
-} from "../collectors/usage-dedup.js";
+} from "../collectors/engine/usage-dedup.js";
 import {
   addStorageTokenCounts,
   readStorageTokenCount,
@@ -20,8 +20,9 @@ type CacheEntry = {
 };
 
 /**
- * Per-model token totals extracted from a single Claude/Codex hook transcript
- * file. Values are the CUMULATIVE sum across every usage-bearing line in the
+ * Per-model token totals extracted from a single Claude hook transcript file
+ * (the hook path is Claude-only — Codex hooks were removed, PRD-431).
+ * Values are the CUMULATIVE sum across every usage-bearing line in the
  * file as it exists right now. Hook transcripts are append-only (compaction
  * appends a summary line rather than rewriting the file), so the latest
  * derivation is authoritative and the token-usage store plain-overwrites
@@ -105,6 +106,19 @@ function normalizeTimestamp(raw: unknown): string {
 export function extractTranscriptTokens(
   transcriptPath: string
 ): TranscriptExtract | null {
+  // FEA-3132 (B1): size-admission before buffering the whole transcript.
+  // `readFileSync` + `split("\n")` materializes the entire file (and its line
+  // array) into the db-host heap at once — a cold-path OOM contributor for a
+  // pathologically large file. Real transcripts are a few MB, so skipping token
+  // extraction above LARGE_FILE_SIZE_BYTES only ever fires on a runaway file and
+  // trades that one file's token stats for not OOM-ing the whole worker.
+  try {
+    if (statSync(transcriptPath).size > LARGE_FILE_SIZE_BYTES) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
   let content: string;
   try {
     content = readFileSync(transcriptPath, "utf-8");
@@ -411,7 +425,6 @@ export function createTranscriptCache(): (
   path: string
 ) => TranscriptExtract | null {
   const cache = new Map<string, CacheEntry>();
-  const largeFileWarned = new Set<string>();
 
   return (path: string) => {
     let st: ReturnType<typeof getFileStat>;
@@ -422,6 +435,21 @@ export function createTranscriptCache(): (
     }
 
     const cached = cache.get(path);
+
+    // FEA-3132 (B1): size-admission caps EVERY path, not just the cold full
+    // read. A 200MB+ file buffers/accumulates more than the db-host heap can
+    // safely materialize. Enforcing this before the branch dispatch below also
+    // covers the warm incremental-growth branch — a cached file that grows past
+    // the cap is evicted and skipped, instead of reading the appended range and
+    // letting the dedup map grow unbounded. (An oversized file is never admitted
+    // into the cache, so the exact-hit rebuild below never legitimately fires
+    // for one.) Skips instead of only warning and reading anyway (prior behavior).
+    if (st.size > LARGE_FILE_SIZE_BYTES) {
+      if (cached) {
+        cache.delete(path);
+      }
+      return null;
+    }
 
     if (
       cached &&
@@ -455,10 +483,6 @@ export function createTranscriptCache(): (
         cached.latestModel,
         cached.compactionCount
       );
-    }
-
-    if (st.size > LARGE_FILE_SIZE_BYTES && !largeFileWarned.has(path)) {
-      largeFileWarned.add(path);
     }
 
     let content: string;

@@ -49,6 +49,7 @@ export function EditableProjectDescription({
 
   return (
     <Textarea
+      aria-label="Project description"
       className="min-h-0 w-full resize-none rounded-none border-none bg-transparent px-0 py-0 text-lg shadow-none focus-visible:ring-0 dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}

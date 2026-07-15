@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
  * Usage, Autonomy, …). Matches the "Recent Sessions" card header exactly: a
  * `text-xl` title and `text-sm` support copy separated by an 8px gap (the
  * design-system CardHeader `gap-2`), with no divider. `actions` renders on the
- * same row, right-aligned (e.g. a Both/Agent/Human toggle).
+ * same row when space allows and wraps below on narrow widths.
  */
 export function SectionHeader({
   title,
@@ -17,8 +17,8 @@ export function SectionHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 pb-3">
-      <div className="flex flex-col gap-2">
+    <div className="flex min-w-0 flex-wrap items-start justify-between gap-3 pb-3">
+      <div className="flex min-w-0 flex-1 basis-56 flex-col gap-2">
         <h3 className="font-semibold text-[var(--foreground)] text-xl leading-none tracking-tight">
           {title}
         </h3>
@@ -29,7 +29,9 @@ export function SectionHeader({
         ) : null}
       </div>
       {actions ? (
-        <div className="flex items-center gap-3">{actions}</div>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          {actions}
+        </div>
       ) : null}
     </div>
   );

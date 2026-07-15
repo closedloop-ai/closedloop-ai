@@ -7,7 +7,6 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import {
   Tooltip,
   TooltipContent,
@@ -28,7 +27,8 @@ type ArtifactRowViewProps = {
   slug: string;
   typeIcon: ReactNode;
   typeLabel: string;
-  status: ComponentProps<typeof StatusIcon>["status"];
+  /** Rendered status icon (e.g. DocumentStatusIcon / FeatureStatusIcon). */
+  statusIcon: ReactNode;
   statusLabel: string;
   priority?: ComponentProps<typeof PriorityIcon>["priority"] | null;
   assignee?: ReactNode;
@@ -43,7 +43,7 @@ export function ArtifactRowView({
   slug,
   typeIcon,
   typeLabel,
-  status,
+  statusIcon,
   statusLabel,
   priority,
   assignee,
@@ -81,7 +81,7 @@ export function ArtifactRowView({
             className="relative z-10 inline-flex shrink-0 items-center"
             type="button"
           >
-            <StatusIcon size={16} status={status} />
+            {statusIcon}
           </button>
         </TooltipTrigger>
         <TooltipContent>{statusLabel}</TooltipContent>

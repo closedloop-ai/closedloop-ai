@@ -1,36 +1,39 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
+"use client";
+
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@repo/design-system/components/ui/card";
-import { formatMetricValue } from "@repo/design-system/components/ui/primitives/format-metric-value";
-import { Sparkline } from "@repo/design-system/components/ui/primitives/sparkline";
+} from "@closedloop-ai/design-system/components/ui/card";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@repo/design-system/components/ui/tooltip";
-import { cn } from "@repo/design-system/lib/utils";
-import type { LucideIcon } from "lucide-react";
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@closedloop-ai/design-system/components/ui/popover";
+import { formatMetricValue } from "@closedloop-ai/design-system/components/ui/primitives/format-metric-value";
+import { Sparkline } from "@closedloop-ai/design-system/components/ui/primitives/sparkline";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
   InfoIcon,
   MinusIcon,
   TrendingDownIcon,
   TrendingUpIcon,
 } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import { useId, useRef, useState } from "react";
+import type { ComponentProps, FocusEvent, PointerEvent, ReactNode } from "react";
 
 type MetricCardProps = {
   label: string;
   value: string | number;
+  /** Optional unit suffix rendered beside the formatted metric value. */
+  unitLabel?: ReactNode;
   detail?: ReactNode;
   trend?: ReactNode;
-  icon?: LucideIcon;
   className?: string;
-  /** Short explainer rendered in a tooltip beside the label. */
+  /** Short explainer rendered in an info popover beside the label. */
   info?: { what: string; how?: string };
   /**
    * Period-over-period change. A number renders a signed up/down chip; pass
@@ -56,9 +59,9 @@ type MetricCardProps = {
 export function MetricCard({
   label,
   value,
+  unitLabel,
   detail,
   trend,
-  icon: Icon,
   className,
   info,
   delta,
@@ -81,14 +84,19 @@ export function MetricCard({
       )}
       {...props}
     >
-      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0 pb-3">
-        <div className="space-y-1">
+      <CardHeader className="flex min-w-0 flex-row items-start justify-between gap-4 space-y-0 pb-3">
+        <div className="min-w-0 space-y-1">
           <CardDescription className="flex items-center gap-1.5 font-semibold text-[11px] uppercase tracking-[0.12em]">
             {label}
-            {info ? <MetricInfoTooltip info={info} label={label} /> : null}
+            {info ? <MetricInfoPopover info={info} label={label} /> : null}
           </CardDescription>
-          <CardTitle className="font-semibold text-2xl tracking-tight">
-            {formatMetricValue(value)}
+          <CardTitle className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 font-semibold text-2xl tracking-tight">
+            <span className="min-w-0 break-words">{formatMetricValue(value)}</span>
+            {unitLabel ? (
+              <span className="font-medium text-muted-foreground text-xs">
+                {unitLabel}
+              </span>
+            ) : null}
           </CardTitle>
         </div>
         {placeholder ? (
@@ -98,27 +106,25 @@ export function MetricCard({
           >
             Sample
           </Badge>
-        ) : Icon ? (
-          <span className="flex size-9 items-center justify-center rounded-xl border border-primary/10 bg-primary/10 text-primary">
-            <Icon className="size-4" />
-          </span>
         ) : null}
       </CardHeader>
       {hasFooter ? (
         <CardContent className="flex flex-col gap-2 pt-0">
           {showDelta ? (
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <MetricDeltaChip delta={delta} sparkline={sparkline} />
               {deltaLabel ? (
-                <span className="text-muted-foreground text-xs">
+                <span className="min-w-0 text-muted-foreground text-xs">
                   {deltaLabel}
                 </span>
               ) : null}
             </div>
           ) : null}
           {detail || trend ? (
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground text-sm">{detail}</span>
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+              <span className="min-w-0 text-muted-foreground text-sm">
+                {detail}
+              </span>
               {trend ? (
                 <span className="font-semibold text-primary text-xs">
                   {trend}
@@ -132,31 +138,115 @@ export function MetricCard({
   );
 }
 
-function MetricInfoTooltip({
+function MetricInfoPopover({
   info,
   label,
 }: {
   info: { what: string; how?: string };
   label: string;
 }) {
+  const contentId = useId();
+  const [openState, setOpenState] = useState({
+    focus: false,
+    hover: false,
+    pinned: false,
+  });
+  const triggerClickShouldCloseRef = useRef(false);
+  const open = openState.focus || openState.hover || openState.pinned;
+
+  const showTransientInfo = (reason: "focus" | "hover") => {
+    setOpenState((currentState) => ({ ...currentState, [reason]: true }));
+  };
+  const hideTransientInfo = (reason: "focus" | "hover") => {
+    setOpenState((currentState) => ({ ...currentState, [reason]: false }));
+  };
+  const togglePinnedInfo = (forceClose = false) =>
+    setOpenState((currentState) => {
+      if (forceClose || currentState.pinned) {
+        return { focus: false, hover: false, pinned: false };
+      }
+
+      return { ...currentState, pinned: true };
+    });
+  const hideInfo = () =>
+    setOpenState({ focus: false, hover: false, pinned: false });
+
+  const handleTriggerClick = () => {
+    const shouldClosePinnedInfo = triggerClickShouldCloseRef.current;
+    triggerClickShouldCloseRef.current = false;
+    togglePinnedInfo(shouldClosePinnedInfo);
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      togglePinnedInfo();
+      return;
+    }
+
+    // Radix may close anchored content as an outside interaction before click.
+    triggerClickShouldCloseRef.current = openState.pinned;
+  };
+
+  const handleBlur = (event: FocusEvent<HTMLButtonElement>) => {
+    const relatedTarget = event.relatedTarget;
+    const nextTargetIsInside =
+      relatedTarget instanceof Node &&
+      event.currentTarget.contains(relatedTarget);
+
+    if (!nextTargetIsInside) {
+      hideTransientInfo("focus");
+    }
+  };
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
+    <Popover onOpenChange={(nextOpen) => !nextOpen && hideInfo()} open={open}>
+      <PopoverAnchor asChild>
         <button
+          aria-controls={open ? contentId : undefined}
+          aria-expanded={open}
           aria-label={`About ${label}`}
+          aria-haspopup="dialog"
           className="text-muted-foreground/60 transition-colors hover:text-foreground"
+          onBlur={handleBlur}
+          onClick={handleTriggerClick}
+          onFocus={() => showTransientInfo("focus")}
+          onPointerEnter={(event) => {
+            if (event.pointerType !== "touch") {
+              showTransientInfo("hover");
+            }
+          }}
+          onPointerLeave={(event) => {
+            if (event.pointerType !== "touch") {
+              hideTransientInfo("hover");
+            }
+          }}
+          onPointerDown={handlePointerDown}
           type="button"
         >
           <InfoIcon className="size-3.5" />
         </button>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-[240px] space-y-1 normal-case">
+      </PopoverAnchor>
+      <PopoverContent
+        align="start"
+        aria-label={`About ${label}`}
+        className="w-60 space-y-1 p-3 text-xs"
+        id={contentId}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+        onEscapeKeyDown={hideInfo}
+        onMouseEnter={() => showTransientInfo("hover")}
+        onMouseLeave={() => hideTransientInfo("hover")}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        role="dialog"
+        side="bottom"
+        sideOffset={0}
+      >
         <p className="font-medium text-xs">{info.what}</p>
         {info.how ? (
           <p className="text-muted-foreground text-xs">{info.how}</p>
         ) : null}
-      </TooltipContent>
-    </Tooltip>
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -3,8 +3,8 @@ import {
   type BranchRow as WireBranchRow,
 } from "@repo/api/src/types/branch";
 import { describe, expect, it } from "vitest";
+import { BranchRowStatus } from "../branch-row";
 import { adaptBranchRow, adaptBranchRows } from "../branch-row-adapter";
-import { BranchRowStatus } from "../branch-sample-data";
 
 const NOW = Date.parse("2026-06-17T12:00:00.000Z");
 

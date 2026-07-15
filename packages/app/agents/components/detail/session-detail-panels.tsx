@@ -22,8 +22,6 @@ import {
 import {
   AlertCircleIcon,
   BotIcon,
-  Clock3Icon,
-  FolderGit2Icon,
   HistoryIcon,
   TerminalSquareIcon,
   WrenchIcon,
@@ -395,35 +393,23 @@ export function SessionOverviewSection({ stats }: SessionOverviewSectionProps) {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <MetricCard
             detail={stats.eventRateHint}
-            icon={HistoryIcon}
             label="Events"
             value={stats.totalEvents.toLocaleString()}
           />
           <MetricCard
-            icon={WrenchIcon}
             label="Tool calls"
             value={stats.toolCalls.toLocaleString()}
           />
           <MetricCard
-            icon={BotIcon}
             label="Subagents"
             value={stats.subagents.toLocaleString()}
           />
           <MetricCard
-            icon={Clock3Icon}
             label="Compactions"
             value={stats.compactions.toLocaleString()}
           />
-          <MetricCard
-            icon={AlertCircleIcon}
-            label="Errors"
-            value={stats.errors.toLocaleString()}
-          />
-          <MetricCard
-            icon={FolderGit2Icon}
-            label="Duration"
-            value={stats.durationLabel}
-          />
+          <MetricCard label="Errors" value={stats.errors.toLocaleString()} />
+          <MetricCard label="Duration" value={stats.durationLabel} />
         </div>
 
         <div className="grid gap-4 lg:grid-cols-3">

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, mock, test } from "node:test";
 import { Observability } from "../src/main/observability.js";
 import type { EnrichedTelemetryEvent } from "../src/main/telemetry-service.js";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
@@ -12,6 +12,7 @@ import {
   _getPluginUpdateStderrTailForTesting,
   _setPluginEnableCommandForTesting,
   _setPluginMarketplaceUpdateCommandForTesting,
+  _setPluginRemediationDeadlineMsForTesting,
   _setPluginUpdateCommandForTesting,
   _setRunCommandForTesting,
   _shouldEnablePluginAutoUpdateForTesting,
@@ -68,9 +69,11 @@ const originalHome = process.env.HOME;
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  mock.timers.reset();
   globalThis.fetch = originalFetch;
   _setPluginEnableCommandForTesting();
   _setPluginMarketplaceUpdateCommandForTesting();
+  _setPluginRemediationDeadlineMsForTesting();
   _setPluginUpdateCommandForTesting();
   _setRunCommandForTesting();
   if (originalHome === undefined) {
@@ -197,6 +200,17 @@ function findPluginCheck(
 
 function mockPluginManifestVersion(version: string): void {
   globalThis.fetch = (async () => Response.json({ version })) as typeof fetch;
+}
+
+function createDeferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 async function writeDirectoryMarketplace(version: string): Promise<string> {
@@ -328,6 +342,12 @@ function registerHealthCheckWithPluginList(
     }
     return { stdout: "1.0.0" };
   });
+  registerHealthCheckWithStubbedBinaries(dispatcher);
+}
+
+function registerHealthCheckWithStubbedBinaries(
+  dispatcher: OperationDispatcher
+): void {
   registerHealthCheckRoutes(
     dispatcher,
     {} as unknown as ProcessManager,
@@ -703,6 +723,245 @@ describe("plugin health checks", () => {
     assert.deepEqual(codePlugin?.enablePluginIds, ["code@closedloop-ai"]);
     assert.deepEqual(enableCalls, ["code@closedloop-ai"]);
   });
+
+  test("plugin enable deadline returns timeout metadata and skips remaining enable runners", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    _setPluginRemediationDeadlineMsForTesting(10);
+    const homeDir = await makeTempHome();
+    await writeAllUserScopedPlugins(homeDir);
+    const enableCalls: string[] = [];
+    const enableStarted = createDeferred();
+    const dispatcher = new OperationDispatcher();
+    registerHealthCheckWithPluginList(dispatcher, () =>
+      buildPluginListJson([
+        {
+          enabled: false,
+          id: "code@closedloop-ai",
+          scope: "user",
+          version: "1.0.0",
+        },
+        {
+          enabled: false,
+          id: "platform@closedloop-ai",
+          scope: "user",
+          version: "1.0.0",
+        },
+      ])
+    );
+    _setPluginEnableCommandForTesting((pluginRef) => {
+      enableCalls.push(pluginRef);
+      enableStarted.resolve();
+      return new Promise<never>(() => {});
+    });
+
+    const capturedPromise = dispatchHealthCheck(dispatcher, {
+      pluginAutoUpdate: true,
+    });
+    await enableStarted.promise;
+    mock.timers.tick(10);
+    const captured = await capturedPromise;
+    const checks = getChecks(parsePayload(captured));
+    const codePlugin = findPluginCheck(checks, "code");
+    const platformPlugin = findPluginCheck(checks, "platform");
+
+    assert.equal(captured.statusCode, 200);
+    assert.equal(codePlugin?.passed, false);
+    assert.equal(codePlugin?.enableAttempted, true);
+    assert.equal(codePlugin?.enableOutcome, "timeout");
+    assert.equal(codePlugin?.error, "Enable timed out");
+    assert.equal(platformPlugin?.passed, false);
+    assert.equal(platformPlugin?.enableAttempted, true);
+    assert.equal(platformPlugin?.enableOutcome, "timeout");
+    assert.equal(platformPlugin?.error, "Enable timed out");
+    assert.deepEqual(enableCalls, ["code@closedloop-ai"]);
+  });
+
+  test("plugin enable remediation uses the default aggregate forty second deadline", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    const codeEnableStarted = createDeferred();
+    const platformEnableStarted = createDeferred();
+    const enableCalls: string[] = [];
+    const dispatcher = new OperationDispatcher();
+    registerHealthCheckWithPluginList(dispatcher, () =>
+      buildPluginListJson([
+        {
+          enabled: false,
+          id: "code@closedloop-ai",
+          scope: "user",
+          version: "1.0.0",
+        },
+        {
+          enabled: false,
+          id: "platform@closedloop-ai",
+          scope: "user",
+          version: "1.0.0",
+        },
+      ])
+    );
+    _setPluginEnableCommandForTesting((pluginRef) => {
+      enableCalls.push(pluginRef);
+      if (pluginRef === "code@closedloop-ai") {
+        codeEnableStarted.resolve();
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({ outcome: "success", stdout: "", elapsedMs: 20_000 });
+          }, 20_000);
+        });
+      }
+      platformEnableStarted.resolve();
+      return new Promise<never>(() => {});
+    });
+
+    let capturedSettled = false;
+    const capturedPromise = dispatchHealthCheck(dispatcher, {
+      pluginAutoUpdate: true,
+    }).then((captured) => {
+      capturedSettled = true;
+      return captured;
+    });
+    await codeEnableStarted.promise;
+    mock.timers.tick(20_000);
+    await platformEnableStarted.promise;
+    mock.timers.tick(19_999);
+    await Promise.resolve();
+
+    assert.equal(capturedSettled, false);
+
+    mock.timers.tick(1);
+    const captured = await capturedPromise;
+    const checks = getChecks(parsePayload(captured));
+    const codePlugin = findPluginCheck(checks, "code");
+    const platformPlugin = findPluginCheck(checks, "platform");
+
+    assert.equal(captured.statusCode, 200);
+    assert.equal(codePlugin?.enableOutcome, "timeout");
+    assert.equal(platformPlugin?.enableOutcome, "timeout");
+    assert.deepEqual(enableCalls, [
+      "code@closedloop-ai",
+      "platform@closedloop-ai",
+    ]);
+  });
+
+  test("plugin auto-update route returns when initial plugin list exceeds the deadline", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    _setPluginRemediationDeadlineMsForTesting(10);
+    const homeDir = await makeTempHome();
+    await writeAllUserScopedPlugins(homeDir);
+    const pluginListStarted = createDeferred();
+    const dispatcher = new OperationDispatcher();
+    _setRunCommandForTesting(async (_cmd, args) => {
+      if (args.join(" ") === "plugin list --json") {
+        pluginListStarted.resolve();
+        return new Promise<never>(() => {});
+      }
+      return { stdout: "1.0.0" };
+    });
+    registerHealthCheckWithStubbedBinaries(dispatcher);
+
+    const capturedPromise = dispatchHealthCheck(dispatcher, {
+      pluginAutoUpdate: true,
+    });
+    await pluginListStarted.promise;
+    mock.timers.tick(10);
+    const captured = await capturedPromise;
+    const codePlugin = findPluginCheck(
+      getChecks(parsePayload(captured)),
+      "code"
+    );
+
+    assert.equal(captured.statusCode, 200);
+    assert.equal(codePlugin?.passed, false);
+    assert.equal(codePlugin?.error, "Could not verify enabled state");
+  });
+
+  test("plugin auto-update route returns when a base CLI probe exceeds the deadline", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    _setPluginRemediationDeadlineMsForTesting(10);
+    const baseProbeStarted = createDeferred();
+    const dispatcher = new OperationDispatcher();
+    _setRunCommandForTesting(async (_cmd, args) => {
+      const command = args.join(" ");
+      if (command === "plugin list --json") {
+        throw {
+          code: "EUNKNOWN",
+          stderr: "",
+          message: "plugin list unavailable",
+        };
+      }
+      if (command === "--version") {
+        baseProbeStarted.resolve();
+        return new Promise<never>(() => {});
+      }
+      return { stdout: "1.0.0" };
+    });
+    registerHealthCheckWithStubbedBinaries(dispatcher);
+
+    const capturedPromise = dispatchHealthCheck(dispatcher, {
+      pluginAutoUpdate: true,
+    });
+    await baseProbeStarted.promise;
+    mock.timers.tick(10);
+    const captured = await capturedPromise;
+    const claudeCheck = getChecks(parsePayload(captured)).find(
+      (check) => check.id === "claude-cli"
+    );
+
+    assert.equal(captured.statusCode, 200);
+    assert.equal(claudeCheck?.passed, false);
+    assert.equal(claudeCheck?.required, true);
+  });
+
+  test("plugin enable deadline covers post-enable inventory reads", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    _setPluginRemediationDeadlineMsForTesting(10);
+    const postInventoryStarted = createDeferred();
+    const enableCalls: string[] = [];
+    const dispatcher = new OperationDispatcher();
+    let pluginListCalls = 0;
+    _setRunCommandForTesting(async (_cmd, args) => {
+      if (args.join(" ") === "plugin list --json") {
+        pluginListCalls += 1;
+        if (pluginListCalls === 1) {
+          return {
+            stdout: buildPluginListJson([
+              {
+                enabled: false,
+                id: "code@closedloop-ai",
+                scope: "user",
+                version: "1.0.0",
+              },
+            ]),
+          };
+        }
+        postInventoryStarted.resolve();
+        return new Promise<never>(() => {});
+      }
+      return { stdout: "1.0.0" };
+    });
+    _setPluginEnableCommandForTesting(async (pluginRef) => {
+      enableCalls.push(pluginRef);
+      return { outcome: "success", stdout: "", elapsedMs: 1 };
+    });
+    registerHealthCheckWithStubbedBinaries(dispatcher);
+
+    const capturedPromise = dispatchHealthCheck(dispatcher, {
+      pluginAutoUpdate: true,
+    });
+    await postInventoryStarted.promise;
+    mock.timers.tick(10);
+    const captured = await capturedPromise;
+    const codePlugin = findPluginCheck(
+      getChecks(parsePayload(captured)),
+      "code"
+    );
+
+    assert.equal(captured.statusCode, 200);
+    assert.equal(codePlugin?.passed, false);
+    assert.equal(codePlugin?.enableAttempted, true);
+    assert.equal(codePlugin?.enableOutcome, "timeout");
+    assert.equal(codePlugin?.error, "Enable timed out");
+    assert.deepEqual(enableCalls, ["code@closedloop-ai"]);
+  });
 });
 
 describe("app-version check", () => {
@@ -904,6 +1163,81 @@ describe("plugin-version check", () => {
     assert.equal(codePlugin?.error, "Update available: 3.0.0");
   });
 
+  test("prefers a github-sourced marketplace's local checkout over the GitHub main manifest (FEA-2751)", async () => {
+    // GitHub main HEAD is ahead of what the installer can actually apply.
+    mockPluginManifestVersion("9.9.9");
+    // The local marketplace checkout (what `claude plugin update` installs from)
+    // is in sync with the installed version.
+    const marketplaceRoot = await writeDirectoryMarketplace("1.0.0");
+    _setRunCommandForTesting(async (_cmd, args) => {
+      if (args.join(" ") === "plugin marketplace list --json") {
+        return {
+          // Mirrors the real `claude plugin marketplace list --json` shape for a
+          // github-sourced marketplace (Claude Code 2.1.169): both `repo` and
+          // `installLocation` are emitted, and `path` is absent. The check must
+          // use `installLocation` (the local clone) as the latest-version source.
+          stdout: JSON.stringify([
+            {
+              name: "closedloop-ai",
+              source: "github",
+              repo: "closedloop-ai/claude-plugins",
+              installLocation: marketplaceRoot,
+            },
+          ]),
+        };
+      }
+      return { stdout: "1.0.0" };
+    });
+
+    const checks = await _applyPluginVersionChecksForTesting(
+      buildPassingPluginChecks(),
+      buildInstalledPluginVersions("1.0.0"),
+      {
+        preferConfiguredMarketplace: true,
+      }
+    );
+    const codePlugin = findPluginCheck(checks, "code");
+
+    // Must NOT report an unresolvable "out of date" against GitHub main HEAD.
+    assert.equal(codePlugin?.passed, true);
+    assert.equal(codePlugin?.version, "1.0.0");
+    assert.equal(codePlugin?.error, undefined);
+  });
+
+  test("falls back to the GitHub manifest when the marketplace checkout is missing (FEA-2751)", async () => {
+    mockPluginManifestVersion("2.0.0");
+    _setRunCommandForTesting(async (_cmd, args) => {
+      if (args.join(" ") === "plugin marketplace list --json") {
+        return {
+          stdout: JSON.stringify([
+            {
+              name: "closedloop-ai",
+              source: "github",
+              repo: "closedloop-ai/claude-plugins",
+              installLocation: path.join(
+                os.tmpdir(),
+                "closedloop-marketplace-missing-checkout"
+              ),
+            },
+          ]),
+        };
+      }
+      return { stdout: "1.0.0" };
+    });
+
+    const checks = await _applyPluginVersionChecksForTesting(
+      buildPassingPluginChecks(),
+      buildInstalledPluginVersions("1.0.0"),
+      {
+        preferConfiguredMarketplace: true,
+      }
+    );
+    const codePlugin = findPluginCheck(checks, "code");
+
+    assert.equal(codePlugin?.passed, false);
+    assert.equal(codePlugin?.error, "Update available: 2.0.0");
+  });
+
   test("auto-update success returns post-update passing metadata only when opted in", async () => {
     mockPluginManifestVersion("2.0.0");
     const calls: string[] = [];
@@ -936,6 +1270,80 @@ describe("plugin-version check", () => {
     assert.equal(codePlugin?.updateAttempted, true);
     assert.equal(codePlugin?.updateOutcome, "success");
     assert.ok(codePlugin?.updatePluginIds?.includes("plugin-code"));
+  });
+
+  test("marketplace refresh deadline returns timeout metadata without update runners", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    _setPluginRemediationDeadlineMsForTesting(10);
+    mockPluginManifestVersion("2.0.0");
+    const updateCalls: string[] = [];
+    const marketplaceStarted = createDeferred();
+    _setPluginMarketplaceUpdateCommandForTesting(() => {
+      marketplaceStarted.resolve();
+      return new Promise<never>(() => {});
+    });
+    _setPluginUpdateCommandForTesting(async (pluginRef) => {
+      updateCalls.push(pluginRef);
+      return { outcome: "success", stdout: "", elapsedMs: 1 };
+    });
+
+    const checksPromise = _applyPluginVersionChecksForTesting(
+      buildPassingPluginChecks(),
+      buildInstalledPluginVersions("1.0.0"),
+      {
+        pluginAutoUpdateEnabled: true,
+        readInstalledVersions: () => buildInstalledPluginVersions("1.0.0"),
+      }
+    );
+    await marketplaceStarted.promise;
+    mock.timers.tick(10);
+    const checks = await checksPromise;
+    const codePlugin = findPluginCheck(checks, "code");
+
+    assert.equal(codePlugin?.passed, false);
+    assert.equal(codePlugin?.updateAttempted, true);
+    assert.equal(codePlugin?.updateOutcome, "timeout");
+    assert.deepEqual(updateCalls, []);
+  });
+
+  test("plugin update deadline skips remaining update runners with timeout metadata", async () => {
+    mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+    _setPluginRemediationDeadlineMsForTesting(10);
+    mockPluginManifestVersion("2.0.0");
+    const updateCalls: string[] = [];
+    const updateStarted = createDeferred();
+    _setPluginMarketplaceUpdateCommandForTesting(async () => ({
+      outcome: "success",
+      stdout: "",
+      elapsedMs: 1,
+    }));
+    _setPluginUpdateCommandForTesting((pluginRef) => {
+      updateCalls.push(pluginRef);
+      updateStarted.resolve();
+      return new Promise<never>(() => {});
+    });
+
+    const checksPromise = _applyPluginVersionChecksForTesting(
+      buildPassingPluginChecks(),
+      buildInstalledPluginVersions("1.0.0"),
+      {
+        pluginAutoUpdateEnabled: true,
+        readInstalledVersions: () => buildInstalledPluginVersions("1.0.0"),
+      }
+    );
+    await updateStarted.promise;
+    mock.timers.tick(10);
+    const checks = await checksPromise;
+    const codePlugin = findPluginCheck(checks, "code");
+    const platformPlugin = findPluginCheck(checks, "platform");
+
+    assert.equal(codePlugin?.passed, false);
+    assert.equal(codePlugin?.updateAttempted, true);
+    assert.equal(codePlugin?.updateOutcome, "timeout");
+    assert.equal(platformPlugin?.passed, false);
+    assert.equal(platformPlugin?.updateAttempted, true);
+    assert.equal(platformPlugin?.updateOutcome, "timeout");
+    assert.deepEqual(updateCalls, ["code@closedloop-ai"]);
   });
 
   test("plugin auto-update is gated on a passing Claude CLI row", () => {

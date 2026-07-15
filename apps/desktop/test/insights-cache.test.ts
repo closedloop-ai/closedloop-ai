@@ -70,6 +70,54 @@ test("serves the last-good value while the epoch churns inside the cooldown (bac
   assert.equal(calls, 1, "no recompute thrash during backfill");
 });
 
+test("markReadStart snapshots the epoch at read time, not compute-invocation time", async () => {
+  const nowMs = 1000;
+  let calls = 0;
+  const cache = new InsightsResultCache({
+    staleServeCooldownMs: 100,
+    now: () => nowMs,
+  });
+  // Simulate a caller (the db-host worker) that waits on the heavy-op gate
+  // before reading: writes land during the wait, THEN it reads and marks the
+  // read start. The recorded epoch must reflect the post-wait read, so the
+  // entry is fresh at the current epoch and does not force a needless recompute.
+  const compute = (markReadStart: () => void) => {
+    calls++;
+    // Backfill commits land while we wait on the gate.
+    cache.bumpDataEpoch();
+    cache.bumpDataEpoch();
+    markReadStart();
+    return Promise.resolve({ n: calls });
+  };
+
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  // Second request at the same (post-read) epoch is a fresh hit — no recompute,
+  // even though the epoch advanced between invocation and the marked read.
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  assert.equal(calls, 1, "read-time epoch snapshot keeps the entry fresh");
+});
+
+test("without markReadStart, a write during compute correctly marks the entry stale", async () => {
+  let nowMs = 1000;
+  let calls = 0;
+  const cache = new InsightsResultCache({
+    staleServeCooldownMs: 100,
+    now: () => nowMs,
+  });
+  const compute = () => {
+    calls++;
+    // A write lands during the read; with the default invoke-time snapshot the
+    // entry is (correctly) marked stale so the next request recomputes.
+    cache.bumpDataEpoch();
+    return Promise.resolve({ n: calls });
+  };
+
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  nowMs += 200; // past cooldown
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 2 });
+  assert.equal(calls, 2, "invoke-time snapshot marks the entry stale");
+});
+
 test("single-flights concurrent identical requests", async () => {
   let calls = 0;
   let resolveCompute: (() => void) | null = null;

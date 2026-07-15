@@ -311,6 +311,7 @@ describe("electron-checkout directory guard", () => {
           missingExact.push(opId);
         }
       }
+      // biome-ignore lint/suspicious/noMisplacedAssertion: assertion is inside this it.skipIf(...) test callback; Biome doesn't recognize the it.skipIf(cond)(name, fn) call shape as a test block
       expect(
         missingExact,
         `Electron source is missing exact operation IDs: ${missingExact.join(", ")}`
@@ -331,6 +332,7 @@ describe("electron-checkout directory guard", () => {
           missingPrefix.push(opId);
         }
       }
+      // biome-ignore lint/suspicious/noMisplacedAssertion: assertion is inside this it.skipIf(...) test callback; Biome doesn't recognize the it.skipIf(cond)(name, fn) call shape as a test block
       expect(
         missingPrefix,
         `Electron source is missing prefix operation IDs: ${missingPrefix.join(", ")}`

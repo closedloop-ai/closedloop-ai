@@ -1,5 +1,5 @@
 import { BranchViewCheckKind } from "@repo/api/src/types/branch-view";
-import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github";
+import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github-status";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGraphql = vi.fn();

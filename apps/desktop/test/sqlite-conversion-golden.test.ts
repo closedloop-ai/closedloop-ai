@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
 // Force a fixed timezone so the timezone-sensitive analytics (the heatmap's
 // per-hour bucketing) are deterministic across machines/CI and identical between
@@ -32,7 +33,7 @@ const NOW = "2026-06-20T12:00:00.000Z";
 type SessionOverrides = Partial<NormalizedSession> & { sessionId: string };
 
 function makeSession(overrides: SessionOverrides): NormalizedSession {
-  return {
+  return baseSession({
     name: overrides.sessionId,
     cwd: "/workspace/closedloop-electron",
     model: "gpt-5",
@@ -41,35 +42,20 @@ function makeSession(overrides: SessionOverrides): NormalizedSession {
     gitBranch: "main",
     startedAt: "2026-06-18T10:00:00.000Z",
     endedAt: "2026-06-18T10:05:00.000Z",
-    teams: [],
     userMessages: 1,
     assistantMessages: 1,
     tokensByModel: {
       "gpt-5": { input: 100, output: 40, cacheRead: 0, cacheWrite: 0 },
     },
     messageTimestamps: ["2026-06-18T10:00:30.000Z"],
-    toolUses: [],
-    plans: [],
-    compactions: [],
-    apiErrors: [],
-    fileModifiedAt: null,
-    turnDurations: [],
     entrypoint: "codex",
-    permissionMode: null,
-    thinkingBlockCount: 0,
-    toolResultErrors: [],
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
-    messages: [],
-    tokenSeries: [],
-    diffStats: null,
-    slashCommands: [],
     artifacts: {
       prs: [],
       issues: [],
       repo: "closedloop-ai/closedloop-electron",
     },
     ...overrides,
-  };
+  });
 }
 
 // Deterministic seed exercising heatmap (varied days/hours), autonomy/classification
@@ -98,6 +84,40 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
         "2026-06-16T09:20:00.000Z",
         "2026-06-16T09:25:00.000Z",
       ],
+      // FEA-2641 Fix 4: the heatmap/autonomy are turn-based over metadata
+      // $.messages — 4 human + 5 assistant turns matching the declared counts,
+      // all inside the 09:00 UTC hour, pinning one mixed Human+Agent cell.
+      messages: [
+        { role: "human", timestamp: "2026-06-16T09:01:00.000Z", text: "q1" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-16T09:02:00.000Z",
+          text: "a1",
+        },
+        { role: "human", timestamp: "2026-06-16T09:10:00.000Z", text: "q2" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-16T09:12:00.000Z",
+          text: "a2",
+        },
+        { role: "human", timestamp: "2026-06-16T09:20:00.000Z", text: "q3" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-16T09:21:00.000Z",
+          text: "a3",
+        },
+        { role: "human", timestamp: "2026-06-16T09:25:00.000Z", text: "q4" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-16T09:26:00.000Z",
+          text: "a4",
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-16T09:29:00.000Z",
+          text: "a5",
+        },
+      ],
       toolUses: [
         { name: "Read", timestamp: "2026-06-16T09:02:00.000Z", input: {} },
         { name: "Edit", timestamp: "2026-06-16T09:12:00.000Z", input: {} },
@@ -117,6 +137,25 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
         "gpt-5": { input: 500, output: 300, cacheRead: 0, cacheWrite: 0 },
       },
       messageTimestamps: ["2026-06-17T14:00:30.000Z"],
+      // 1 human + 3 assistant turns (headless kickoff) in the 14:00 UTC hour.
+      messages: [
+        { role: "human", timestamp: "2026-06-17T14:00:30.000Z", text: "go" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-17T14:02:00.000Z",
+          text: "a1",
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-17T14:05:00.000Z",
+          text: "a2",
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-17T14:07:00.000Z",
+          text: "a3",
+        },
+      ],
       toolUses: [
         { name: "Bash", timestamp: "2026-06-17T14:01:00.000Z", input: {} },
       ],
@@ -148,6 +187,50 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
         "2026-06-18T22:05:00.000Z",
         "2026-06-18T22:15:00.000Z",
         "2026-06-18T22:25:00.000Z",
+      ],
+      // 6 human + 7 assistant turns in the 22:00 UTC hour.
+      messages: [
+        { role: "human", timestamp: "2026-06-18T22:05:00.000Z", text: "q1" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:06:00.000Z",
+          text: "a1",
+        },
+        { role: "human", timestamp: "2026-06-18T22:15:00.000Z", text: "q2" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:16:00.000Z",
+          text: "a2",
+        },
+        { role: "human", timestamp: "2026-06-18T22:25:00.000Z", text: "q3" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:26:00.000Z",
+          text: "a3",
+        },
+        { role: "human", timestamp: "2026-06-18T22:30:00.000Z", text: "q4" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:31:00.000Z",
+          text: "a4",
+        },
+        { role: "human", timestamp: "2026-06-18T22:35:00.000Z", text: "q5" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:36:00.000Z",
+          text: "a5",
+        },
+        { role: "human", timestamp: "2026-06-18T22:40:00.000Z", text: "q6" },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:41:00.000Z",
+          text: "a6",
+        },
+        {
+          role: "assistant",
+          timestamp: "2026-06-18T22:44:00.000Z",
+          text: "a7",
+        },
       ],
       toolUses: [
         { name: "Read", timestamp: "2026-06-18T22:06:00.000Z", input: {} },
@@ -181,7 +264,7 @@ async function captureAnalytics() {
       db.dashboard.getInsights(InsightsSection.Delivery, "90", insightsNow),
       db.dashboard.getInsights(InsightsSection.Utilization, "90", insightsNow),
       db.dashboard.getInsights(InsightsSection.Agents, "90", insightsNow),
-      db.dashboard.getTokenAnalytics(),
+      db.dashboard.getTokenAnalytics(insightsNow),
     ]);
     return { delivery, utilization, agents, tokenAnalytics };
   } finally {

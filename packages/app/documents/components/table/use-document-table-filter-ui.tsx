@@ -1,17 +1,18 @@
 "use client";
 
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus } from "@repo/api/src/types/document";
-import type { TableFiltersReturn } from "@repo/app/documents/hooks/use-table-filters";
 import {
-  DOCUMENT_STATUS_LABELS,
-  DOCUMENT_STATUS_TO_ICON,
-} from "@repo/app/projects/lib/project-constants";
+  type ArtifactStatus,
+  DOCUMENT_STATUS_OPTIONS,
+  FEATURE_STATUS_OPTIONS,
+} from "@repo/api/src/types/document";
+import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
+import type { TableFiltersReturn } from "@repo/app/documents/hooks/use-table-filters";
+import { ARTIFACT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { PRIORITY_LABELS } from "@repo/app/shared/lib/priority-constants";
 import { useTags } from "@repo/app/tags/hooks/use-tags";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import type {
   TableFilterCurrentUser,
   TableFilterOption,
@@ -85,15 +86,23 @@ export function useDocumentTableFilterUi({
           })),
         ];
 
-    const statusOptions: TableFilterOption<DocumentStatus>[] = Object.values(
-      DocumentStatus
-    ).map((status) => ({
-      id: status,
-      label: DOCUMENT_STATUS_LABELS[status],
-      count: filtersReturn.statusCounts.get(status) ?? 0,
-      icon: <StatusIcon size={16} status={DOCUMENT_STATUS_TO_ICON[status]} />,
-      searchText: DOCUMENT_STATUS_LABELS[status],
-    }));
+    // Mixed table: offer both vocabularies (PRD-495). IN_REVIEW is shared by
+    // Documents and Features, so dedupe to a single filter chip.
+    const seenStatuses = new Set<ArtifactStatus>();
+    const statusOptions: TableFilterOption<ArtifactStatus>[] = [
+      ...buildStatusOptions({
+        sectionLabel: "Document Status",
+        seenStatuses,
+        statusCounts: filtersReturn.statusCounts,
+        statuses: DOCUMENT_STATUS_OPTIONS,
+      }),
+      ...buildStatusOptions({
+        sectionLabel: "Feature Status",
+        seenStatuses,
+        statusCounts: filtersReturn.statusCounts,
+        statuses: FEATURE_STATUS_OPTIONS,
+      }),
+    ];
 
     const priorityOptions: TableFilterOption<Priority>[] = Object.values(
       Priority
@@ -137,4 +146,36 @@ export function useDocumentTableFilterUi({
   ]);
 
   return { controller, viewModel };
+}
+
+function buildStatusOptions({
+  sectionLabel,
+  seenStatuses,
+  statusCounts,
+  statuses,
+}: {
+  sectionLabel: string;
+  seenStatuses: Set<ArtifactStatus>;
+  statusCounts: ReadonlyMap<string, number>;
+  statuses: readonly ArtifactStatus[];
+}): TableFilterOption<ArtifactStatus>[] {
+  const options: TableFilterOption<ArtifactStatus>[] = [];
+
+  for (const status of statuses) {
+    if (seenStatuses.has(status)) {
+      continue;
+    }
+
+    seenStatuses.add(status);
+    options.push({
+      id: status,
+      label: ARTIFACT_STATUS_LABELS[status],
+      count: statusCounts.get(status) ?? 0,
+      icon: <ArtifactStatusIcon size={16} status={status} />,
+      searchText: ARTIFACT_STATUS_LABELS[status],
+      sectionLabel,
+    });
+  }
+
+  return options;
 }

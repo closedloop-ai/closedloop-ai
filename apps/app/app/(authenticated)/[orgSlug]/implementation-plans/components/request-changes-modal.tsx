@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -73,15 +77,13 @@ export function RequestChangesModal({
 
         <div className="space-y-4 py-4">
           {error ? (
-            <div
-              className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm"
-              role="alert"
-            >
-              {error}
-            </div>
+            <Alert variant="error">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           ) : null}
 
           <Textarea
+            aria-label="Requested changes"
             className="min-h-[150px]"
             disabled={isSubmitting}
             onChange={(e) => setChanges(e.target.value)}

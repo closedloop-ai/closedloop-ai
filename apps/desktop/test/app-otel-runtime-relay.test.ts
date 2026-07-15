@@ -114,3 +114,22 @@ test("OTEL_SDK_DISABLED keeps the relay transport inert", async () => {
   assert.equal(transport.startContexts.length, 0);
   assert.equal(transport.shipments.length, 0);
 });
+
+test("relay handshake context carries the normalized service.version, never 0.0 (FEA-2199)", async () => {
+  const transport = createStubTransport();
+  const runtime = createDesktopOtelRuntime({
+    appVersion: "0.0",
+    env: { CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod" },
+    getAppInstallationId: () => "install_relay_version",
+    isPackaged: false,
+    telemetryTransport: transport,
+  });
+  activeRuntime = runtime;
+  await runtime.start();
+
+  // The transport handshake must agree with the resource attribute: an unusable
+  // version is normalized to the sentinel before BOTH are stamped.
+  assert.equal(transport.startContexts.length, 1);
+  assert.equal(transport.startContexts[0]?.serviceVersion, "0.0.0-unknown");
+  assert.notEqual(transport.startContexts[0]?.serviceVersion, "0.0");
+});

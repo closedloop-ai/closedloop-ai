@@ -6,22 +6,36 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { loadSessionsFromDb } from "../src/main/collectors/opencode/opencode-parser.js";
 import {
-  emptyArtifacts,
-  emptyUsageExtras,
   Harness,
   type NormalizedSession,
 } from "../src/main/collectors/types.js";
-import {
-  getArtifactSessionUsage,
-  openSqliteAgentDatabase,
-} from "../src/main/database/sqlite.js";
+import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { getArtifactSessionUsage } from "../src/main/database/sync-source.js";
 import {
   ModelPricingCurrency,
   ModelPricingSource,
 } from "../src/main/model-pricing/model-pricing-fixture.js";
 import { computeExpectedTokenCost } from "./model-pricing-test-utils.js";
+import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
 type SqliteDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
+
+const CACHE_COST_EPSILON = 1e-12;
+
+function assertCacheCostEpsilon(
+  cCache: number | undefined,
+  eventRows: Record<string, unknown>[],
+  label: string
+): void {
+  const expectedCache =
+    sumEventCost(eventRows, "cache_read_cost_usd_estimated") +
+    sumEventCost(eventRows, "cache_creation_cost_usd_estimated");
+  // biome-ignore lint/suspicious/noMisplacedAssertion: helper called from test blocks
+  assert.ok(
+    Math.abs((cCache ?? 0) - expectedCache) < CACHE_COST_EPSILON,
+    `${label} cCache within epsilon: ${cCache} vs ${expectedCache}`
+  );
+}
 
 test("SQLite open and reopen leave model pricing rows empty", async () => {
   const { db, dir, dataDir } = await openTempDb();
@@ -83,16 +97,16 @@ test("Codex import persists token, event, session, projection, sync, and bucket 
         cost_usd_estimated: eventCost.costUsd,
         input_cost_usd_estimated: eventCost.inputCostUsd,
         output_cost_usd_estimated: eventCost.outputCostUsd,
-        cache_read_cost_usd_estimated: eventCost.cacheCostUsd,
-        cache_creation_cost_usd_estimated: null,
+        cache_read_cost_usd_estimated: eventCost.cacheReadCostUsd,
+        cache_creation_cost_usd_estimated: eventCost.cacheWriteCostUsd,
       },
       {
         model: "gpt-5-codex",
         cost_usd_estimated: eventCost.costUsd,
         input_cost_usd_estimated: eventCost.inputCostUsd,
         output_cost_usd_estimated: eventCost.outputCostUsd,
-        cache_read_cost_usd_estimated: eventCost.cacheCostUsd,
-        cache_creation_cost_usd_estimated: null,
+        cache_read_cost_usd_estimated: eventCost.cacheReadCostUsd,
+        cache_creation_cost_usd_estimated: eventCost.cacheWriteCostUsd,
       },
     ]);
 
@@ -125,9 +139,10 @@ test("Codex import persists token, event, session, projection, sync, and bucket 
       synced[0].activityBuckets?.[0].cOut,
       sumEventCost(eventRows, "output_cost_usd_estimated")
     );
-    assert.equal(
+    assertCacheCostEpsilon(
       synced[0].activityBuckets?.[0].cCache,
-      sumEventCost(eventRows, "cache_read_cost_usd_estimated")
+      eventRows,
+      "synced"
     );
 
     const artifactSlug = "FEA-2030-codex-cost";
@@ -174,8 +189,8 @@ test("OpenCode parser import persists token, event, session, sync, and bucket co
         cost_usd_estimated: usageCost.costUsd,
         input_cost_usd_estimated: usageCost.inputCostUsd,
         output_cost_usd_estimated: usageCost.outputCostUsd,
-        cache_read_cost_usd_estimated: usageCost.cacheCostUsd,
-        cache_creation_cost_usd_estimated: null,
+        cache_read_cost_usd_estimated: usageCost.cacheReadCostUsd,
+        cache_creation_cost_usd_estimated: usageCost.cacheWriteCostUsd,
       },
     ]);
     assert.deepEqual(await selectSessionCost(db, session.sessionId), {
@@ -200,9 +215,10 @@ test("OpenCode parser import persists token, event, session, sync, and bucket co
       synced[0].activityBuckets?.[0].cOut,
       sumEventCost(eventRows, "output_cost_usd_estimated")
     );
-    assert.equal(
+    assertCacheCostEpsilon(
       synced[0].activityBuckets?.[0].cCache,
-      sumEventCost(eventRows, "cache_read_cost_usd_estimated")
+      eventRows,
+      "synced"
     );
   } finally {
     await db.close();
@@ -295,16 +311,16 @@ test("Claude import persists genai-prices estimated costs (no harness gate)", as
         cost_usd_estimated: eventCost.costUsd,
         input_cost_usd_estimated: eventCost.inputCostUsd,
         output_cost_usd_estimated: eventCost.outputCostUsd,
-        cache_read_cost_usd_estimated: eventCost.cacheCostUsd,
-        cache_creation_cost_usd_estimated: null,
+        cache_read_cost_usd_estimated: eventCost.cacheReadCostUsd,
+        cache_creation_cost_usd_estimated: eventCost.cacheWriteCostUsd,
       },
       {
         model: "claude-opus-4-5",
         cost_usd_estimated: eventCost.costUsd,
         input_cost_usd_estimated: eventCost.inputCostUsd,
         output_cost_usd_estimated: eventCost.outputCostUsd,
-        cache_read_cost_usd_estimated: eventCost.cacheCostUsd,
-        cache_creation_cost_usd_estimated: null,
+        cache_read_cost_usd_estimated: eventCost.cacheReadCostUsd,
+        cache_creation_cost_usd_estimated: eventCost.cacheWriteCostUsd,
       },
     ]);
     assert.deepEqual(await selectSessionCost(db, session.sessionId), {
@@ -392,8 +408,8 @@ test("live hook transcript path persists token, event, session, sync, and bucket
         cost_usd_estimated: usageCost.costUsd,
         input_cost_usd_estimated: usageCost.inputCostUsd,
         output_cost_usd_estimated: usageCost.outputCostUsd,
-        cache_read_cost_usd_estimated: usageCost.cacheCostUsd,
-        cache_creation_cost_usd_estimated: null,
+        cache_read_cost_usd_estimated: usageCost.cacheReadCostUsd,
+        cache_creation_cost_usd_estimated: usageCost.cacheWriteCostUsd,
       },
     ]);
     assert.deepEqual(await selectSessionCost(db, "codex-live-priced"), {
@@ -418,9 +434,10 @@ test("live hook transcript path persists token, event, session, sync, and bucket
       synced[0].activityBuckets?.[0].cOut,
       sumEventCost(eventRows, "output_cost_usd_estimated")
     );
-    assert.equal(
+    assertCacheCostEpsilon(
       synced[0].activityBuckets?.[0].cCache,
-      sumEventCost(eventRows, "cache_read_cost_usd_estimated")
+      eventRows,
+      "synced"
     );
   } finally {
     await db.close();
@@ -638,7 +655,7 @@ function makeSession(input: {
   harness: Harness;
   model: string;
 }): NormalizedSession {
-  return {
+  return baseSession({
     sessionId: input.sessionId,
     name: `${input.harness} pricing session`,
     cwd: `/workspace/${input.sessionId}`,
@@ -648,7 +665,6 @@ function makeSession(input: {
     gitBranch: "fea-1845",
     startedAt: "2026-06-07T11:00:00.000Z",
     endedAt: "2026-06-07T11:10:00.000Z",
-    teams: [],
     userMessages: 1,
     assistantMessages: 1,
     tokensByModel: {
@@ -678,22 +694,8 @@ function makeSession(input: {
       },
     ],
     messageTimestamps: ["2026-06-07T11:01:00.000Z"],
-    toolUses: [],
-    plans: [],
-    compactions: [],
-    apiErrors: [],
-    fileModifiedAt: null,
-    turnDurations: [],
     entrypoint: input.harness,
-    permissionMode: null,
-    thinkingBlockCount: 0,
-    toolResultErrors: [],
-    usageExtras: emptyUsageExtras(),
-    messages: [],
-    diffStats: null,
-    slashCommands: [],
-    artifacts: emptyArtifacts(),
-  };
+  });
 }
 
 async function linkClosedloopArtifact(

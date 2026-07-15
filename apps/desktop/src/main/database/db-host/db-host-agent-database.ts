@@ -1,4 +1,4 @@
-import type { SqliteAgentDatabase } from "../sqlite.js";
+import type { DbHostAgentDatabase } from "../sqlite.js";
 import type { DbHostClient } from "./db-host-client.js";
 
 function noop(): void {
@@ -34,7 +34,7 @@ const ABSENT_OP_PATHS = new Set(["syncSource.close"]);
  */
 export function createDbHostAgentDatabase(
   client: DbHostClient
-): SqliteAgentDatabase {
+): DbHostAgentDatabase {
   const build = (path: string): unknown =>
     new Proxy(noop, {
       get(_target, prop) {
@@ -62,5 +62,5 @@ export function createDbHostAgentDatabase(
 
   // Single IPC-boundary cast: the Proxy structurally answers every
   // SqliteAgentDatabase method path, which the type system can't infer.
-  return build("") as SqliteAgentDatabase;
+  return build("") as DbHostAgentDatabase;
 }

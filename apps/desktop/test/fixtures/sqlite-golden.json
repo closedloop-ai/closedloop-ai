@@ -7,14 +7,23 @@
         "value": 1,
         "format": "number",
         "sub": "PRs found in local sessions",
-        "deltaPct": 100
+        "deltaPct": null
+      },
+      {
+        "key": "mergedCount",
+        "label": "Merged PRs",
+        "value": 0,
+        "format": "number",
+        "sub": "PRs merged in range",
+        "deltaPct": null,
+        "internal": true
       },
       {
         "key": "ttm",
         "label": "Median time to PR",
         "value": 480000,
         "format": "duration",
-        "sub": "session start → PR",
+        "sub": "session start \u2192 PR",
         "deltaPct": null
       },
       {
@@ -31,20 +40,20 @@
         "value": 0.04918,
         "format": "currency",
         "sub": "estimated AI spend in window",
-        "deltaPct": 100
+        "deltaPct": null
       },
       {
         "key": "merge-rate",
         "label": "Merge rate",
         "value": 0,
         "format": "percent",
-        "sub": "of captured PRs",
+        "sub": "of decided PRs (merged or closed)",
         "deltaPct": null
       },
       {
         "key": "pr-size",
         "label": "Median PR size",
-        "value": 0,
+        "value": null,
         "format": "number",
         "sub": "median lines changed per captured PR",
         "deltaPct": null
@@ -54,554 +63,740 @@
       "prTrend": {
         "series": [
           {
-            "key": "merged",
-            "label": "Captured PRs"
+            "key": "agent",
+            "label": "Agent-raised"
+          },
+          {
+            "key": "manual",
+            "label": "Manual/untracked"
           }
         ],
         "points": [
           {
             "date": "2026-03-22",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-23",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-24",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-25",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-26",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-27",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-28",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-29",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-30",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-03-31",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-01",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-02",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-03",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-04",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-05",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-06",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-07",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-08",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-09",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-10",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-11",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-12",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-13",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-14",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-15",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-16",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-17",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-18",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-19",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-20",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-21",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-22",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-23",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-24",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-25",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-26",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-27",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-28",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-29",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-04-30",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-01",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-02",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-03",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-04",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-05",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-06",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-07",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-08",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-09",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-10",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-11",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-12",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-13",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-14",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-15",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-16",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-17",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-18",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-19",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-20",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-21",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-22",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-23",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-24",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-25",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-26",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-27",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-28",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-29",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-30",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-05-31",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-01",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-02",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-03",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-04",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-05",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-06",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-07",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-08",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-09",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-10",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-11",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-12",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-13",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-14",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-15",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-16",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-17",
             "values": {
+              "agent": 0,
+              "manual": 1,
               "merged": 1
             }
           },
           {
             "date": "2026-06-18",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-19",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           },
           {
             "date": "2026-06-20",
             "values": {
+              "agent": 0,
+              "manual": 0,
               "merged": 0
             }
           }
@@ -1163,37 +1358,31 @@
           }
         ]
       },
-      "prByRepo": [
-        {
-          "key": "closedloop-ai/closedloop-electron",
-          "label": "closedloop-ai/closedloop-electron",
-          "value": 1
-        }
-      ],
+      "prByRepo": [],
       "meanTimeToMerge": [
         {
-          "key": "under-1h",
-          "label": "<1h",
+          "key": "lt4h",
+          "label": "< 4h",
           "value": 1
         },
         {
-          "key": "1-6h",
-          "label": "1-6h",
+          "key": "4to12h",
+          "label": "4–12h",
           "value": 0
         },
         {
-          "key": "6-24h",
-          "label": "6-24h",
+          "key": "12to24h",
+          "label": "12–24h",
           "value": 0
         },
         {
-          "key": "1-3d",
-          "label": "1-3d",
+          "key": "1to3d",
+          "label": "1–3d",
           "value": 0
         },
         {
-          "key": "over-3d",
-          "label": ">3d",
+          "key": "gt3d",
+          "label": "> 3d",
           "value": 0
         }
       ],
@@ -1206,28 +1395,18 @@
       ],
       "branchLifespan": [
         {
-          "key": "under-1h",
-          "label": "<1h",
+          "key": "short",
+          "label": "Short-lived (< 1d)",
           "value": 1
         },
         {
-          "key": "1-6h",
-          "label": "1-6h",
+          "key": "med",
+          "label": "Medium (1–7d)",
           "value": 0
         },
         {
-          "key": "6-24h",
-          "label": "6-24h",
-          "value": 0
-        },
-        {
-          "key": "1-3d",
-          "label": "1-3d",
-          "value": 0
-        },
-        {
-          "key": "over-3d",
-          "label": ">3d",
+          "key": "long",
+          "label": "Long-lived (> 7d)",
           "value": 0
         }
       ],
@@ -1275,7 +1454,7 @@
         "label": "Review backlog",
         "value": 1,
         "format": "number",
-        "sub": "captured PRs",
+        "sub": "open PRs awaiting review",
         "deltaPct": null
       },
       {
@@ -2498,20 +2677,20 @@
           {
             "day": "2026-06-16",
             "hour": 9,
-            "human": 0,
-            "agent": 6
+            "human": 4,
+            "agent": 5
           },
           {
             "day": "2026-06-17",
             "hour": 14,
-            "human": 0,
-            "agent": 2
+            "human": 1,
+            "agent": 3
           },
           {
             "day": "2026-06-18",
             "hour": 22,
-            "human": 0,
-            "agent": 4
+            "human": 6,
+            "agent": 7
           }
         ]
       },
@@ -2964,19 +3143,19 @@
           {
             "date": "2026-06-16",
             "values": {
-              "claude-sonnet-4-5": 2000
+              "claude-sonnet-4-5": 0.02
             }
           },
           {
             "date": "2026-06-17",
             "values": {
-              "gpt-5": 800
+              "gpt-5": 0
             }
           },
           {
             "date": "2026-06-18",
             "values": {
-              "claude-sonnet-4-5": 3500
+              "claude-sonnet-4-5": 0.03
             }
           },
           {
@@ -3516,19 +3695,19 @@
           {
             "date": "2026-06-16",
             "values": {
-              "autonomy": 100
+              "autonomy": 55.55555555555556
             }
           },
           {
             "date": "2026-06-17",
             "values": {
-              "autonomy": 100
+              "autonomy": 75
             }
           },
           {
             "date": "2026-06-18",
             "values": {
-              "autonomy": 100
+              "autonomy": 53.84615384615385
             }
           },
           {
@@ -3547,14 +3726,14 @@
       },
       "modelBreakdown": [
         {
-          "key": "gpt-5",
-          "label": "gpt-5",
-          "value": 800
-        },
-        {
           "key": "claude-sonnet-4-5",
           "label": "claude-sonnet-4-5",
-          "value": 5500
+          "value": 0.05
+        },
+        {
+          "key": "gpt-5",
+          "label": "gpt-5",
+          "value": 0
         }
       ],
       "tokenDistribution": [
@@ -4173,35 +4352,41 @@
     "totalOutputTokens": 2600,
     "totalCacheReadTokens": 1100,
     "totalCacheWriteTokens": 300,
+    "windowDays": 30,
     "byModel": [
       {
         "model": "claude-sonnet-4-5",
         "inputTokens": 3200,
         "outputTokens": 2300,
-        "sessions": 2
+        "sessions": 2,
+        "estimatedCostUsd": 0.05
       },
       {
         "model": "gpt-5",
         "inputTokens": 500,
         "outputTokens": 300,
-        "sessions": 1
+        "sessions": 1,
+        "estimatedCostUsd": 0
       }
     ],
     "byDay": [
       {
-        "day": "2026-06-18",
-        "inputTokens": 2000,
-        "outputTokens": 1500
+        "day": "2026-06-16",
+        "inputTokens": 1200,
+        "outputTokens": 800,
+        "estimatedCostUsd": 0.02
       },
       {
         "day": "2026-06-17",
         "inputTokens": 500,
-        "outputTokens": 300
+        "outputTokens": 300,
+        "estimatedCostUsd": 0
       },
       {
-        "day": "2026-06-16",
-        "inputTokens": 1200,
-        "outputTokens": 800
+        "day": "2026-06-18",
+        "inputTokens": 2000,
+        "outputTokens": 1500,
+        "estimatedCostUsd": 0.03
       }
     ]
   }

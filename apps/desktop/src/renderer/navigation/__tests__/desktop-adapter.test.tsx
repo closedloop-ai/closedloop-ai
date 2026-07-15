@@ -87,7 +87,7 @@ describe("createDesktopNavigation", () => {
   });
 
   it("migrates a legacy tab+sessionId hash and back() returns to the tab (AC-021.5)", () => {
-    const host = createFakeHashHost("#tab=kanban&sessionId=s-9");
+    const host = createFakeHashHost("#tab=settings&sessionId=s-9");
     const navigation = createDesktopNavigation(host);
 
     expect(navigation.getHref()).toBe("/sessions/s-9");
@@ -101,8 +101,8 @@ describe("createDesktopNavigation", () => {
     act(() => {
       result.current.actions.back();
     });
-    expect(result.current.path).toBe("/kanban");
-    expect(host.getHash()).toBe("#/kanban");
+    expect(result.current.path).toBe("/settings");
+    expect(host.getHash()).toBe("#/settings");
   });
 
   it("navigate updates path, params, and the persisted hash", () => {
@@ -136,9 +136,9 @@ describe("createDesktopNavigation", () => {
     );
 
     act(() => {
-      host.externallySetHash("#/kanban");
+      host.externallySetHash("#/settings");
     });
-    expect(result.current.path).toBe("/kanban");
+    expect(result.current.path).toBe("/settings");
 
     act(() => {
       result.current.actions.back();
@@ -174,7 +174,7 @@ describe("createDesktopNavigation", () => {
     const host = createFakeHashHost("#/dashboard");
     const navigation = createDesktopNavigation(host);
 
-    host.externallySetHash("#tab=kanban&sessionId=s-3");
+    host.externallySetHash("#tab=settings&sessionId=s-3");
     expect(navigation.getHref()).toBe("/sessions/s-3");
     expect(host.getHash()).toBe("#/sessions/s-3");
   });
@@ -208,11 +208,11 @@ describe("createDesktopNavigation", () => {
   });
 
   it("ignores external hash changes to unmapped paths", () => {
-    const host = createFakeHashHost("#/kanban");
+    const host = createFakeHashHost("#/settings");
     const navigation = createDesktopNavigation(host);
 
     host.externallySetHash("#/users/123");
-    expect(navigation.getHref()).toBe("/kanban");
+    expect(navigation.getHref()).toBe("/settings");
   });
 
   it("returns org-relative paths unchanged from useOrgPath", () => {
@@ -228,7 +228,7 @@ describe("createDesktopNavigation", () => {
     const navigation = createDesktopNavigation(host);
 
     navigation.dispose();
-    host.externallySetHash("#/kanban");
+    host.externallySetHash("#/settings");
     expect(navigation.getHref()).toBe("/dashboard");
   });
 });

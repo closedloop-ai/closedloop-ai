@@ -1,9 +1,11 @@
 import { AgentSessionsLiveBridge } from "@repo/app/agents/data-source/agent-sessions-live-bridge";
-import { AgentSessionsDataSourceProvider } from "@repo/app/agents/data-source/provider";
+import {
+  AgentComponentsDataSourceProvider,
+  AgentSessionsDataSourceProvider,
+} from "@repo/app/agents/data-source/provider";
+import { TraceCommentsDataSourceProvider } from "@repo/app/agents/data-source/trace-comments-provider";
 import type { ApiAdapter } from "@repo/app/shared/api/api-adapter";
 import { ApiAdapterProvider } from "@repo/app/shared/api/provider";
-import { AuthAdapterProvider } from "@repo/app/shared/auth/provider";
-import { createStaticAuthAdapter } from "@repo/app/shared/auth/static-auth-adapter";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { makeQueryClient } from "@repo/app/shared/query/query-client";
@@ -15,8 +17,12 @@ import {
   createDesktopRoutingAdapter,
   ensureDesktopRoutingSelection,
 } from "../engineer/desktop-routing-adapter";
+import { createDesktopTraceCommentsDataSource } from "../shared-trace-comments/desktop-trace-comments-data-source";
+import { DesktopAuthProvider } from "./desktop-auth-provider";
 import { InsightsLiveBridge } from "./insights-live-bridge";
+import { createLocalAgentComponentsDataSource } from "./local-agent-components-data-source";
 import { createLocalAgentSessionsDataSource } from "./local-agent-sessions-data-source";
+import { applyDesktopSessionsListPollDefaults } from "./sessions-list-poll-defaults";
 
 /**
  * Desktop app-core provider stack for shared `@repo/app` telemetry views.
@@ -28,29 +34,36 @@ import { createLocalAgentSessionsDataSource } from "./local-agent-sessions-data-
  * the dashboard's insights aggregates (KPI cards / heatmap / charts), which
  * read through `insightsKeys` and would otherwise stay one-shot-on-load. The
  * QueryClient runs a push model (`staleTime: Infinity`) so the bridges — not a
- * timer — own freshness.
+ * timer — own freshness. The one exception is the Sessions LIST query, which
+ * gets a background poll fallback (FEA-2187, see
+ * {@link applyDesktopSessionsListPollDefaults}): the live bridge is
+ * visibility-gated, so a hidden/offscreen renderer (CI) can defer the single
+ * post-import flush forever, stranding the list on its initial empty fetch.
  *
  * `ApiAdapterProvider` is retained (it still backs `useApiClient`, which the
  * data-source accessor constructs unconditionally, and the unused state
- * mutation) over an inert transport (`inertDesktopApiAdapter`); auth/flags stay
- * local-only static.
+ * mutation) over an inert transport (`inertDesktopApiAdapter`). Auth is now
+ * live: `DesktopAuthProvider` (FEA-2219) mirrors the main-process session
+ * manager into the shared `AuthAdapter` over IPC, replacing the former static
+ * signed-out adapter; feature flags stay local-only static.
  */
 export function DesktopAppCoreProvider({
   children,
 }: Readonly<{ children: ReactNode }>) {
-  const [queryClient] = useState(() =>
-    makeQueryClient({ staleTime: Number.POSITIVE_INFINITY })
-  );
-  const [authAdapter] = useState(() =>
-    createStaticAuthAdapter({
-      getToken: () => Promise.resolve(null),
-      orgId: null,
-      userId: null,
-    })
-  );
+  const [queryClient] = useState(() => {
+    const client = makeQueryClient({ staleTime: Number.POSITIVE_INFINITY });
+    applyDesktopSessionsListPollDefaults(client);
+    return client;
+  });
   const [featureFlagAdapter] = useState(() => createStaticFeatureFlagAdapter());
+  const [agentComponentsDataSource] = useState(() =>
+    createLocalAgentComponentsDataSource(window.desktopApi)
+  );
   const [agentSessionsDataSource] = useState(() =>
     createLocalAgentSessionsDataSource(window.desktopApi)
+  );
+  const [traceCommentsDataSource] = useState(() =>
+    createDesktopTraceCommentsDataSource(window.desktopApi)
   );
 
   // Engineer gateway transport (M-001): install the shared `/api/gateway/*`
@@ -79,19 +92,27 @@ export function DesktopAppCoreProvider({
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthAdapterProvider adapter={authAdapter}>
+      <DesktopAuthProvider>
         <FeatureFlagAdapterProvider adapter={featureFlagAdapter}>
           <ApiAdapterProvider adapter={inertDesktopApiAdapter}>
-            <AgentSessionsDataSourceProvider
-              dataSource={agentSessionsDataSource}
+            <AgentComponentsDataSourceProvider
+              dataSource={agentComponentsDataSource}
             >
-              <AgentSessionsLiveBridge />
-              <InsightsLiveBridge />
-              {children}
-            </AgentSessionsDataSourceProvider>
+              <TraceCommentsDataSourceProvider
+                dataSource={traceCommentsDataSource}
+              >
+                <AgentSessionsDataSourceProvider
+                  dataSource={agentSessionsDataSource}
+                >
+                  <AgentSessionsLiveBridge />
+                  <InsightsLiveBridge />
+                  {children}
+                </AgentSessionsDataSourceProvider>
+              </TraceCommentsDataSourceProvider>
+            </AgentComponentsDataSourceProvider>
           </ApiAdapterProvider>
         </FeatureFlagAdapterProvider>
-      </AuthAdapterProvider>
+      </DesktopAuthProvider>
     </QueryClientProvider>
   );
 }

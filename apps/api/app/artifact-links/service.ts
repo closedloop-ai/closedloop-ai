@@ -450,8 +450,9 @@ type PrismaArtifactWithEndpointDetail = PrismaArtifact & {
     currentPullRequestDetail: {
       id: string;
       branchArtifactId: string | null;
-      repositoryId: string;
-      githubId: string;
+      // Nullable for desktop-produced PRs in non-App repos (FEA-2732).
+      repositoryId: string | null;
+      githubId: string | null;
       number: number;
       title: string | null;
       htmlUrl: string | null;

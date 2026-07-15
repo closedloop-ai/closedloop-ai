@@ -4,7 +4,10 @@ import type {
   GitHubInstallationInfo,
   GitHubRepository,
 } from "@repo/api/src/types/github";
-import { GitHubInstallationStatus } from "@repo/api/src/types/github";
+import {
+  GitHubInstallationStatus,
+  PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY,
+} from "@repo/api/src/types/github";
 import {
   useConfirmDifferentAccountReset,
   useDisconnectGitHub,
@@ -13,6 +16,10 @@ import {
 } from "@repo/app/github/hooks/use-github-integration";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -58,10 +65,12 @@ function SuspendedState({
               @{installation.accountLogin}
             </p>
           ) : null}
-          <div className="rounded-md border border-warning/30 bg-warning/12 p-3 text-sm text-warning-foreground">
-            Installation suspended by GitHub admin. Ask your admin to unsuspend
-            the app.
-          </div>
+          <Alert variant="warning">
+            <AlertDescription>
+              Installation suspended by GitHub admin. Ask your admin to
+              unsuspend the app.
+            </AlertDescription>
+          </Alert>
         </div>
       </div>
       <div className="flex justify-end">
@@ -292,7 +301,9 @@ export function GitHubIntegrationCard() {
   const searchParams = useSearchParamsValue();
   const confirmReset = useConfirmDifferentAccountReset();
   const requiresConfirmation = readRequiresConfirmationParams(searchParams);
-  const publicReposEnabled = useFeatureFlagEnabled("public-github-repos");
+  const publicReposEnabled = useFeatureFlagEnabled(
+    PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY
+  );
   const {
     data: status,
     isError,

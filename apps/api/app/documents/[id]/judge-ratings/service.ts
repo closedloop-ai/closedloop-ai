@@ -4,6 +4,7 @@ import type {
   UserJudgeRatingsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { withDb } from "@repo/database";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /**
@@ -60,10 +61,7 @@ export function submitJudgeRating(
         },
       });
     } catch (error) {
-      if (
-        !(error instanceof Error && "code" in error) ||
-        error.code !== "P2002"
-      ) {
+      if (getPrismaErrorCode(error) !== "P2002") {
         throw error;
       }
 

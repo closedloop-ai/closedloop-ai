@@ -31,6 +31,11 @@ describe("useAgentSessionDetail", () => {
               });
             },
           },
+          {
+            method: "GET",
+            path: "/agent-sessions/session-detail-1/trace-comments",
+            respond: () => [],
+          },
         ]}
       >
         <DetailProbe id="session-detail-1" />
@@ -99,6 +104,11 @@ describe("useAgentSessionDetail", () => {
                 releaseRefetch = resolve;
               });
             },
+          },
+          {
+            method: "GET",
+            path: "/agent-sessions/session-detail-1/trace-comments",
+            respond: () => [],
           },
         ]}
         queryData={[

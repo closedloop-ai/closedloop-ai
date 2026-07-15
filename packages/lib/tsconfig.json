@@ -1,0 +1,18 @@
+{
+  "extends": "@repo/typescript-config/base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    // Browser-safety guard (see AGENTS.md): with no ambient @types/node in scope,
+    // any use of `Buffer`/`process`/`node:*` in a lib module fails typecheck.
+    // `TextEncoder`/`TextDecoder`/`URL` come from the base `lib` (DOM + es2022),
+    // so universal Web APIs stay available.
+    "types": []
+  },
+  "include": ["**/*.ts"],
+  // `vitest.config.ts` imports `vitest/config`, whose types transitively pull in
+  // @types/node globals and would leak `Buffer`/`process` into the whole program,
+  // silently defeating the `types: []` guard above. It is config, not shipped
+  // code, and vitest loads it at runtime — so keep it out of the typecheck. Test
+  // files (`*.test.ts`) stay checked; they are browser-safe like the code.
+  "exclude": ["node_modules", "dist", "vitest.config.ts"]
+}

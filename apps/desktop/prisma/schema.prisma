@@ -64,6 +64,7 @@ model Session {
   agents                  Agent[]
   artifactLinks           SessionArtifactLink[]
   artifactLinkBackfillSeen ArtifactLinkBackfillSeen?
+  activitySegmentBackfillSeen ActivitySegmentBackfillSeen?
   codexTraceSpans         CodexTraceSpan[]
 
   @@index([startedAt(sort: Desc)], map: "idx_sessions_started_at")
@@ -114,6 +115,11 @@ model Event {
   summary   String?
   data      String?
   createdAt String? @map("created_at")
+  // FEA-2990: the working git branch this tool invocation ran on, carried
+  // straight from `NormalizedToolUse.gitBranch` at import (Claude-only today;
+  // null for Codex and for legacy events that predate this column). Enables
+  // per-event component→branch attribution instead of session-level.
+  gitBranch String? @map("git_branch")
 
   @@index([sessionId], map: "idx_events_session_id")
   @@index([agentId], map: "idx_events_agent_id")
@@ -177,6 +183,23 @@ model SessionToolAnalytics {
   @@map("session_tool_analytics")
 }
 
+/// FEA-3132: per-(session, message-timestamp, turn_kind) rollup for the Insights
+/// autonomy trend + activity heatmap, materialized at ingest so those reads no
+/// longer json_each-expand every message of every in-window session on every
+/// dashboard load. `ts` is the RAW UTC `$.timestamp` (re-bucketed local on read,
+/// timezone-safe); `turnKind` pre-resolves the read's role+headless predicate
+/// ('human' | 'agent'); `turnCount` collapses same-(ts,kind) messages so
+/// SUM(turnCount) == the old COUNT(*). See rebuildSessionTurnBuckets.
+model SessionTurnBucket {
+  sessionId String @map("session_id")
+  ts        String
+  turnKind  String @map("turn_kind")
+  turnCount Int    @default(1) @map("turn_count")
+
+  @@id([sessionId, ts, turnKind])
+  @@map("session_turn_bucket")
+}
+
 model TokenUsage {
   sessionId            String  @map("session_id")
   model                String
@@ -214,6 +237,11 @@ model TokenUsage {
 
   @@id([sessionId, model])
   @@index([sessionId], map: "idx_token_usage_session")
+  // perf (#2481): partial indexes bounding the boot-time reprice scan
+  // (`repriceUnpricedTokenUsage`). Mirrors migration
+  // 0016_token_usage_reprice_index; keep both in sync.
+  @@index([sessionId], map: "idx_token_usage_unpriced", where: raw("cost_usd_estimated IS NULL"))
+  @@index([sessionId], map: "idx_token_usage_compacted", where: raw("baseline_input > 0 OR baseline_output > 0 OR baseline_cache_read > 0 OR baseline_cache_write > 0"))
   @@map("token_usage")
 }
 
@@ -524,6 +552,21 @@ model PullRequest {
   @@map("pull_requests")
 }
 
+/// Durable cache of cloud-sourced GitHub branch overlays used by Desktop while
+/// offline or when a refresh fails. The JSON payload preserves omitted fields so
+/// old local GitHub enrichment does not become the writer for absent cloud data.
+model CloudGithubBranchOverlay {
+  identityKey  String @map("identity_key")
+  repoFullName String @map("repo_full_name")
+  branchName   String @map("branch_name")
+  overlay      Json
+  lastSyncedAt String @map("last_synced_at")
+
+  @@id([identityKey, repoFullName, branchName])
+  @@index([identityKey, lastSyncedAt], map: "idx_cloud_github_branch_overlays_identity_synced")
+  @@map("cloud_github_branch_overlays")
+}
+
 model PrBackfillSeen {
   sessionId   String  @id @map("session_id")
   filePath    String? @map("file_path")
@@ -531,6 +574,43 @@ model PrBackfillSeen {
   scannedAt   String? @map("scanned_at")
 
   @@map("pr_backfill_seen")
+}
+
+/// Desktop-local trace comments. These are the durable source of truth for the
+/// Electron app; cloud comment/thread ids are attached after best-effort sync.
+model TraceComment {
+  id                  String  @id
+  threadId            String  @map("thread_id")
+  targetType          String  @map("target_type")
+  targetId            String  @map("target_id")
+  artifactId          String  @map("artifact_id")
+  surface             String
+  status              String  @default("OPEN")
+  anchor              Json
+  body                String
+  authorId            String  @map("author_id")
+  authorName          String? @map("author_name")
+  authorAvatarUrl     String? @map("author_avatar_url")
+  canEdit             Boolean @default(false) @map("can_edit")
+  canDelete           Boolean @default(false) @map("can_delete")
+  cloudCommentId      String? @map("cloud_comment_id")
+  cloudThreadId       String? @map("cloud_thread_id")
+  profileId           String? @map("profile_id")
+  syncComputeTargetId String? @map("sync_compute_target_id")
+  syncUserId          String? @map("sync_user_id")
+  syncOrganizationId  String? @map("sync_organization_id")
+  replies             Json    @default("[]")
+  syncStatus          String  @default("local_pending") @map("sync_status")
+  lastSyncAttemptAt   String? @map("last_sync_attempt_at")
+  syncError           String? @map("sync_error")
+  createdAt           String  @map("created_at")
+  updatedAt           String  @map("updated_at")
+
+  @@unique([cloudCommentId], map: "idx_trace_comments_cloud_comment", where: raw("cloud_comment_id IS NOT NULL"))
+  @@index([targetType, targetId, createdAt, id], map: "idx_trace_comments_target")
+  @@index([profileId, syncComputeTargetId, syncUserId, syncOrganizationId], map: "idx_trace_comments_sync_scope")
+  @@index([syncStatus], map: "idx_trace_comments_sync_status")
+  @@map("trace_comments")
 }
 
 model Artifact {
@@ -559,6 +639,8 @@ model Artifact {
   prState            String? @map("pr_state")
   mergeCommitSha     String? @map("merge_commit_sha")
   baseRef            String? @map("base_ref")
+  firstPushedAt      String? @map("first_pushed_at")
+  pushSource         String? @map("push_source")
   observedAt         String? @map("observed_at")
   createdAt          String  @map("created_at")
   lastSeenAt         String  @map("last_seen_at")
@@ -703,4 +785,157 @@ model ArtifactLinkBackfillSeen {
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("artifact_link_backfill_seen")
+}
+
+// FEA-2267: persisted per-session activity-segment tiling (state-aware spend
+// attribution, PRD-488). The deterministic `id` is a sha256(sessionId|startMs|
+// version) slice. `phase` is a free TEXT column (taxonomy stored as data,
+// Q-001): adding/renaming a phase is an ACTIVITY_CLASSIFIER_VERSION bump +
+// backfill re-derive, never a migration. `evidenceLayers` is a JSON array
+// (empty for the stub; FEA-2268 populates the evidence taxonomy), modelled as
+// `Json` like `SyncState.observedIdsAtTopUpdatedAt`. No FK to `sessions`:
+// segments are re-derived per import and the deletion paths
+// (`deleteSessionRow`, `sweepExpiredSessions`) purge them via the typed
+// delegate, matching how the other no-cascade child tables are cleaned up.
+model SessionActivitySegment {
+  id             String @id
+  sessionId      String @map("session_id")
+  phase          String
+  startMs        BigInt @map("start_ms")
+  endMs          BigInt @map("end_ms")
+  confidence     Float  @default(1)
+  evidenceLayers Json   @default("[]") @map("evidence_layers")
+  version        Int
+  workItemRef    String? @map("work_item_ref")
+  observedAt     String  @map("observed_at")
+
+  @@index([sessionId, startMs], map: "idx_session_activity_segments_session_start")
+  @@map("session_activity_segments")
+}
+
+// FEA-2267: backfill high-water-mark for the activity-segment derivation,
+// mirroring `artifact_link_backfill_seen`. A session is re-tiled when its
+// transcript mtime changes OR `classifier_version` is below the current
+// ACTIVITY_CLASSIFIER_VERSION (a version bump re-derives all history).
+model ActivitySegmentBackfillSeen {
+  sessionId         String  @id @map("session_id")
+  filePath          String? @map("file_path")
+  fileMtimeMs       BigInt? @map("file_mtime_ms")
+  classifierVersion Int     @map("classifier_version")
+  scannedAt         String? @map("scanned_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("activity_segment_backfill_seen")
+}
+
+// FEA-2715 (PRD-512, PLN-1288): per-transcript-file fingerprint + upload-cursor
+// for the raw-transcript archive lane. One row per logical transcript file,
+// keyed by (externalSessionId, fileKey) where fileKey is "main" or
+// "subagent:{fileId}" (mirrors the PLN-1287 control-plane identity). This lane
+// is entirely separate from the 256 KiB metadata lane (`SyncState`), so there
+// is NO FK to `sessions` — a transcript may be discovered before its session
+// row exists, and the store is a pure cache/queue: server state from the
+// `sync-plan` endpoint is always authoritative (recovery invariant 2), so
+// losing this table is harmless (worst case: re-discovery + noop plans).
+//
+// `syncedByteOffset` / `syncedSha256` / `storedEtag` cache the server's
+// authoritative post-`complete` state; `syncedComputeTargetId` records which
+// compute target that cache belongs to, so an account/machine switch never
+// reuses another target's offset (the executor re-plans from server truth when
+// it differs). `syncedSha256` is the sha256 of `[0, syncedByteOffset)` and is
+// sent back as `prefixSha256` on the next `sync-plan` to detect
+// compaction/rewrite. Numeric columns are BigInt (byte offsets/sizes, mtime ms)
+// per the schema convention; timestamps are TEXT ISO strings.
+model TranscriptSyncState {
+  externalSessionId     String  @map("external_session_id")
+  fileKey               String  @map("file_key")
+  sourceHarness         String  @map("source_harness")
+  sourcePath            String  @map("source_path")
+  sourcePathHash        String  @map("source_path_hash")
+  lastMtimeMs           BigInt? @map("last_mtime_ms")
+  lastSize              BigInt? @map("last_size")
+  syncedByteOffset      BigInt  @default(0) @map("synced_byte_offset")
+  syncedSha256          String? @map("synced_sha256")
+  storedEtag            String? @map("stored_etag")
+  syncedComputeTargetId String? @map("synced_compute_target_id")
+  status                String  @default("idle") @map("status")
+  syncClass             String  @default("live") @map("sync_class")
+  retryCount            Int     @default(0) @map("retry_count")
+  nextAttemptAt         String? @map("next_attempt_at")
+  lastError             String? @map("last_error")
+  createdAt             String  @map("created_at")
+  updatedAt             String  @map("updated_at")
+
+  @@id([externalSessionId, fileKey])
+  @@index([status, nextAttemptAt], map: "idx_transcript_sync_state_status_next")
+  @@index([syncClass, status], map: "idx_transcript_sync_state_class_status")
+  @@map("transcript_sync_state")
+}
+
+// FEA-2923 (T-8.1): first-class component inventory for cloud sync. One row per
+// detected component across all kinds. Event-driven existence discovery: the
+// first time a component is observed in the event stream its existence is
+// registered. Device-scoped (no session FK), tombstone via uninstalled_at,
+// mirrors the lifecycle-timestamp pattern of `Skill` / `AgentPack`.
+// Deterministic id = sha256(componentKind|harness|externalId).
+// Unique dedup on (componentKind, externalId) per §1b design.
+model AgentComponent {
+  id            String  @id                           // sha256(kind|harness|externalId)
+  componentKind String  @map("component_kind")        // skill|command|subagent|mcp|hook|plugin|workflow|config|tool
+  externalId    String  @map("external_id")           // scanner-stable id (skillId, packId+harness+installPath, …)
+  componentKey  String? @map("component_key")         // invocation-join key (skill name, /command name, mcp server, subagent_type)
+  name          String?
+  version       String?
+  harness       String?
+  source        String?                               // "user" | "project" | "local" (settings scope)
+  description   String?
+  sourceUrl     String? @map("source_url")
+  installPath   String? @map("install_path")
+  packId        String? @map("pack_id")              // parent pack when the component ships inside one
+  scope         String?                              // "user" | "project" | "local"
+  projectPath   String? @map("project_path")         // populated for project-scoped components
+  metadata      Json?                                // kind-specific extras (hook event+matcher, mcp transport, config keys)
+  firstSeenAt   String? @map("first_seen_at")        // ISO string; set on first upsert (detectedAt equivalent)
+  lastSeenAt    String? @map("last_seen_at")
+  uninstalledAt String? @map("uninstalled_at")       // tombstone, like skills/agent_packs
+
+  @@unique([componentKind, externalId], map: "idx_agent_components_kind_ext")
+  @@index([componentKind], map: "idx_agent_components_kind")
+  @@index([packId], map: "idx_agent_components_pack", where: raw("pack_id IS NOT NULL"))
+  @@index([componentKind, componentKey], map: "idx_agent_components_kind_key", where: raw("component_key IS NOT NULL"))
+  @@index([lastSeenAt], map: "idx_agent_components_last_seen")
+  @@map("agent_components")
+}
+
+// FEA-2923 (T-8.2): per-(component, session) invocation rows. Materialized at
+// import (no transcript re-parse) in the same transaction that rebuilds
+// session_tool_analytics. Composite PK (sessionId, componentKind, componentKey).
+// No FK on session_id — matches token_usage / session_tool_analytics convention
+// (a FK would drift prisma-migrations-agreement; see schema note at 208-211).
+// agentComponentId is nullable: null for built-in tools with no inventory row.
+// startedDay mirrors session_tool_analytics for time-series queries.
+model AgentComponentSessionUsage {
+  sessionId        String  @map("session_id")
+  componentKind    String  @map("component_kind")
+  componentKey     String  @map("component_key")        // skill/command name, tool_name, mcp server, subagent_type
+  // FEA-2990: the git branch this usage bucket ran on, derived from per-event
+  // `events.git_branch`. Empty string '' is the sentinel for "no branch"
+  // (Codex, legacy events, non-tool kinds) so it can sit in the composite PK
+  // (SQLite PK columns are NOT NULL). A single session that switches branches
+  // mid-run now produces one usage row per (component, branch).
+  gitBranch        String  @default("") @map("git_branch")
+  agentComponentId String? @map("agent_component_id")   // nullable: null for built-in tools
+  harness          String?
+  invocations      Int     @default(0)
+  errorCount       Int     @default(0) @map("error_count")
+  firstInvokedAt   String? @map("first_invoked_at")
+  lastInvokedAt    String? @map("last_invoked_at")
+  startedDay       String? @map("started_day")          // UTC day bucket, mirrors session_tool_analytics
+
+  @@id([sessionId, componentKind, componentKey, gitBranch])
+  @@index([componentKind, componentKey], map: "idx_acsu_kind_key")
+  @@index([agentComponentId], map: "idx_acsu_component", where: raw("agent_component_id IS NOT NULL"))
+  @@index([startedDay], map: "idx_acsu_day")
+  @@map("agent_component_session_usage")
 }

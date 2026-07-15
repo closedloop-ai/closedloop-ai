@@ -50,6 +50,87 @@ function pruneResultBacklog(): void {
   }
 }
 
+// Index of the last backlog event the client already acknowledged, located by
+// its sequence. Everything at or before this position was streamed before the
+// reconnect — including events without a sequence, which can't be compared to
+// the cursor directly — so it must not be replayed.
+function findLastAcknowledgedIndex(
+  events: RelayResultEvent[],
+  afterSequence: number | undefined
+): number {
+  if (afterSequence === undefined) {
+    return -1;
+  }
+  let lastAcknowledgedIndex = -1;
+  events.forEach((event, index) => {
+    if (typeof event.sequence === "number" && event.sequence <= afterSequence) {
+      lastAcknowledgedIndex = index;
+    }
+  });
+  if (lastAcknowledgedIndex !== -1) {
+    return lastAcknowledgedIndex;
+  }
+  // No anchoring sequenced event remained in the backlog (it was shifted off
+  // due to MAX_RESULT_EVENTS overflow). Fall back to positional suppression:
+  // the first surviving sequenced event whose sequence is strictly greater than
+  // afterSequence marks the boundary — every unsequenced event before it was
+  // delivered before the reconnect and must not be replayed.
+  const firstNewSequencedIndex = events.findIndex(
+    (event) =>
+      typeof event.sequence === "number" && event.sequence > afterSequence
+  );
+  return firstNewSequencedIndex > 0 ? firstNewSequencedIndex - 1 : -1;
+}
+
+// A backlog event is suppressed on replay when the subscriber has already
+// processed it: a sequenced event whose sequence is at or below the reconnect
+// cursor, or an unsequenced event sitting at or before the last acknowledged
+// event's position.
+function isAlreadyAcknowledged(
+  event: RelayResultEvent,
+  index: number,
+  afterSequence: number | undefined,
+  lastAcknowledgedIndex: number
+): boolean {
+  if (typeof event.sequence === "number") {
+    return afterSequence !== undefined && event.sequence <= afterSequence;
+  }
+  return index <= lastAcknowledgedIndex;
+}
+
+// Replay the buffered result backlog to a freshly (re)subscribed handler,
+// skipping events already delivered before the reconnect cursor. Returns the
+// count of events actually (re)dispatched.
+function replayResultBacklog(
+  operationId: string,
+  events: RelayResultEvent[],
+  handler: ResultHandler,
+  afterSequence: number | undefined
+): number {
+  const lastAcknowledgedIndex = findLastAcknowledgedIndex(
+    events,
+    afterSequence
+  );
+  let replayedCount = 0;
+  events.forEach((event, index) => {
+    if (
+      isAlreadyAcknowledged(event, index, afterSequence, lastAcknowledgedIndex)
+    ) {
+      return;
+    }
+    replayedCount++;
+    try {
+      handler(event);
+    } catch (error) {
+      log.error("Failed replaying relay result event", {
+        operationId,
+        error,
+      });
+    }
+  });
+  return replayedCount;
+}
+
 export const relayEventBus = {
   subscribeOperations(targetId: string, handler: OperationHandler): () => void {
     let handlers = operationSubscribers.get(targetId);
@@ -131,7 +212,11 @@ export const relayEventBus = {
     return { deliveredToSubscriber: true };
   },
 
-  subscribeResults(operationId: string, handler: ResultHandler): () => void {
+  subscribeResults(
+    operationId: string,
+    handler: ResultHandler,
+    options?: { afterSequence?: number }
+  ): () => void {
     pruneResultBacklog();
 
     let handlers = resultSubscribers.get(operationId);
@@ -143,24 +228,23 @@ export const relayEventBus = {
 
     const replay = resultBacklog.get(operationId);
     if (replay) {
-      for (const event of replay.events) {
-        try {
-          handler(event);
-        } catch (error) {
-          log.error("Failed replaying relay result event", {
-            operationId,
-            error,
-          });
-        }
-      }
+      // On an EventSource auto-reconnect the client passes its last-seen
+      // sequence (via `afterSequence`/`Last-Event-ID`) so the backlog is not
+      // re-delivered.
+      const replayedCount = replayResultBacklog(
+        operationId,
+        replay.events,
+        handler,
+        options?.afterSequence
+      );
       // Emit once per replay trigger. `value` reflects events attempted
-      // (not confirmed-delivered) in this replay batch.
+      // (not confirmed-delivered) after the reconnect-cursor filter.
       safeEmit(() =>
         emitQueueMetric({
           metric: "replay_frequency",
           origin: ORIGIN,
           count: 1,
-          value: replay.events.length,
+          value: replayedCount,
           filterToken: FilterToken.CommandReplay,
         })
       );

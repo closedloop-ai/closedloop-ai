@@ -20,7 +20,7 @@
  * `agent_session_token_usage` / `agent_session_events` children, and the parent
  * `artifact` row. Deleting the artifact ALSO cascades to derived association
  * rows the backup does NOT capture — `artifact_links`,
- * `session_pull_request_links`, `tag_artifacts`, `favorite_artifacts`,
+ * `tag_artifacts`, `favorite_artifacts`,
  * `comment_threads`, `artifact_evaluations`, `artifact_ratings`,
  * `file_attachments`, `linear_subtasks` — and NULLs the `loops` /
  * `loop_session_artifact` pointers (`onDelete: SetNull`). The session payload
@@ -266,7 +266,6 @@ export async function countOrphanedChildren(
  */
 export type CascadeAssociationCounts = {
   artifactLinks: number;
-  sessionPrLinks: number;
   ratings: number;
   evaluations: number;
   commentThreads: number;
@@ -282,7 +281,6 @@ export type CascadeAssociationCounts = {
 
 const ZERO_ASSOCIATIONS: CascadeAssociationCounts = {
   artifactLinks: 0,
-  sessionPrLinks: 0,
   ratings: 0,
   evaluations: 0,
   commentThreads: 0,
@@ -314,7 +312,6 @@ export async function countCascadeAssociations(
           select: {
             sourceLinks: true,
             targetLinks: true,
-            sessionPrLinks: true,
             ratings: true,
             evaluations: true,
             commentThreads: true,
@@ -339,7 +336,6 @@ export async function countCascadeAssociations(
   const counts = withCounts.reduce<CascadeAssociationCounts>(
     (acc, { _count: c }) => {
       acc.artifactLinks += c.sourceLinks + c.targetLinks;
-      acc.sessionPrLinks += c.sessionPrLinks;
       acc.ratings += c.ratings;
       acc.evaluations += c.evaluations;
       acc.commentThreads += c.commentThreads;
@@ -354,7 +350,6 @@ export async function countCascadeAssociations(
   counts.loopReferences = loopReferences;
   counts.total =
     counts.artifactLinks +
-    counts.sessionPrLinks +
     counts.ratings +
     counts.evaluations +
     counts.commentThreads +
@@ -650,7 +645,7 @@ export async function main() {
     console.warn(
       `  ⚠ ${a.total} backup-uncaptured association(s) on the matched ` +
         "artifacts (NOT reversible by resync — review before executing):\n" +
-        `      artifact_links=${a.artifactLinks}, session_pr_links=${a.sessionPrLinks}, ` +
+        `      artifact_links=${a.artifactLinks}, ` +
         `comment_threads=${a.commentThreads}, ratings=${a.ratings}, ` +
         `evaluations=${a.evaluations}, tags=${a.tagArtifacts}, ` +
         `favorites=${a.favorites}, attachments=${a.fileAttachments}, ` +

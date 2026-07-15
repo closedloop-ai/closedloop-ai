@@ -70,6 +70,8 @@ function createStubRuntime(
     start: async () => {},
     emitAppLifecycleEvent: () => {},
     emitAppExceptionEvent,
+    emitIpcPerfEvent: () => {},
+    emitSyncBatchEvent: () => {},
     shutdown: async () => {},
     getBufferedRecords: () => [],
     resetBuffer: () => {},

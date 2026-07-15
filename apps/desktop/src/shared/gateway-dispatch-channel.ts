@@ -8,3 +8,6 @@
  * (which would hang every overlay request with no compile-time signal).
  */
 export const GATEWAY_DISPATCH_CHANNEL = "desktop:gateway-dispatch";
+
+/** Main-held source marker for renderer-originated gateway dispatch requests. */
+export const GATEWAY_DISPATCH_RENDERER_SOURCE = "renderer-ipc";

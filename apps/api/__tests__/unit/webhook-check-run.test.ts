@@ -7,7 +7,7 @@
  *
  * These are pure unit tests with mocked external dependencies:
  * - @repo/database (Prisma client - withDb + withDb.tx)
- * - @repo/github (queryStatusCheckRollup)
+ * - @repo/github (queryStatusCheckRollupWithProviderResult)
  * - @repo/observability/log (logging)
  */
 
@@ -48,7 +48,12 @@ vi.mock("@repo/database", () => {
 });
 
 vi.mock("@repo/github", () => ({
-  queryStatusCheckRollup: vi.fn(),
+  GitHubProviderResultStatus: {
+    Success: "success",
+    ProviderRateLimit: "provider_rate_limit",
+    ProviderUnavailable: "provider_unavailable",
+  },
+  queryStatusCheckRollupWithProviderResult: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -59,6 +64,7 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+import { mapRollupStateToChecksStatus } from "@repo/api/src/github-checks-status";
 import {
   BranchViewCheckKind,
   BranchViewChecksProviderState,
@@ -66,16 +72,20 @@ import {
 import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github";
 import { GitHubInstallationStatus } from "@repo/database";
 // Import after mocking
-import { queryStatusCheckRollup } from "@repo/github";
+import {
+  GitHubProviderResultStatus,
+  queryStatusCheckRollupWithProviderResult,
+} from "@repo/github";
 import { getMockWithDb } from "@/__tests__/utils/db-helpers";
 import { handleCheckRun } from "@/app/webhooks/github/handlers/check-run-handler";
-import { mapRollupStateToChecksStatus } from "@/lib/github-checks-status";
+import { CheckRunRetryState } from "@/lib/branch-status-check-retry";
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 import { statusRollup } from "../utils/status-check-helpers";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
-const mockQueryStatusCheckRollup = queryStatusCheckRollup as unknown as Mock;
+const mockQueryStatusCheckRollupWithProviderResult =
+  queryStatusCheckRollupWithProviderResult as unknown as Mock;
 
 // Mock database clients
 let mockDb: any;
@@ -215,6 +225,7 @@ describe("handleCheckRun", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -225,7 +236,9 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       expect(mockWithDb).not.toHaveBeenCalled();
-      expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+      expect(
+        mockQueryStatusCheckRollupWithProviderResult
+      ).not.toHaveBeenCalled();
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -237,7 +250,9 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       expect(mockWithDb).not.toHaveBeenCalled();
-      expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+      expect(
+        mockQueryStatusCheckRollupWithProviderResult
+      ).not.toHaveBeenCalled();
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -259,7 +274,9 @@ describe("handleCheckRun", () => {
       expect(data.message).toBe("Missing installation");
 
       expect(mockWithDb).not.toHaveBeenCalled();
-      expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+      expect(
+        mockQueryStatusCheckRollupWithProviderResult
+      ).not.toHaveBeenCalled();
     });
   });
 
@@ -277,6 +294,7 @@ describe("handleCheckRun", () => {
         where: {
           githubRepoId: String(event.repository.id),
           fullName: event.repository.full_name,
+          removedAt: null,
           installation: {
             installationId: String(event.installation.id),
             status: GitHubInstallationStatus.ACTIVE,
@@ -289,7 +307,9 @@ describe("handleCheckRun", () => {
           owner: true,
         },
       });
-      expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+      expect(
+        mockQueryStatusCheckRollupWithProviderResult
+      ).not.toHaveBeenCalled();
       expect(mockWithDb.tx).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -318,7 +338,9 @@ describe("handleCheckRun", () => {
           }),
         })
       );
-      expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+      expect(
+        mockQueryStatusCheckRollupWithProviderResult
+      ).not.toHaveBeenCalled();
       expect(mockWithDb.tx).not.toHaveBeenCalled();
 
       const data = await response.json();
@@ -327,7 +349,7 @@ describe("handleCheckRun", () => {
   });
 
   describe("GraphQL rollup", () => {
-    it("skips DB writes when queryStatusCheckRollup returns null", async () => {
+    it("skips DB writes when queryStatusCheckRollupWithProviderResult returns null", async () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const installationId = 99;
       const event = createCheckRunEvent({ headSha, installationId });
@@ -349,19 +371,30 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue({
-        ok: false,
-        reason: StatusCheckRollupFailureReason.GraphqlError,
-      });
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess({
+          ok: false,
+          reason: StatusCheckRollupFailureReason.GraphqlError,
+        })
+      );
       mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
         deletedAt: null,
       });
+      mockTx.branchDetail.updateMany.mockImplementation((args: any) => {
+        if (
+          args?.data?.checkRunRetryState === CheckRunRetryState.Pending &&
+          args?.where?.checkRunRetryResourceId !== undefined
+        ) {
+          return Promise.resolve({ count: 0 });
+        }
+        return Promise.resolve({ count: 1 });
+      });
 
       const response = await handleCheckRun(event);
 
-      expect(mockQueryStatusCheckRollup).toHaveBeenCalledWith(
+      expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
         String(installationId),
         "org",
         "repo",
@@ -385,6 +418,64 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+    });
+
+    it("schedules rate-limited check_run retries with provider retry metadata", async () => {
+      const headSha = "abc123def456abc123def456abc123def456abc1";
+      const event = createCheckRunEvent({
+        checkRunId: 24_681,
+        headSha,
+        installationId: 99,
+      });
+      const now = new Date("2026-07-03T01:00:00Z");
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-123",
+        owner: "org",
+        name: "repo",
+      });
+      mockDb.branchDetail.findFirst.mockResolvedValue(
+        makeBranchDetailRow({
+          artifactId: "artifact-pr-123",
+          number: 42,
+          title: "Test PR",
+          externalUrl: "https://github.com/org/repo/pull/42",
+          headSha,
+          workstreamId: "ws-uuid-123",
+          linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
+        })
+      );
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue({
+        status: GitHubProviderResultStatus.ProviderRateLimit,
+        retryAfterSeconds: 37,
+      });
+      mockTx.branchDetail.findUnique.mockResolvedValue({
+        headSha,
+        checksStatus: "UNKNOWN",
+        deletedAt: null,
+      });
+
+      const response = await handleCheckRun(event);
+
+      expect(mockTx.branchDetail.updateMany).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            checkRunRetryNextAt: new Date("2026-07-03T01:00:37Z"),
+            checkRunRetryReason: StatusCheckRollupFailureReason.RateLimited,
+            checkRunRetryState: CheckRunRetryState.Pending,
+          }),
+          where: expect.objectContaining({
+            artifact: { organizationId: "org-1" },
+            artifactId: "artifact-pr-123",
+            deletedAt: null,
+            headSha,
+            repositoryId: "repo-uuid-123",
+          }),
+        })
+      );
+      expect(response.status).toBe(200);
     });
   });
 
@@ -416,7 +507,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
 
       // TOCTOU guard: re-read in tx returns same headSha and different checksStatus
       mockTx.branchDetail.findUnique.mockResolvedValue({
@@ -430,7 +523,7 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       // Verify GraphQL call
-      expect(mockQueryStatusCheckRollup).toHaveBeenCalledWith(
+      expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
         String(installationId),
         "org",
         "repo",
@@ -489,24 +582,26 @@ describe("handleCheckRun", () => {
           linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
         })
       );
-      mockQueryStatusCheckRollup.mockResolvedValue({
-        ok: true,
-        state: "SUCCESS",
-        totalCount: 1,
-        truncated: false,
-        checks: [
-          {
-            id: "check-run-1",
-            kind: BranchViewCheckKind.CheckRun,
-            providerNodeId: "node-1",
-            name: "Build",
-            status: "COMPLETED",
-            conclusion: "SUCCESS",
-            targetUrl: "https://github.com/org/repo/actions/runs/1",
-            position: 0,
-          },
-        ],
-      });
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess({
+          ok: true,
+          state: "SUCCESS",
+          totalCount: 1,
+          truncated: false,
+          checks: [
+            {
+              id: "check-run-1",
+              kind: BranchViewCheckKind.CheckRun,
+              providerNodeId: "node-1",
+              name: "Build",
+              status: "COMPLETED",
+              conclusion: "SUCCESS",
+              targetUrl: "https://github.com/org/repo/actions/runs/1",
+              position: 0,
+            },
+          ],
+        })
+      );
       mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "PASSING",
@@ -571,7 +666,9 @@ describe("handleCheckRun", () => {
         }
         return Promise.resolve(null);
       });
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
       mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
@@ -624,7 +721,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
 
       // TOCTOU re-read returns same status (PASSING == PASSING after mapping SUCCESS)
       mockTx.branchDetail.findUnique.mockResolvedValue({
@@ -677,7 +776,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
 
       // TX re-read returns a different headSha (synchronize event arrived)
       mockTx.branchDetail.findUnique.mockResolvedValue({
@@ -719,7 +820,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
       mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
         checksStatus: "UNKNOWN",
@@ -770,7 +873,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
 
       // TX re-read shows the branch was deleted between initial read and tx.
       mockTx.branchDetail.findUnique.mockResolvedValue({
@@ -814,7 +919,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
 
       // TX re-read: PR was deleted
       mockTx.branchDetail.findUnique.mockResolvedValue(null);
@@ -853,7 +960,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("FAILURE"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("FAILURE"))
+      );
 
       mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
@@ -902,7 +1011,9 @@ describe("handleCheckRun", () => {
         })
       );
 
-      mockQueryStatusCheckRollup.mockResolvedValue(statusRollup("SUCCESS"));
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
 
       mockTx.branchDetail.findUnique.mockResolvedValue({
         headSha,
@@ -921,3 +1032,10 @@ describe("handleCheckRun", () => {
     });
   });
 });
+
+function providerSuccess<T>(value: T) {
+  return {
+    status: GitHubProviderResultStatus.Success,
+    value,
+  };
+}

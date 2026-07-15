@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -37,11 +39,12 @@ const SCHEMA_MAX_BYTES_DECLARATION_PATTERN =
 const mode = parseMode();
 const packageRoot = process.cwd();
 const smokeRoot = mkdtempSync(join(tmpdir(), "telemetry-contract-sample-"));
-const samplePath = join(
+let samplePath = join(
   packageRoot,
   mode === "source" ? SAMPLE_SOURCE_PATH : SAMPLE_DIST_PATH
 );
-const SCHEMA_MAX_BYTES = readSampleSchemaMaxBytes(samplePath);
+let distGenAiSchemaPath = join(packageRoot, GENERATED_GEN_AI_SCHEMA_PATH);
+let schemaMaxBytes = 0;
 
 type SampleMode = "source" | "dist";
 
@@ -72,7 +75,11 @@ main().catch((error) => {
 async function main() {
   try {
     assertToolAvailable("jq");
+    if (mode === "dist") {
+      snapshotDistModeArtifacts();
+    }
     assertSampleIsRunnable(samplePath);
+    schemaMaxBytes = readSampleSchemaMaxBytes(samplePath);
     await assertCommandHelperReportsSpawnAndTimeoutFailures();
 
     if (mode === "source") {
@@ -109,11 +116,7 @@ async function runSourceMode() {
 }
 
 async function runDistMode() {
-  const schemaPath = join(packageRoot, GENERATED_GEN_AI_SCHEMA_PATH);
-  invariant(
-    existsSync(schemaPath),
-    "dist GenAI schema must exist before dist mode"
-  );
+  const schemaPath = distGenAiSchemaPath;
   const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as JsonSchema;
 
   await assertCanonicalRows(schemaPath);
@@ -503,7 +506,7 @@ async function assertSchemaSetupFailures(
   schema: JsonSchema
 ) {
   const oversizedSchemaPath = join(smokeRoot, "oversized.schema.json");
-  writeFileSync(oversizedSchemaPath, `${" ".repeat(SCHEMA_MAX_BYTES + 1)}\n`);
+  writeFileSync(oversizedSchemaPath, `${" ".repeat(schemaMaxBytes + 1)}\n`);
   assertSetupFailure(
     await runSample(["--schema", oversizedSchemaPath], {
       stdin: `${JSON.stringify(canonicalRow())}\n`,
@@ -742,7 +745,7 @@ async function assertUrlTempFilesAreCleaned(schemaPath: string) {
 
   await withHttpServer(
     (_request, response) => {
-      const oversizedBody = `{"truncated":${" ".repeat(SCHEMA_MAX_BYTES + 1)}}`;
+      const oversizedBody = `{"truncated":${" ".repeat(schemaMaxBytes + 1)}}`;
       response.writeHead(200, {
         "content-length": 2,
         "content-type": "application/json",
@@ -842,12 +845,12 @@ function readSampleSchemaMaxBytes(path: string): number {
 }
 
 function oversizedSchemaBody(): string {
-  return `${" ".repeat(SCHEMA_MAX_BYTES + 1)}\n`;
+  return `${" ".repeat(schemaMaxBytes + 1)}\n`;
 }
 
 function writeChunkedOversizedSchemaResponse(response: ServerResponse) {
   response.writeHead(200, { "content-type": "application/json" });
-  let remainingBytes = SCHEMA_MAX_BYTES + 2;
+  let remainingBytes = schemaMaxBytes + 2;
   while (remainingBytes > 0) {
     const chunkSize = Math.min(65_536, remainingBytes);
     response.write(" ".repeat(chunkSize));
@@ -1039,6 +1042,34 @@ function assertSampleIsRunnable(path: string) {
       "Sample script must be executable"
     );
   }
+}
+
+function snapshotDistModeArtifacts() {
+  samplePath = snapshotDistFile(
+    SAMPLE_DIST_PATH,
+    "validate-perf-jsonl.dist.sh"
+  );
+  distGenAiSchemaPath = snapshotDistFile(
+    GENERATED_GEN_AI_SCHEMA_PATH,
+    "gen-ai.dist.schema.json"
+  );
+}
+
+function snapshotDistFile(relativePath: string, fileName: string): string {
+  const sourcePath = join(packageRoot, relativePath);
+  invariant(
+    existsSync(sourcePath),
+    `dist artifact is missing: ${basename(sourcePath)}`
+  );
+  const sourceStat = statSync(sourcePath);
+  invariant(
+    sourceStat.size > 0,
+    `dist artifact must not be empty: ${basename(sourcePath)}`
+  );
+  const snapshotPath = join(smokeRoot, fileName);
+  copyFileSync(sourcePath, snapshotPath);
+  chmodSync(snapshotPath, sourceStat.mode % 0o1000);
+  return snapshotPath;
 }
 
 function assertToolAvailable(toolName: string) {

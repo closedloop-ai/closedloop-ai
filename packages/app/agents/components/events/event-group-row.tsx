@@ -41,6 +41,7 @@ export function EventGroupRow({
       )}
     >
       <button
+        aria-expanded={expanded}
         className={cn(
           "flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/35",
           isMultiEvent && "bg-cyan-500/[0.03] hover:bg-cyan-500/[0.06]"

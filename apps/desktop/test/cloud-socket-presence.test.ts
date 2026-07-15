@@ -27,6 +27,9 @@ import { GATEWAY_PROTOCOL_VERSION } from "../src/shared/contracts.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
+const HELLO_ACK_TIMEOUT_RESET_PATTERN =
+  /socket\.on\("desktop\.hello\.ack",[\s\S]*?this\.helloAckTimeoutCount = 0;/;
+
 function createStubOptions(
   overrides?: Partial<CloudSocketOptions>
 ): CloudSocketOptions {
@@ -684,16 +687,9 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
       new URL("../src/main/cloud-socket.ts", import.meta.url),
       "utf8"
     );
-    const ackHandlerSection = source.match(
-      /socket\.on\("desktop\.hello\.ack",[\s\S]{0,2000}?\}\);/
-    );
-    assert.ok(
-      ackHandlerSection,
-      "desktop.hello.ack listener must exist in cloud-socket.ts"
-    );
     assert.match(
-      ackHandlerSection[0],
-      /this\.helloAckTimeoutCount = 0;/,
+      source,
+      HELLO_ACK_TIMEOUT_RESET_PATTERN,
       "desktop.hello.ack listener must reset helloAckTimeoutCount to 0"
     );
   });

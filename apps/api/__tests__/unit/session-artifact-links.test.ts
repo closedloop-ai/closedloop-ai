@@ -8,7 +8,7 @@
  *      shape, zero-sessions early return, byModel sort order (AC 65).
  *
  * The private helpers (resolveArtifactSlugMap, mergeArtifactRefsBySlug,
- * roleFromMethod, persistArtifactLinks, persistSessionPrLinks) are not
+ * roleFromMethod, persistArtifactLinks, persistSessionPrArtifactLinks) are not
  * exported; their logic is validated in-package via the public API and through
  * the type tests in packages/api/src/types/session-artifact-link.test.ts.
  */
@@ -36,7 +36,6 @@ import {
 } from "@repo/api/src/types/agent-session";
 import {
   type ArtifactSessionUsageSummary,
-  SessionPrLinkSource,
   SessionPrRelationType,
 } from "@repo/api/src/types/session-artifact-link";
 import { withDb } from "@repo/database";
@@ -186,17 +185,13 @@ describe("parseDesktopAgentSessionsPayload — backward compatibility", () => {
 // Const-object enum values (AC 59)
 // ---------------------------------------------------------------------------
 
-describe("SessionPrRelationType and SessionPrLinkSource enum values", () => {
+describe("SessionPrRelationType enum values", () => {
   it("SessionPrRelationType.Created is 'CREATED'", () => {
     expect(SessionPrRelationType.Created).toBe("CREATED");
   });
 
   it("SessionPrRelationType.Referenced is 'REFERENCED'", () => {
     expect(SessionPrRelationType.Referenced).toBe("REFERENCED");
-  });
-
-  it("SessionPrLinkSource.Deterministic is 'DETERMINISTIC'", () => {
-    expect(SessionPrLinkSource.Deterministic).toBe("DETERMINISTIC");
   });
 });
 

@@ -1,6 +1,10 @@
 import { Priority } from "@repo/api/src/types/common";
 import type { DocumentWithProject } from "@repo/api/src/types/document";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import {
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import {
@@ -51,7 +55,7 @@ describe("groupByMode — status", () => {
 
   test("orders sections by STATUS enum order regardless of input order", () => {
     const items = [
-      makeItem("1", { status: DocumentStatus.Done }),
+      makeItem("1", { status: DocumentStatus.Approved }),
       makeItem("2", { status: DocumentStatus.Draft }),
       makeItem("3", { status: DocumentStatus.InReview }),
     ];
@@ -60,7 +64,7 @@ describe("groupByMode — status", () => {
     expect(sections.map((s) => s.descriptor.status)).toEqual([
       DocumentStatus.Draft,
       DocumentStatus.InReview,
-      DocumentStatus.Done,
+      DocumentStatus.Approved,
     ]);
   });
 
@@ -73,6 +77,26 @@ describe("groupByMode — status", () => {
     const [section] = groupByMode(items, identity, GroupByMode.Status);
 
     expect(section.values.map((v) => v.data.id)).toEqual(["a", "b", "c"]);
+  });
+
+  test("labels headers in title case from the combined vocabulary and carries the artifact type", () => {
+    const featureItem: DocumentRowItem = {
+      kind: "document",
+      data: {
+        id: "f",
+        status: FeatureStatus.InProgress,
+        priority: null,
+        assignee: null,
+        title: "Feature",
+        type: DocumentType.Feature,
+        slug: "FEA-1",
+      } as unknown as DocumentWithProject,
+    };
+    const [section] = groupByMode([featureItem], identity, GroupByMode.Status);
+
+    // "IN_PROGRESS" → "In Progress", not the raw enum value.
+    expect(section.descriptor.label).toBe("In Progress");
+    expect(section.descriptor.artifactType).toBe(DocumentType.Feature);
   });
 });
 
@@ -139,7 +163,7 @@ describe("groupByMode — getRow", () => {
     type Wrapped = { id: string; item: DocumentRowItem };
     const items: Wrapped[] = [
       { id: "w1", item: makeItem("a", { status: DocumentStatus.Draft }) },
-      { id: "w2", item: makeItem("b", { status: DocumentStatus.Done }) },
+      { id: "w2", item: makeItem("b", { status: DocumentStatus.Approved }) },
       { id: "w3", item: makeItem("c", { status: DocumentStatus.Draft }) },
     ];
     const sections = groupByMode(items, (w) => w.item, GroupByMode.Status);

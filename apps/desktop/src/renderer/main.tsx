@@ -7,6 +7,7 @@ import "react-resizable/css/styles.css";
 import "./globals.css";
 import App from "./App";
 import { createRendererOtelRuntime } from "./app-otel-runtime";
+import { RenderCommitTelemetryProvider } from "./components/sessions/render-commit-telemetry-context";
 import { registerMainEntrypointExceptionCapture } from "./main-entrypoint-exception-capture";
 import { RootErrorBoundary } from "./root-error-boundary";
 import { DesktopAppCoreProvider } from "./shared-agent-sessions/desktop-app-core-provider";
@@ -38,8 +39,14 @@ createRoot(rootElement).render(
         }
       >
         <DesktopAppCoreProvider>
-          <App />
-          <RendererReadySignal />
+          <RenderCommitTelemetryProvider
+            reportRenderCommit={(event) =>
+              rendererOtelRuntime.reportRenderCommit(event)
+            }
+          >
+            <App />
+            <RendererReadySignal />
+          </RenderCommitTelemetryProvider>
         </DesktopAppCoreProvider>
       </RootErrorBoundary>
     </DesignSystemProvider>

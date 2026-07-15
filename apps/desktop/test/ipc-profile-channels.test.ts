@@ -9,7 +9,11 @@ import { createProfileConfigDesktopApi } from "../src/main/profile-config-preloa
 
 type IpcHandler = (event: unknown, payload?: unknown) => unknown;
 
-function makeProfileRegistrarHandlers(): Map<string, IpcHandler> {
+const UNTRUSTED_SENDER_ERROR = /untrusted sender/;
+
+function makeProfileRegistrarHandlers(
+  isTrustedSender: (sender: unknown) => boolean = () => true
+): Map<string, IpcHandler> {
   const handlers = new Map<string, IpcHandler>();
   const savedConfig = {
     id: "profile-1",
@@ -25,6 +29,7 @@ function makeProfileRegistrarHandlers(): Map<string, IpcHandler> {
       },
     },
     {
+      isTrustedSender,
       settingsStore: {
         findConfigByOrigins: () => savedConfig,
         getRelayOrigin: () => savedConfig.relayOrigin,
@@ -126,6 +131,43 @@ describe("profile config IPC registrar", () => {
     );
     assert.equal(saved.id, "profile-1");
     assert.equal(applied.id, "profile-1");
+  });
+
+  test("mutating handlers reject untrusted senders", async () => {
+    const handlers = makeProfileRegistrarHandlers(() => false);
+    const trustedSender = {};
+    const event = { sender: trustedSender };
+
+    await assert.rejects(
+      async () =>
+        await handlers.get(ProfileConfigIpcChannel.SaveConfig)?.(event, {
+          name: "Production",
+          apiKey: "sk_live_evil",
+        }),
+      UNTRUSTED_SENDER_ERROR
+    );
+    await assert.rejects(
+      async () =>
+        await handlers.get(ProfileConfigIpcChannel.ApplyConfig)?.(event, {
+          id: "profile-1",
+        }),
+      UNTRUSTED_SENDER_ERROR
+    );
+    await assert.rejects(
+      async () =>
+        await handlers.get(ProfileConfigIpcChannel.DeleteConfig)?.(event, {
+          id: "profile-1",
+        }),
+      UNTRUSTED_SENDER_ERROR
+    );
+    await assert.rejects(
+      async () =>
+        await handlers.get(ProfileConfigIpcChannel.RenameConfig)?.(event, {
+          id: "profile-1",
+          name: "Renamed",
+        }),
+      UNTRUSTED_SENDER_ERROR
+    );
   });
 });
 

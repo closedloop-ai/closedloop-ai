@@ -34,6 +34,7 @@ const EMPTY_SCOPE: ResetScope = {
   githubInstallationIds: [],
   githubRepositoryIds: [],
   agentIds: [],
+  catalogItemIds: [],
 };
 
 describe("reset helpers", () => {

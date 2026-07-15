@@ -63,6 +63,7 @@ function detail(
     commits: [],
     sessions,
     mergedTrace,
+    leadTime: { firstActivityT: null, lastActivityT: null, idleSpans: [] },
     linkedPrNumbers: [42],
     linkedArtifacts: [],
   };

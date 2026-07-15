@@ -11,11 +11,11 @@
     "prefix": ""
   },
   "aliases": {
-    "components": "@repo/design-system/components",
-    "utils": "@repo/design-system/lib/utils",
-    "hooks": "@repo/design-system/hooks",
-    "lib": "@repo/design-system/lib",
-    "ui": "@repo/design-system/components/ui"
+    "components": "@closedloop-ai/design-system/components",
+    "utils": "@closedloop-ai/design-system/lib/utils",
+    "hooks": "@closedloop-ai/design-system/hooks",
+    "lib": "@closedloop-ai/design-system/lib",
+    "ui": "@closedloop-ai/design-system/components/ui"
   },
   "iconLibrary": "lucide"
 }

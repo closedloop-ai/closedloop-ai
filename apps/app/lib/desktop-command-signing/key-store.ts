@@ -1,6 +1,6 @@
 "use client";
 
-import { bytesToBase64 } from "./crypto-utils";
+import { bytesToBase64, bytesToBase64Url } from "./crypto-utils";
 
 /** IndexedDB database name for browser-held Desktop command signing keys. */
 export const COMMAND_SIGNING_DB_NAME = "closedloop-command-signing" as const;
@@ -10,7 +10,6 @@ export const COMMAND_SIGNING_DB_VERSION = 1 as const;
 export const COMMAND_SIGNING_STORE_NAME = "signing-keys" as const;
 /** Single browser-held key id used by command signing registration flows. */
 export const DEFAULT_COMMAND_SIGNING_KEY_ID = "default" as const;
-const BASE64_PADDING_REGEX = /=+$/;
 
 export type BrowserSigningKey =
   | {
@@ -51,13 +50,6 @@ type StoredSigningKey = {
   publicKeyBase64: string;
   fingerprint: string;
 };
-
-function bytesToBase64Url(bytes: Uint8Array): string {
-  return bytesToBase64(bytes)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(BASE64_PADDING_REGEX, "");
-}
 
 async function fingerprintRawPublicKey(
   rawPublicKey: ArrayBuffer

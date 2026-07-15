@@ -2,16 +2,21 @@ import type { AppTelemetry } from "../app";
 import { AppExceptionOrigin } from "../app-exception-origin";
 import type { PermissionTelemetry } from "../permission";
 import { TelemetryAttribute } from "../src/attributes";
-import { createEmit, emit } from "../src/emit";
+import { createEmit, createSpanEmit, emit, emitSpan } from "../src/emit";
 import type { GenAiTelemetry } from "../src/gen-ai";
 import { TelemetrySchemaName } from "../src/schema-name";
-import type { SpanTelemetry } from "../src/span";
+import type { TelemetrySpanEnvelopePayload } from "../src/schema-shape";
+import { SpanKind, SpanStatusCode, type SpanTelemetry } from "../src/span";
 import type { SyncTelemetry } from "../sync";
 
 const channel = {
   info(_message: string, _meta: Record<string, unknown>) {},
 };
+const spanChannel = {
+  span(_envelope: Record<string, unknown>) {},
+};
 const emitWithChannel = createEmit(channel);
+const emitSpanWithChannel = createSpanEmit(spanChannel);
 
 const appAttributes = {
   [TelemetryAttribute.AppInstallationId]: "install_0123456789abcdef",
@@ -44,6 +49,28 @@ const permissionAttributes = {
   [TelemetryAttribute.GenAiPermissionSource]: "config",
 } satisfies PermissionTelemetry;
 
+const spanEnvelopeAttributes = {
+  ...spanAttributes,
+  [TelemetryAttribute.DurationMs]: 1,
+} satisfies SpanTelemetry & { [TelemetryAttribute.DurationMs]: 1 };
+
+const spanEnvelope = {
+  trace_id: "0123456789abcdef0123456789abcdef",
+  span_id: "0123456789abcdef",
+  name: "http.request",
+  kind: SpanKind.Internal,
+  status: {
+    code: SpanStatusCode.Ok,
+  },
+  duration_ms: 1,
+  schema_name: TelemetrySchemaName.Span,
+  attributes: spanEnvelopeAttributes,
+} satisfies TelemetrySpanEnvelopePayload<
+  typeof TelemetrySchemaName.Span,
+  SpanTelemetry,
+  1
+>;
+
 emit(TelemetrySchemaName.Span, {
   name: "http.request",
   attributes: spanAttributes,
@@ -64,6 +91,8 @@ emitWithChannel(TelemetrySchemaName.Permission, {
   name: "gen_ai.permission",
   attributes: permissionAttributes,
 });
+emitSpan(spanEnvelope);
+emitSpanWithChannel(spanEnvelope);
 
 emit(TelemetrySchemaName.Span, {
   name: "missing",
@@ -150,3 +179,63 @@ const spanPayloadWithUnknown = {
 
 // @ts-expect-error Span emit rejects prebuilt payload variables with unknown extras.
 emit(TelemetrySchemaName.Span, spanPayloadWithUnknown);
+
+// @ts-expect-error Span envelopes require top-level duration_ms.
+emitSpan({
+  trace_id: "0123456789abcdef0123456789abcdef",
+  span_id: "0123456789abcdef",
+  name: "missing-duration",
+  kind: SpanKind.Internal,
+  status: {
+    code: SpanStatusCode.Ok,
+  },
+  schema_name: TelemetrySchemaName.Span,
+  attributes: spanAttributes,
+});
+
+emitSpan({
+  ...spanEnvelope,
+  attributes: {
+    ...spanAttributes,
+    // @ts-expect-error Span envelope nested attributes reject unknown fresh keys.
+    "not.in.schema": 1,
+  },
+});
+
+const spanEnvelopeAttributesWithUnknown = {
+  ...spanAttributes,
+  "not.in.schema": 1,
+};
+
+emitSpan({
+  ...spanEnvelope,
+  // @ts-expect-error Span envelope rejects prebuilt nested attributes with unknown extras.
+  attributes: spanEnvelopeAttributesWithUnknown,
+});
+
+const _mismatchedDurationEnvelope = {
+  trace_id: "0123456789abcdef0123456789abcdef",
+  span_id: "0123456789abcdef",
+  name: "mismatched-duration",
+  kind: SpanKind.Internal,
+  status: {
+    code: SpanStatusCode.Ok,
+  },
+  duration_ms: 1,
+  schema_name: TelemetrySchemaName.Span,
+  attributes: {
+    ...spanAttributes,
+    // @ts-expect-error Span envelope duration mirrors the top-level literal when expressible.
+    [TelemetryAttribute.DurationMs]: 2,
+  },
+} satisfies TelemetrySpanEnvelopePayload<
+  typeof TelemetrySchemaName.Span,
+  SpanTelemetry & { [TelemetryAttribute.DurationMs]: 2 },
+  1
+>;
+
+emitSpan({
+  ...spanEnvelope,
+  // @ts-expect-error Span envelopes require a published schema name.
+  schema_name: "trace",
+});

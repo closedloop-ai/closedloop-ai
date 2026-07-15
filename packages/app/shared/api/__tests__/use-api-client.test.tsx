@@ -5,7 +5,15 @@ import {
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { useSyncExternalStore } from "react";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { AuthAdapter, AuthSnapshot } from "../../auth/auth-adapter";
 import { AuthAdapterProvider } from "../../auth/provider";
 import { createStaticAuthAdapter } from "../../auth/static-auth-adapter";
@@ -23,6 +31,10 @@ const AUTH_PROVIDER_ERROR = /AuthAdapterProvider/;
 describe("useApiClient (port)", () => {
   beforeEach(() => {
     fetchMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   afterAll(() => {
@@ -214,6 +226,42 @@ describe("useApiClient (port)", () => {
     await pending;
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a signed-in loaded snapshot to produce a bearer token", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: null }));
+    const getToken = vi
+      .fn<() => Promise<string | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue("late-token");
+    const { result } = renderHook(() => useApiClient(), {
+      wrapper: createWrapper(
+        createStaticAuthAdapter({
+          isLoaded: true,
+          userId: "user_test",
+          getToken,
+        })
+      ),
+    });
+
+    const pending = result.current.get("/things");
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await pending;
+
+    expect(getToken).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${TEST_ORIGIN}/things`,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer late-token",
+        }),
+      })
+    );
   });
 
   it("throws a descriptive error when mounted without its providers", () => {

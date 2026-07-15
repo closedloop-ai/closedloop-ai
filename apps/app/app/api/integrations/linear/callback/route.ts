@@ -3,7 +3,7 @@ import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
-import { env } from "@/env";
+import { resolveApiOrigin } from "@/lib/api-origin";
 import {
   getErrorRedirectUrl,
   getSuccessRedirectUrl,
@@ -94,7 +94,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // Token exchange happens in API to keep client_secret there
     const clerkToken = await getToken();
     const apiResponse = await fetch(
-      `${env.NEXT_PUBLIC_API_URL}/integrations/linear/connect`,
+      `${resolveApiOrigin(request)}/integrations/linear/connect`,
       {
         method: "POST",
         headers: {

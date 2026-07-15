@@ -1,10 +1,40 @@
+import tls from "node:tls";
+import {
+  DbHealthAuthMode,
+  DbHealthCheckStatus,
+  DbHealthHostType,
+  DbHealthSource,
+  DbHealthSslMode,
+  type DbHealthTransportCheck,
+  DbHealthTransportError,
+} from "@repo/api/src/types/db-health";
 import pg from "pg";
+import { AWS_RDS_CA_BUNDLE } from "./rds-ca-bundle";
 
 /**
  * `ssl` option shape accepted by `pg.Client` / `pg.Pool`. Either `false`
  * (no TLS — used for localhost) or an object that controls cert verification.
+ * `ca` carries an explicit trust-anchor list on the verifying path (see
+ * `VERIFIED_SSL_CA`).
  */
-export type SslOption = false | { rejectUnauthorized: boolean };
+export type SslOption =
+  | false
+  | { rejectUnauthorized: boolean; ca?: string | string[] };
+
+/**
+ * Trust anchors for the verifying TLS path. Node's `tls` `ca` option REPLACES
+ * the default trust store rather than appending to it, so we merge the bundled
+ * Mozilla roots (`tls.rootCertificates`, which verify publicly-trusted hosts
+ * such as Neon) with Amazon's RDS CA bundle — which is NOT present in many
+ * runtimes' default store, notably Vercel's, where its absence produced
+ * `SELF_SIGNED_CERT_IN_CHAIN` and took prod DB connectivity down. The union
+ * verifies both RDS and publicly-trusted endpoints under
+ * `rejectUnauthorized: true`, so no path has to drop verification.
+ */
+const VERIFIED_SSL_CA: readonly string[] = [
+  ...tls.rootCertificates,
+  AWS_RDS_CA_BUNDLE,
+];
 
 /**
  * Hostnames the pg driver should connect to without TLS.
@@ -22,6 +52,11 @@ const LOCALHOST_HOSTNAMES: ReadonlySet<string> = new Set([
   "[::1]",
 ]);
 
+const RDS_HOST_SUFFIXES = [
+  ".rds.amazonaws.com",
+  ".rds.amazonaws.com.cn",
+] as const;
+
 /**
  * Returns true when the URL's hostname resolves to the local machine — used
  * to decide whether to skip TLS entirely.
@@ -37,9 +72,11 @@ export function isLocalhostUrl(url: URL): boolean {
  *   - localhost / 127.0.0.1 / ::1      → no TLS
  *   - explicit `?sslmode=disable`      → no TLS
  *   - `allowInsecure: true`            → TLS without cert verification
- *                                        (legacy behavior for self-signed
- *                                        RDS endpoints / preview DBs)
- *   - everything else                  → TLS with cert verification (safe default)
+ *                                        (legacy escape hatch for endpoints
+ *                                        whose chain still isn't trusted)
+ *   - everything else                  → TLS with cert verification against
+ *                                        the system roots + RDS CA bundle
+ *                                        (`VERIFIED_SSL_CA`); safe default
  *
  * Used by both `seed.ts` and the integration-test fixture
  * (`scripts/seed/__tests__/fixtures/ephemeral-db.ts`) so that the SSL policy
@@ -61,7 +98,40 @@ export function resolveSslOption(opts: {
   if (opts.allowInsecure) {
     return { rejectUnauthorized: false };
   }
-  return { rejectUnauthorized: true };
+  return { rejectUnauthorized: true, ca: [...VERIFIED_SSL_CA] };
+}
+
+export function classifyDatabaseTransport(input: {
+  databaseUrl?: string | null;
+  pgHost?: string | null;
+  pgDatabase?: string | null;
+  pgUser?: string | null;
+  allowInsecureSsl?: boolean;
+}): DbHealthTransportCheck {
+  if (input.databaseUrl) {
+    return classifyDatabaseUrlTransport(
+      input.databaseUrl,
+      input.allowInsecureSsl === true
+    );
+  }
+
+  if (input.pgHost && input.pgDatabase && input.pgUser) {
+    const hostType = classifyHostType(input.pgHost);
+    const sslMode = classifySslMode({
+      hostType,
+      sslmode: null,
+      allowInsecureSsl: input.allowInsecureSsl === true,
+    });
+
+    return buildTransportCheck({
+      source: DbHealthSource.PgHostIam,
+      authMode: DbHealthAuthMode.Iam,
+      hostType,
+      sslMode,
+    });
+  }
+
+  return buildUnknownTransportCheck();
 }
 
 export function createSslClient(databaseUrl: string) {
@@ -130,4 +200,133 @@ export function matchesProductionHostPattern(hostname: string): string | null {
     }
   }
   return null;
+}
+
+function classifyDatabaseUrlTransport(
+  databaseUrl: string,
+  allowInsecureSsl: boolean
+): DbHealthTransportCheck {
+  try {
+    const url = new URL(databaseUrl);
+    const hostType = classifyHostType(url.hostname);
+    const sslMode = classifySslMode({
+      hostType,
+      sslmode: url.searchParams.get("sslmode"),
+      allowInsecureSsl,
+    });
+
+    return buildTransportCheck({
+      source: DbHealthSource.DatabaseUrl,
+      authMode: DbHealthAuthMode.Password,
+      hostType,
+      sslMode,
+    });
+  } catch {
+    return buildUnknownTransportCheck();
+  }
+}
+
+function classifyHostType(hostname: string): DbHealthHostType {
+  const normalizedHostname = hostname.toLowerCase();
+
+  if (LOCALHOST_HOSTNAMES.has(normalizedHostname)) {
+    return DbHealthHostType.Localhost;
+  }
+
+  if (RDS_HOST_SUFFIXES.some((suffix) => normalizedHostname.endsWith(suffix))) {
+    return DbHealthHostType.Rds;
+  }
+
+  if (normalizedHostname.length > 0) {
+    return DbHealthHostType.Other;
+  }
+
+  return DbHealthHostType.Unknown;
+}
+
+function classifySslMode(input: {
+  hostType: DbHealthHostType;
+  sslmode: string | null;
+  allowInsecureSsl: boolean;
+}): DbHealthSslMode {
+  if (input.hostType === DbHealthHostType.Localhost) {
+    return DbHealthSslMode.Disabled;
+  }
+
+  if (input.sslmode?.toLowerCase() === "disable") {
+    return DbHealthSslMode.Disabled;
+  }
+
+  if (input.allowInsecureSsl) {
+    return DbHealthSslMode.Insecure;
+  }
+
+  if (input.hostType === DbHealthHostType.Unknown) {
+    return DbHealthSslMode.Unknown;
+  }
+
+  return DbHealthSslMode.Verified;
+}
+
+function buildTransportCheck(input: {
+  source: DbHealthSource;
+  authMode: DbHealthAuthMode;
+  hostType: DbHealthHostType;
+  sslMode: DbHealthSslMode;
+}): DbHealthTransportCheck {
+  const verifiedRdsTls =
+    input.hostType === DbHealthHostType.Rds &&
+    input.sslMode === DbHealthSslMode.Verified;
+
+  if (verifiedRdsTls) {
+    return {
+      status: DbHealthCheckStatus.Ok,
+      hostType: input.hostType,
+      sslMode: input.sslMode,
+      authMode: input.authMode,
+      source: input.source,
+      verifiedRdsTls,
+    };
+  }
+
+  return {
+    status: DbHealthCheckStatus.Error,
+    hostType: input.hostType,
+    sslMode: input.sslMode,
+    authMode: input.authMode,
+    source: input.source,
+    verifiedRdsTls,
+    error: getTransportError(input.hostType, input.sslMode),
+  };
+}
+
+function buildUnknownTransportCheck(): DbHealthTransportCheck {
+  return {
+    status: DbHealthCheckStatus.Error,
+    hostType: DbHealthHostType.Unknown,
+    sslMode: DbHealthSslMode.Unknown,
+    authMode: DbHealthAuthMode.Unknown,
+    source: DbHealthSource.Unknown,
+    verifiedRdsTls: false,
+    error: DbHealthTransportError.UnknownPosture,
+  };
+}
+
+function getTransportError(
+  hostType: DbHealthHostType,
+  sslMode: DbHealthSslMode
+): DbHealthTransportError {
+  if (sslMode === DbHealthSslMode.Disabled) {
+    return DbHealthTransportError.TlsDisabled;
+  }
+
+  if (sslMode === DbHealthSslMode.Insecure) {
+    return DbHealthTransportError.TlsInsecure;
+  }
+
+  if (hostType === DbHealthHostType.Unknown) {
+    return DbHealthTransportError.UnknownPosture;
+  }
+
+  return DbHealthTransportError.NotRds;
 }

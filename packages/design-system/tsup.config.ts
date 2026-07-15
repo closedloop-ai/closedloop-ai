@@ -37,6 +37,7 @@ export default defineConfig({
     "components/ui/drawer.tsx",
     "components/ui/dropdown-menu.tsx",
     "components/ui/empty-state.tsx",
+    "components/ui/empty.tsx",
     "components/ui/favorite-button.tsx",
     "components/ui/feed-rail.tsx",
     "components/ui/filter-popover.tsx",
@@ -88,8 +89,11 @@ export default defineConfig({
     "components/ui/user-select-popover.tsx",
     "components/ui/types.ts",
     "components/ui/utils.ts",
+    "components/ui/status-icon-primitives.tsx",
     "components/ui/primitives/*.tsx",
+    "components/ui/primitives/format-metric-value.ts",
     "components/ui/layout/*.tsx",
+    "lib/keyboard-activation.ts",
     "storybook/component-catalog.ts",
     "storybook/mock-data.ts",
     "hooks/use-copy-to-clipboard.ts",
@@ -102,6 +106,13 @@ export default defineConfig({
   dts: true,
   clean: true,
   sourcemap: true,
+  // Keep each entry self-contained. With code splitting, tsup hoists shared
+  // component code (e.g. the Toaster body that calls useTheme) into chunk-*.js
+  // files that DON'T carry the "use client" directive, so a consuming RSC build
+  // (Next) treats those hooks as server code and prerender throws
+  // "useTheme() from the server". No splitting => the directive stays with the
+  // code in every entry file.
+  splitting: false,
   outExtension({ format }) {
     return {
       js: format === "esm" ? ".js" : ".cjs",

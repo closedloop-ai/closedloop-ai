@@ -4,15 +4,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 const RENDERER_ROOT = join(import.meta.dirname, "..", "src", "renderer");
+// FEA-2923: the standalone `derived/desktop-derived-telemetry-view.tsx` route
+// body was removed when Packs-Lab / derived pages were folded into the unified
+// Agents workspace; the surviving route bodies still carry the guard's intent.
 const ROUTE_BODY_FILES = [
   join(RENDERER_ROOT, "App.tsx"),
   join(RENDERER_ROOT, "components", "features", "CoreFeaturesView.tsx"),
-  join(
-    RENDERER_ROOT,
-    "components",
-    "derived",
-    "desktop-derived-telemetry-view.tsx"
-  ),
 ];
 const LEGACY_AGGREGATE_RENDERER_RE =
   /window\.desktopApi\.db\.(?:getWorkflowData|getTools|getSubAgents)|\bgetWorkflowData\b|\bgetTools\b|\bgetSubAgents\b/;

@@ -10,7 +10,7 @@ export function AuthAdapterProvider({
   children,
 }: {
   adapter: AuthAdapter;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <AuthAdapterContext.Provider value={adapter}>

@@ -1,25 +1,25 @@
 "use client";
 
-import { Label } from "@repo/design-system/components/ui/label";
-import { MetadataSection } from "@repo/design-system/components/ui/metadata-panel";
+import { Label } from "@closedloop-ai/design-system/components/ui/label";
+import { MetadataSection } from "@closedloop-ai/design-system/components/ui/metadata-panel";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@repo/design-system/components/ui/select";
-import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
+} from "@closedloop-ai/design-system/components/ui/select";
 import {
   type User,
   UserSelectPopover,
-} from "@repo/design-system/components/ui/user-select-popover";
-import { type ComponentProps, useId } from "react";
+} from "@closedloop-ai/design-system/components/ui/user-select-popover";
+import { type ReactNode, useId } from "react";
 
 type StatusMetadataOption = {
   value: string;
   label: string;
-  iconStatus: ComponentProps<typeof StatusIcon>["status"];
+  /** Rendered status icon for this option (owned by the domain caller). */
+  icon: ReactNode;
 };
 
 export type StatusMetadataSectionProps = {
@@ -48,7 +48,7 @@ export function StatusMetadataSection({
   const statusOptions = options.map((statusOption) => (
     <SelectItem key={statusOption.value} value={statusOption.value}>
       <span className="inline-flex items-center gap-1.5">
-        <StatusIcon size={16} status={statusOption.iconStatus} />
+        {statusOption.icon}
         {statusOption.label}
       </span>
     </SelectItem>

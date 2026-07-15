@@ -1,10 +1,11 @@
-import { RefreshCwIcon } from "lucide-react";
+import { FolderInput, RefreshCwIcon, TriangleAlert } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useDesktopEvent } from "../hooks/useDesktopApi";
 import {
   INITIAL_UPDATE_BANNER_STATE,
   isUpdateApplyEnabled,
   isUpdateBannerVisible,
+  isUpdateInstallBlocked,
   reduceUpdateAvailableEvent,
   reduceUpdateStatusEvent,
   type UpdateBannerState,
@@ -18,15 +19,17 @@ import {
  * Once an
  * update is downloaded and ready, the whole banner becomes a clickable
  * "Relaunch to update" action that calls applyUpdate() (quit + install +
- * restart). Pre-ready states (downloading/available/error) render as an
- * informational strip. All gating is delegated to the pure helpers in
- * update-banner-state.ts.
+ * restart). Read-only install blocks render a warning with a Move & Update
+ * action, while other pre-ready states render as informational/error strips.
+ * All gating is delegated to the pure helpers in update-banner-state.ts.
  */
 export function UpdateBanner() {
   const [state, setState] = useState<UpdateBannerState>(
     INITIAL_UPDATE_BANNER_STATE
   );
   const [applying, setApplying] = useState(false);
+  const [movingToApplications, setMovingToApplications] = useState(false);
+  const [moveFailed, setMoveFailed] = useState(false);
 
   useDesktopEvent(
     "desktop:update-status",
@@ -53,8 +56,46 @@ export function UpdateBanner() {
     }
   }, []);
 
+  const handleMoveToApplications = useCallback(async () => {
+    setMovingToApplications(true);
+    setMoveFailed(false);
+    try {
+      const moved = await window.desktopApi.moveToApplications();
+      setMoveFailed(!moved);
+    } catch {
+      setMoveFailed(true);
+    } finally {
+      setMovingToApplications(false);
+    }
+  }, []);
+
   if (!isUpdateBannerVisible(state)) {
     return null;
+  }
+
+  if (isUpdateInstallBlocked(state)) {
+    return (
+      <div
+        className="flex shrink-0 items-center justify-center gap-3 border-[var(--warning)]/30 border-b bg-[var(--warning)]/12 px-4 py-2 text-[var(--warning-foreground)] text-sm"
+        role="status"
+      >
+        <TriangleAlert aria-hidden="true" className="size-3.5 shrink-0" />
+        <span className="min-w-0 truncate font-medium">
+          {moveFailed
+            ? "Couldn't move automatically. Quit Closedloop, move it to Applications, then relaunch."
+            : updateBannerMessage(state)}
+        </span>
+        <button
+          className="flex shrink-0 items-center gap-1.5 rounded border border-[var(--warning)]/40 bg-[var(--background)]/70 px-2 py-1 font-semibold text-[11px] text-[var(--warning-foreground)] transition-colors hover:bg-[var(--warning)]/18 disabled:pointer-events-none disabled:opacity-70"
+          disabled={movingToApplications}
+          onClick={handleMoveToApplications}
+          type="button"
+        >
+          <FolderInput aria-hidden="true" className="size-3.5 shrink-0" />
+          <span>{movingToApplications ? "Moving..." : "Move & Update"}</span>
+        </button>
+      </div>
+    );
   }
 
   if (isUpdateApplyEnabled(state)) {

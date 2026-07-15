@@ -18,6 +18,8 @@ function fakeSource(scope: string, total: number): BranchesDataSource {
     scope,
     list: () => Promise.resolve({ items: [], total, viewerScope: "self" }),
     detail: () => Promise.reject(new Error("detail unused")),
+    comments: () => Promise.reject(new Error("comments unused")),
+    trace: () => Promise.reject(new Error("trace unused")),
     usage: () => Promise.reject(new Error("usage unused")),
     analytics: () => Promise.reject(new Error("analytics unused")),
   };

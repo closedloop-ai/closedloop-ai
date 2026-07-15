@@ -1,6 +1,5 @@
 import type {
   AgentsInsightsResponse,
-  CategoryBucket,
   DeliveryInsightsResponse,
   InsightsPeriod,
   KpiStat,
@@ -12,39 +11,96 @@ import {
   InsightsPeriod as InsightsPeriodValues,
   InsightsSection,
   KpiFormat,
+  kpi,
+  lifespanHistogram,
+  pctDelta,
+  ttmHistogram,
 } from "@closedloop-ai/loops-api/insights";
+import { median } from "@repo/api/src/utils/math";
+import { labelize } from "@repo/api/src/utils/string";
+import { PrState } from "../enrichment/types.js";
 import {
   addStorageTokenCounts,
   readStorageTokenCount,
 } from "../token-counts.js";
+import {
+  createdArtifactLinksSubquery,
+  formatLocalDayKey,
+  localDay,
+  localHour,
+} from "./db-helpers.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 
 const MS_PER_DAY = 86_400_000;
 const TREND_LOOKBACK_DAYS = 90;
 const MAX_MODEL_SERIES = 6;
-const LABEL_SEPARATOR_PATTERN = /[-_:]/;
 
-// --- "Human" session classification (activity heatmap Human/Agent split) ------
+// FEA-2486: PR throughput split. "agent" = the PR has session PR-creation
+// evidence (a relation='created' artifact link); "manual" = no such evidence —
+// which includes genuinely hand-raised PRs AND PRs raised outside captured
+// sessions (other machines, bots, cloud loops).
+const PR_TREND_SERIES: TimeSeriesSeries[] = [
+  { key: "agent", label: "Agent-raised" },
+  { key: "manual", label: "Manual/untracked" },
+];
+
+// --- Human/Agent TURN attribution (activity heatmap + autonomy trend) ---------
 //
-// The SINGLE definition of a "human-interactive" session, factored out so the
-// rule lives in one place and is easy to tune as the product definition firms
-// up. The activity heatmap splits event density into Human vs Agent by this
-// rule; "agent" is simply its complement (headless/`-p` runs and spawned
-// sub-agents).
+// PM ruling 2026-07-10 (FEA-2641 Fix 4): the heatmap and autonomy trend chart
+// conversational TURNS attributed by their OWN role, not event density gated
+// by the per-session `is_human` flag. Session-level splitting painted a
+// steered session's entire autonomous stretch as Human — one overnight /build
+// run the user typed two prompts into showed as 24/7 Human activity. Per-turn
+// attribution gives each series its literal meaning: a Human cell is an hour
+// the human actually typed; everything the agent did — including a human
+// session's autonomous overnight stretches and spawned-subagent work — paints
+// Agent at the hours it actually ran.
 //
-// Current rule: a session is human-interactive iff the human took at least
-// HUMAN_TURN_THRESHOLD turns — i.e. the human STEERED it (the initial prompt
-// PLUS at least one more turn). A single-prompt run (`-p`/headless, or an
-// autonomous/spawned sub-agent) counts as agent. The shared ActivityHeatmap
-// contract describes this loosely as "submitted a user prompt"; the operational
-// bar here is the stricter "steered" reading. If the product definition changes
-// (e.g. one prompt = human), adjust HUMAN_TURN_THRESHOLD and the contract doc
-// together — this is the only place the SQL encodes it.
-// FEA-2038: the human/agent session classification (HUMAN_TURN_THRESHOLD, the
-// user/prompt turn predicate, and the metadata fallback) now lives at INGEST in
-// `session_analytics.is_human` (see upsertSessionAnalyticsRollup in sqlite.ts).
-// The insights queries read the precomputed flag/counts instead of re-deriving
-// them per page load, so the on-the-fly classification SQL was removed here.
+// Source: sessions.metadata $.messages (role + timestamp per parsed message),
+// the same transcript-first source that feeds the is_human rollup.
+// role:"human" is already evidence-exact at parse time (FEA-2641: wake-up
+// re-injections, stdout echoes, teammate messages, and non-steering commands
+// like /exit are excluded; all five harness parsers emit these messages).
+// `session_analytics.is_human` remains the ingest-time SESSION classification
+// (see upsertSessionAnalyticsRollupBatch in write-core.ts) but no longer
+// feeds these two charts.
+//
+// Headless kickoffs are NOT human: a role:"human" turn in a session launched
+// programmatically — cron-scheduled code reviews, fleet/workflow agents,
+// scripted `claude -p` / `codex exec` runs — was not typed at a keyboard, so
+// it counts as an Agent turn. Two harness-stamped vocabularies identify
+// headless launches (census over the local corpus, 2026-07-10):
+//   - Claude entrypoint: "sdk-cli" (headless SDK path; 990 sessions) vs
+//     "cli" (interactive; 141) — nothing else in the wild.
+//   - Codex session_meta.originator (stored as the entrypoint since
+//     DATA_REVISION 13): "codex_exec" / "claude-codex-exec" (scripted; 1,092
+//     rollouts) vs "codex-tui" / "codex_cli_rs" / "codex_vscode"
+//     (interactive; 455) — no interactive value contains "exec".
+// Hence LIKE 'sdk%' OR LIKE '%exec%'. The check is positive-evidence only:
+// an absent entrypoint, "cli", tui/vscode values, or a legacy harness
+// fallback (e.g. plain "codex") stays interactive, so genuine typed prompts
+// are never demoted by missing data.
+//
+// JSON guards mirror the rollup SQL (write-core.ts): the json_each argument
+// is NULLed via nested CASE unless metadata is valid JSON whose $.messages is
+// an array (json_each over NULL yields no rows), and json_extract is gated
+// behind `m.type = 'object'` — CASE, not AND, because CASE evaluation order
+// is a language guarantee while AND terms may be reordered — so malformed
+// metadata or a primitive array element can never raise "malformed JSON" and
+// abort the query. A turn timestamp outside the rendered day axis simply
+// doesn't match a column. FEA-3059: this turn source is scanned per bounded
+// session-id batch (turnsByRoleForIds + forEachTurnsChunk below), not over the
+// whole window at once, so json_each never materializes the full corpus.
+
+// FEA-3132: the per-turn source that fed the heatmap + autonomy trend is no
+// longer computed on the read path. Turns are materialized into
+// `session_turn_bucket` at ingest (`rebuildSessionTurnBuckets`, write-core.ts):
+// one row per (session, message `$.timestamp`, resolved `turn_kind`), where
+// turn_kind pre-resolves the old role+headless predicate. Both reads now GROUP
+// BY that indexed table, so a dashboard load never json_each-expands `$.messages`
+// again. The former json_each helpers (turnsByRoleForIds / forEachTurnsChunk /
+// windowSessionIds / HUMAN_TURN_PREDICATE / AGENT_TURN_PREDICATE / TURNS_SCAN_CHUNK)
+// are gone.
 
 type LocalInsightsResponse =
   | DeliveryInsightsResponse
@@ -56,6 +112,16 @@ type LocalInsightsResponse =
  * shaped section responses the cloud `apps/api` returns, but against the
  * in-process SQLite database (the user's own data). Desktop is always personal
  * scope and returns the same response shape as the web Insights backend.
+ *
+ * Timezone contract (FEA-2430): timestamps are STORED as UTC ISO strings; every
+ * day/hour bucket this module emits for display converts to the user's LOCAL
+ * timezone via localDay()/localHour() in SQL and formatLocalDayKey()/eachDay()
+ * in JS — the two sides must stay in lockstep (matching keys) or charts silently
+ * drop data. Window BOUNDARIES stay rolling UTC instants (resolveRange); only
+ * bucket labels are local. This restores the pre-SQLite-migration behavior
+ * (Postgres bucketed AT TIME ZONE; FEA-1459's port made buckets UTC). The
+ * desktop main process runs on the user's machine, so 'localtime' == the
+ * user's OS timezone, DST handled per-date by the OS tz database.
  */
 export function computeLocalInsights(
   prisma: DesktopPrisma,
@@ -156,7 +222,7 @@ async function computeAgents(
   const toolsOverTime = await prisma.client.$queryRawUnsafe<
     { day: string; n: bigint }[]
   >(
-    `SELECT substr(s.started_at,1,10) AS day,
+    `SELECT ${localDay("s.started_at")} AS day,
             COUNT(*) AS n
      FROM events e
      JOIN sessions s ON s.id = e.session_id
@@ -167,18 +233,23 @@ async function computeAgents(
     range.trendStartIso,
     range.endIso
   );
+  // FEA-2331: the model charts measure estimated SPEND (USD), not token volume.
+  // Token-share-by-model is misleading for cache-heavy harnesses — Claude Code's
+  // prompt-cache reuse pushes ~all real token volume into cache_read_tokens
+  // (excluded from input+output), so a low-cache tool can outrank it on tokens
+  // while costing far less. Cost is cache-neutral, so it reflects where the money
+  // actually goes. `cost_usd_estimated` is a REAL column → driver yields a float,
+  // so these stay plain numbers (NOT the safe-integer token helpers). NULL costs
+  // COALESCE to 0 (treated as $0) rather than dropping the row.
   const breakdown = await prisma.client.$queryRawUnsafe<
-    { model: string; value: bigint }[]
+    { model: string; value: number }[]
   >(
-    // Parity: Postgres returned value as ::text and ORDER BY value DESC sorted
-    // it LEXICALLY ("800" > "5500"). The golden encodes that text ordering, so
-    // sort by the text form of the sum to reproduce it exactly.
-    `SELECT t.model AS model, SUM(t.input_tokens + t.output_tokens) AS value
+    `SELECT t.model AS model, COALESCE(SUM(t.cost_usd_estimated), 0) AS value
      FROM token_usage t
      JOIN sessions s ON s.id = t.session_id
      WHERE s.started_at BETWEEN $1 AND $2 AND t.model IS NOT NULL
      GROUP BY t.model
-     ORDER BY CAST(SUM(t.input_tokens + t.output_tokens) AS TEXT) DESC`,
+     ORDER BY COALESCE(SUM(t.cost_usd_estimated), 0) DESC`,
     range.startIso,
     range.endIso
   );
@@ -186,12 +257,12 @@ async function computeAgents(
     {
       day: string;
       model: string;
-      value: bigint;
+      value: number;
     }[]
   >(
-    `SELECT substr(s.started_at,1,10) AS day,
+    `SELECT ${localDay("s.started_at")} AS day,
             t.model AS model,
-            SUM(t.input_tokens + t.output_tokens) AS value
+            COALESCE(SUM(t.cost_usd_estimated), 0) AS value
      FROM token_usage t
      JOIN sessions s ON s.id = t.session_id
      WHERE s.started_at BETWEEN $1 AND $2 AND t.model IS NOT NULL
@@ -199,32 +270,46 @@ async function computeAgents(
     range.trendStartIso,
     range.endIso
   );
-  // Daily median session-autonomy index (0 manual → 100 agentic). Per session:
-  // share of conversational turns that were the agent's (assistant turns) vs the
-  // human's (user/prompt turns) — more agent turns per human turn ⇒ more
-  // autonomous. SQL-derived index; distinct from the read-time detail score.
-  // FEA-2038: autonomy-over-time now pulls from the SAME source as the activity
-  // heatmap — events joined to the precomputed per-session `is_human` flag. Per
-  // day it is the share of event activity that came from agent (non-human-steered)
-  // sessions (0 = all human-steered, 100 = all agentic), so the trend line and the
-  // heatmap's Human/Agent split always agree. (The old per-session assistant/human
-  // turn ratio went flat at 0 for harnesses whose events carry no "assistant"
-  // type; the is_human classification is harness-agnostic.)
-  const autonomy = await prisma.client.$queryRawUnsafe<
-    { day: string; median: number }[]
+  // Daily autonomy index (0 manual → 100 agentic): the share of the day's
+  // parsed conversational turns that were the agent's (role:"assistant") vs
+  // the human's (role:"human"), from the SAME turn source as the activity
+  // heatmap (TURNS_BY_ROLE_SOURCE) so the trend line and the heatmap split
+  // always agree. Turn-based per the FEA-2641 Fix 4 PM ruling — a
+  // human-steered session's autonomous stretches score agentic on the days
+  // they ran instead of inheriting the session's Human flag. Harness-agnostic
+  // because every parser emits role-tagged messages (unlike the abandoned
+  // events-corpus turn ratio, which went flat for harnesses whose events
+  // carry no "assistant" type).
+  // FEA-3059: bounded-scan autonomy. Sum per-day agent/total turn counts across
+  // session-id batches, then compute the ratio once — identical to the old
+  // single-pass `100.0 * agentFilter / NULLIF(total,0)` but the json_each scan
+  // never exceeds TURNS_SCAN_CHUNK sessions.
+  // FEA-3132: read the pre-materialized `session_turn_bucket` (built at ingest by
+  // rebuildSessionTurnBuckets) instead of json_each-expanding `$.messages` every
+  // load. `turn_kind` already encodes the role+headless predicate; SUM(turn_count)
+  // reproduces the old COUNT(*). Window on the SESSION's started_at (matching the
+  // old windowSessionIds), bucket the raw UTC ts to local at read time.
+  const autonomyRows = await prisma.client.$queryRawUnsafe<
+    { day: string; agent: bigint; total: bigint }[]
   >(
-    `SELECT substr(e.created_at, 1, 10) AS day,
-            100.0 * SUM(CASE WHEN sa.is_human = 0 THEN 1 ELSE 0 END)
-              / NULLIF(COUNT(*), 0) AS median
-     FROM events e
-     JOIN session_analytics sa ON sa.session_id = e.session_id
-     WHERE sa.started_at IS NOT NULL
-       AND sa.started_at BETWEEN $1 AND $2
-       AND e.created_at IS NOT NULL
-     GROUP BY day`,
+    `SELECT ${localDay("b.ts")} AS day,
+            SUM(CASE WHEN b.turn_kind = 'agent' THEN b.turn_count ELSE 0 END) AS agent,
+            SUM(b.turn_count) AS total
+     FROM session_turn_bucket b
+     JOIN sessions s ON s.id = b.session_id
+     WHERE s.started_at IS NOT NULL AND s.started_at BETWEEN $1 AND $2
+     GROUP BY day
+     HAVING day IS NOT NULL`,
     range.trendStartIso,
     range.endIso
   );
+  const autonomy = autonomyRows.map((r) => {
+    const total = num(r.total);
+    return {
+      day: r.day,
+      median: total > 0 ? (100.0 * num(r.agent)) / total : 0,
+    };
+  });
 
   const row = totals[0];
   const inputTokens = token(row?.input_tokens, "insights.agents.input_tokens");
@@ -302,7 +387,8 @@ async function computeAgents(
       modelBreakdown: breakdown.map((r) => ({
         key: r.model,
         label: r.model,
-        value: token(r.value, "insights.agents.model_tokens"),
+        // USD spend (float), rounded to cents — NOT a token count.
+        value: roundUsd(num(r.value)),
       })),
       tokenDistribution: [
         { key: "input", label: "Input", value: inputTokens },
@@ -376,23 +462,32 @@ async function computeUtilization(
   const perDay = await prisma.client.$queryRawUnsafe<
     { day: string; n: bigint }[]
   >(
-    `SELECT substr(started_at,1,10) AS day, COUNT(*) AS n
+    `SELECT ${localDay("started_at")} AS day, COUNT(*) AS n
      FROM sessions
      WHERE started_at BETWEEN $1 AND $2
      GROUP BY day`,
     range.trendStartIso,
     range.endIso
   );
+  // FEA-3091: scope the events-per-day series by the EVENT time
+  // (e.created_at), not by the parent session's started_at. The bucket key is
+  // localDay(e.created_at), and web's fetchEventVolume filters
+  // `e.event_created_at BETWEEN trendStart AND end`, so filtering on the
+  // session's start window here counted a different population: a session that
+  // began before trendStart but kept emitting events inside the window was
+  // counted on web yet fully excluded on desktop, depressing the left edge and
+  // diverging the totals. The JOIN to sessions is retained (parity with the
+  // sibling event queries — only events tied to a captured session count), but
+  // the window predicate now matches the bucket field and the web series.
   const eventsPerDay = await prisma.client.$queryRawUnsafe<
     { day: string; n: bigint }[]
   >(
-    `SELECT substr(e.created_at,1,10) AS day,
+    `SELECT ${localDay("e.created_at")} AS day,
             COUNT(*) AS n
      FROM events e
      JOIN sessions s ON s.id = e.session_id
      WHERE e.created_at IS NOT NULL
-       AND s.started_at IS NOT NULL
-       AND s.started_at BETWEEN $1 AND $2
+       AND e.created_at BETWEEN $1 AND $2
      GROUP BY day`,
     range.trendStartIso,
     range.endIso
@@ -424,38 +519,83 @@ async function computeUtilization(
      WHERE kind = 'pull_request'
        AND COALESCE(observed_at, created_at) IS NOT NULL`
   );
-  // Hour×day event density, split by session mode (Human vs Agent). The
-  // per-session binary classification rule lives in one place —
-  // {@link humanSessionClassificationSql} / {@link HUMAN_TURN_THRESHOLD}.
-  const heatmap = await prisma.client.$queryRawUnsafe<
-    {
-      day: string;
-      hour: bigint;
-      human: bigint;
-      agent: bigint;
-    }[]
+  // FEA-2951: the "Review backlog" KPI (kpi:backlog) approximates the shared
+  // tile's documented population — "Open PRs awaiting review". This is a
+  // desktop-local APPROXIMATION of, not an exact match for, the web/cloud
+  // `countReviewBacklog`, which counts PRs whose `reviewDecision IS NULL`
+  // regardless of pr_state. Desktop has no per-PR review-decision signal (the
+  // `artifacts` table only carries `pr_state`), so the two populations
+  // legitimately diverge in two known ways: a merged/closed PR that never got a
+  // decision counts toward web's backlog but not this one, and an open PR that
+  // already has a decision counts here but not on web. The all-captured
+  // `backlog` count above (which still feeds the reviewQueue "Captured locally"
+  // bar) includes already-merged/closed PRs, so on a busy repo it reads in the
+  // hundreds while web reads a handful — hence the narrower open-PR filter here.
+  //
+  // Count only PRs we positively know are open (LOWER(pr_state) = PrState.Open,
+  // same casing guard as the merge-rate KPI, FEA-2486) plus un-enriched rows
+  // (pr_state IS NULL) as the intended fallback. We deliberately avoid
+  // `NOT IN ('merged','closed')`: that would fabricate "open" for any
+  // future/unknown lifecycle value (e.g. a `draft` state written by a newer
+  // enricher), inflating the KPI. Unknown non-null states stay OUT of the
+  // backlog — left indeterminate, consistent with the rest of the desktop
+  // lifecycle code — rather than being counted as open.
+  const reviewBacklog = await prisma.client.$queryRawUnsafe<{ n: bigint }[]>(
+    `SELECT COUNT(*) AS n
+     FROM artifacts
+     WHERE kind = 'pull_request'
+       AND COALESCE(observed_at, created_at) IS NOT NULL
+       AND (LOWER(pr_state) = '${PrState.Open}' OR pr_state IS NULL)`
+  );
+  // Hour×day TURN density, split into Human vs Agent per turn via
+  // TURNS_BY_ROLE_SOURCE (PM ruling 2026-07-10, FEA-2641 Fix 4): each parsed
+  // message buckets at its own local hour under its own role, so Human cells
+  // appear only at hours with genuine typed prompts and a steered session's
+  // autonomous stretches paint Agent. The events corpus no longer feeds this
+  // chart.
+  // FEA-3059: bounded-scan activity heatmap. Sum per-(day, hour) human/agent
+  // turn counts across session-id batches — identical rows to the old
+  // single-pass query, but json_each never exceeds TURNS_SCAN_CHUNK sessions.
+  // FEA-2210: the heatmap follows the capped trend window (min(period, 90d)),
+  // NOT the full selected window (for "all", range.startIso is the epoch, which
+  // would render ~20k day-columns and break the grid).
+  // FEA-3132: read the pre-materialized `session_turn_bucket` (see the autonomy
+  // trend above) instead of json_each-expanding `$.messages` every load.
+  const heatmapRows = await prisma.client.$queryRawUnsafe<
+    { day: string; hour: bigint; human: bigint; agent: bigint }[]
   >(
-    // FEA-2038: the per-session human/agent classification is precomputed at
-    // ingest in `session_analytics.is_human` (mirrors humanSessionClassificationSql
-    // / HUMAN_TURN_THRESHOLD), so this no longer re-scans the events corpus to
-    // count human turns — it just buckets events by hour and splits on the stored
-    // flag.
-    `SELECT substr(e.created_at,1,10) AS day,
-            CAST(strftime('%H', e.created_at) AS INTEGER) AS hour,
-            COUNT(*) FILTER (WHERE sa.is_human = 1) AS human,
-            COUNT(*) FILTER (WHERE sa.is_human = 0) AS agent
-     FROM events e
-     JOIN session_analytics sa ON sa.session_id = e.session_id
-     WHERE sa.started_at IS NOT NULL
-       AND sa.started_at BETWEEN $1 AND $2
-       AND e.created_at IS NOT NULL
-     GROUP BY day, hour`,
-    range.startIso,
+    `SELECT ${localDay("b.ts")} AS day,
+            ${localHour("b.ts")} AS hour,
+            SUM(CASE WHEN b.turn_kind = 'human' THEN b.turn_count ELSE 0 END) AS human,
+            SUM(CASE WHEN b.turn_kind = 'agent' THEN b.turn_count ELSE 0 END) AS agent
+     FROM session_turn_bucket b
+     JOIN sessions s ON s.id = b.session_id
+     WHERE s.started_at IS NOT NULL AND s.started_at BETWEEN $1 AND $2
+     GROUP BY day, hour
+     HAVING day IS NOT NULL`,
+    range.trendStartIso,
     range.endIso
   );
+  // Match SQLite's `GROUP BY day, hour` output order (sorted by the group key)
+  // so the emitted `cells` array is byte-identical to the prior query — the
+  // golden depends on it.
+  const heatmap = heatmapRows
+    .map((r) => ({
+      day: r.day,
+      hour: num(r.hour),
+      human: num(r.human),
+      agent: num(r.agent),
+    }))
+    .sort((a, b) => {
+      if (a.day !== b.day) {
+        return a.day < b.day ? -1 : 1;
+      }
+      return a.hour - b.hour;
+    });
 
   const row = totals[0];
   const capturedPrCount = num(backlog[0]?.n);
+  const reviewBacklogCount = num(reviewBacklog[0]?.n);
   const kpis: KpiStat[] = [
     kpi(
       "sessions",
@@ -474,9 +614,9 @@ async function computeUtilization(
     kpi(
       "backlog",
       "Review backlog",
-      capturedPrCount,
+      reviewBacklogCount,
       KpiFormat.Number,
-      "captured PRs"
+      "open PRs awaiting review"
     ),
     kpi(
       "events",
@@ -501,7 +641,9 @@ async function computeUtilization(
         label: "Events",
       }),
       activityHeatmap: {
-        days: eachDay(range.startIso, range.endIso),
+        // Capped trend window (see the heatmap query above) so the column axis
+        // never exceeds 90 days — matches the "Last 90 days (max)" caption.
+        days: eachDay(range.trendStartIso, range.endIso),
         cells: heatmap.map((r) => ({
           day: r.day,
           hour: num(r.hour),
@@ -553,14 +695,48 @@ async function computeDelivery(
     costRow,
     priorCostRow,
     priorLocRows,
+    earliestRow,
   ] = await Promise.all([
-    prisma.client.$queryRawUnsafe<{ n: bigint; merged: bigint }[]>(
-      // FEA-2038: captured PRs in window + how many are MERGED, for a real
-      // merge rate (replaces a hardcoded 100). pr_state is uppercase
-      // ('MERGED'), matching the branch projection's classification.
+    prisma.client.$queryRawUnsafe<
+      { n: bigint; merged: bigint; decided: bigint; merged_authored: bigint }[]
+    >(
+      // FEA-2038: captured PRs in window + how many are merged, for a real
+      // merge rate (replaces a hardcoded 100). FEA-2486: pr_state is written
+      // lowercase (PrState, enrichment/types.ts); the previous uppercase
+      // 'MERGED' comparison matched zero rows on real stores. LOWER() guards
+      // against any legacy row with different casing.
+      //
+      // FEA-2942: merge rate is taken over DECIDED PRs (merged + closed), not
+      // all captured PRs. A still-open PR has not reached a terminal state, so
+      // counting it in the denominator conflates "not merged yet" with "won't
+      // merge" and understates the rate (a window full of in-flight PRs read as
+      // failures). `pr_state` for open PRs is refreshed toward its terminal
+      // value by the enrichment sweep (enrichment-runner.ts re-polls non-final
+      // PR artifacts via the local `gh` CLI), so `decided` grows as PRs land.
+      // `n` (total captured), `merged`, and `decided` all count every captured
+      // PR in the window (no created-link gate) — they back the "Captured PRs"
+      // KPI, the capture-count charts, and the merge-rate KPI, which
+      // intentionally rate the whole captured population.
+      //
+      // FEA-2995: `merged_authored` is the AUTHORED-only merged count that
+      // backs the shared AI-Impact card's "Cost per merged PR" denominator
+      // (`mergedCount` KPI below). Unlike `merged`, it inner-gates on the
+      // relation='created' links — the SAME created-vs-referenced gate the
+      // prByRepo breakdown (FEA-2862) and the trend `agent_n` use — so
+      // reference-only PRs (competitor repos scanned via `gh api`, CI `uses:`
+      // refs, test fixtures; relation='referenced'/'workspace') are excluded.
+      // This matches cloud's denominator (countMergedPrsInRange counts only
+      // authored pullRequestDetail rows), keeping cost-per-merged-PR
+      // reconciled across surfaces. The created-links subquery is DISTINCT per
+      // artifact, so this LEFT JOIN cannot fan out and leaves `n`/`merged`/
+      // `decided` unchanged.
       `SELECT COUNT(*) AS n,
-                SUM(CASE WHEN pr_state = 'MERGED' THEN 1 ELSE 0 END) AS merged
+                SUM(CASE WHEN LOWER(pr_state) = '${PrState.Merged}' THEN 1 ELSE 0 END) AS merged,
+                SUM(CASE WHEN LOWER(pr_state) IN ('${PrState.Merged}', '${PrState.Closed}') THEN 1 ELSE 0 END) AS decided,
+                SUM(CASE WHEN LOWER(pr_state) = '${PrState.Merged}' AND cl.artifact_id IS NOT NULL THEN 1 ELSE 0 END) AS merged_authored
        FROM artifacts
+       LEFT JOIN ${createdArtifactLinksSubquery()} cl
+         ON cl.artifact_id = artifacts.id
        WHERE kind = 'pull_request'
          AND COALESCE(observed_at, created_at) BETWEEN $1 AND $2`,
       range.startIso,
@@ -575,10 +751,18 @@ async function computeDelivery(
       range.priorStartIso,
       range.startIso
     ),
-    prisma.client.$queryRawUnsafe<{ day: string; n: bigint }[]>(
-      `SELECT substr(COALESCE(observed_at, created_at),1,10) AS day,
-              COUNT(*) AS n
+    prisma.client.$queryRawUnsafe<
+      { day: string; n: bigint; agent_n: bigint }[]
+    >(
+      // FEA-2486: agent_n counts PRs with session PR-creation evidence
+      // (relation 'created' from a pr-create tool output). DISTINCT collapses
+      // multi-session created links so one PR can never fan out to >1.
+      `SELECT ${localDay("COALESCE(observed_at, created_at)")} AS day,
+              COUNT(*) AS n,
+              SUM(CASE WHEN cl.artifact_id IS NOT NULL THEN 1 ELSE 0 END) AS agent_n
        FROM artifacts
+       LEFT JOIN ${createdArtifactLinksSubquery()} cl
+         ON cl.artifact_id = artifacts.id
        WHERE kind = 'pull_request'
          AND COALESCE(observed_at, created_at) BETWEEN $1 AND $2
        GROUP BY day`,
@@ -586,11 +770,25 @@ async function computeDelivery(
       range.endIso
     ),
     prisma.client.$queryRawUnsafe<{ repo: string; n: bigint }[]>(
-      `SELECT COALESCE(repo_full_name, 'Unknown') AS repo,
+      // FEA-2862: "Merged PRs by repository" must count only PRs the user
+      // actually merged in-session — not reference-only artifacts (competitor
+      // repos scanned read-only via `gh api`, CI `uses:` refs, unit-test
+      // fixture repos), which land in `artifacts` as relation='referenced'/
+      // 'workspace' and skew this breakdown with repos the user never opened a
+      // PR against. Gate on BOTH signals the sibling queries already use:
+      // (a) authored in-session — inner-join the DISTINCT relation='created'
+      // links (same created-vs-referenced distinction as the trend query above
+      // and the latency created_rank below), and (b) genuinely merged —
+      // LOWER(pr_state)='merged' (same casing guard as the merge-rate KPI), so
+      // the chart data matches its title.
+      `SELECT COALESCE(a.repo_full_name, 'Unknown') AS repo,
               COUNT(*) AS n
-       FROM artifacts
-       WHERE kind = 'pull_request'
-         AND COALESCE(observed_at, created_at) BETWEEN $1 AND $2
+       FROM artifacts a
+       JOIN ${createdArtifactLinksSubquery()} cl
+         ON cl.artifact_id = a.id
+       WHERE a.kind = 'pull_request'
+         AND LOWER(a.pr_state) = '${PrState.Merged}'
+         AND COALESCE(a.observed_at, a.created_at) BETWEEN $1 AND $2
        GROUP BY repo
        ORDER BY n DESC`,
       range.startIso,
@@ -630,71 +828,148 @@ async function computeDelivery(
       range.startIso,
       range.endIso
     ),
-    prisma.client.$queryRawUnsafe<{ loc: bigint; day: string }[]>(
+    prisma.client.$queryRawUnsafe<
+      { loc: bigint; enriched: bigint; day: string }[]
+    >(
       // FEA-2038: per-PR LOC (lines added + removed) for captured PRs, with the
       // bucket day — powers the "KLOC captured" + "Median PR size" KPIs and the
-      // KLOC-over-time trend. NULL lines_added = un-enriched PR; excluded so the
-      // median/total reflect only PRs whose size we actually know.
+      // KLOC-over-time trend. FEA-2159: an un-enriched PR (NULL lines_added AND
+      // lines_removed — size not yet fetched) folds into KLOC as 0 via COALESCE,
+      // which leaves the KLOC total/trend unchanged (0 adds nothing).
+      // FEA-2868: `enriched` flags PRs whose size IS known so the median can be
+      // taken over enriched PRs ONLY — folding un-enriched PRs in as 0 was
+      // dragging the Delivery median toward 0. A row is LOC-enriched only when
+      // BOTH line counts are present, matching `isLocEnrichedRow`
+      // (branch-analytics-projection.ts) — hence AND, not OR. A genuinely empty
+      // enriched PR still has enriched=1 and counts as a real 0.
+      //
+      // NOTE: this INTENTIONALLY diverges from the Branches-list median in
+      // `projectBranchAnalytics` (branch-analytics-projection.ts), which medians
+      // over ALL merged single-PR branches and folds a missing line total in as 0
+      // (FEA-2159, guarded by test/e2e/branches-median-pr-size.spec.ts) rather
+      // than excluding un-enriched rows. The two medians therefore do NOT match:
+      // this PR fixes the Delivery dashboard's un-enriched 0-padding without
+      // touching the Branches page's deliberate include-as-0 behavior.
       `SELECT COALESCE(lines_added, 0) + COALESCE(lines_removed, 0) AS loc,
-              substr(COALESCE(observed_at, created_at), 1, 10) AS day
+              CASE WHEN lines_added IS NOT NULL AND lines_removed IS NOT NULL
+                   THEN 1 ELSE 0 END AS enriched,
+              ${localDay("COALESCE(observed_at, created_at)")} AS day
        FROM artifacts
        WHERE kind = 'pull_request'
-         AND COALESCE(observed_at, created_at) BETWEEN $1 AND $2
-         AND lines_added IS NOT NULL`,
+         AND COALESCE(observed_at, created_at) BETWEEN $1 AND $2`,
       range.startIso,
       range.endIso
     ),
-    // FEA-2038: total estimated AI spend over the window, from the per-session
-    // analytics rollup (est_cost is summed from token_usage.cost_usd_estimated
-    // at ingest). Powers the delivery "Cost" KPI.
+    // FEA-2346: total estimated AI spend over the window, from token_usage ⋈
+    // sessions — the same source the Agents model-spend charts use, so the two
+    // KPIs cannot drift (previously read session_analytics.est_cost, which was
+    // stale when the rollup lagged or missing when session_analytics rows were
+    // absent).
     prisma.client.$queryRawUnsafe<{ cost: number }[]>(
-      `SELECT COALESCE(SUM(est_cost), 0) AS cost
-         FROM session_analytics
-         WHERE started_at IS NOT NULL
-           AND started_at BETWEEN $1 AND $2`,
+      `SELECT COALESCE(SUM(t.cost_usd_estimated), 0) AS cost
+         FROM token_usage t
+         JOIN sessions s ON s.id = t.session_id
+         WHERE s.started_at IS NOT NULL
+           AND s.started_at BETWEEN $1 AND $2`,
       range.startIso,
       range.endIso
     ),
-    // FEA-2038: prior-window cost + LOC, so the Cost / KLOC / PR-size KPIs show
-    // a real period-over-period delta instead of "unknown".
+    // FEA-2346: prior-window cost, so the Cost / KLOC / PR-size KPIs show a
+    // real period-over-period delta instead of "unknown".
     prisma.client.$queryRawUnsafe<{ cost: number }[]>(
-      `SELECT COALESCE(SUM(est_cost), 0) AS cost
-         FROM session_analytics
-         WHERE started_at IS NOT NULL
-           AND started_at >= $1 AND started_at < $2`,
+      `SELECT COALESCE(SUM(t.cost_usd_estimated), 0) AS cost
+         FROM token_usage t
+         JOIN sessions s ON s.id = t.session_id
+         WHERE s.started_at IS NOT NULL
+           AND s.started_at >= $1 AND s.started_at < $2`,
       range.priorStartIso,
       range.startIso
     ),
-    prisma.client.$queryRawUnsafe<{ loc: bigint }[]>(
-      `SELECT COALESCE(lines_added, 0) + COALESCE(lines_removed, 0) AS loc
+    prisma.client.$queryRawUnsafe<{ loc: bigint; enriched: bigint }[]>(
+      // FEA-2159: prior-window per-PR LOC for the PR-size / KLOC period deltas.
+      // FEA-2868: carries the same `enriched` flag as the current window (BOTH
+      // line counts present — AND, matching isLocEnrichedRow) so the prior median
+      // is likewise taken over enriched PRs only — the median delta then compares
+      // like with like (both windows exclude unknown-size PRs).
+      `SELECT COALESCE(lines_added, 0) + COALESCE(lines_removed, 0) AS loc,
+              CASE WHEN lines_added IS NOT NULL AND lines_removed IS NOT NULL
+                   THEN 1 ELSE 0 END AS enriched
          FROM artifacts
          WHERE kind = 'pull_request'
            AND COALESCE(observed_at, created_at) >= $1
-           AND COALESCE(observed_at, created_at) < $2
-           AND lines_added IS NOT NULL`,
+           AND COALESCE(observed_at, created_at) < $2`,
       range.priorStartIso,
       range.startIso
+    ),
+    // FEA-2210: earliest relevant record across the tables that feed the delta
+    // KPIs (captured PRs + per-session cost). Powers the uniform "full prior
+    // period" rule — a period-over-period delta is only shown when local
+    // history reaches back to (or before) the prior window's start; otherwise
+    // it is hidden rather than reported as a misleading +100% off an empty
+    // prior window.
+    prisma.client.$queryRawUnsafe<{ earliest: string | null }[]>(
+      `SELECT MIN(ts) AS earliest FROM (
+         SELECT MIN(COALESCE(observed_at, created_at)) AS ts
+           FROM artifacts WHERE kind = 'pull_request'
+         UNION ALL
+         SELECT MIN(started_at) AS ts
+           FROM session_analytics WHERE started_at IS NOT NULL
+       )`
     ),
   ]);
 
   const captured = num(current[0]?.n);
   const priorCaptured = num(prior[0]?.n);
-  const mergedCount = num(current[0]?.merged);
+  // Raw captured merged count (every relation, no created-link gate). Feeds the
+  // merge-rate denominator pairing below ONLY — NOT the "mergedCount" KPI, which
+  // now emits `authoredMergedCount` (see FEA-2995 note). Named `rawMergedCount`
+  // so it isn't mistaken for the KPI of the same key.
+  const rawMergedCount = num(current[0]?.merged);
+  // FEA-2995: authored-only merged count for the AI-Impact card's
+  // "Cost per merged PR" denominator (`mergedCount` KPI). Gated on the
+  // created-artifact links so reference-only merged PRs don't inflate the
+  // denominator and diverge from cloud. The merge-rate below intentionally
+  // stays over the whole captured population (`rawMergedCount`/`decidedCount`).
+  const authoredMergedCount = num(current[0]?.merged_authored);
+  // FEA-2942: denominator = DECIDED PRs (merged + closed), excluding still-open
+  // ones. 0 decided PRs → 0 (no terminal outcome to rate yet), matching the
+  // prior empty-window behavior.
+  const decidedCount = num(current[0]?.decided);
   const mergeRate =
-    captured > 0 ? Math.round((mergedCount / captured) * 100) : 0;
+    decidedCount > 0 ? Math.round((rawMergedCount / decidedCount) * 100) : 0;
   const latencies = latencyRows
     .map((row) => num(row.latency_ms))
     .filter((value) => value >= 0);
-  const trendByDay = new Map(trend.map((row) => [row.day, num(row.n)]));
+  const trendByDay = new Map(
+    trend.map((row) => [
+      row.day,
+      { total: num(row.n), agent: num(row.agent_n) },
+    ])
+  );
   const totalCost = num(costRow[0]?.cost);
 
-  // FEA-2038: PR-size / KLOC metrics from captured-PR LOC.
+  // FEA-2038: PR-size / KLOC metrics from captured-PR LOC. KLOC sums over ALL
+  // captured PRs (un-enriched fold in as 0). FEA-2868: the median is taken over
+  // ENRICHED PRs only (size known) — un-enriched PRs have unknown size and their
+  // 0-padding was dragging the median to 0.
   const locValues = locRows
     .map((row) => num(row.loc))
     .filter((value) => value >= 0);
   const totalLoc = locValues.reduce((sum, value) => sum + value, 0);
   const klocCaptured = Math.round(totalLoc / 100) / 10;
-  const medianPrSize = median(locValues) ?? 0;
+  const enrichedLocValues = locRows
+    .filter((row) => num(row.enriched) === 1)
+    .map((row) => num(row.loc))
+    .filter((value) => value >= 0);
+  // FEA-2923: when NO captured PR in the window is LOC-enriched (all sizes
+  // unknown), there is nothing to take a median over — emit `null` so the KPI
+  // renders `—` (formatKpiValue) instead of a misleading 0. `null` (not a
+  // non-finite number) keeps the value JSON-serializable on the cloud path and
+  // matches the `KpiStat.value: number | null` contract. The Branches list
+  // stays all-time + include-as-0 by design; this only stops the delivery
+  // dashboard from reporting a fabricated 0 for an empty window.
+  const medianPrSize: number | null =
+    enrichedLocValues.length > 0 ? (median(enrichedLocValues) ?? 0) : null;
   // Prior-window equivalents for period-over-period deltas.
   const priorCost = num(priorCostRow[0]?.cost);
   const priorLocValues = priorLocRows
@@ -703,7 +978,39 @@ async function computeDelivery(
   const priorKloc =
     Math.round(priorLocValues.reduce((sum, value) => sum + value, 0) / 100) /
     10;
-  const priorMedianPrSize = median(priorLocValues) ?? 0;
+  // FEA-2868 (thread 1): keep the prior median NULLABLE. When the prior window
+  // has no enriched PRs (only un-enriched or none), median() returns null and we
+  // must NOT coerce it to 0 — a 0 baseline would surface a bogus +100% PR-size
+  // delta for any current enriched PR size even though there is no real prior
+  // baseline to compare against. A null prior median suppresses the delta below
+  // (treated as no-prior-baseline), same as hasFullPriorPeriod being false.
+  const priorMedianPrSize = median(
+    priorLocRows
+      .filter((row) => num(row.enriched) === 1)
+      .map((row) => num(row.loc))
+      .filter((value) => value >= 0)
+  );
+  // FEA-2210: uniform calendar rule — only surface a period-over-period delta
+  // when the local DB holds a FULL prior period to compare against (earliest
+  // relevant record on or before the prior window's start). For the "all" range
+  // priorStartIso is the epoch, so this is naturally false (no comparison), and
+  // a brand-new install with no history is likewise not comparable. When not
+  // comparable the delta is null, which the dashboard renders as a hidden chip
+  // rather than a misleading +100%.
+  const earliestRecordIso = earliestRow[0]?.earliest ?? null;
+  const hasFullPriorPeriod =
+    earliestRecordIso !== null && earliestRecordIso <= range.priorStartIso;
+  const reportDelta = (current: number, prior: number): number | null =>
+    hasFullPriorPeriod ? pctDelta(current, prior) : null;
+  // FEA-2868 (thread 1): the PR-size delta additionally requires a non-empty
+  // prior ENRICHED population. When the prior window medians to null (no
+  // enriched PRs), there is no real baseline — suppress the delta even if
+  // hasFullPriorPeriod is true, rather than reporting a spurious +100% off a
+  // fabricated 0 prior median.
+  const reportPrSizeDelta = (current: number | null): number | null =>
+    current === null || priorMedianPrSize === null
+      ? null
+      : reportDelta(current, priorMedianPrSize);
   const klocByDay = new Map<string, number>();
   for (const row of locRows) {
     klocByDay.set(row.day, (klocByDay.get(row.day) ?? 0) + num(row.loc) / 1000);
@@ -717,7 +1024,31 @@ async function computeDelivery(
         captured,
         KpiFormat.Number,
         "PRs found in local sessions",
-        pctDelta(captured, priorCaptured)
+        reportDelta(captured, priorCaptured)
+      ),
+      // FEA-2946: surface-agnostic MERGED-PR count the shared AI-Impact card reads
+      // as its "Cost per merged PR" denominator. Desktop's visible `merged` tile
+      // above deliberately carries CAPTURED PRs (all states), so the card cannot
+      // divide by it and stay consistent with cloud, whose `merged` KPI IS the
+      // merged count. Both surfaces now expose this dedicated key with identical
+      // (merged) semantics. Flagged `internal` (mirrors the delivery-kpis
+      // registry's MergedCount entry): response-only, backs no tile, so it
+      // renders nothing on its own.
+      //
+      // FEA-2995: use the AUTHORED-only merged count (`authoredMergedCount`,
+      // gated on created-artifact links) rather than the raw captured `merged`,
+      // so this denominator counts only genuinely-authored merged PRs — the
+      // same population cloud's countMergedPrsInRange counts. Counting every
+      // merged `pull_request` artifact (including reference-only PRs) inflated
+      // the denominator and understated cost-per-merged-PR versus cloud.
+      kpi(
+        "mergedCount",
+        "Merged PRs",
+        authoredMergedCount,
+        KpiFormat.Number,
+        "PRs merged in range",
+        null,
+        true
       ),
       kpi(
         "ttm",
@@ -732,7 +1063,7 @@ async function computeDelivery(
         klocCaptured,
         KpiFormat.Number,
         "thousands of lines changed in captured PRs",
-        pctDelta(klocCaptured, priorKloc)
+        reportDelta(klocCaptured, priorKloc)
       ),
       kpi(
         "cost",
@@ -740,14 +1071,14 @@ async function computeDelivery(
         totalCost,
         KpiFormat.Currency,
         "estimated AI spend in window",
-        pctDelta(totalCost, priorCost)
+        reportDelta(totalCost, priorCost)
       ),
       kpi(
         "merge-rate",
         "Merge rate",
         mergeRate,
         KpiFormat.Percent,
-        "of captured PRs"
+        "of decided PRs (merged or closed)"
       ),
       kpi(
         "pr-size",
@@ -755,14 +1086,11 @@ async function computeDelivery(
         medianPrSize,
         KpiFormat.Number,
         "median lines changed per captured PR",
-        pctDelta(medianPrSize, priorMedianPrSize)
+        reportPrSizeDelta(medianPrSize)
       ),
     ],
     charts: {
-      prTrend: gapFilledSeries(trendByDay, range, {
-        key: "merged",
-        label: "Captured PRs",
-      }),
+      prTrend: prSplitSeries(trendByDay, range),
       klocTrend: gapFilledSeries(klocByDay, range, {
         key: "kloc",
         label: "KLOC captured",
@@ -772,11 +1100,11 @@ async function computeDelivery(
         label: row.repo,
         value: num(row.n),
       })),
-      meanTimeToMerge: durationHistogram(latencies),
+      meanTimeToMerge: ttmHistogram(latencies),
       prByState: [
         { key: "captured", label: "Captured locally", value: captured },
       ],
-      branchLifespan: durationHistogram(latencies),
+      branchLifespan: lifespanHistogram(latencies),
       checkStatus: [
         { key: "captured", label: "Captured locally", value: captured },
       ],
@@ -789,18 +1117,16 @@ async function computeDelivery(
 }
 
 function buildModelSeries(
-  rows: Array<{ day: string; model: string; value: unknown }>,
+  rows: Array<{ day: string; model: string; value: number }>,
   range: Range
 ): TimeSeries {
+  // FEA-2331: values are USD spend (float), so accumulate with plain numeric
+  // addition — the storage-token helpers reject fractional values by design.
   const totalsByModel = new Map<string, number>();
   for (const r of rows) {
     totalsByModel.set(
       r.model,
-      addStorageTokenCounts(
-        totalsByModel.get(r.model) ?? 0,
-        r.value,
-        "insights.agents.model_series_total"
-      )
+      (totalsByModel.get(r.model) ?? 0) + num(r.value)
     );
   }
   const topModels = [...totalsByModel.entries()]
@@ -818,11 +1144,7 @@ function buildModelSeries(
       usesOther = true;
     }
     const day = byDay.get(r.day) ?? {};
-    day[key] = addStorageTokenCounts(
-      day[key] ?? 0,
-      r.value,
-      "insights.agents.model_series_day"
-    );
+    day[key] = (day[key] ?? 0) + num(r.value);
     byDay.set(r.day, day);
   }
 
@@ -836,7 +1158,7 @@ function buildModelSeries(
 
   const points = eachDay(range.trendStartIso, range.endIso).map((date) => ({
     date,
-    values: byDay.get(date) ?? {},
+    values: roundUsdValues(byDay.get(date) ?? {}),
   }));
   return { series, points };
 }
@@ -853,49 +1175,38 @@ function gapFilledSeries(
   return { series: [series], points };
 }
 
-function durationHistogram(values: number[]): CategoryBucket[] {
-  const buckets = [
-    { key: "under-1h", label: "<1h", min: 0, max: 3_600_000, value: 0 },
-    { key: "1-6h", label: "1-6h", min: 3_600_000, max: 21_600_000, value: 0 },
-    {
-      key: "6-24h",
-      label: "6-24h",
-      min: 21_600_000,
-      max: 86_400_000,
-      value: 0,
-    },
-    {
-      key: "1-3d",
-      label: "1-3d",
-      min: 86_400_000,
-      max: 259_200_000,
-      value: 0,
-    },
-    {
-      key: "over-3d",
-      label: ">3d",
-      min: 259_200_000,
-      max: Number.POSITIVE_INFINITY,
-      value: 0,
-    },
-  ];
-
-  for (const value of values) {
-    const bucket = buckets.find(
-      (entry) => value >= entry.min && value < entry.max
-    );
-    if (bucket) {
-      bucket.value++;
-    }
-  }
-
-  return buckets.map(({ key, label, value }) => ({ key, label, value }));
+// FEA-2486: two declared series (agent/manual) plus an UNDECLARED "merged"
+// total key. The kpi:merged sparkline reads values.merged directly, while the
+// bar/heatmap renderers sum only DECLARED series — the total key must stay out
+// of `series` or those variants would double-count.
+function prSplitSeries(
+  countsByDay: Map<string, { total: number; agent: number }>,
+  range: Range
+): TimeSeries {
+  const points = eachDay(range.trendStartIso, range.endIso).map((date) => {
+    const counts = countsByDay.get(date);
+    const total = counts?.total ?? 0;
+    const agent = counts?.agent ?? 0;
+    return {
+      date,
+      values: { agent, manual: total - agent, merged: total },
+    };
+  });
+  return { series: PR_TREND_SERIES, points };
 }
 
 function resolveRange(period: InsightsPeriod, now: Date): Range {
   const endIso = now.toISOString();
+  // FEA-2210: the trend sparklines + activity heatmap follow the selected
+  // period but are capped at TREND_LOOKBACK_DAYS (90) so long ranges — and
+  // "all" — stay readable (the all-time corpus paints an unreadable ~200-column
+  // heatmap). KPI totals below still use the full, uncapped selected window.
+  const trendDays =
+    period === InsightsPeriodValues.All
+      ? TREND_LOOKBACK_DAYS
+      : Math.min(Number(period), TREND_LOOKBACK_DAYS);
   const trendStartIso = new Date(
-    now.getTime() - TREND_LOOKBACK_DAYS * MS_PER_DAY
+    now.getTime() - trendDays * MS_PER_DAY
   ).toISOString();
   if (period === InsightsPeriodValues.All) {
     return {
@@ -917,32 +1228,20 @@ function resolveRange(period: InsightsPeriod, now: Date): Range {
 
 function eachDay(startIso: string, endIso: string): string[] {
   const keys: string[] = [];
-  const start = new Date(startIso);
-  const cursor = new Date(
-    Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())
-  );
+  // FEA-2430: local calendar days (was UTC). Floor both ends to LOCAL midnight
+  // and advance with local setDate so DST-transition days (23h/25h) still
+  // yield exactly one label each.
+  const cursor = new Date(startIso);
+  cursor.setHours(0, 0, 0, 0);
   const end = new Date(endIso);
-  const endDay = Date.UTC(
-    end.getUTCFullYear(),
-    end.getUTCMonth(),
-    end.getUTCDate()
-  );
-  while (cursor.getTime() <= endDay) {
-    keys.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  end.setHours(0, 0, 0, 0);
+  while (cursor.getTime() <= end.getTime()) {
+    // FEA-2430: LOCAL yyyy-MM-dd key matching the localDay() SQL buckets — the
+    // two must stay in lockstep (see timezone contract above).
+    keys.push(formatLocalDayKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
   }
   return keys;
-}
-
-function kpi(
-  key: string,
-  label: string,
-  value: number,
-  format: KpiFormat,
-  sub: string,
-  deltaPct: number | null = null
-): KpiStat {
-  return { key, label, value, format, sub, deltaPct };
 }
 
 function num(value: number | bigint | string | null | undefined): number {
@@ -951,32 +1250,23 @@ function num(value: number | bigint | string | null | undefined): number {
   return value == null ? 0 : Number(value);
 }
 
+// FEA-2331: round a USD spend value to whole cents so the float-summed model
+// spend doesn't leak binary-floating-point noise (e.g. 5016.609999998) across
+// the IPC/contract boundary. Cents precision is plenty for a share chart.
+function roundUsd(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundUsdValues(
+  values: Record<string, number>
+): Record<string, number> {
+  const rounded: Record<string, number> = {};
+  for (const [key, value] of Object.entries(values)) {
+    rounded[key] = roundUsd(value);
+  }
+  return rounded;
+}
+
 function token(value: unknown, fieldName: string): number {
   return readStorageTokenCount(value, fieldName);
-}
-
-function labelize(value: string): string {
-  return value
-    .split(LABEL_SEPARATOR_PATTERN)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) {
-    return null;
-  }
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
-    : (sorted[mid] ?? null);
-}
-
-function pctDelta(current: number, prior: number): number | null {
-  if (prior === 0) {
-    return current === 0 ? null : 100;
-  }
-  return Math.round(((current - prior) / prior) * 1000) / 10;
 }

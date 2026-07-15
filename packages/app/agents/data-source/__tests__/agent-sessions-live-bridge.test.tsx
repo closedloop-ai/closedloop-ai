@@ -7,6 +7,7 @@ import {
   useAgentSessions,
 } from "../../hooks/use-agent-sessions";
 import type {
+  AgentSessionQueryFilters,
   AgentSessionsChange,
   AgentSessionsDataSource,
 } from "../agent-sessions-data-source";
@@ -74,8 +75,10 @@ function liveFakeSource(withSubscribe: boolean) {
   };
 }
 
-function ListProbe() {
-  useAgentSessions({});
+function ListProbe({
+  filters = {},
+}: Readonly<{ filters?: AgentSessionQueryFilters }>) {
+  useAgentSessions(filters);
   return null;
 }
 
@@ -86,12 +89,15 @@ async function advance(ms: number) {
   });
 }
 
-function renderBridge(source: AgentSessionsDataSource) {
+function renderBridge(
+  source: AgentSessionsDataSource,
+  listFilters: AgentSessionQueryFilters = {}
+) {
   return render(
     <AppCoreStoryProviders>
       <AgentSessionsDataSourceProvider dataSource={source}>
         <AgentSessionsLiveBridge />
-        <ListProbe />
+        <ListProbe filters={listFilters} />
       </AgentSessionsDataSourceProvider>
     </AppCoreStoryProviders>
   );
@@ -216,6 +222,49 @@ describe("AgentSessionsLiveBridge", () => {
     emitChange({}); // next change → refetch #3 → succeeds
     await advance(INVALIDATION_THROTTLE_MS);
     expect(calls).toBe(3); // recovered on its own, no error loop
+  });
+
+  it("retains selected-user filters through live refresh and recovery", async () => {
+    const capturedFilters: AgentSessionQueryFilters[] = [];
+    let calls = 0;
+    let emitChange: (change: AgentSessionsChange) => void = () => undefined;
+    const source: AgentSessionsDataSource = {
+      scope: "local",
+      list: (filters) => {
+        calls += 1;
+        capturedFilters.push(filters);
+        if (calls === 2) {
+          return Promise.reject(new Error("transient source failure"));
+        }
+        return Promise.resolve({
+          items: [],
+          total: calls,
+          viewerScope: "self",
+        });
+      },
+      detail: () => Promise.reject(new Error("unused")),
+      usage: () => Promise.reject(new Error("unused")),
+      analytics: () => Promise.reject(new Error("unused")),
+      subscribe: (onChange) => {
+        emitChange = onChange;
+        return () => {
+          emitChange = () => undefined;
+        };
+      },
+    };
+    renderBridge(source, { userId: "user-1" });
+
+    await advance(INVALIDATION_THROTTLE_MS);
+    emitChange({ sessionId: "matching-user-session" });
+    await advance(INVALIDATION_THROTTLE_MS);
+    emitChange({ sessionId: "other-user-session" });
+    await advance(INVALIDATION_THROTTLE_MS);
+
+    expect(capturedFilters).toEqual([
+      { userId: "user-1" },
+      { userId: "user-1" },
+      { userId: "user-1" },
+    ]);
   });
 });
 

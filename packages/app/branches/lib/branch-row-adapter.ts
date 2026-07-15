@@ -8,10 +8,10 @@ import {
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
   type BranchRow as RenderBranchRow,
-} from "./branch-sample-data";
+} from "./branch-row";
 
 /**
- * Wire `BranchStatus` (branch.ts) -> render `BranchRowStatus` (branch-sample-data).
+ * Wire `BranchStatus` (branch.ts) -> render `BranchRowStatus` (branch-row).
  * The render enum has no "closed"; a closed-without-merge branch is dormant, so
  * it maps to the muted "draft" variant (least-alarming). Epic B's table rework
  * can introduce a dedicated closed variant.

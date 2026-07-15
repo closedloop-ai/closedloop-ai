@@ -1,8 +1,11 @@
 import type { ConnectGitHubResponse } from "@repo/api/src/types/github";
+import { GitHubBackfillStatus } from "@repo/api/src/types/github";
+import { waitUntil } from "@vercel/functions";
 import { organizationsService } from "@/app/organizations/service";
 import { env } from "@/env";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { githubBackfillService } from "../backfill-service";
 import { githubService } from "../service";
 import { connectGitHubValidator } from "../validators";
 
@@ -48,8 +51,22 @@ export const POST = withAuth<
   );
 
   switch (result.status) {
-    case "connected":
-      return successResponse({ connected: true });
+    case "connected": {
+      const backfillStatus = await runBoundedFirstSlice(organization.id);
+      waitUntil(
+        githubBackfillService
+          .runPostConnectBackfill({
+            organizationId: organization.id,
+            approvedForVisibleWrites: true,
+            bypassCooldown: true,
+          })
+          .catch(() => undefined)
+      );
+      return successResponse({
+        connected: true,
+        backfill: { status: backfillStatus },
+      });
+    }
     case "requires_confirmation":
       return successResponse({
         connected: false,
@@ -62,3 +79,20 @@ export const POST = withAuth<
       return errorResponse(result.error, null, 400);
   }
 });
+
+async function runBoundedFirstSlice(
+  organizationId: string
+): Promise<GitHubBackfillStatus> {
+  try {
+    const summary = await githubBackfillService.runPostConnectBackfill({
+      organizationId,
+      approvedForVisibleWrites: true,
+      repositoryLimit: 1,
+    });
+    return summary.status === GitHubBackfillStatus.Degraded
+      ? GitHubBackfillStatus.Degraded
+      : GitHubBackfillStatus.FirstSliceStarted;
+  } catch {
+    return GitHubBackfillStatus.Degraded;
+  }
+}

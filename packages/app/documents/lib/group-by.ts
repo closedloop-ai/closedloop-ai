@@ -2,7 +2,7 @@ import type { Priority } from "@repo/api/src/types/common";
 import type { DocumentStatus } from "@repo/api/src/types/document";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
-import { DOCUMENT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import { ARTIFACT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import { PRIORITY_LABELS } from "@repo/app/shared/lib/priority-constants";
 import { comparePriorityValues } from "@repo/app/shared/lib/priority-sort";
 import { STATUS_DISPLAY_ORDER } from "@repo/app/shared/lib/status-grouping";
@@ -26,6 +26,12 @@ export type GroupSectionDescriptor = {
   label: string;
   mode: GroupByNonNone;
   status?: DocumentStatus;
+  /**
+   * Artifact type of the section's representative row (DocumentType or, for
+   * branch/session rows, ArtifactType). Lets a status-group header render the
+   * type-correct icon — Documents and Features diverge on IN_REVIEW (PRD-495).
+   */
+  artifactType?: string;
   priority?: Priority | null;
   assignee?: BasicUser | null;
 };
@@ -33,15 +39,20 @@ export type GroupSectionDescriptor = {
 const NO_PRIORITY_KEY = "no-priority";
 const UNASSIGNED_KEY = "unassigned";
 
-function statusDescriptor(status: DocumentStatus): GroupSectionDescriptor {
+function statusDescriptor(
+  status: DocumentStatus,
+  artifactType?: string
+): GroupSectionDescriptor {
   return {
     key: status,
-    // Branch/session rows carry non-DocumentStatus values (GitHubPRState,
-    // harness strings); fall back to the raw value so their section headers
-    // are never blank.
-    label: DOCUMENT_STATUS_LABELS[status] ?? status,
+    // Combined Document + Feature labels (PRD-495) so headers read as title
+    // case ("In Progress", not "IN_PROGRESS"). Branch/session rows carry
+    // non-artifact status values (GitHubPRState, harness strings) not in the
+    // map; fall back to the raw value so their headers are never blank.
+    label: ARTIFACT_STATUS_LABELS[status] ?? status,
     mode: GroupByMode.Status,
     status,
+    artifactType,
   };
 }
 
@@ -70,7 +81,8 @@ function descriptorForItem(
   mode: GroupByNonNone
 ): GroupSectionDescriptor {
   if (mode === GroupByMode.Status) {
-    return statusDescriptor(item.data.status as DocumentStatus);
+    const artifactType = item.kind === "project" ? undefined : item.data.type;
+    return statusDescriptor(item.data.status as DocumentStatus, artifactType);
   }
   if (mode === GroupByMode.Priority) {
     return priorityDescriptor(item.data.priority ?? null);

@@ -158,6 +158,7 @@ export function useStreamDispatch(params: UseStreamDispatchParams) {
                 break;
               }
 
+              const seqBeforeReconnect = lastSeq;
               result = await streamReader.readStream(
                 reconnectReader,
                 callbacks,
@@ -166,6 +167,25 @@ export function useStreamDispatch(params: UseStreamDispatchParams) {
 
               commandId ??= result.commandId;
               lastSeq = result.lastSeq ?? lastSeq;
+
+              // A reconnect that advanced `lastSeq` delivered new events,
+              // which proves the gateway command is still live and
+              // streaming. Reset the budget so a long command over a flaky
+              // connection (repeated relay timeouts, each followed by a
+              // productive resume) is not abandoned after 10 cumulative
+              // drops. Mirrors the sibling reconnecting streams, which reset
+              // on a successful connect (use-loop-stream.ts `onConnected`,
+              // use-compute-target-status-stream.ts `onOpen` →
+              // `reconnectAttempts = 0`). Guarding on progress rather than a
+              // bare successful connect avoids an infinite loop when reconnects
+              // keep succeeding but deliver nothing new.
+              if (
+                result.lastSeq !== undefined &&
+                (seqBeforeReconnect === undefined ||
+                  result.lastSeq > seqBeforeReconnect)
+              ) {
+                attempts = 0;
+              }
 
               if (result.completed) {
                 dispatch({ type: "error/clear" });

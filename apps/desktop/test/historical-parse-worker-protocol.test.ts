@@ -13,13 +13,14 @@ import {
   historicalParseWorkerResponseSchema,
   summarizeHistoricalWorkerResponseIssues,
   summarizeHistoricalWorkerStderr,
-} from "../src/main/collectors/historical-parse-worker-protocol.js";
+} from "../src/main/collectors/engine/historical-parse-worker-protocol.js";
+import { createUtilityProcessHistoricalParseRunner } from "../src/main/collectors/engine/utility-process-historical-parse-runner.js";
 import {
   Harness,
   type NormalizedSession,
   type NormalizedToolUse,
 } from "../src/main/collectors/types.js";
-import { createUtilityProcessHistoricalParseRunner } from "../src/main/collectors/utility-process-historical-parse-runner.js";
+import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
 const WORKER_STDERR_SUMMARY_PATTERN =
   /^historical parse worker stderr \(\d+ bytes\): .+$/;
@@ -76,6 +77,110 @@ test("historical parse worker response accepts normalized sessions", () => {
   });
 
   assert.equal(result.success, true);
+});
+
+test("historical parse worker response accepts normalized subagents", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [
+      {
+        ...makeSession("worker-subagent-session"),
+        subagents: [
+          {
+            id: "agent-1",
+            parentId: null,
+            name: "Researcher",
+            type: "research",
+            task: "collect context",
+            startedAt: "2026-06-07T12:00:00.000Z",
+            endedAt: "2026-06-07T12:01:00.000Z",
+            status: "completed",
+            nativeSubagentId: "agent-native",
+            toolUses: [
+              {
+                name: "Read",
+                timestamp: "2026-06-07T12:00:30.000Z",
+                input: { file_path: "src/index.ts" },
+              },
+            ],
+            tokensByModel: {
+              "claude-sonnet-4-5": {
+                input: 10,
+                output: 5,
+                cacheRead: 1,
+                cacheWrite: 0,
+              },
+            },
+            metadata: { parentUuid: "parent-uuid" },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.success, true);
+});
+
+test("historical parse worker response rejects malformed subagents", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [
+      {
+        ...makeSession("worker-bad-subagent-session"),
+        subagents: [
+          {
+            id: "agent-1",
+            parentId: null,
+            name: "Researcher",
+            unexpected: true,
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.success, false);
+});
+
+test("historical parse worker response accepts a parse-quality signal (FEA-2771)", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [
+      {
+        ...makeSession("worker-parse-quality-session"),
+        parseQuality: {
+          totalLines: 12,
+          malformedLines: 1,
+          truncatedFinalLine: true,
+        },
+      },
+    ],
+  });
+
+  assert.equal(result.success, true);
+});
+
+test("historical parse worker response rejects a malformed parse-quality signal (FEA-2771)", () => {
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: [
+      {
+        ...makeSession("worker-bad-parse-quality-session"),
+        parseQuality: {
+          totalLines: 12,
+          malformedLines: 1,
+          truncatedFinalLine: true,
+          unexpected: true,
+        },
+      },
+    ],
+  });
+
+  assert.equal(result.success, false);
 });
 
 test("historical parse worker schema stays in parity with NormalizedToolUse fields", () => {
@@ -675,46 +780,16 @@ test("historical parse worker stderr summary keeps mixed warning output", () => 
 });
 
 function makeSession(sessionId: string): NormalizedSession {
-  return {
+  return baseSession({
     sessionId,
-    name: sessionId,
     cwd: "/workspace/project",
     model: "gpt-5",
-    version: null,
-    slug: null,
-    gitBranch: null,
     startedAt: "2026-06-07T12:00:00.000Z",
     endedAt: "2026-06-07T12:05:00.000Z",
-    teams: [],
     userMessages: 1,
     assistantMessages: 1,
-    tokensByModel: {},
-    messageTimestamps: [],
-    toolUses: [],
-    plans: [],
-    compactions: [],
-    apiErrors: [],
-    fileModifiedAt: null,
-    turnDurations: [],
     entrypoint: Harness.Claude,
-    permissionMode: null,
-    thinkingBlockCount: 0,
-    toolResultErrors: [],
-    usageExtras: {
-      service_tiers: [],
-      speeds: [],
-      inference_geos: [],
-    },
-    messages: [],
-    tokenSeries: [],
-    diffStats: null,
-    slashCommands: [],
-    artifacts: {
-      prs: [],
-      issues: [],
-      repo: null,
-    },
-  };
+  });
 }
 
 function parseWorkerToolUse(toolUse: Record<string, unknown>) {

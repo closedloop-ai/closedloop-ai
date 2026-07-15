@@ -4,6 +4,7 @@ import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
+import { resolveApiOrigin } from "@/lib/api-origin";
 import {
   GOOGLE_OAUTH_ERRORS,
   GOOGLE_STATE_COOKIE,
@@ -103,7 +104,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const redirectUri = getGoogleCallbackUrl();
     const clerkToken = await getToken();
     const apiResponse = await fetch(
-      `${env.NEXT_PUBLIC_API_URL}/integrations/google/connect`,
+      `${resolveApiOrigin(request)}/integrations/google/connect`,
       {
         method: "POST",
         headers: {

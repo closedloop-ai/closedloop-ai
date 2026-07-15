@@ -11,56 +11,75 @@ import {
   PinIcon,
   Trash2Icon,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { deltaIsPositive, formatDelta, formatKpiValue } from "../lib/format";
 import { EmptyTile } from "./empty-tile";
 import { InfoTip } from "./info-tip";
+import { KpiDeltaPlaceholder } from "./kpi-delta-placeholder";
+import { ResizeButtons } from "./resize-buttons";
 
 /**
  * KPI tile rendered with the design-system `MetricCard` composite, plus the
- * Insights pin/info/drag affordances overlaid in the corner. Reuses the shared
- * card styling so KPI tiles match the rest of the product surface.
+ * Insights pin/info/drag affordances overlaid in the corner. The metric's
+ * short description stays behind the card info icon, while the overlay info
+ * button keeps the richer metric-definition copy.
  */
 export function KpiMetricTile({
   tileId,
   title,
   kpi,
+  unitLabel,
   pinned,
   onTogglePin,
   onEditTile,
   onResizeWidth,
   showDragHandle = false,
   showResizeControls = false,
+  bodyOverride,
 }: {
   tileId: string;
   title: string;
   kpi: KpiStat | undefined;
+  unitLabel?: ReactNode;
   pinned: boolean;
   onTogglePin?: (id: string) => void;
   onEditTile?: (id: string) => void;
   onResizeWidth?: (id: string, width: number) => void;
   showDragHandle?: boolean;
   showResizeControls?: boolean;
+  bodyOverride?: ReactNode;
 }) {
+  let body: ReactNode = <EmptyTile />;
+  if (bodyOverride) {
+    body = (
+      <div className="h-full rounded-lg border bg-card">{bodyOverride}</div>
+    );
+  } else if (kpi) {
+    body = (
+      <MetricCard
+        className="h-full"
+        info={kpi.sub ? { what: kpi.sub } : undefined}
+        label={kpi.label || title}
+        trend={<TrendBadge deltaPct={kpi.deltaPct} />}
+        unitLabel={unitLabel}
+        value={formatKpiValue(kpi.value, kpi.format)}
+      />
+    );
+  }
+
   return (
     <div className="relative h-full">
-      {kpi ? (
-        <MetricCard
-          className="h-full"
-          detail={kpi.sub}
-          label={title}
-          trend={<TrendBadge deltaPct={kpi.deltaPct} />}
-          value={formatKpiValue(kpi.value, kpi.format)}
-        />
-      ) : (
-        <EmptyTile />
-      )}
+      {body}
       <div className="absolute top-2 right-2 z-[10000] flex items-center gap-0.5 rounded-md border bg-background/95 p-0.5 opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover:opacity-100">
         {showDragHandle ? (
           <GripVerticalIcon className="insights-drag-handle size-4 cursor-move text-muted-foreground" />
         ) : null}
         <div className="flex items-center gap-0.5">
           {showResizeControls && onResizeWidth ? (
-            <ResizeButtons onResize={(width) => onResizeWidth(tileId, width)} />
+            <ResizeButtons
+              className="bg-card"
+              onResize={(width) => onResizeWidth(tileId, width)}
+            />
           ) : null}
           {onEditTile ? (
             <Button
@@ -107,37 +126,13 @@ export function KpiMetricTile({
   );
 }
 
-function ResizeButtons({ onResize }: { onResize: (width: number) => void }) {
-  return (
-    <div className="insights-widget-control hidden items-center rounded border bg-card p-0.5 md:flex">
-      {[
-        { label: "1/2", width: 6 },
-        { label: "Full", width: 12 },
-      ].map((option) => (
-        <Button
-          className="h-6 px-1.5 text-[10px]"
-          key={option.width}
-          onClick={(event) => {
-            event.stopPropagation();
-            onResize(option.width);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          size="sm"
-          type="button"
-          variant="ghost"
-        >
-          {option.label}
-        </Button>
-      ))}
-    </div>
-  );
-}
-
 function TrendBadge({ deltaPct }: { deltaPct: number | null }) {
   const delta = formatDelta(deltaPct);
   if (!delta) {
-    return null;
+    // Render a dash placeholder instead of hiding the slot so the chip layout
+    // stays stable between ranges, and explain the absence via tooltip + a
+    // screen-reader-only label (rather than silently dropping the field).
+    return <KpiDeltaPlaceholder />;
   }
   const positive = deltaIsPositive(deltaPct);
   return (

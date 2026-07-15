@@ -2,6 +2,10 @@
 
 Electron desktop app providing a localhost HTTP gateway for the Closedloop platform.
 
+## Versioning
+
+**Do not hand-edit the `version` field in `package.json` when making a change.** The patch number is a **floor**, not the live version — the real counter is minted automatically as a `desktop-v*` git tag on every merge to `main` whose diff touched the `apps/desktop` build closure (`.github/workflows/desktop-version-bump.yml`). Bumping the patch in a PR does nothing useful and conflicts with that ledger. Only edit this field to deliberately raise the floor or advance the `major.minor` series, and only when the task explicitly calls for it. See `AGENTS.md` ("Versioning And Build Info") for the full mechanism.
+
 ## Updating App Icons
 
 The source of truth for the app icon is `app-icon.svg`, a self-contained 1024x1024 SVG with the squircle tile, loop mark, and accent baked in. The macOS app/dock assets are derived from it. To regenerate after updating the SVG:
@@ -81,6 +85,17 @@ These are set on spawned subprocesses (Claude Code, deploy, learnings) rather th
 |---|---|
 | `CLOSEDLOOP_WORKDIR` | Working directory for Closedloop run artifacts. Set on Claude Code and learnings child processes. |
 | `HOME`, `USER`, `SHELL`, `TERM`, `NODE_ENV` | Standard environment inherited into deploy child processes to ensure a sane shell environment. |
+
+### Golden Corpus Mode (dev-only)
+
+Set by the `just desktop-golden` launch recipe to boot the app against the frozen golden-sessions corpus in an isolated throwaway profile (see `packages/golden-sessions/README.md`). Dev-only — this mode is never packaged into a shipped build, and with `CLOSEDLOOP_GOLDEN_MODE` unset every touched code path behaves exactly as normal, byte-for-byte.
+
+| Variable | Description |
+|---|---|
+| `CLOSEDLOOP_GOLDEN_MODE=1` | Enable golden corpus mode: redirects `userData` to the throwaway profile, stages the corpus, injects corpus-only collectors, and hard-disables live capture (hooks/watchers/OTLP) and cloud sync. Unset/falsy = normal behavior. |
+| `CLOSEDLOOP_GOLDEN_CORPUS_DIR` | Absolute path to the golden-sessions corpus to render (the recipe points this at `packages/golden-sessions`). Must exist and be a directory; validated at startup. |
+| `CLOSEDLOOP_GOLDEN_USER_DATA_DIR` | Absolute path to the throwaway profile that `userData` is redirected to (the recipe uses `apps/desktop/.golden-profile`). Realpath-guarded to never equal, contain, or be contained by the real profile or the corpus; on any violation the app fails to boot rather than fall back to the real profile. |
+| `CLOSEDLOOP_DESKTOP_TELEMETRY_EGRESS=0` | Telemetry-egress kill switch; golden mode sets it to `0` so no telemetry leaves the machine. |
 
 ## Required GitHub Secrets
 

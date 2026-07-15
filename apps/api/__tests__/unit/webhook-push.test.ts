@@ -51,6 +51,16 @@ vi.mock("@/app/branches/file-cache-service", () => ({
   refreshBranchFileChangeCache: vi.fn(),
 }));
 
+vi.mock("@/app/commits/commit-service", () => ({
+  commitService: {
+    recordWebhookCommits: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/webhooks/github/handlers/dirty-scope-publisher", () => ({
+  publishGitHubDirtyScopes: vi.fn(),
+}));
+
 // Import after mocking
 import { withDb } from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
@@ -58,6 +68,8 @@ import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { branchService } from "@/app/branches/branch-service";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
+import { commitService } from "@/app/commits/commit-service";
+import { publishGitHubDirtyScopes } from "@/app/webhooks/github/handlers/dirty-scope-publisher";
 import { handlePush } from "@/app/webhooks/github/handlers/push-handler";
 
 // Type aliases for mocked functions
@@ -68,6 +80,10 @@ const mockUpsertBranchArtifact =
   branchService.upsertBranchArtifact as unknown as Mock;
 const mockRefreshBranchFileChangeCache =
   refreshBranchFileChangeCache as unknown as Mock;
+const mockPublishGitHubDirtyScopes =
+  publishGitHubDirtyScopes as unknown as Mock;
+const mockRecordWebhookCommits =
+  commitService.recordWebhookCommits as unknown as Mock;
 const mockLogInfo = log.info as unknown as Mock;
 
 // Mock database client
@@ -80,7 +96,9 @@ const mockDb = {
     findFirst: vi.fn(),
   },
   branchDetail: {
-    findUnique: vi.fn(),
+    // D2: the push handler resolves an existing branch by (repository_id,
+    // branch_name) via findFirst now that that pair is no longer a unique key.
+    findFirst: vi.fn(),
   },
   project: {
     findMany: vi.fn(),
@@ -169,6 +187,8 @@ function createPushEvent(partial: {
   before?: string;
   after?: string;
   commitsCount?: number;
+  created?: boolean;
+  deleted?: boolean;
 }): PushEvent {
   const {
     repositoryId,
@@ -177,6 +197,8 @@ function createPushEvent(partial: {
     before = "abc123",
     after = "def456",
     commitsCount = 1,
+    created = false,
+    deleted = false,
   } = partial;
 
   const commits = Array.from({ length: commitsCount }, (_, i) => ({
@@ -230,8 +252,8 @@ function createPushEvent(partial: {
       type: "User",
       site_admin: false,
     },
-    created: false,
-    deleted: false,
+    created,
+    deleted,
     forced: false,
     base_ref: null,
     compare: "",
@@ -263,7 +285,7 @@ describe("handlePush", () => {
       id: "source-artifact-1",
       projectId: "project-1",
     });
-    mockDb.branchDetail.findUnique.mockResolvedValue(null);
+    mockDb.branchDetail.findFirst.mockResolvedValue(null);
     mockDb.project.findMany.mockResolvedValue([]);
     mockParseArtifactReferences.mockReturnValue([
       {
@@ -282,7 +304,79 @@ describe("handlePush", () => {
       ok: true,
       value: { fileCount: 1, patchBytes: 10 },
     });
+    mockPublishGitHubDirtyScopes.mockResolvedValue(undefined);
+    mockRecordWebhookCommits.mockResolvedValue({ written: 1 });
     mockWaitUntil.mockImplementation((promise) => promise);
+  });
+
+  describe("commit persistence (FEA-2731)", () => {
+    it("persists push commits through the commit service with GitHub-mapped fields", async () => {
+      const event = createPushEvent({
+        repositoryId: 111,
+        repositoryFullName: "owner/repo",
+        commitsCount: 1,
+      });
+      event.commits[0].id = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b";
+      event.commits[0].message = "feat: real subject";
+      event.commits[0].added = ["a.ts", "b.ts"];
+      event.commits[0].modified = ["c.ts"];
+      event.commits[0].removed = [];
+
+      await handlePush(event);
+
+      expect(mockRecordWebhookCommits).toHaveBeenCalledTimes(1);
+      const arg = mockRecordWebhookCommits.mock.calls[0][0];
+      expect(arg).toMatchObject({
+        organizationId: "org-1",
+        repositoryFullName: "owner/repo",
+        branchArtifactId: "branch-artifact-1",
+      });
+      expect(arg.commits).toHaveLength(1);
+      expect(arg.commits[0]).toMatchObject({
+        sha: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+        message: "feat: real subject",
+        authorName: "Test User",
+        authorEmail: "test@example.com",
+        authorLogin: "testuser",
+        filesChanged: 3, // added(2) + modified(1) + removed(0)
+      });
+      expect(arg.commits[0].committedAt).toEqual(
+        new Date("2021-01-01T00:00:00Z")
+      );
+    });
+
+    it("does not persist commits for a branch deletion", async () => {
+      const event = createPushEvent({
+        repositoryId: 111,
+        repositoryFullName: "owner/repo",
+        deleted: true,
+        commitsCount: 1,
+      });
+      await handlePush(event);
+      expect(mockRecordWebhookCommits).not.toHaveBeenCalled();
+    });
+
+    it("does not persist when the push carries zero commits", async () => {
+      const event = createPushEvent({
+        repositoryId: 111,
+        repositoryFullName: "owner/repo",
+        commitsCount: 0,
+      });
+      await handlePush(event);
+      expect(mockRecordWebhookCommits).not.toHaveBeenCalled();
+    });
+
+    it("acks the webhook even when commit persistence throws (best-effort)", async () => {
+      mockRecordWebhookCommits.mockRejectedValue(new Error("db down"));
+      const event = createPushEvent({
+        repositoryId: 111,
+        repositoryFullName: "owner/repo",
+        commitsCount: 1,
+      });
+      const response = await handlePush(event);
+      expect(response.status).toBe(200);
+      expect(mockPublishGitHubDirtyScopes).toHaveBeenCalled();
+    });
   });
 
   describe("tracked repository", () => {
@@ -319,9 +413,69 @@ describe("handlePush", () => {
           sourceArtifactId: "source-artifact-1",
           beforeSha: "abc123",
           headSha: "def456",
+          headShaObservedAt: new Date("2024-06-15T10:30:00Z"),
+          isCreate: false,
         })
       );
       expect(mockWaitUntil).toHaveBeenCalled();
+    });
+
+    it("passes GitHub created pushes through as branch-create observations", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        before: "0000000000000000000000000000000000000000",
+        after: "sha-recreated",
+        created: true,
+      });
+
+      const response = await handlePush(event);
+      const json = await response.json();
+
+      expect(json).toEqual({
+        message: "Push event processed successfully",
+        ok: true,
+      });
+      expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          beforeSha: "0000000000000000000000000000000000000000",
+          headSha: "sha-recreated",
+          headShaObservedAt: new Date("2024-06-15T10:30:00Z"),
+          isCreate: true,
+          isDelete: false,
+          deletedAt: null,
+        })
+      );
+    });
+
+    it("passes GitHub deleted pushes through as tombstone observations", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        before: "deleted-head",
+        after: "0000000000000000000000000000000000000000",
+        deleted: true,
+      });
+
+      const response = await handlePush(event);
+      const json = await response.json();
+
+      expect(json).toEqual({
+        message: "Push event processed successfully",
+        ok: true,
+      });
+      expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          beforeSha: "deleted-head",
+          headSha: null,
+          headShaSource: null,
+          headShaObservedAt: new Date("2024-06-15T10:30:00Z"),
+          isCreate: false,
+          isDelete: true,
+          deletedAt: new Date("2024-06-15T10:30:00Z"),
+        })
+      );
+      expect(mockWaitUntil).not.toHaveBeenCalled();
     });
 
     it("matches repository by githubRepoId and installationId from the push payload", async () => {
@@ -471,6 +625,7 @@ describe("handlePush", () => {
         where: {
           githubRepoId: "789",
           fullName: "owner/repo",
+          removedAt: null,
           installation: {
             status: "ACTIVE",
             organizationId: { not: null },
@@ -566,7 +721,7 @@ describe("handlePush", () => {
         after: "new-head",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findUnique.mockResolvedValueOnce({
+      mockDb.branchDetail.findFirst.mockResolvedValueOnce({
         artifact: {
           organizationId: "org-1",
           projectId: "project-existing",
@@ -602,7 +757,7 @@ describe("handlePush", () => {
         after: "new-head",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findUnique.mockResolvedValueOnce(null);
+      mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
       mockDb.project.findMany.mockResolvedValueOnce([
         {
           id: "project-default",
@@ -649,7 +804,7 @@ describe("handlePush", () => {
         ref: "refs/heads/manual/ambiguous-default",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findUnique.mockResolvedValueOnce(null);
+      mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
       mockDb.project.findMany.mockResolvedValueOnce([
         {
           id: "project-a",
@@ -712,7 +867,7 @@ describe("handlePush", () => {
         ref: "refs/heads/manual/missing-default",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findUnique.mockResolvedValueOnce(null);
+      mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
       mockDb.project.findMany.mockResolvedValueOnce([
         {
           id: "project-other",

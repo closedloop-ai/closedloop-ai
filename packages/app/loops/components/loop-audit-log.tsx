@@ -1,7 +1,11 @@
 "use client";
 
 import { resolveFriendlyError } from "@repo/api/src/types/friendly-error";
-import type { LoopEvent, LoopEventError } from "@repo/api/src/types/loop";
+import type {
+  LoopEvent,
+  LoopEventError,
+  StoredLoopEvent,
+} from "@repo/api/src/types/loop";
 import { LoopEventType } from "@repo/api/src/types/loop";
 import { useLoopEventsPaginated } from "@repo/app/loops/hooks/use-loops";
 import {
@@ -12,6 +16,10 @@ import {
   formatDateTimeOrFallback,
   formatRelativeTimeOrFallback,
 } from "@repo/app/shared/lib/date-utils";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import {
   Collapsible,
   CollapsibleContent,
@@ -38,6 +46,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
+import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
 import { cn } from "@repo/design-system/lib/utils";
 import { ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -78,14 +87,6 @@ function getEventDetails(event: LoopEvent): string {
     default:
       return "";
   }
-}
-
-function getEventKey(event: LoopEvent): string {
-  const details =
-    event.type === LoopEventType.Error
-      ? `${event.code}-${event.message.slice(0, 80)}`
-      : getEventDetails(event).slice(0, 80);
-  return `${event.type}-${event.timestamp ?? "untimed"}-${details}`;
 }
 
 function isExpandableEvent(event: LoopEvent): boolean {
@@ -194,7 +195,7 @@ function resolveLoopEventError(event: LoopEventError) {
 
 // -- Event Row --
 
-function EventRow({ event }: { event: LoopEvent }) {
+function EventRow({ event }: { event: StoredLoopEvent }) {
   const [isOpen, setIsOpen] = useState(false);
   const expandable = isExpandableEvent(event);
   const details = getEventDetails(event);
@@ -212,18 +213,10 @@ function EventRow({ event }: { event: LoopEvent }) {
         className={cn(expandable && "cursor-pointer hover:bg-muted/50")}
         onClick={expandable ? () => setIsOpen((o) => !o) : undefined}
         onKeyDown={
+          // Only toggle when the row itself is focused, not when the event
+          // bubbles up from a focusable child (handled by the helper's guard).
           expandable
-            ? (keyEvent) => {
-                // Only toggle when the row itself is focused, not when the
-                // event bubbles up from a focusable child.
-                if (
-                  keyEvent.target === keyEvent.currentTarget &&
-                  (keyEvent.key === "Enter" || keyEvent.key === " ")
-                ) {
-                  keyEvent.preventDefault();
-                  setIsOpen((o) => !o);
-                }
-              }
+            ? activateOnEnterOrSpace(() => setIsOpen((o) => !o))
             : undefined
         }
         role={expandable ? "button" : undefined}
@@ -311,9 +304,11 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
 
   if (error) {
     return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message ?? "Failed to load events"}
-      </div>
+      <Alert variant="error">
+        <AlertDescription>
+          {error.message ?? "Failed to load events"}
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -366,7 +361,7 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
             </TableHeader>
             <TableBody>
               {events.map((event) => (
-                <EventRow event={event} key={getEventKey(event)} />
+                <EventRow event={event} key={event.id} />
               ))}
             </TableBody>
           </Table>

@@ -74,10 +74,7 @@ export async function downloadPlanArtifacts(
   );
 
   const promptsSnapshot: PromptsSnapshot | null =
-    parsePromptsSnapshotFromMarkdownEntries(
-      promptMarkdownEntries,
-      "[loop-document-ingestion]"
-    );
+    parsePromptsSnapshotFromMarkdownEntries(promptMarkdownEntries);
 
   return { planContent, questionsContent, judgesReport, promptsSnapshot };
 }
@@ -105,12 +102,9 @@ export async function ingestPlanArtifacts(
   // Fall back to questions content if no plan (same as webhook path)
   const finalContent = artifacts.planContent ?? artifacts.questionsContent;
   if (!finalContent) {
-    log.info(
-      "[loop-document-ingestion] No plan or questions content to ingest",
-      {
-        documentId,
-      }
-    );
+    log.info("loop.document_ingestion.plan_content_missing", {
+      documentId,
+    });
     return;
   }
 
@@ -164,13 +158,13 @@ export async function ingestPlanArtifacts(
       });
     });
 
-    log.info("[loop-document-ingestion] Persisted judges report", {
+    log.info("loop.document_ingestion.judges_report_persisted", {
       documentId,
       reportId: artifacts.judgesReport.report_id,
     });
   }
 
-  log.info("[loop-document-ingestion] Plan content ingested", {
+  log.info("loop.document_ingestion.plan_content_ingested", {
     documentId,
     contentLength: finalContent.length,
   });

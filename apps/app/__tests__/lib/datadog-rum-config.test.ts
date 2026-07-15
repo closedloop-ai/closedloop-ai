@@ -40,7 +40,7 @@ describe("getDatadogRumConfig", () => {
       site: "datadoghq.com",
       trackLongTasks: true,
       trackResources: true,
-      trackUserInteractions: false,
+      trackUserInteractions: true,
       version: "abcdef123456",
     });
   });
@@ -130,5 +130,88 @@ describe("getDatadogRumConfig", () => {
     };
 
     expect(scrubDatadogRumEvent(event as never)).toBe(false);
+  });
+
+  it.each([
+    ["Next.js notFound() 404 control flow", "NEXT_HTTP_ERROR_FALLBACK;404"],
+    [
+      "Clerk UI mount watchdog timeout",
+      "[Clerk UI] Component renderer did not mount within 10s. Check the Network tab.",
+    ],
+    [
+      "React #418 hydration mismatch",
+      "Minified React error #418; visit https://react.dev/errors/418 for the full message",
+    ],
+  ])("drops benign client error class: %s (FEA-2404)", async (_label, message) => {
+    const { scrubDatadogRumEvent } = await loadConfig();
+    const event = {
+      type: "error",
+      error: { message },
+    };
+
+    expect(scrubDatadogRumEvent(event as never)).toBe(false);
+  });
+
+  it("matches a benign signature found only in the error stack", async () => {
+    const { scrubDatadogRumEvent } = await loadConfig();
+    const event = {
+      type: "error",
+      error: {
+        message: "Error",
+        stack: "Error\n  at r (chunk.js:1)\n  NEXT_HTTP_ERROR_FALLBACK;404",
+      },
+    };
+
+    expect(scrubDatadogRumEvent(event as never)).toBe(false);
+  });
+
+  it("preserves novel/unlisted error events so real regressions still reach RUM", async () => {
+    const { scrubDatadogRumEvent } = await loadConfig();
+    const event = {
+      type: "error",
+      error: {
+        message: "TypeError: Cannot read properties of undefined (reading 'x')",
+      },
+    };
+
+    expect(scrubDatadogRumEvent(event as never)).toBe(true);
+  });
+
+  it("drops action events for non-staff sessions", async () => {
+    const { scrubDatadogRumEvent, isDatadogRumStaffCaptureEnabled } =
+      await loadConfig();
+    const event = {
+      type: "action",
+      action: { target: { name: "Confidential Document Title" } },
+    };
+
+    expect(isDatadogRumStaffCaptureEnabled()).toBe(false);
+    expect(scrubDatadogRumEvent(event as never)).toBe(false);
+  });
+
+  it("forwards action events once staff capture is enabled", async () => {
+    const {
+      scrubDatadogRumEvent,
+      setDatadogRumStaffCapture,
+      isDatadogRumStaffCaptureEnabled,
+    } = await loadConfig();
+    const event = {
+      type: "action",
+      action: { target: { name: "Confidential Document Title" } },
+    };
+
+    setDatadogRumStaffCapture(true);
+    expect(isDatadogRumStaffCaptureEnabled()).toBe(true);
+    expect(scrubDatadogRumEvent(event as never)).toBe(true);
+
+    setDatadogRumStaffCapture(false);
+    expect(scrubDatadogRumEvent(event as never)).toBe(false);
+  });
+
+  it("keeps non-action events unaffected by the staff gate", async () => {
+    const { scrubDatadogRumEvent } = await loadConfig();
+    const errorEvent = { type: "error", error: { message: "boom" } };
+
+    expect(scrubDatadogRumEvent(errorEvent as never)).toBe(true);
   });
 });

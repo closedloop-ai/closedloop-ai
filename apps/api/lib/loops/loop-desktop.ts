@@ -13,7 +13,6 @@ import type {
   CreateDesktopCommandInput,
   HarnessType,
 } from "@repo/api/src/types/compute-target";
-import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type {
   LoopBody,
@@ -30,7 +29,6 @@ import {
   CommandSigningRequirementStatus,
   isComputeTargetSigningEligible,
 } from "@/lib/compute-target-signing-eligibility";
-import { shortContentHash } from "@/lib/content-hash";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   toEnvelope,
@@ -38,6 +36,7 @@ import {
 } from "@/lib/desktop-gateway-wire";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import type { DesktopUserIntentSignature } from "./compute-provider";
+import { getImplementationPlanPayloadDiagnostics } from "./loop-desktop-diagnostics";
 import type { ContextPack } from "./loop-state";
 
 type RelayOperation = ReturnType<typeof toRelayOperation>;
@@ -77,50 +76,6 @@ async function assertDelivered(
     });
     throw new RelayDispatchNotDeliveredError(result.reason);
   }
-}
-
-function getImplementationPlanPayloadDiagnostics(contextPack: ContextPack): {
-  artifactCount: number;
-  implementationPlanArtifactPresent: boolean;
-  implementationPlanRawRecordPresent: boolean;
-  implementationPlanRawContentPresent: boolean;
-  implementationPlanRawContentMatchesArtifact: boolean | null;
-  implementationPlanRawReusableByDesktop: boolean | null;
-  implementationPlanContentLength: number | null;
-  implementationPlanRawContentLength: number | null;
-  implementationPlanContentHash: string | null;
-  implementationPlanRawContentHash: string | null;
-} {
-  const planArtifact = contextPack.artifacts.find(
-    (artifact) => artifact.type === DocumentType.ImplementationPlan
-  );
-  const rawPlanContent =
-    typeof planArtifact?.raw?.content === "string"
-      ? planArtifact.raw.content
-      : undefined;
-  let implementationPlanRawReusableByDesktop: boolean | null = null;
-  if (planArtifact && rawPlanContent !== undefined) {
-    implementationPlanRawReusableByDesktop =
-      rawPlanContent === planArtifact.content;
-  } else if (planArtifact) {
-    implementationPlanRawReusableByDesktop = false;
-  }
-
-  return {
-    artifactCount: contextPack.artifacts.length,
-    implementationPlanArtifactPresent: planArtifact !== undefined,
-    implementationPlanRawRecordPresent: planArtifact?.raw !== undefined,
-    implementationPlanRawContentPresent: rawPlanContent !== undefined,
-    implementationPlanRawContentMatchesArtifact:
-      planArtifact && rawPlanContent !== undefined
-        ? rawPlanContent === planArtifact.content
-        : null,
-    implementationPlanRawReusableByDesktop,
-    implementationPlanContentLength: planArtifact?.content.length ?? null,
-    implementationPlanRawContentLength: rawPlanContent?.length ?? null,
-    implementationPlanContentHash: shortContentHash(planArtifact?.content),
-    implementationPlanRawContentHash: shortContentHash(rawPlanContent),
-  };
 }
 
 /**

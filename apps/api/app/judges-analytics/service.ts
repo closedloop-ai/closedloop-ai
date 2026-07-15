@@ -20,59 +20,14 @@ import type {
   RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
 import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
-import { ArtifactType, PromptType, withDb } from "@repo/database";
+import { ArtifactType, Prisma, PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
-/** getUTCDay() returns 0 for Sunday; ISO week starts on Monday. */
-const SUNDAY_INDEX = 0;
-/** Days from Sunday back to the previous Monday. */
-const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
 type HumanCountsByType = {
   humanRatingsByType: Map<DocumentType, number>;
   humanCommentsByType: Map<DocumentType, number>;
 };
-
-function formatDateKey(year: number, month: number, day: number): string {
-  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function bucketKey(d: Date, groupBy: DocumentCountsGroupBy): string {
-  const date = new Date(d);
-  const y = date.getUTCFullYear();
-  const m = date.getUTCMonth();
-  const day = date.getUTCDate();
-
-  switch (groupBy) {
-    case "day":
-      return formatDateKey(y, m, day);
-    case "month":
-      return formatDateKey(y, m, 1);
-    case "week": {
-      const monday = getISOWeekStartDate(date);
-      return formatDateKey(
-        monday.getUTCFullYear(),
-        monday.getUTCMonth(),
-        monday.getUTCDate()
-      );
-    }
-    default:
-      throw new Error(`Unknown groupBy value: ${groupBy}`);
-  }
-}
-
-function getISOWeekStartDate(date: Date): Date {
-  const dow = date.getUTCDay();
-  const mondayOffset =
-    dow === SUNDAY_INDEX ? ISO_WEEK_OFFSET_FROM_SUNDAY : 1 - dow;
-  return new Date(
-    Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate() + mondayOffset
-    )
-  );
-}
 
 function initializeHumanCountsByType(types: DocumentType[]): HumanCountsByType {
   const humanRatingsByType = new Map<DocumentType, number>();
@@ -667,19 +622,24 @@ async function resolveJudgePromptIds(
 async function getJudgeDescriptionByPromptName(
   organizationId: string
 ): Promise<Map<string, string>> {
+  // DISTINCT ON collapses the unbounded version history to the latest row per
+  // raw prompt name in the DB, instead of shipping every (name × version) row.
+  // The JS reduce below is still required because distinct raw names can
+  // normalize to the same judge name; the cross-name latest-version comparison
+  // is preserved by selecting each raw name's highest version here.
   const judgePrompts = await withDb((db) =>
-    db.prompt.findMany({
-      where: {
-        organizationId,
-        promptType: PromptType.JUDGE,
-      },
-      select: {
-        name: true,
-        description: true,
-        version: true,
-      },
-      orderBy: [{ version: "desc" }, { name: "asc" }],
-    })
+    db.$queryRaw<{ name: string; description: string; version: number }[]>(
+      Prisma.sql`
+        SELECT DISTINCT ON ("name")
+          "name" AS name,
+          "description" AS description,
+          "version" AS version
+        FROM "prompt_registry"
+        WHERE "organization_id" = ${organizationId}::uuid
+          AND "prompt_type" = ${PromptType.JUDGE}::"PromptType"
+        ORDER BY "name" ASC, "version" DESC
+      `
+    )
   );
 
   const latestPromptByName = new Map<
@@ -1007,7 +967,9 @@ export const judgesAnalyticsService = {
 
   /**
    * Get artifact creation counts grouped by time bucket and artifact type.
-   * Uses findMany + in-memory grouping so it works with any Prisma schema/adapter.
+   * Aggregates in the database with date_trunc + COUNT + GROUP BY so only the
+   * already-bucketed rows are shipped back, instead of every matching artifact.
+   * Truncation is done in UTC to match the prior in-memory bucketing semantics.
    *
    * @param organizationId - Organization ID to scope the query
    * @param startDate - Start date (inclusive)
@@ -1021,41 +983,47 @@ export const judgesAnalyticsService = {
     endDate: Date,
     groupBy: DocumentCountsGroupBy
   ): Promise<DocumentCountsResponse> {
-    const artifacts = await withDb((db) =>
-      db.artifact.findMany({
-        where: {
-          organizationId,
-          type: ArtifactType.DOCUMENT,
-          createdAt: { gte: startDate, lte: endDate },
-        },
-        select: { createdAt: true, subtype: true },
-      })
+    const rows = await withDb((db) =>
+      db.$queryRaw<{ bucket: string; subtype: string; count: number }[]>(
+        Prisma.sql`
+          SELECT
+            to_char(
+              date_trunc(${groupBy}, "created_at" AT TIME ZONE 'UTC'),
+              'YYYY-MM-DD'
+            ) AS bucket,
+            "subtype" AS subtype,
+            COUNT(*)::int AS count
+          FROM "artifacts"
+          WHERE "organization_id" = ${organizationId}::uuid
+            AND "type" = ${ArtifactType.DOCUMENT}::"ArtifactType"
+            AND "subtype" IS NOT NULL
+            AND "created_at" >= ${startDate}
+            AND "created_at" <= ${endDate}
+          GROUP BY bucket, "subtype"
+          ORDER BY bucket ASC
+        `
+      )
     );
 
-    const bucketTypeCounts = new Map<string, Map<string, number>>();
-    for (const { createdAt, subtype } of artifacts) {
-      if (subtype === null) {
+    const bucketOrder: string[] = [];
+    const countsByBucket = new Map<string, Record<string, number>>();
+    for (const { bucket, subtype, count } of rows) {
+      if (count <= 0) {
         continue;
       }
-      const key = bucketKey(createdAt, groupBy);
-      if (!bucketTypeCounts.has(key)) {
-        bucketTypeCounts.set(key, new Map());
+      let countsByType = countsByBucket.get(bucket);
+      if (countsByType === undefined) {
+        countsByType = {};
+        countsByBucket.set(bucket, countsByType);
+        bucketOrder.push(bucket);
       }
-      const typeMap = bucketTypeCounts.get(key)!;
-      typeMap.set(subtype, (typeMap.get(subtype) ?? 0) + 1);
+      countsByType[subtype] = count;
     }
 
-    const buckets: DocumentCountBucket[] = [...bucketTypeCounts.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([bucket, typeMap]) => {
-        const countsByType: Record<string, number> = {};
-        for (const [type, count] of typeMap) {
-          if (count > 0) {
-            countsByType[type] = count;
-          }
-        }
-        return { bucket, countsByType };
-      });
+    const buckets: DocumentCountBucket[] = bucketOrder.map((bucket) => ({
+      bucket,
+      countsByType: countsByBucket.get(bucket) as Record<string, number>,
+    }));
     return { buckets };
   },
 

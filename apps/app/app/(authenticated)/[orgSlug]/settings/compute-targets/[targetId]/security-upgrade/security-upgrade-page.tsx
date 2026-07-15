@@ -8,6 +8,10 @@ import {
   requiresDesktopUpdateAction,
 } from "@repo/app/compute/components/desktop-security";
 import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -231,17 +235,20 @@ export function DesktopSecurityUpgradePage({
           </CardHeader>
           <CardContent className="space-y-4">
             {commandExpiresAt ? (
-              <div className="flex items-center gap-2 rounded-md border border-success/30 bg-success/12 p-3 text-sm text-success">
-                <CheckCircle2 className="size-4" />
-                Command sent. It expires at {formatExpiresAt(commandExpiresAt)}.
-              </div>
+              <Alert variant="success">
+                <CheckCircle2 />
+                <AlertDescription>
+                  Command sent. It expires at{" "}
+                  {formatExpiresAt(commandExpiresAt)}.
+                </AlertDescription>
+              </Alert>
             ) : null}
 
             {errorMessage ? (
-              <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm">
-                <ShieldAlert className="size-4" />
-                {errorMessage}
-              </div>
+              <Alert variant="error">
+                <ShieldAlert />
+                <AlertDescription>{errorMessage}</AlertDescription>
+              </Alert>
             ) : null}
 
             {isEligible ? (

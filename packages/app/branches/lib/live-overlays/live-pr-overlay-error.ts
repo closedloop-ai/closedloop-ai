@@ -10,7 +10,7 @@
  * Why a live overlay is unavailable, so panels render a DISTINCT state per
  * cause:
  * - `not-connected`  — gateway 403 (proxy guard / `directory not allowed` /
- *   `gh` unauthenticated): show the connect-GitHub affordance.
+ *   `gh` unauthenticated): show the surface's unavailable state.
  * - `no-repo-identity` — no `repoFullName`/`prNumber` or the slug resolves to no
  *   local worktree (repo-identity capture, FEA-1899, not yet populated).
  * - `error` — any other failure.

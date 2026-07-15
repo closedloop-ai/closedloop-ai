@@ -155,32 +155,43 @@ export const tagService = {
     entityId: string,
     organizationId: string
   ) {
-    await validateTagOwnership(tagId, organizationId);
-    await validateEntityExists(entityType, entityId, organizationId);
-
     try {
-      switch (entityType) {
-        case TagEntityType.Project:
-          await withDb((db) =>
-            db.tagProject.create({ data: { tagId, projectId: entityId } })
-          );
-          break;
-        case TagEntityType.Artifact:
-          await withDb((db) =>
-            db.tagArtifact.create({ data: { tagId, artifactId: entityId } })
-          );
-          break;
-        case TagEntityType.Loop:
-          await withDb((db) =>
-            db.tagLoop.create({ data: { tagId, loopId: entityId } })
-          );
-          break;
-        default:
-          throw new Error(`Unknown entity type: ${entityType as string}`);
-      }
+      // Validate ownership/existence and write in one transaction so a
+      // concurrently deleted entity cannot pass validation and then leave a
+      // phantom row (TOCTOU). The inner withDb() calls in the validators join
+      // this ambient transaction.
+      await withDb.tx(async () => {
+        await validateTagOwnership(tagId, organizationId);
+        await validateEntityExists(entityType, entityId, organizationId);
+
+        switch (entityType) {
+          case TagEntityType.Project:
+            await withDb((db) =>
+              db.tagProject.create({ data: { tagId, projectId: entityId } })
+            );
+            break;
+          case TagEntityType.Artifact:
+            await withDb((db) =>
+              db.tagArtifact.create({ data: { tagId, artifactId: entityId } })
+            );
+            break;
+          case TagEntityType.Loop:
+            await withDb((db) =>
+              db.tagLoop.create({ data: { tagId, loopId: entityId } })
+            );
+            break;
+          default:
+            throw new Error(`Unknown entity type: ${entityType as string}`);
+        }
+      });
     } catch (error) {
       if (getPrismaErrorCode(error) === "P2002") {
         return;
+      }
+      // P2003: the entity was deleted between validation and insert, so the
+      // foreign key no longer resolves. Fail gracefully as not-found.
+      if (getPrismaErrorCode(error) === "P2003") {
+        throw new EntityNotFoundError(entityType, entityId);
       }
       throw error;
     }

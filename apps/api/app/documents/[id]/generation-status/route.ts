@@ -1,6 +1,7 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import type { GenerationStatus } from "@repo/api/src/types/document";
+import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
@@ -34,7 +35,7 @@ export const GET = withAuth<
 
       return NextResponse.json(success(result));
     } catch (error) {
-      console.error("Failed to fetch generation status:", error);
+      log.error("documents.generation_status_failed", { error, resolvedId });
       return NextResponse.json(failure("Failed to fetch generation status"), {
         status: 500,
       });

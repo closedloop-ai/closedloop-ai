@@ -22,6 +22,8 @@ const BLANKET_THREAD_KIND_DEFAULT_REGEX =
   /UPDATE\s+"github_comment_thread_projections"\s+SET\s+"thread_kind"\s*=\s*'REVIEW_THREAD'\s+WHERE\s+"thread_kind"\s+IS\s+NULL/i;
 const LEGACY_DERIVED_THREAD_KIND_REGEX =
   /UPDATE\s+"github_comment_thread_projections"\s+projection\s+SET\s+"thread_kind"\s*=\s*\(\s*CASE[\s\S]+FROM\s+"github_pr_review_comments"\s+legacy/i;
+const THREAD_KIND_SCHEMA_FIELD_REGEX =
+  /\bthreadKind\s+GitHubCommentThreadKind\s+@map\("thread_kind"\)/;
 
 describe("comment table final drop migration", () => {
   it("drops only the legacy review-comment table/type after verifying source-kind unified data", () => {
@@ -54,8 +56,8 @@ describe("comment table final drop migration", () => {
     expect(sql).toContain(
       'CREATE UNIQUE INDEX "github_comment_thread_projections_pr_review_thread_unique" ON "github_comment_thread_projections"("pull_request_detail_id", "thread_kind", "review_thread_id")'
     );
-    expect(readModelBlock(schema, "GitHubCommentThreadProjection")).toContain(
-      'threadKind          GitHubCommentThreadKind   @map("thread_kind")'
+    expect(readModelBlock(schema, "GitHubCommentThreadProjection")).toMatch(
+      THREAD_KIND_SCHEMA_FIELD_REGEX
     );
     expect(schema).not.toContain("model GitHubPRReviewComment");
     expect(schema).not.toContain('@@map("github_pr_review_comments")');

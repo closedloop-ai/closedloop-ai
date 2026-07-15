@@ -411,13 +411,19 @@ test("(b-integration) registerSymphonyInteractiveRoutes: spawn failure → defau
     const fakeBin = path.join(tmpDir, "fake-bin");
     await fs.mkdir(fakeBin, { recursive: true });
 
-    // Locate the real git binary and symlink it into fake-bin so that
-    // getGitDiff() (which uses execSync without an env override) can find git.
+    // Locate the active git command and wrap it in fake-bin so getGitDiff()
+    // (which uses execSync without an env override) can find git. Do not
+    // symlink the runtime git wrapper: it resolves its native payload relative
+    // to its own script path, so relocating it breaks in isolated worktrees.
     const realGit = await execFileAsync("/bin/sh", [
       "-c",
       "command -v git",
     ]).then((r) => r.stdout.trim());
-    await fs.symlink(realGit, path.join(fakeBin, "git"));
+    await fs.writeFile(
+      path.join(fakeBin, "git"),
+      `#!/bin/sh\nexec ${JSON.stringify(realGit)} "$@"\n`,
+      { mode: 0o755 }
+    );
 
     // Create a fake `claude` that exits immediately with code 1 and writes
     // nothing to stdout.  Because fake-bin is first in process.env.PATH and

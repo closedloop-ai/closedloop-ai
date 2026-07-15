@@ -10,9 +10,9 @@ import type { ReactNode } from "react";
 
 // Shared styling for every overview metric/KPI card — the dashboard stats row
 // plus the Sessions/Branches/Analytics/PRs/CoreFeatures summary cards. Built on
-// the design-system `MetricCard`'s native spacing (metric-on-top /
-// supporting-copy-below). The one deliberate tweak is bumping the headline value
-// to `text-3xl`; applied here so every card matches.
+// the design-system `MetricCard`'s native metric-on-top spacing. The one
+// deliberate tweak is bumping the headline value to `text-3xl`; applied here so
+// every card matches.
 export const DASHBOARD_METRIC_CARD_CLASS_NAME =
   "h-full [&_[data-slot='card-title']]:text-3xl";
 
@@ -36,10 +36,15 @@ export function DashboardCard({
   contentClassName?: string;
 }) {
   return (
-    <Card className={cn("rounded-[1.25rem] border-border bg-card", className)}>
+    <Card
+      className={cn(
+        "min-w-0 rounded-[1.25rem] border-border bg-card",
+        className
+      )}
+    >
       {title ? (
-        <CardHeader className="px-6">
-          <CardTitle className="font-semibold text-xl tracking-tight">
+        <CardHeader className="px-4 sm:px-6">
+          <CardTitle className="min-w-0 font-semibold text-xl tracking-tight">
             {title}
           </CardTitle>
           {description ? (
@@ -47,7 +52,7 @@ export function DashboardCard({
           ) : null}
         </CardHeader>
       ) : null}
-      <CardContent className={cn("px-6", contentClassName)}>
+      <CardContent className={cn("min-w-0 px-4 sm:px-6", contentClassName)}>
         {children}
       </CardContent>
     </Card>

@@ -26,6 +26,7 @@ import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import { useOrgSlug } from "@/hooks/use-org-slug";
+import { ComplianceSection } from "./components/compliance-section";
 
 /**
  * Org monitoring route wrapper. It owns org slug, route state, source-artifact
@@ -114,6 +115,7 @@ export default function AgentMonitoringPage() {
           analyticsBreakdownsEnabled
           exportHref={exportHref}
           extraColumnLabel="Artifact"
+          footerSlot={<ComplianceSection />}
           getSessionHref={(session) => `/${orgSlug}/sessions/${session.id}`}
           getUserHref={(userId) => `/${orgSlug}/sessions?userId=${userId}`}
           onQueryStateChange={setQueryState}

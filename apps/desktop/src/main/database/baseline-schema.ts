@@ -23,12 +23,6 @@
  */
 
 /**
- * Frozen legacy schema snapshot. Empty under SQLite: there is no pre-runner
- * SQLite snapshot to re-assert.
- */
-export const SQLITE_SCHEMA = "";
-
-/**
  * The ordered, idempotent statement sequence the runner re-asserts when
  * baselining. Empty under SQLite: the idempotent `0001_init` migration is the
  * reconciliation mechanism, so there is nothing extra to re-assert here.

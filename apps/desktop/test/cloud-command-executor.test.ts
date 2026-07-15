@@ -138,10 +138,7 @@ test("cancels queued command with terminal done(cancelled=true)", async () => {
     (event) => event.commandId === "c2" && event.eventType === "done"
   );
   assert.ok(cancelledDone);
-  assert.equal(
-    (cancelledDone?.data as Record<string, unknown>).cancelled,
-    true
-  );
+  assert.equal((cancelledDone.data as Record<string, unknown>).cancelled, true);
   assert.deepEqual(started, ["c1"]);
 });
 
@@ -181,6 +178,144 @@ test("emits terminal timeout error when command exceeds timeoutMs", async () => 
   );
 });
 
+test("gateway response watchdog releases a wedged slot when timeoutMs is absent (FEA-2848)", async () => {
+  // A handler that accepts the connection but never sends a response: without an
+  // independent watchdog the fetch never settles, the in-flight slot is never
+  // released, and a maxInFlightCommands-capped scheduler stalls forever.
+  await startGateway(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (url.searchParams.get("command") === "wedged") {
+      await sleep(10_000); // never responds within the test window
+      return;
+    }
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ok: true }));
+  });
+
+  const events: Omit<
+    DesktopCommandStreamEvent,
+    "protocolVersion" | "messageId" | "timestamp"
+  >[] = [];
+  executor = createExecutor({
+    maxInFlightCommands: 1,
+    onEvent: (event) => events.push(event),
+    gatewayResponseTimeoutMs: 40,
+  });
+  executor.setConnected(true);
+
+  // No timeoutMs on either command — the wire default the finding describes.
+  executor.enqueue(
+    buildCommand("wedged", { command: "wedged" }, { repoPath: "/repo/a" })
+  );
+  executor.enqueue(
+    buildCommand("after", { command: "after" }, { repoPath: "/repo/b" })
+  );
+
+  // The watchdog aborts the stuck fetch, surfacing a terminal error for it...
+  await waitFor(
+    () =>
+      events.some(
+        (event) =>
+          event.commandId === "wedged" &&
+          event.eventType === "error" &&
+          asRecord(event.data).terminal === true
+      ),
+    2000
+  );
+  // ...and the freed slot lets the queued command dispatch and complete.
+  await waitFor(
+    () =>
+      events.some(
+        (event) => event.commandId === "after" && event.eventType === "done"
+      ),
+    2000
+  );
+});
+
+test("gateway response watchdog spares a slow non-streaming loop launch while still bounding a wedged streaming-default command (Codex P2)", async () => {
+  // The /api/gateway/symphony/loop route responds with JSON only after slow setup
+  // (repo/worktree prep, binary resolution, process spawn). It must survive past
+  // the short prompt-headers default — even when that default is injected small —
+  // while a genuinely wedged non-loop command on the short bound is still aborted
+  // so its in-flight slot frees.
+  const SLOW_LAUNCH_RESPONSE_DELAY_MS = 150;
+  await startGateway(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (url.pathname === "/api/gateway/symphony/loop") {
+      // Legitimately slow: far beyond the 40ms injected default, but trivially
+      // under the generous slow-setup backstop the route actually gets.
+      await sleep(SLOW_LAUNCH_RESPONSE_DELAY_MS);
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ok: true, loopId: "loop-1" }));
+      return;
+    }
+    if (url.searchParams.get("command") === "wedged") {
+      await sleep(10_000); // never responds within the test window
+      return;
+    }
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ok: true }));
+  });
+
+  const events: Omit<
+    DesktopCommandStreamEvent,
+    "protocolVersion" | "messageId" | "timestamp"
+  >[] = [];
+  executor = createExecutor({
+    // maxInFlightCommands: 2 so the slow loop launch and the wedged command run
+    // concurrently against their different (route-aware) bounds.
+    maxInFlightCommands: 2,
+    onEvent: (event) => events.push(event),
+    // The injected short bound governs only non-slow-setup routes; the loop route
+    // is exempt and keeps its generous backstop.
+    gatewayResponseTimeoutMs: 40,
+  });
+  executor.setConnected(true);
+
+  // timeoutMs: null is exactly what the relay fixture sends for loop launches.
+  executor.enqueue(
+    buildCommand(
+      "loop-launch",
+      { command: "loop-launch" },
+      {
+        repoPath: "/repo/loop",
+        timeoutMs: null,
+        path: "/api/gateway/symphony/loop",
+      }
+    )
+  );
+  executor.enqueue(
+    buildCommand("wedged", { command: "wedged" }, { repoPath: "/repo/wedged" })
+  );
+
+  // The wedged non-loop command hits the short 40ms bound and is aborted...
+  await waitFor(
+    () =>
+      events.some(
+        (event) =>
+          event.commandId === "wedged" &&
+          event.eventType === "error" &&
+          asRecord(event.data).terminal === true
+      ),
+    2000
+  );
+
+  // ...but the slow loop launch, which the short bound would have aborted at
+  // 40ms, completes successfully because it is exempt and uses the backstop.
+  await waitFor(() => countDone(events, "loop-launch") === 1, 2000);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.commandId === "loop-launch" && event.eventType === "error"
+    ),
+    false,
+    "slow loop launch must not surface a watchdog error"
+  );
+});
+
 test("replays buffered events from resume sequence", async () => {
   await startGateway(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -217,6 +352,127 @@ test("replays buffered events from resume sequence", async () => {
     .slice(eventCountBeforeReplay)
     .filter((event) => event.commandId === "replay-command");
   assert.ok(replayed.every((event) => event.sequence > 1));
+});
+
+test("fails a streaming command whose replay buffer exceeds the high-water mark while acks stall", async () => {
+  const mark = 5;
+  let streamClosed = false;
+
+  await startGateway(async (_request, response) => {
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/x-ndjson");
+    response.on("close", () => {
+      streamClosed = true;
+    });
+    // Stream far more chunk events than the buffer mark. The executor never
+    // acks (simulating a disconnected cloud socket), so its per-command buffer
+    // should hit the high-water mark and abort this response.
+    for (let i = 0; i < 1000 && !streamClosed && !response.destroyed; i += 1) {
+      try {
+        response.write(
+          `${JSON.stringify({ type: "chunk", content: `line-${i}` })}\n`
+        );
+      } catch {
+        break;
+      }
+      await sleep(2);
+    }
+    try {
+      response.end();
+    } catch {
+      // response already torn down by the executor's backpressure abort
+    }
+  });
+
+  const events: Omit<
+    DesktopCommandStreamEvent,
+    "protocolVersion" | "messageId" | "timestamp"
+  >[] = [];
+  executor = createExecutor({
+    maxInFlightCommands: 1,
+    onEvent: (event) => events.push(event),
+    maxBufferedEventsPerCommand: mark,
+  });
+  executor.setConnected(true);
+
+  const commandId = "buffer-overflow";
+  // Never call acknowledge(): nothing trims buffered.events, so it grows until
+  // the high-water mark trips.
+  executor.enqueue(buildCommand(commandId, { command: "stream" }));
+
+  await waitFor(() =>
+    events.some(
+      (event) =>
+        event.commandId === commandId &&
+        event.eventType === "error" &&
+        asRecord(event.data).code === "buffer_overflow"
+    )
+  );
+  await waitFor(() => executor?.getStats().activeCommands === 0);
+  await waitFor(() => streamClosed);
+
+  const forwarded = events.filter((event) => event.commandId === commandId);
+  const overflowError = forwarded.find(
+    (event) => asRecord(event.data).code === "buffer_overflow"
+  );
+  assert.ok(overflowError);
+  assert.equal(overflowError.eventType, "error");
+  assert.equal(asRecord(overflowError.data).terminal, true);
+  // The overflow error is the last event: the command went terminal, so nothing
+  // more is emitted even though the gateway kept trying to stream.
+  assert.equal(forwarded.at(-1), overflowError);
+  // Buffer is bounded: no more than the mark's worth of events plus the single
+  // terminal error, versus the 1000 the gateway attempted to push.
+  assert.ok(
+    forwarded.length <= mark + 1,
+    `expected at most ${mark + 1} forwarded events, got ${forwarded.length}`
+  );
+  assert.deepEqual(executor.getStats(), { activeCommands: 0, queueDepth: 0 });
+});
+
+test("completes a streaming command whose terminal event lands on the buffer high-water mark", async () => {
+  const mark = 4;
+
+  await startGateway(async (_request, response) => {
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/x-ndjson");
+    // The "running" status event takes the first buffer slot, so `mark - 1`
+    // chunks fill the buffer to exactly the mark. The terminal `done` then lands
+    // on the boundary: it must still complete the command, not trip overflow.
+    for (let i = 0; i < mark - 1; i += 1) {
+      response.write(
+        `${JSON.stringify({ type: "chunk", content: `c${i}` })}\n`
+      );
+    }
+    response.write(`${JSON.stringify({ type: "done" })}\n`);
+    response.end();
+  });
+
+  const events: Omit<
+    DesktopCommandStreamEvent,
+    "protocolVersion" | "messageId" | "timestamp"
+  >[] = [];
+  executor = createExecutor({
+    maxInFlightCommands: 1,
+    onEvent: (event) => events.push(event),
+    maxBufferedEventsPerCommand: mark,
+  });
+  executor.setConnected(true);
+
+  const commandId = "boundary-done";
+  // Never ack: the buffer is never trimmed, so the terminal event lands exactly
+  // at the high-water mark.
+  executor.enqueue(buildCommand(commandId, { command: "stream" }));
+
+  await waitFor(() => countDone(events, commandId) === 1);
+
+  const forwarded = events.filter((event) => event.commandId === commandId);
+  assert.ok(
+    !forwarded.some((event) => asRecord(event.data).code === "buffer_overflow"),
+    "terminal event on the boundary must not be converted to a buffer overflow"
+  );
+  assert.equal(forwarded.at(-1)?.eventType, "done");
+  assert.deepEqual(executor.getStats(), { activeCommands: 0, queueDepth: 0 });
 });
 
 test("forwards request body for DELETE commands", async () => {
@@ -696,6 +952,8 @@ function createExecutor(options: {
   commandSignatureVerifier?: CloudCommandExecutorOptions["commandSignatureVerifier"];
   isCommandSigningEnforced?: CloudCommandExecutorOptions["isCommandSigningEnforced"];
   prepareCommandForExecution?: CloudCommandExecutorOptions["prepareCommandForExecution"];
+  gatewayResponseTimeoutMs?: number;
+  maxBufferedEventsPerCommand?: number;
 }): CloudCommandExecutor {
   return new CloudCommandExecutor({
     getGatewayPort: () => gatewayPort,
@@ -704,6 +962,12 @@ function createExecutor(options: {
     sendCommandAck: options.onAck ?? (() => {}),
     sendCommandEvent: options.onEvent,
     onQueueStatsChange: options.onQueueStatsChange,
+    ...(options.gatewayResponseTimeoutMs === undefined
+      ? {}
+      : { gatewayResponseTimeoutMs: options.gatewayResponseTimeoutMs }),
+    ...(options.maxBufferedEventsPerCommand === undefined
+      ? {}
+      : { maxBufferedEventsPerCommand: options.maxBufferedEventsPerCommand }),
     ...(options.commandSignatureVerifier
       ? { commandSignatureVerifier: options.commandSignatureVerifier }
       : {}),
@@ -721,7 +985,8 @@ function buildCommand(
   query: Record<string, string>,
   options?: {
     repoPath?: string;
-    timeoutMs?: number;
+    timeoutMs?: number | null;
+    path?: string;
   }
 ): DesktopCommandEvent {
   return {
@@ -731,13 +996,13 @@ function buildCommand(
     commandId,
     operationId: "git_action",
     method: "POST",
-    path: "/api/gateway/git",
+    path: options?.path ?? "/api/gateway/git",
     query,
     body: {
       action: "status",
       repoPath: options?.repoPath ?? "/repo/default",
     },
-    timeoutMs: options?.timeoutMs,
+    timeoutMs: options?.timeoutMs ?? undefined,
   };
 }
 

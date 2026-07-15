@@ -1,4 +1,4 @@
-import type { BadgeProps } from "@repo/design-system/components/ui/badge";
+import type { BadgeProps } from "@closedloop-ai/design-system/components/ui/badge";
 import type { Tone } from "./types";
 
 export const badgeClassName =

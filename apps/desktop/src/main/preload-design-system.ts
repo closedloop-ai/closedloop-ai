@@ -1,10 +1,22 @@
 import type {
+  AgentComponentDetail,
+  AgentComponentListResponse,
+  AgentComponentQueryFilters,
+  ComponentModelTrendResponse,
+  SkillLoadedResponse,
+  SubagentFrequencyResponse,
+} from "@repo/api/src/types/agent-component";
+import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
+import type {
   BranchAnalytics,
   BranchListResponse,
   BranchPageDetail,
   BranchUsageSummary,
+  MergedTraceItem,
 } from "@repo/api/src/types/branch";
+import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import { ipcRenderer } from "electron";
+import type { GitHubResyncNudgeRendererEvent } from "../renderer/types/desktop-api.js";
 import type {
   AgentHierarchyNode,
   AgentRow,
@@ -42,6 +54,8 @@ import type {
   WorkflowQueryData,
 } from "../shared/agent-db-contract.js";
 import type { DiagnosticsData } from "../shared/diagnostics-contract.js";
+import { PACK_ANALYTICS_IPC_CHANNEL } from "../shared/pack-analytics-channel.js";
+import { SHARED_AGENT_COMPONENTS_IPC_CHANNELS } from "../shared/shared-agent-components-contract.js";
 import {
   SHARED_AGENT_SESSIONS_IPC_CHANNELS,
   type SharedAgentSessionAnalytics,
@@ -53,9 +67,20 @@ import {
 } from "../shared/shared-agent-sessions-contract.js";
 import {
   SHARED_BRANCHES_IPC_CHANNELS,
+  type SharedBranchesDetailRequest,
   type SharedBranchesListRequest,
   type SharedBranchesQuery,
 } from "../shared/shared-branches-contract.js";
+import {
+  SHARED_TRACE_COMMENTS_IPC_CHANNELS,
+  type SharedTraceComment,
+  type SharedTraceCommentDeleteResult,
+  type SharedTraceCommentDraft,
+  type SharedTraceCommentReplyDraft,
+  type SharedTraceCommentTarget,
+  type SharedTraceCommentUpdate,
+} from "../shared/shared-trace-comments-contract.js";
+import type { CoachingInstallOutcome } from "./packs/required-plugin-installer.js";
 import { exposeDesktopApi } from "./preload-common.js";
 
 type DbChangePayload = { sessionId?: string };
@@ -76,6 +101,9 @@ type RendererInteractionListenerOptions = {
 };
 
 const dbChangeSubscribers = new Set<(payload: DbChangePayload) => void>();
+const githubResyncNudgeSubscribers = new Set<
+  (payload: GitHubResyncNudgeRendererEvent) => void
+>();
 let liveDbReady = false;
 let liveDbInFlightCount = 0;
 let rendererLiveDbIdleScheduled = false;
@@ -91,6 +119,13 @@ ipcRenderer.on(
   "desktop:db:changed",
   (_event: unknown, payload: DbChangePayload = {}) => {
     notifyDbChangeSubscribers(payload);
+  }
+);
+
+ipcRenderer.on(
+  "desktop:github-resync-nudge",
+  (_event: unknown, payload: GitHubResyncNudgeRendererEvent) => {
+    notifyGitHubResyncNudgeSubscribers(payload);
   }
 );
 
@@ -123,11 +158,13 @@ const designSystemDashboardApi = {
         SHARED_BRANCHES_IPC_CHANNELS.list,
         request
       ),
-    detail: (id: string) =>
+    detail: (request: string | SharedBranchesDetailRequest) =>
       invokeLiveDb<BranchPageDetail | null>(
         SHARED_BRANCHES_IPC_CHANNELS.detail,
-        id
+        request
       ),
+    trace: (id: string) =>
+      invokeLiveDb<MergedTraceItem[]>(SHARED_BRANCHES_IPC_CHANNELS.trace, id),
     usage: (request?: SharedBranchesQuery) =>
       invokeLiveDb<BranchUsageSummary>(
         SHARED_BRANCHES_IPC_CHANNELS.usage,
@@ -137,6 +174,50 @@ const designSystemDashboardApi = {
       invokeLiveDb<BranchAnalytics>(
         SHARED_BRANCHES_IPC_CHANNELS.analytics,
         request
+      ),
+  },
+  traceCommentsApi: {
+    list: (target: SharedTraceCommentTarget) =>
+      invokeLiveDb<SharedTraceComment[]>(
+        SHARED_TRACE_COMMENTS_IPC_CHANNELS.list,
+        target
+      ),
+    create: (
+      target: SharedTraceCommentTarget,
+      draft: SharedTraceCommentDraft
+    ) =>
+      invokeLiveDb<SharedTraceComment>(
+        SHARED_TRACE_COMMENTS_IPC_CHANNELS.create,
+        target,
+        draft
+      ),
+    reply: (
+      target: SharedTraceCommentTarget,
+      commentId: string,
+      draft: SharedTraceCommentReplyDraft
+    ) =>
+      invokeLiveDb<SharedTraceComment>(
+        SHARED_TRACE_COMMENTS_IPC_CHANNELS.reply,
+        target,
+        commentId,
+        draft
+      ),
+    update: (
+      target: SharedTraceCommentTarget,
+      commentId: string,
+      update: SharedTraceCommentUpdate
+    ) =>
+      invokeLiveDb<SharedTraceComment>(
+        SHARED_TRACE_COMMENTS_IPC_CHANNELS.update,
+        target,
+        commentId,
+        update
+      ),
+    delete: (target: SharedTraceCommentTarget, commentId: string) =>
+      invokeLiveDb<SharedTraceCommentDeleteResult>(
+        SHARED_TRACE_COMMENTS_IPC_CHANNELS.delete,
+        target,
+        commentId
       ),
   },
   db: {
@@ -204,6 +285,12 @@ const designSystemDashboardApi = {
 
     // Catalog (FEA-1314)
     getCatalog: () => invokeLiveDb<CatalogEntry[]>("desktop:db:get-catalog"),
+    // Cloud call (not the local db-host): org-wide pack analytics via main.
+    getPackAnalytics: (packId: string) =>
+      ipcRenderer.invoke(
+        PACK_ANALYTICS_IPC_CHANNEL,
+        packId
+      ) as Promise<PackAnalyticsResponse | null>,
     getCatalogEntry: (packId: string) =>
       invokeLiveDb<CatalogEntry | null>("desktop:db:get-catalog-entry", packId),
     getCatalogReadme: (packId: string) =>
@@ -222,6 +309,16 @@ const designSystemDashboardApi = {
         harness,
         cwd
       ),
+    // Opt-in coaching distribution install (FEA-2923 / §I). Unlike the catalog
+    // channels this routes to a main-process handler (not the live DB runtime),
+    // so it uses `ipcRenderer.invoke` directly. The handler resolves the
+    // presigned asset by distribution id from the authoritative cloud response
+    // and rejects on failure so the banner can surface an inline error.
+    coachingInstall: (distributionId: string) =>
+      ipcRenderer.invoke(
+        "desktop:coaching:install",
+        distributionId
+      ) as Promise<CoachingInstallOutcome>,
     catalogUninstall: (packId: string, harness: string, cwd?: string) =>
       invokeLiveDb<CatalogMutationResult>(
         "desktop:db:catalog-uninstall",
@@ -279,6 +376,41 @@ const designSystemDashboardApi = {
       offset?: number;
     }) => invokeLiveDb<PrRecord[]>("desktop:db:get-pr-list", opts),
     openPr: (id: string) => invokeLiveDb<void>("desktop:db:open-pr", id),
+
+    // Optimization analytics (FEA-2923 / AC-022)
+    getComponentModelTrend: (
+      componentKind: string,
+      componentKey: string,
+      model?: string,
+      days?: number
+    ) =>
+      invokeLiveDb<ComponentModelTrendResponse>(
+        "desktop:db:get-component-model-trend",
+        componentKind,
+        componentKey,
+        model,
+        days
+      ),
+    getSubagentFrequency: (subagentKey: string, days?: number) =>
+      invokeLiveDb<SubagentFrequencyResponse>(
+        "desktop:db:get-subagent-frequency",
+        subagentKey,
+        days
+      ),
+    isSkillLoaded: (skillKey: string) =>
+      invokeLiveDb<SkillLoadedResponse>("desktop:db:is-skill-loaded", skillKey),
+
+    // Agent components local read (FEA-2923 / T-16.3)
+    listAgentComponents: (filters: AgentComponentQueryFilters) =>
+      invokeLiveDb<AgentComponentListResponse>(
+        SHARED_AGENT_COMPONENTS_IPC_CHANNELS.list,
+        filters
+      ),
+    getAgentComponentDetail: (slug: string) =>
+      invokeLiveDb<AgentComponentDetail | null>(
+        SHARED_AGENT_COMPONENTS_IPC_CHANNELS.detail,
+        slug
+      ),
   },
   /**
    * Subscribe to in-process DB-change pushes. The design renderer listens for
@@ -290,6 +422,15 @@ const designSystemDashboardApi = {
       dbChangeSubscribers.delete(callback);
     };
   },
+  /** Subscribe to server-origin GitHub resync nudges delivered through Desktop. */
+  onGitHubResyncNudge: (
+    callback: (payload: GitHubResyncNudgeRendererEvent) => void
+  ) => {
+    githubResyncNudgeSubscribers.add(callback);
+    return () => {
+      githubResyncNudgeSubscribers.delete(callback);
+    };
+  },
   /** Subscribe to streamed pack install/uninstall output (FEA-1314). */
   onInstallOutput: (callback: (payload: InstallOutputChunk) => void) => {
     const handler = (_event: unknown, payload: InstallOutputChunk) =>
@@ -298,12 +439,36 @@ const designSystemDashboardApi = {
     return () =>
       ipcRenderer.removeListener("desktop:pack:install-output", handler);
   },
+  /**
+   * Subscribe to opt-in distributions pushed by the main-process
+   * `RequiredPluginInstaller` (FEA-2923 / §I). Mirrors `onInstallOutput`.
+   */
+  onDistributionsOptInAvailable: (
+    callback: (distributions: OptInDistributionDto[]) => void
+  ) => {
+    const handler = (_event: unknown, distributions: OptInDistributionDto[]) =>
+      callback(distributions);
+    ipcRenderer.on("desktop:distributions:opt-in-available", handler);
+    return () =>
+      ipcRenderer.removeListener(
+        "desktop:distributions:opt-in-available",
+        handler
+      );
+  },
 };
 
 exposeDesktopApi(designSystemDashboardApi);
 
 function notifyDbChangeSubscribers(payload: DbChangePayload): void {
   for (const callback of dbChangeSubscribers) {
+    callback(payload);
+  }
+}
+
+function notifyGitHubResyncNudgeSubscribers(
+  payload: GitHubResyncNudgeRendererEvent
+): void {
+  for (const callback of githubResyncNudgeSubscribers) {
     callback(payload);
   }
 }

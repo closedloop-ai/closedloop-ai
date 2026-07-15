@@ -11,6 +11,9 @@ import {
 export const SHARED_BRANCHES_IPC_CHANNELS = {
   list: "desktop:shared-branches:list",
   detail: "desktop:shared-branches:detail",
+  // PLN-1148 Phase 2: the events-heavy merged trace, split out of `detail` and
+  // fetched lazily when the Sessions & timeline tab opens.
+  trace: "desktop:shared-branches:trace",
   usage: "desktop:shared-branches:usage",
   analytics: "desktop:shared-branches:analytics",
 } as const;
@@ -18,6 +21,7 @@ export const SHARED_BRANCHES_IPC_CHANNELS = {
 export const SHARED_BRANCHES_IPC_CHANNEL_LIST = [
   SHARED_BRANCHES_IPC_CHANNELS.list,
   SHARED_BRANCHES_IPC_CHANNELS.detail,
+  SHARED_BRANCHES_IPC_CHANNELS.trace,
   SHARED_BRANCHES_IPC_CHANNELS.usage,
   SHARED_BRANCHES_IPC_CHANNELS.analytics,
 ] as const;
@@ -33,6 +37,12 @@ export type SharedBranchesQuery = BranchQueryFilters;
 
 export type SharedBranchesListRequest = SharedBranchesQuery & {
   ids?: readonly string[];
+  forceRefresh?: boolean;
+};
+
+export type SharedBranchesDetailRequest = {
+  id: string;
+  forceRefresh?: boolean;
 };
 
 export const SHARED_BRANCHES_NOT_FOUND_CODE = "LOCAL_BRANCH_NOT_FOUND" as const;

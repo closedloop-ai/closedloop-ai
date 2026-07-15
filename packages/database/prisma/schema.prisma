@@ -21,14 +21,29 @@ enum LinkType {
   RELATES_TO // bidirectional association (Feature ↔ Feature)
 }
 
+// Advisory only — not bound to any column (Artifact.status is a freeform
+// String). Documents are PRD/IMPLEMENTATION_PLAN/TEMPLATE subtypes; their
+// authoring/approval lifecycle. SSOT: @closedloop-ai/loops-api/document. PRD-495.
 enum DocumentStatus {
   DRAFT
-  IN_PROGRESS
   IN_REVIEW
+  CHANGES_REQUESTED
   APPROVED
   EXECUTED
-  DONE
   OBSOLETE
+}
+
+// Advisory only — not bound to any column. Features (subtype = FEATURE); their
+// delivery / issue-tracker lifecycle. SSOT: @closedloop-ai/loops-api/document.
+enum FeatureStatus {
+  TRIAGE
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  BLOCKED
+  DONE
+  CANCELED
 }
 
 enum EvaluationReportType {
@@ -212,18 +227,6 @@ enum PreferredComputeMode {
   CLOUD
 }
 
-// FEA-1684: Relation type for session↔PR links (deterministic extraction).
-// Shared with PRD-463 Stage 2 which adds PROBABILISTIC rows on top.
-enum SessionPrRelationType {
-  CREATED
-  REFERENCED
-}
-
-// FEA-1684: Source confidence tier for session↔PR links.
-enum SessionPrLinkSource {
-  DETERMINISTIC
-}
-
 // Kinds of first-class artifacts tracked in the `artifacts` parent table.
 // Added in Chunk 2a of PLN-321 alongside the Artifact/DocumentDetail models.
 enum ArtifactType {
@@ -286,6 +289,7 @@ model Organization {
   prompts                   Prompt[]
   computeTargets            ComputeTarget[]
   computeTargetHealthChecks ComputeTargetHealthCheck[]
+  sessionTranscripts        SessionTranscript[]
   chatSessions              ChatSession[]
   judgeHumanScores          JudgeHumanScore[]
   customFields              CustomField[]
@@ -293,11 +297,19 @@ model Organization {
   agents                    Agent[]
   repoBootstrapConfigs      RepoBootstrapConfig[]
   userPublicKeys            UserPublicKey[]
+  agentComponents           AgentComponent[]
+  catalogItems              CatalogItem[]
+  distributions             Distribution[]
   publicRepositories        PublicRepository[]
   externalCommentAuthors    ExternalCommentAuthor[]
   githubUserConnections     GitHubUserConnection[]
   tags                      Tag[]
   linearSubtasks            LinearSubtask[]
+  desktopSessions           DesktopSession[]
+  githubDirtyScopeNudges    GitHubDirtyScopeNudge[]
+  branchDetails             BranchDetail[]
+  pullRequestDetails        PullRequestDetail[]
+  commitDetails             CommitDetail[]
 
   @@map("organizations")
 }
@@ -351,6 +363,11 @@ model User {
   externalCommentAuthors      ExternalCommentAuthor[]
   githubUserConnections       GitHubUserConnection[]
   createdTags                 Tag[]                               @relation("TagCreatedBy")
+  desktopSessions             DesktopSession[]
+  createdCatalogItems         CatalogItem[]                       @relation("CatalogItemCreatedBy")
+  changedCatalogItemVersions  CatalogItemVersion[]                @relation("CatalogItemVersionChangedBy")
+  createdDistributions        Distribution[]                      @relation("DistributionCreatedBy")
+  distributionTargetStatuses  DistributionTargetStatus[]          @relation("DistributionTargetStatusUser")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -389,6 +406,16 @@ model ComputeTarget {
   lastAgentSessionSyncAt DateTime? @map("last_agent_session_sync_at")
   isOnline               Boolean   @default(false) @map("is_online")
   isSharedWithOrg        Boolean   @default(false) @map("is_shared_with_org")
+  // FEA-2923 (Gap A): marks a synthetic per-org "cloud" compute target that
+  // owns cloud-authored AgentComponent rows (org-custom agents backfilled from
+  // catalog_items). These rows have NO real device. The sentinel keeps
+  // AgentComponent.computeTargetId a non-null FK without a nullable-FK ripple
+  // through desktop sync / listing / analytics, and its distinct id guarantees
+  // device sync upserts (keyed by the real device computeTargetId) never
+  // collide with cloud rows. Device-facing listings filter it out
+  // (isCloudSentinel = false). See migration
+  // 20260712000000_add_compute_target_cloud_sentinel_and_backfill_agent_components.
+  isCloudSentinel        Boolean   @default(false) @map("is_cloud_sentinel")
   gatewayId              String?   @map("gateway_id")
   selectedHarness        String    @default("claude") @map("selected_harness")
   createdAt              DateTime  @default(now()) @map("created_at")
@@ -401,7 +428,12 @@ model ComputeTarget {
   loopExecutionCredentialConsumptions LoopExecutionCredentialConsumption[]
   loops                               Loop[]
   sessionDetails                      SessionDetail[]
+  sessionTranscripts                  SessionTranscript[]
+  githubDirtyScopeNudges              GitHubDirtyScopeNudge[]
   healthCheck                         ComputeTargetHealthCheck?
+  agentComponents                     AgentComponent[]
+  distributionTargetStatuses          DistributionTargetStatus[]
+  distributionTargetingEntries        DistributionTargetingEntry[]
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
@@ -475,11 +507,9 @@ model SessionDetail {
   awaitingInputSince DateTime?     @map("awaiting_input_since")
   sourceArtifactId   String?       @map("source_artifact_id")
   sourceLoopId       String?       @map("source_loop_id")
-  issueId            String?       @map("issue_id")
   baseBranch         String?       @map("base_branch")
   state              String?
   branch             String?
-  issues             Json?
   pullRequests       Json?         @map("pull_requests")
   wallClock          String?       @map("wall_clock")
   activeAgent        String?       @map("active_agent")
@@ -512,11 +542,11 @@ model SessionDetail {
   phases             Json?
   phaseIterations    Json?         @map("phase_iterations")
   phaseLoopbacks     Json?         @map("phase_loopbacks")
-  inputTokens        Int           @default(0) @map("input_tokens")
-  outputTokens       Int           @default(0) @map("output_tokens")
-  cacheReadTokens    Int           @default(0) @map("cache_read_tokens")
-  cacheWriteTokens   Int           @default(0) @map("cache_write_tokens")
-  estimatedCost      Decimal       @default(0) @map("estimated_cost") @db.Decimal(10, 6)
+  inputTokens        BigInt        @default(0) @map("input_tokens")
+  outputTokens       BigInt        @default(0) @map("output_tokens")
+  cacheReadTokens    BigInt        @default(0) @map("cache_read_tokens")
+  cacheWriteTokens   BigInt        @default(0) @map("cache_write_tokens")
+  estimatedCost      Decimal       @default(0) @map("estimated_cost") @db.Decimal(14, 6)
   agentCount         Int           @default(0) @map("agent_count")
   toolUseCount       Int           @default(0) @map("tool_use_count")
   errorCount         Int           @default(0) @map("error_count")
@@ -527,11 +557,15 @@ model SessionDetail {
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
 
-  artifact          Artifact                 @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  user              User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  computeTarget     ComputeTarget            @relation(fields: [computeTargetId], references: [id], onDelete: Restrict)
-  tokenUsageByModel AgentSessionTokenUsage[]
-  events            AgentSessionEvent[]
+  artifact           Artifact                         @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  user               User?                            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  computeTarget      ComputeTarget                    @relation(fields: [computeTargetId], references: [id], onDelete: Restrict)
+  tokenUsageByModel  AgentSessionTokenUsage[]
+  events             AgentSessionEvent[]
+  tokenEvents        AgentSessionTokenEvent[]
+  usageRollup        AgentSessionUsageRollup?
+  sessionTranscripts SessionTranscript[]
+  componentUsages    AgentComponentSessionUsage[]
 
   @@unique([computeTargetId, externalSessionId])
   @@index([sessionStartedAt])
@@ -540,9 +574,78 @@ model SessionDetail {
   @@index([computeTargetId, sessionUpdatedAt])
   @@index([computeTargetId, lastActivityAt])
   @@index([lastActivityAt])
+  @@index([repositoryFullName])
+  // Sessions-list autonomy-tier and cost-bucket facets filter these columns with
+  // range predicates (gte/lt), unlike the equality-based harness facet. A range
+  // predicate can't share a composite index with the lastActivityAt sort column
+  // (the range breaks the ordering), so single-column indexes on each filtered
+  // column are the useful shape — mirroring the single-column repositoryFullName
+  // facet index. autonomy is nullable ("unknown" tier = IS NULL). (FEA-2504)
+  @@index([autonomy])
+  @@index([estimatedCost])
   @@map("session_detail")
 }
 
+/// Cloud-side metadata for a raw session transcript archived to S3 (FEA-2714).
+/// One row per transcript FILE: a logical session owns one `main` transcript
+/// plus zero or more `subagent:{fileId}` sidechain files, discriminated by
+/// `fileKey`. Metadata only — transcript bytes live in the S3 transcripts
+/// bucket and never transit apps/api (PLN-1285 decision 2).
+model SessionTranscript {
+  id                     String    @id @default(uuid(7)) @db.Uuid
+  organizationId         String    @map("organization_id") @db.Uuid
+  computeTargetId        String    @map("compute_target_id") @db.Uuid
+  externalSessionId      String    @map("external_session_id")
+  // Resolved from (computeTargetId, externalSessionId); nullable because a
+  // transcript can arrive before the metadata lane creates the SessionDetail
+  // row. FK targets SessionDetail.artifactId (its primary key). Subagent rows
+  // share the parent session's sessionDetailId. Both routes attempt resolution
+  // while unset.
+  sessionDetailId        String?   @map("session_detail_id") @db.Uuid
+  // Harness that produced the transcript: `claude_code`, `codex`, …
+  sourceHarness          String    @map("source_harness")
+  // `main` for the session transcript, `subagent:{fileId}` for sidechain files.
+  fileKey                String    @map("file_key")
+  objectStorageKey       String    @map("object_storage_key")
+  // pending | uploading | uploaded | failed
+  uploadStatus           String    @default("pending") @map("upload_status")
+  // Archive identity (client-computed sha256); set once verified on complete.
+  rawSha256              String?   @map("raw_sha256")
+  // S3-verified full-object CRC64NVME checksum; set on complete.
+  crc64nvme              String?   @map("crc64nvme")
+  rawByteSize            BigInt?   @map("raw_byte_size")
+  // Current-version ETag, used as If-Match on the next copy-append.
+  storedEtag             String?   @map("stored_etag")
+  // Last VERIFIED byte offset — advances only on a successful complete
+  // (recovery invariant 1). Clients recompute their delta from this.
+  syncedByteOffset       BigInt    @default(0) @map("synced_byte_offset")
+  sourceMtime            DateTime? @map("source_mtime")
+  // Hash of the local file path — no raw local paths in cloud (PRD security req).
+  sourcePathHash         String?   @map("source_path_hash")
+  // In-flight multipart upload id + start time, for resume and staleness abort.
+  pendingUploadId        String?   @map("pending_upload_id")
+  pendingUploadStartedAt DateTime? @map("pending_upload_started_at")
+  firstSeenAt            DateTime  @default(now()) @map("first_seen_at")
+  lastObservedAt         DateTime  @default(now()) @map("last_observed_at")
+  uploadedAt             DateTime? @map("uploaded_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  computeTarget ComputeTarget  @relation(fields: [computeTargetId], references: [id], onDelete: Restrict)
+  sessionDetail SessionDetail? @relation(fields: [sessionDetailId], references: [artifactId], onDelete: SetNull)
+
+  // Session identity (matches SessionDetail) plus the per-file discriminator.
+  @@unique([computeTargetId, externalSessionId, fileKey])
+  @@index([organizationId])
+  @@index([sessionDetailId])
+  @@map("session_transcript")
+}
+
+// FEA-2718: conversation turn text left the database. The `summary` and `data`
+// columns (turn/tool content) were dropped — the cloud transcript archive
+// (FEA-2717) is the sole source of turn/tool detail. Only columnar metadata
+// used by the timeline/markers/analytics remains here.
 model AgentSessionEvent {
   id              String   @id @default(uuid(7)) @db.Uuid
   agentSessionId  String   @map("agent_session_id") @db.Uuid
@@ -550,8 +653,6 @@ model AgentSessionEvent {
   agentExternalId String?  @map("agent_external_id")
   eventType       String   @map("event_type")
   toolName        String?  @map("tool_name")
-  summary         String?
-  data            Json?
   eventCreatedAt  DateTime @map("event_created_at")
   createdAt       DateTime @default(now()) @map("created_at")
 
@@ -566,11 +667,11 @@ model AgentSessionTokenUsage {
   id               String   @id @default(uuid(7)) @db.Uuid
   agentSessionId   String   @map("agent_session_id") @db.Uuid
   model            String
-  inputTokens      Int      @default(0) @map("input_tokens")
-  outputTokens     Int      @default(0) @map("output_tokens")
-  cacheReadTokens  Int      @default(0) @map("cache_read_tokens")
-  cacheWriteTokens Int      @default(0) @map("cache_write_tokens")
-  estimatedCost    Decimal  @default(0) @map("estimated_cost") @db.Decimal(10, 6)
+  inputTokens      BigInt   @default(0) @map("input_tokens")
+  outputTokens     BigInt   @default(0) @map("output_tokens")
+  cacheReadTokens  BigInt   @default(0) @map("cache_read_tokens")
+  cacheWriteTokens BigInt   @default(0) @map("cache_write_tokens")
+  estimatedCost    Decimal  @default(0) @map("estimated_cost") @db.Decimal(14, 6)
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -579,6 +680,86 @@ model AgentSessionTokenUsage {
   @@unique([agentSessionId, model])
   @@index([model])
   @@map("agent_session_token_usage")
+}
+
+/// FEA-2730 (PRD-510 FR4 G1): raw per-event token usage synced from the
+/// desktop's keep-all `token_events` log (retention/rollup deferred, Q3).
+/// Append-only and idempotent: the desktop source table has no primary key, so
+/// `externalEventId` is a content hash the desktop synthesizes per row (mirrors
+/// the SessionActivitySegment.id precedent), and the
+/// `@@unique([agentSessionId, externalEventId])` + createMany(skipDuplicates)
+/// makes re-sync a no-op.
+///
+/// D4 (PRD-510) decision — this table is JOIN-REACHED, so it carries NO
+/// `organizationId` and no org-wide index. Org isolation is enforced through the
+/// `session → artifact.organizationId` relation, exactly as its sibling
+/// `AgentSessionTokenUsage` already is; every cloud read enters through a
+/// SessionDetail join (getSessionTokenEvents, the insights/usage aggregations).
+/// `SessionDetail` itself has no `organizationId` (org lives on the parent
+/// `Artifact`). The `[agentSessionId, eventCreatedAt]` index covers the
+/// per-session, optionally date-bounded focus-page reads. Revisit only if a
+/// future read must scan token events org-wide WITHOUT entering through
+/// SessionDetail (e.g. "every token event for the org in a time window") — that
+/// would justify adding `organizationId` + an `[organizationId, eventCreatedAt]`
+/// index in a follow-up migration. No such read exists today.
+model AgentSessionTokenEvent {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  agentSessionId   String   @map("agent_session_id") @db.Uuid
+  externalEventId  String   @map("external_event_id")
+  agentExternalId  String?  @map("agent_external_id")
+  model            String
+  inputTokens      BigInt   @default(0) @map("input_tokens")
+  outputTokens     BigInt   @default(0) @map("output_tokens")
+  cacheReadTokens  BigInt   @default(0) @map("cache_read_tokens")
+  cacheWriteTokens BigInt   @default(0) @map("cache_write_tokens")
+  estimatedCost    Decimal  @default(0) @map("estimated_cost") @db.Decimal(14, 6)
+  eventCreatedAt   DateTime @map("event_created_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  session SessionDetail @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
+
+  @@unique([agentSessionId, externalEventId])
+  @@index([agentSessionId, eventCreatedAt])
+  @@map("agent_session_token_events")
+}
+
+/// FEA-2730 (PRD-510 FR4 G10): the desktop's one-row-per-session usage rollup
+/// (source table `session_analytics`), synced as-is and authoritative (Q16). 1:1
+/// with SessionDetail — the PK IS the session's artifact id, so re-sync upserts
+/// in place. Token columns are widened to BigInt and cost to Decimal(14,6) for
+/// numeric fidelity (FEA-2728), though the desktop rollup stores them narrower;
+/// `isHuman` is a boolean cloud-side (0/1 on the desktop). No `organizationId`
+/// (join-reached via the session, per the D4 decision on AgentSessionTokenEvent
+/// above). Named `UsageRollup` rather than `Analytics` to avoid colliding with
+/// the unrelated org-wide `AgentSessionAnalytics` viewer-analytics API type.
+model AgentSessionUsageRollup {
+  artifactId       String    @id @map("artifact_id") @db.Uuid
+  startedAt        DateTime? @map("started_at")
+  startedDay       String?   @map("started_day")
+  status           String?
+  harness          String?
+  isHuman          Boolean   @default(false) @map("is_human")
+  humanTurns       Int       @default(0) @map("human_turns")
+  agentTurns       Int       @default(0) @map("agent_turns")
+  eventCount       Int       @default(0) @map("event_count")
+  toolInvocations  Int       @default(0) @map("tool_invocations")
+  errorEvents      Int       @default(0) @map("error_events")
+  inputTokens      BigInt    @default(0) @map("input_tokens")
+  outputTokens     BigInt    @default(0) @map("output_tokens")
+  cacheReadTokens  BigInt    @default(0) @map("cache_read_tokens")
+  cacheWriteTokens BigInt    @default(0) @map("cache_write_tokens")
+  estimatedCost    Decimal   @default(0) @map("estimated_cost") @db.Decimal(14, 6)
+  runtimeMs        BigInt?   @map("runtime_ms")
+  // When the desktop last recomputed this rollup (distinct from the cloud's own
+  // updatedAt bookkeeping below).
+  rollupUpdatedAt  DateTime? @map("rollup_updated_at")
+  lastSyncedAt     DateTime  @default(now()) @map("last_synced_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  session SessionDetail @relation(fields: [artifactId], references: [artifactId], onDelete: Cascade)
+
+  @@map("agent_session_usage_rollups")
 }
 
 model DesktopCommand {
@@ -639,6 +820,86 @@ model DesktopCommandEvent {
 
   @@id([commandId, sequence])
   @@map("desktop_command_events")
+}
+
+model GitHubDirtyScopeNudge {
+  id                             String    @id @default(uuid(7)) @db.Uuid
+  organizationId                 String    @map("organization_id") @db.Uuid
+  githubInstallationRepositoryId String    @map("github_installation_repository_id") @db.Uuid
+  computeTargetId                String    @map("compute_target_id") @db.Uuid
+  windowStartedAt                DateTime  @map("window_started_at")
+  dirtyScopes                    Json      @map("dirty_scopes")
+  genericRefresh                 Boolean   @default(false) @map("generic_refresh")
+  scheduledDispatchAt            DateTime  @map("scheduled_dispatch_at")
+  dispatchClaimedAt              DateTime? @map("dispatch_claimed_at")
+  dispatchedAt                   DateTime? @map("dispatched_at")
+  expiresAt                      DateTime  @map("expires_at")
+  deliveryResult                 Json?     @map("delivery_result")
+  createdAt                      DateTime  @default(now()) @map("created_at")
+  updatedAt                      DateTime  @updatedAt @map("updated_at")
+
+  organization  Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository    GitHubInstallationRepository @relation(fields: [githubInstallationRepositoryId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget                @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, githubInstallationRepositoryId, computeTargetId, windowStartedAt], map: "github_dirty_scope_nudges_org_repo_target_window_key")
+  @@index([scheduledDispatchAt, dispatchedAt], map: "github_dirty_scope_nudges_dispatch_due_idx")
+  @@index([dispatchClaimedAt], map: "github_dirty_scope_nudges_dispatch_claim_idx")
+  @@index([expiresAt], map: "github_dirty_scope_nudges_expires_idx")
+  @@index([organizationId, githubInstallationRepositoryId], map: "github_dirty_scope_nudges_org_repo_idx")
+  @@map("github_dirty_scope_nudges")
+}
+
+// =============================================================================
+// DESKTOP SESSION AUTH (FEA-1514 / FEA-2215)
+// First-party desktop sessions. Short-lived access tokens are stateless JWTs
+// (see packages/auth/desktop-session-jwt.ts); only the rotating refresh-token
+// family is persisted here, and only as a hash. Session + refresh-token family
+// are bound to the desktop device public key so a stolen refresh token alone
+// cannot mint a new access token.
+// =============================================================================
+
+model DesktopSession {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  gatewayId      String    @map("gateway_id")
+  boundPublicKey String    @map("bound_public_key")
+  metadata       Json      @default("{}")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  revokedAt      DateTime? @map("revoked_at")
+  expiresAt      DateTime  @map("expires_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization  Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  refreshTokens DesktopRefreshToken[]
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([expiresAt])
+  @@map("desktop_sessions")
+}
+
+model DesktopRefreshToken {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  sessionId          String    @map("session_id") @db.Uuid
+  familyId           String    @map("family_id") @db.Uuid
+  tokenHash          String    @unique @map("token_hash")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  expiresAt          DateTime  @map("expires_at")
+  lastUsedAt         DateTime? @map("last_used_at")
+  revokedAt          DateTime? @map("revoked_at")
+  replacedByTokenId  String?   @map("replaced_by_token_id") @db.Uuid
+  rotatedFromTokenId String?   @map("rotated_from_token_id") @db.Uuid
+
+  session DesktopSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, revokedAt])
+  @@index([familyId, revokedAt])
+  @@index([expiresAt])
+  @@map("desktop_refresh_tokens")
 }
 
 model Project {
@@ -707,7 +968,7 @@ model TeamMember {
 
   // Relations
   team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([teamId, userId])
   @@index([userId])
@@ -742,7 +1003,7 @@ model ProjectTeam {
 
   // Relations
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  team    Team    @relation(fields: [teamId], references: [id])
+  team    Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, teamId])
   @@index([teamId])
@@ -828,6 +1089,12 @@ model Artifact {
   name           String
   slug           String?
   assigneeId     String?          @map("assignee_id") @db.Uuid
+  // Freeform per-subtype lifecycle status. Intentionally NOT bound to a DB enum:
+  // a single column carries multiple disjoint vocabularies — DocumentStatus
+  // (PRD/IMPLEMENTATION_PLAN/TEMPLATE), FeatureStatus (FEATURE), plus the
+  // Branch/Deployment/Session vocabularies. The authoritative contracts are the
+  // TypeScript SSOTs in @closedloop-ai/loops-api/document; the DocumentStatus /
+  // FeatureStatus enums below are advisory documentation only. See PRD-495.
   status         String
   priority       Priority?
   dueDate        DateTime?        @map("due_date")
@@ -850,9 +1117,9 @@ model Artifact {
   loopSession               Loop?                              @relation("LoopSessionArtifact")
   branchDeployments         DeploymentDetail[]                 @relation("DeploymentOfBranch")
   pullRequestDetails        PullRequestDetail[]                @relation("BranchPullRequests")
+  branchCommits             CommitDetail[]                     @relation("BranchCommits")
   sourceLinks               ArtifactLink[]                     @relation("ArtifactLinkSource")
   targetLinks               ArtifactLink[]                     @relation("ArtifactLinkTarget")
-  sessionPrLinks            SessionPullRequestLink[]           @relation("SessionPrLinks")
   ratings                   ArtifactRating[]
   evaluations               ArtifactEvaluation[]
   commentThreads            CommentThread[]
@@ -868,6 +1135,7 @@ model Artifact {
   @@index([organizationId, projectId, sortOrder])
   @@index([organizationId, type, status])
   @@index([organizationId, assigneeId])
+  @@index([organizationId, createdById])
   @@map("artifacts")
 }
 
@@ -892,7 +1160,20 @@ model DocumentDetail {
 // Branch-owned detail for BRANCH-typed artifacts.
 model BranchDetail {
   artifactId                    String       @id @map("artifact_id") @db.Uuid
-  repositoryId                  String       @map("repository_id") @db.Uuid
+  // Write-once denormalization of the parent Artifact.organizationId (the org
+  // SSOT — PRD-510 FR13). Present only because the D2 unique index cannot span
+  // the Artifact join; set once at creation from the parent Artifact and never
+  // updated independently (guarded by the FR13 invariant test).
+  organizationId                String       @map("organization_id") @db.Uuid
+  // Installation-repo surrogate id — nullable enrichment only (PRD-510 D2). App
+  // repos carry it (webhook/status/file-cache lookups); desktop-produced
+  // branches in non-App repos have none. Branch identity keys on
+  // repositoryFullName (D2), not this id.
+  repositoryId                  String?      @map("repository_id") @db.Uuid
+  // Normalized `owner/name` (normalizeRepoFullName) — the producer-independent
+  // branch identity component (PRD-510 D2), uniform across desktop sync and the
+  // GitHub webhook regardless of whether the App is installed.
+  repositoryFullName            String       @map("repository_full_name")
   branchName                    String       @map("branch_name")
   baseBranch                    String?      @map("base_branch")
   baseBranchSource              String?      @map("base_branch_source")
@@ -907,6 +1188,13 @@ model BranchDetail {
   // the Artifact createdAt.
   lastActivityAt                DateTime?    @map("last_activity_at")
   lastPushBeforeSha             String?      @map("last_push_before_sha")
+  // Explicit set-once push state (PRD-510 FR2, mirroring FEA-2531 Phase C).
+  // `firstPushedAt` is the earliest verified push (earliest wins); `pushSource`
+  // is `session` | `webhook`. Deliberately NEVER derived from the volatile
+  // headShaSource (the stale_push trap) or from row existence (D3: existence
+  // means "observed", not "pushed"). Drives the FR12 display predicate.
+  firstPushedAt                 DateTime?    @map("first_pushed_at")
+  pushSource                    String?      @map("push_source")
   currentPullRequestDetailId    String?      @map("current_pull_request_detail_id") @db.Uuid
   deletedAt                     DateTime?    @map("deleted_at")
   checksStatus                  ChecksStatus @default(UNKNOWN) @map("checks_status")
@@ -916,6 +1204,14 @@ model BranchDetail {
   checksDetailProviderState     String?      @map("checks_detail_provider_state")
   checksDetailUnavailableReason String?      @map("checks_detail_unavailable_reason")
   checksDetailUpdatedAt         DateTime?    @map("checks_detail_updated_at")
+  checkRunRetryState            String?      @map("check_run_retry_state") @db.VarChar(32)
+  checkRunRetryHeadSha          String?      @map("check_run_retry_head_sha")
+  checkRunRetryResourceId       String?      @map("check_run_retry_resource_id") @db.VarChar(255)
+  checkRunRetryIdempotencyKey   String?      @map("check_run_retry_idempotency_key") @db.VarChar(255)
+  checkRunRetryAttempts         Int          @default(0) @map("check_run_retry_attempts")
+  checkRunRetryNextAt           DateTime?    @map("check_run_retry_next_at")
+  checkRunRetryLastAttemptAt    DateTime?    @map("check_run_retry_last_attempt_at")
+  checkRunRetryReason           String?      @map("check_run_retry_reason") @db.VarChar(64)
   fileCacheStatus               String       @default("absent") @map("file_cache_status")
   fileCacheHeadSha              String?      @map("file_cache_head_sha")
   fileCacheFileCount            Int          @default(0) @map("file_cache_file_count")
@@ -926,39 +1222,62 @@ model BranchDetail {
   lastSyncCompletedAt           DateTime?    @map("last_sync_completed_at")
   lastSyncErrorCode             String?      @map("last_sync_error_code")
   lastSyncErrorMessage          String?      @map("last_sync_error_message") @db.Text
+  fetchCredentialType           String?      @map("fetch_credential_type") @db.VarChar(32)
+  fetchCredentialOwnerId        String?      @map("fetch_credential_owner_id") @db.Uuid
+  fetchMechanism                String?      @map("fetch_mechanism") @db.VarChar(32)
+  fetchTrigger                  String?      @map("fetch_trigger") @db.VarChar(32)
+  fetchObservedAt               DateTime?    @map("fetch_observed_at")
+  fetchResultReason             String?      @map("fetch_result_reason") @db.VarChar(64)
   createdAt                     DateTime     @default(now()) @map("created_at")
   updatedAt                     DateTime     @updatedAt @map("updated_at")
 
   artifact                 Artifact                        @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  repository               GitHubInstallationRepository    @relation(fields: [repositoryId], references: [id])
+  organization             Organization                    @relation(fields: [organizationId], references: [id])
+  repository               GitHubInstallationRepository?   @relation(fields: [repositoryId], references: [id])
   currentPullRequestDetail PullRequestDetail?              @relation("CurrentBranchPullRequest", fields: [currentPullRequestDetailId], references: [id], onDelete: SetNull)
   fileChanges              BranchFileChange[]
   statusChecks             BranchStatusCheck[]
   githubCommentProjections GitHubCommentThreadProjection[]
 
-  @@unique([repositoryId, branchName])
+  // PRD-510 D2 branch identity: one row per (org, normalized repo full name,
+  // branch name) — uniform across producers, independent of App installation.
+  // Explicit map: the default name exceeds Postgres's 63-char identifier limit.
+  @@unique([organizationId, repositoryFullName, branchName], map: "branch_detail_org_repo_full_name_branch_key")
+  // FR12 display predicate: org-scoped scans filtering on push evidence.
+  @@index([organizationId, firstPushedAt], map: "branch_detail_org_first_pushed_at_idx")
   @@index([repositoryId, headSha])
+  // NOTE: branch_detail_remote_head_evidence_idx is a partial index on
+  // head_sha_source, last_activity_at DESC, and artifact_id where head_sha is
+  // present and deleted_at is null. Prisma cannot express partial indexes.
   @@index([currentPullRequestDetailId])
   @@index([syncStatus])
   @@index([lastActivityAt])
+  @@index([checkRunRetryState, checkRunRetryNextAt], map: "branch_detail_check_run_retry_due_idx")
+  @@index([repositoryId, checkRunRetryHeadSha], map: "branch_detail_check_run_retry_repo_head_idx")
   @@map("branch_detail")
 }
 
 // Bounded current-head GitHub status/check context projection for Branch View.
 model BranchStatusCheck {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchArtifactId String   @map("branch_artifact_id") @db.Uuid
-  headSha          String   @map("head_sha")
-  providerKey      String   @map("provider_key") @db.VarChar(160)
-  kind             String   @db.VarChar(32)
-  providerNodeId   String?  @map("provider_node_id") @db.VarChar(255)
-  name             String   @db.VarChar(255)
-  status           String?  @db.VarChar(64)
-  conclusion       String?  @db.VarChar(64)
-  targetUrl        String?  @map("target_url") @db.VarChar(2048)
-  position         Int
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchArtifactId       String    @map("branch_artifact_id") @db.Uuid
+  headSha                String    @map("head_sha")
+  providerKey            String    @map("provider_key") @db.VarChar(160)
+  kind                   String    @db.VarChar(32)
+  providerNodeId         String?   @map("provider_node_id") @db.VarChar(255)
+  name                   String    @db.VarChar(255)
+  status                 String?   @db.VarChar(64)
+  conclusion             String?   @db.VarChar(64)
+  targetUrl              String?   @map("target_url") @db.VarChar(2048)
+  position               Int
+  fetchCredentialType    String?   @map("fetch_credential_type") @db.VarChar(32)
+  fetchCredentialOwnerId String?   @map("fetch_credential_owner_id") @db.Uuid
+  fetchMechanism         String?   @map("fetch_mechanism") @db.VarChar(32)
+  fetchTrigger           String?   @map("fetch_trigger") @db.VarChar(32)
+  fetchObservedAt        DateTime? @map("fetch_observed_at")
+  fetchResultReason      String?   @map("fetch_result_reason") @db.VarChar(64)
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
   branch BranchDetail @relation(fields: [branchArtifactId], references: [artifactId], onDelete: Cascade)
 
@@ -970,37 +1289,127 @@ model BranchStatusCheck {
 // GitHub pull request conversation detail. These rows are nested under branch
 // artifacts and preserve current or historical PR-specific review state.
 model PullRequestDetail {
-  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  artifactId           String?         @unique @map("artifact_id") @db.Uuid
-  branchArtifactId     String          @map("branch_artifact_id") @db.Uuid
-  repositoryId         String          @map("repository_id") @db.Uuid
-  githubId             String          @unique @map("github_id")
-  number               Int
-  title                String?
-  htmlUrl              String?         @map("html_url")
-  body                 String?         @db.Text
-  prState              GitHubPRState   @default(OPEN) @map("pr_state")
-  isDraft              Boolean         @default(false) @map("is_draft")
-  reviewDecision       ReviewDecision? @map("review_decision")
-  isCurrent            Boolean         @default(false) @map("is_current")
-  closedAt             DateTime?       @map("closed_at")
-  mergedAt             DateTime?       @map("merged_at")
-  mergeCommitSha       String?         @map("merge_commit_sha")
-  lastVerifiedAt       DateTime?       @map("last_verified_at")
-  lastRefreshAttemptAt DateTime?       @map("last_refresh_attempt_at")
+  id                     String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  artifactId             String?         @unique @map("artifact_id") @db.Uuid
+  branchArtifactId       String          @map("branch_artifact_id") @db.Uuid
+  // FEA-2732 / PRD-510 D2: write-once denormalization of the parent branch
+  // Artifact's organizationId (the org SSOT). Set once at creation from the
+  // branch's org and never updated independently. Present because a PR detail row
+  // has no Artifact of its own to scope by, and the repo-less desktop identity
+  // index must span the org (two orgs can sync the same public repo's PR number).
+  organizationId         String          @map("organization_id") @db.Uuid
+  // Installation-repo surrogate id — nullable enrichment only (PRD-510 D2). App
+  // repos carry it (webhook/adoption lookups); desktop-produced PRs in non-App
+  // repos have none until a later App installation adopts the row. PR identity
+  // keys on repositoryFullName (repo-less) or repositoryId (App); never on both.
+  repositoryId           String?         @map("repository_id") @db.Uuid
+  // Normalized `owner/name` (normalizeRepoFullName) — the producer-independent PR
+  // identity component for repo-less desktop rows (PRD-510 D2), uniform across
+  // desktop sync and the GitHub webhook. Enrichment for App rows.
+  repositoryFullName     String?         @map("repository_full_name")
+  // Nullable for desktop-only rows until `gh` enrichment / App adoption supplies
+  // the canonical GitHub node id. The unique constraint still holds across all
+  // non-null values (Postgres treats NULLs as distinct).
+  githubId               String?         @unique @map("github_id")
+  number                 Int
+  title                  String?
+  htmlUrl                String?         @map("html_url")
+  body                   String?         @db.Text
+  prState                GitHubPRState   @default(OPEN) @map("pr_state")
+  isDraft                Boolean         @default(false) @map("is_draft")
+  additions              Int?
+  deletions              Int?
+  changedFiles           Int?            @map("changed_files")
+  reviewDecision         ReviewDecision? @map("review_decision")
+  isCurrent              Boolean         @default(false) @map("is_current")
+  closedAt               DateTime?       @map("closed_at")
+  mergedAt               DateTime?       @map("merged_at")
+  mergeCommitSha         String?         @map("merge_commit_sha")
+  lastVerifiedAt         DateTime?       @map("last_verified_at")
+  lastRefreshAttemptAt   DateTime?       @map("last_refresh_attempt_at")
+  fetchCredentialType    String?         @map("fetch_credential_type") @db.VarChar(32)
+  fetchCredentialOwnerId String?         @map("fetch_credential_owner_id") @db.Uuid
+  fetchMechanism         String?         @map("fetch_mechanism") @db.VarChar(32)
+  fetchTrigger           String?         @map("fetch_trigger") @db.VarChar(32)
+  fetchObservedAt        DateTime?       @map("fetch_observed_at")
+  fetchResultReason      String?         @map("fetch_result_reason") @db.VarChar(64)
 
   artifact                       Artifact?                       @relation(fields: [artifactId], references: [id], onDelete: SetNull)
   branchArtifact                 Artifact                        @relation("BranchPullRequests", fields: [branchArtifactId], references: [id], onDelete: Cascade)
-  repository                     GitHubInstallationRepository    @relation(fields: [repositoryId], references: [id])
+  repository                     GitHubInstallationRepository?   @relation(fields: [repositoryId], references: [id])
+  organization                   Organization                    @relation(fields: [organizationId], references: [id])
   reviews                        GitHubPRReview[]
   githubCommentThreadProjections GitHubCommentThreadProjection[]
   currentForBranches             BranchDetail[]                  @relation("CurrentBranchPullRequest")
-  sessionPrLinks                 SessionPullRequestLink[]
 
+  // App-repo identity (webhook/backfill producers). Repo-less desktop rows have a
+  // null repositoryId, so this index never constrains them (NULLs are distinct).
   @@unique([repositoryId, number])
   @@unique([id, branchArtifactId], map: "pull_request_detail_id_branch_artifact_id_key")
   @@index([branchArtifactId, isCurrent])
+  @@index([organizationId])
+  // NOTE: pull_request_detail_org_repo_full_name_number_key is a PARTIAL unique
+  // index on (organization_id, repository_full_name, number) WHERE repository_id
+  // IS NULL — the producer-independent identity for desktop-produced non-App PRs
+  // (FEA-2732). Prisma cannot express partial indexes, so it lives in the raw
+  // migration. A later App installation fills repository_id (adoption), moving the
+  // row out of this index and under @@unique([repositoryId, number]).
   @@map("pull_request_detail")
+}
+
+// Cloud SSOT for git commits observed on a branch (PRD-510 D7 / FEA-2731).
+// Deliberately a STANDALONE table, NOT an Artifact subtype — commits are git
+// objects; no COMMIT ArtifactType exists and none is added. The row attaches to
+// the platform only via `branchArtifactId` (the branch's Artifact); there is no
+// commit slug and no ArtifactLink. Fed by two producers reconciled on the
+// identity key: desktop sync (non-App repos, no GitHub App required) and the
+// GitHub `push` webhook (App repos). Reads are join-reached per branch.
+model CommitDetail {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  // Write-once denormalization of the owning org (from the API key at ingest /
+  // the branch Artifact's org). Present only so the identity index can span for
+  // cross-tenant dedup (non-App repos carry no repositoryId, mirroring D2) — it
+  // is NOT a query-scoping column (D4: reads reach it via the branch). Set once
+  // at creation and never independently updated.
+  organizationId     String    @map("organization_id") @db.Uuid
+  // Normalized `owner/name` (normalizeRepoFullName) — the producer-independent
+  // commit identity component (PRD-510 D2), uniform across desktop sync and the
+  // GitHub webhook regardless of whether the App is installed.
+  repositoryFullName String    @map("repository_full_name")
+  sha                String
+  // The branch the commit was observed on. Single FK, Cascade; no ArtifactLink.
+  // Many-to-many (a commit on multiple branches) is deferred (Q10).
+  branchArtifactId   String    @map("branch_artifact_id") @db.Uuid
+  message            String?   @db.Text
+  committedAt        DateTime? @map("committed_at")
+  authoredAt         DateTime? @map("authored_at")
+  authorName         String?   @map("author_name")
+  authorEmail        String?   @map("author_email")
+  authorLogin        String?   @map("author_login")
+  linesAdded         Int?      @map("lines_added")
+  linesRemoved       Int?      @map("lines_removed")
+  filesChanged       Int?      @map("files_changed")
+  isMerge            Boolean   @default(false) @map("is_merge")
+  mergeCommitSha     String?   @map("merge_commit_sha")
+  // Provenance of the last authoritative writer per the field-level merge rules
+  // (Phase 4): `desktop_sync` | `push_webhook` | `github_api`. Freeform String,
+  // matching BranchDetail's pushSource/headShaSource convention; the allowed
+  // values are the CommitSource SSOT in @repo/api (packages/api/src/types).
+  source             String
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  branch       Artifact     @relation("BranchCommits", fields: [branchArtifactId], references: [id], onDelete: Cascade)
+
+  // PRD-510 D7 commit identity: one row per (org, normalized repo full name,
+  // sha) — cross-tenant dedup and the convergence point for the desktop + webhook
+  // producers. Explicit map keeps the constraint name well under Postgres's
+  // 63-char identifier limit.
+  @@unique([organizationId, repositoryFullName, sha], map: "commit_detail_org_repo_full_name_sha_key")
+  // Branch-detail read pattern: a branch's commits, most-recent first.
+  @@index([branchArtifactId, committedAt], map: "commit_detail_branch_committed_at_idx")
+  @@map("commit_detail")
 }
 
 // Bounded branch file-change metadata cache. Raw file contents stay in GitHub
@@ -1074,35 +1483,6 @@ model ArtifactLink {
   @@index([organizationId, sourceId, linkType])
   @@index([organizationId, targetId, linkType])
   @@map("artifact_links")
-}
-
-// FEA-1684 / PRD-463 7.1: Deterministic session↔PR associations extracted from
-// desktop transcripts. Denormalized repo+number with nullable FK to
-// PullRequestDetail (best-effort resolved). Stage 2 (LLM classification) adds
-// PROBABILISTIC rows. Do not re-create this table.
-model SessionPullRequestLink {
-  id                  String                @id @default(uuid(7)) @db.Uuid
-  organizationId      String                @map("organization_id") @db.Uuid
-  sessionArtifactId   String                @map("session_artifact_id") @db.Uuid
-  repositoryFullName  String                @map("repository_full_name")
-  prNumber            Int                   @map("pr_number")
-  prUrl               String                @map("pr_url")
-  relationType        SessionPrRelationType @map("relation_type")
-  source              SessionPrLinkSource   @default(DETERMINISTIC)
-  confidence          Float?
-  pullRequestDetailId String?               @map("pull_request_detail_id") @db.Uuid
-  reviewStatus        String?               @map("review_status")
-  extractorVersion    Int?                  @map("extractor_version")
-  createdAt           DateTime              @default(now()) @map("created_at")
-  updatedAt           DateTime              @updatedAt @map("updated_at")
-
-  sessionArtifact     Artifact              @relation("SessionPrLinks", fields: [sessionArtifactId], references: [id], onDelete: Cascade)
-  pullRequestDetail   PullRequestDetail?    @relation(fields: [pullRequestDetailId], references: [id], onDelete: SetNull)
-
-  @@unique([sessionArtifactId, repositoryFullName, prNumber, relationType])
-  @@index([organizationId, sessionArtifactId])
-  @@index([organizationId, repositoryFullName, prNumber])
-  @@map("session_pull_request_links")
 }
 
 model ArtifactEvaluation {
@@ -1213,6 +1593,10 @@ model FileAttachment {
 
   @@index([artifactId])
   @@index([artifactId, purpose])
+  // Serves the attachment reconcile sweep's `(bucket, key IN (...))` orphan
+  // lookup, run once per list page over the whole table. Without it that lookup
+  // is a seq-scan that grows unbounded with the table.
+  @@index([bucket, key])
   @@map("file_attachments")
 }
 
@@ -1294,24 +1678,30 @@ model CommentThread {
 // Provider-specific projection for GitHub review and issue-comment thread state.
 // Generic artifact comments stay in CommentThread so future sources do not inherit GitHub columns.
 model GitHubCommentThreadProjection {
-  threadId            String                    @id @map("thread_id") @db.Uuid
-  branchArtifactId    String                    @map("branch_artifact_id") @db.Uuid
-  pullRequestDetailId String                    @map("pull_request_detail_id") @db.Uuid
-  threadKind          GitHubCommentThreadKind   @map("thread_kind")
-  reviewThreadId      String?                   @map("review_thread_id")
-  rootCommentId       String?                   @map("root_comment_id")
-  reviewId            String?                   @map("review_id")
-  path                String?
-  line                Int?
-  side                GitHubDiffSide?
-  startLine           Int?                      @map("start_line")
-  startSide           GitHubDiffSide?           @map("start_side")
-  commitSha           String?                   @map("commit_sha")
-  htmlUrl             String?                   @map("html_url") @db.Text
-  resolvable          Boolean                   @default(false)
-  legacyState         GitHubLegacyCommentState? @map("legacy_state")
-  deletedAt           DateTime?                 @map("deleted_at")
-  lastSyncedAt        DateTime?                 @map("last_synced_at")
+  threadId               String                    @id @map("thread_id") @db.Uuid
+  branchArtifactId       String                    @map("branch_artifact_id") @db.Uuid
+  pullRequestDetailId    String                    @map("pull_request_detail_id") @db.Uuid
+  threadKind             GitHubCommentThreadKind   @map("thread_kind")
+  reviewThreadId         String?                   @map("review_thread_id")
+  rootCommentId          String?                   @map("root_comment_id")
+  reviewId               String?                   @map("review_id")
+  path                   String?
+  line                   Int?
+  side                   GitHubDiffSide?
+  startLine              Int?                      @map("start_line")
+  startSide              GitHubDiffSide?           @map("start_side")
+  commitSha              String?                   @map("commit_sha")
+  htmlUrl                String?                   @map("html_url") @db.Text
+  resolvable             Boolean                   @default(false)
+  legacyState            GitHubLegacyCommentState? @map("legacy_state")
+  deletedAt              DateTime?                 @map("deleted_at")
+  lastSyncedAt           DateTime?                 @map("last_synced_at")
+  fetchCredentialType    String?                   @map("fetch_credential_type") @db.VarChar(32)
+  fetchCredentialOwnerId String?                   @map("fetch_credential_owner_id") @db.Uuid
+  fetchMechanism         String?                   @map("fetch_mechanism") @db.VarChar(32)
+  fetchTrigger           String?                   @map("fetch_trigger") @db.VarChar(32)
+  fetchObservedAt        DateTime?                 @map("fetch_observed_at")
+  fetchResultReason      String?                   @map("fetch_result_reason") @db.VarChar(64)
 
   thread             CommentThread             @relation(fields: [threadId, branchArtifactId], references: [id, artifactId], onDelete: Cascade)
   branch             BranchDetail              @relation(fields: [branchArtifactId], references: [artifactId], onDelete: Cascade)
@@ -1365,6 +1755,12 @@ model GitHubCommentProjection {
   githubHtmlUrl            String?   @map("github_html_url") @db.Text
   githubUpdatedAt          DateTime? @map("github_updated_at")
   githubDeletedAt          DateTime? @map("github_deleted_at")
+  fetchCredentialType      String?   @map("fetch_credential_type") @db.VarChar(32)
+  fetchCredentialOwnerId   String?   @map("fetch_credential_owner_id") @db.Uuid
+  fetchMechanism           String?   @map("fetch_mechanism") @db.VarChar(32)
+  fetchTrigger             String?   @map("fetch_trigger") @db.VarChar(32)
+  fetchObservedAt          DateTime? @map("fetch_observed_at")
+  fetchResultReason        String?   @map("fetch_result_reason") @db.VarChar(64)
 
   comment          Comment                       @relation(fields: [commentId, threadId], references: [id, threadId], onDelete: Cascade)
   threadProjection GitHubCommentThreadProjection @relation(fields: [threadId], references: [threadId], onDelete: Cascade)
@@ -1462,8 +1858,12 @@ model Loop {
   computeTargetId String? @map("compute_target_id") @db.Uuid
 
   // Container tracking
-  containerId String? @map("container_id") // ECS task ARN
-  s3StateKey  String? @map("s3_state_key") // S3 prefix for state
+  containerId      String?   @map("container_id") // ECS task ARN
+  s3StateKey       String?   @map("s3_state_key") // S3 prefix for state
+  // Set by the loop-state retention sweep once this loop's S3 state (conversation
+  // history, context-pack, logs) has been purged. Marks the loop done so the
+  // daily cron skips it on subsequent runs. Null = state not yet purged.
+  s3StateCleanedAt DateTime? @map("s3_state_cleaned_at")
 
   // PR and session tracking (populated by harness agent on completion)
   prUrl      String? @map("pr_url")
@@ -1548,6 +1948,11 @@ model Loop {
   @@index([organizationId, userId, createdAt])
   @@index([parentLoopId])
   @@index([computeTargetId])
+  // Serves the loop-state retention sweep (apps/api/app/cron/cleanup-loop-state):
+  // `WHERE status IN (terminal) AND completedAt < cutoff ORDER BY completedAt`,
+  // so the daily scan for purgeable terminal loops is an index scan rather than a
+  // sequential scan that grows with the loops table.
+  @@index([status, completedAt])
   @@map("loops")
 }
 
@@ -1711,10 +2116,11 @@ model GitHubInstallationRepository {
   removedAt      DateTime? @map("removed_at")
 
   // Relations
-  installation       GitHubInstallation  @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  installation       GitHubInstallation      @relation(fields: [installationId], references: [id], onDelete: Cascade)
   branchDetails      BranchDetail[]
   pullRequestDetails PullRequestDetail[]
   teamRepositories   TeamRepository[]
+  dirtyScopeNudges   GitHubDirtyScopeNudge[]
 
   @@unique([installationId, githubRepoId])
   @@map("github_installation_repositories")
@@ -1773,17 +2179,23 @@ model PublicRepository {
 }
 
 model GitHubPRReview {
-  id              String         @id @default(uuid(7)) @db.Uuid
-  pullRequestId   String         @map("pull_request_id") @db.Uuid
-  githubReviewId  String         @unique @map("github_review_id")
-  authorLogin     String         @map("author_login")
-  authorAvatarUrl String?        @map("author_avatar_url")
-  state           ReviewDecision
-  body            String?        @db.Text
-  htmlUrl         String         @map("html_url")
-  submittedAt     DateTime       @map("submitted_at")
-  createdAt       DateTime       @default(now()) @map("created_at")
-  updatedAt       DateTime       @updatedAt @map("updated_at")
+  id                     String         @id @default(uuid(7)) @db.Uuid
+  pullRequestId          String         @map("pull_request_id") @db.Uuid
+  githubReviewId         String         @unique @map("github_review_id")
+  authorLogin            String         @map("author_login")
+  authorAvatarUrl        String?        @map("author_avatar_url")
+  state                  ReviewDecision
+  body                   String?        @db.Text
+  htmlUrl                String         @map("html_url")
+  submittedAt            DateTime       @map("submitted_at")
+  fetchCredentialType    String?        @map("fetch_credential_type") @db.VarChar(32)
+  fetchCredentialOwnerId String?        @map("fetch_credential_owner_id") @db.Uuid
+  fetchMechanism         String?        @map("fetch_mechanism") @db.VarChar(32)
+  fetchTrigger           String?        @map("fetch_trigger") @db.VarChar(32)
+  fetchObservedAt        DateTime?      @map("fetch_observed_at")
+  fetchResultReason      String?        @map("fetch_result_reason") @db.VarChar(64)
+  createdAt              DateTime       @default(now()) @map("created_at")
+  updatedAt              DateTime       @updatedAt @map("updated_at")
 
   // Relations
   pullRequestDetail PullRequestDetail @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
@@ -1797,16 +2209,17 @@ model GitHubPRReview {
 // =============================================================================
 
 model SlackIntegration {
-  id                 String   @id @default(uuid(7)) @db.Uuid
-  organizationId     String   @unique @map("organization_id") @db.Uuid
-  accessToken        String   @map("access_token")
-  botUserId          String   @map("bot_user_id")
-  teamId             String   @map("team_id")
-  teamName           String   @map("team_name")
-  defaultChannelId   String?  @map("default_channel_id")
-  defaultChannelName String?  @map("default_channel_name")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  id                   String   @id @default(uuid(7)) @db.Uuid
+  organizationId       String   @unique @map("organization_id") @db.Uuid
+  accessToken          String   @map("access_token")
+  accessTokenEncrypted String?  @map("access_token_encrypted") @db.Text
+  botUserId            String   @map("bot_user_id")
+  teamId               String   @map("team_id")
+  teamName             String   @map("team_name")
+  defaultChannelId     String?  @map("default_channel_id")
+  defaultChannelName   String?  @map("default_channel_name")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@map("slack_integrations")
 }
@@ -1863,7 +2276,13 @@ model OAuthRateLimit {
 
 model OAuthAuthorizationCode {
   id                  String    @id @default(uuid(7)) @db.Uuid
-  code                String    @unique
+  // FEA-2775 EXPAND phase: `code` (plaintext) and `code_fingerprint` (SHA-256)
+  // coexist so the independently-deployed MCP server can roll without a skew
+  // outage. Both are nullable during the transition — old MCP sets `code`, new
+  // MCP sets `codeFingerprint`. A follow-up CONTRACT migration drops `code` and
+  // makes `codeFingerprint` required once the new MCP image is fully rolled out.
+  code                String?   @unique
+  codeFingerprint     String?   @unique @map("code_fingerprint")
   encryptedApiKey     String    @map("encrypted_api_key")
   keyId               String    @map("key_id")
   userId              String    @map("user_id") @db.Uuid
@@ -1954,6 +2373,31 @@ model DesktopOnboardingDeviceSession {
   @@index([requestIpHash, status, expiresAt], map: "desktop_device_sessions_ip_status_exp_idx")
   @@index([expiresAt])
   @@map("desktop_onboarding_device_sessions")
+}
+
+/// One-time OAuth authorization code for the desktop authorization-code + PKCE
+/// loopback flow (FEA-2409 / PLN-843 Amendment 1). Minted by the Clerk-authed
+/// authorize endpoint, bound to the resolved user/org, the desktop device
+/// public key (PoP), the PKCE S256 challenge, and the exact loopback redirect
+/// URI. Redeemed exactly once (`redeemedAt`) at the token endpoint, within a
+/// short `expiresAt` window, in exchange for a first-party desktop session.
+/// userId/organizationId are stored as plain columns (no FK relation), matching
+/// DesktopOnboardingAttempt — the row is ephemeral and single-use.
+model DesktopAuthorizationCode {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  codeHash       String    @unique @map("code_hash")
+  userId         String    @map("user_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  gatewayId      String    @map("gateway_id")
+  boundPublicKey String    @map("bound_public_key")
+  codeChallenge  String    @map("code_challenge")
+  redirectUri    String    @map("redirect_uri")
+  expiresAt      DateTime  @map("expires_at")
+  redeemedAt     DateTime? @map("redeemed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("desktop_authorization_codes")
 }
 
 // =============================================================================
@@ -2219,4 +2663,282 @@ model TagLoop {
   @@unique([tagId, loopId])
   @@index([loopId])
   @@map("tag_loops")
+}
+
+// =============================================================================
+// AGENT COMPONENT INVENTORY + USAGE (FEA-2923 / T-6.1, T-6.2)
+// Two independent representations — never conflate. See reconciled-decisions.md.
+// =============================================================================
+
+/// Inventory / Existence registry — one deduped row per distinct component
+/// per compute target. Org-visible via org ↔ computeTarget join; org-scoped
+/// reads filter through computeTarget.organizationId. Populated by event-driven
+/// discovery (upsert-on-observe), synced desktop→api.
+model AgentComponent {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  organizationId      String    @map("organization_id") @db.Uuid
+  computeTargetId     String    @map("compute_target_id") @db.Uuid
+  componentKind       String    @map("component_kind")
+  externalComponentId String    @map("external_component_id")
+  harness             String?
+  name                String?
+  componentKey        String?   @map("component_key")
+  version             String?
+  description         String?
+  sourceUrl           String?   @map("source_url")
+  installPath         String?   @map("install_path")
+  packId              String?   @map("pack_id")
+  scope               String?
+  projectPath         String?   @map("project_path")
+  metadata            Json?
+  firstSeenAt         DateTime? @map("first_seen_at")
+  lastSeenAt          DateTime? @map("last_seen_at")
+  uninstalledAt       DateTime? @map("uninstalled_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  sessionUsages AgentComponentSessionUsage[]
+
+  // Primary dedup key: one row per (device, kind, external component id).
+  @@unique([computeTargetId, componentKind, externalComponentId])
+  @@index([organizationId, componentKind])
+  @@index([organizationId])
+  @@map("agent_components")
+}
+
+/// Usage / Invocation stats — per session × component key. No organizationId:
+/// org isolation is enforced through SessionDetail → Artifact.organizationId
+/// (D4 decision, same precedent as AgentSessionTokenEvent). Independent from
+/// AgentComponent existence: either can exist without the other.
+model AgentComponentSessionUsage {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  agentSessionId   String    @map("agent_session_id") @db.Uuid
+  componentKind    String    @map("component_kind")
+  componentKey     String    @map("component_key")
+  // FEA-2990: the git branch this usage bucket ran on, from per-event
+  // `events.git_branch` on the desktop. Empty string '' is the "no per-event
+  // branch" sentinel (Codex, legacy pre-column events, non-tool kinds); those
+  // rows fall back to session-level SessionBranch attribution. Part of the
+  // natural key so a session that switched branches mid-run persists one row
+  // per (component, branch). Defaulted to '' so older desktop builds that omit
+  // the field upsert into the single session-level bucket exactly as before.
+  gitBranch        String    @default("") @map("git_branch")
+  // Nullable: usage can be recorded before the inventory row exists (e.g. built-in
+  // tools), or inventory sync may not have run yet.
+  agentComponentId String?   @map("agent_component_id") @db.Uuid
+  harness          String?
+  invocationCount  Int       @default(0) @map("invocation_count")
+  errorCount       Int       @default(0) @map("error_count")
+  firstInvokedAt   DateTime? @map("first_invoked_at")
+  lastInvokedAt    DateTime? @map("last_invoked_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  session         SessionDetail   @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
+  agentComponent  AgentComponent? @relation(fields: [agentComponentId], references: [id], onDelete: SetNull)
+
+  @@unique([agentSessionId, componentKind, componentKey, gitBranch], map: "idx_acsu_session_kind_key_branch")
+  @@index([agentComponentId])
+  @@index([agentSessionId, componentKind])
+  // FEA-3160: the Agents-workspace time window filters usage on
+  // `last_invoked_at >= startDate`. The nested `sessionUsages` read scopes by
+  // last_invoked_at alone, so a plain index serves that range predicate…
+  @@index([lastInvokedAt])
+  // …while the org-scoped child-usage rollup and orphan-usage reads filter
+  // `component_kind IN (...)` together with the same range, so a composite
+  // (component_kind, last_invoked_at) serves those without a full scan.
+  @@index([componentKind, lastInvokedAt])
+  @@map("agent_component_session_usage")
+}
+
+// =============================================================================
+// CATALOG + DISTRIBUTION PLATFORM (FEA-2923 / T-14.1–T-14.4, T-21.1)
+// Admin-authored / curated distributable definitions and distribution tracking.
+// =============================================================================
+
+/// A distributable definition of any component kind (plugin, skill, command,
+/// agent, hook, mcp). Source: org_custom (admin-uploaded, org-private),
+/// curated (ClosedLoop best-practice, global, read-only), or marketplace
+/// (future; leave hooks). organizationId is null for global/curated items.
+///
+/// Legacy Agent supersede (T-21.1): legacyAgentId traces migration provenance.
+/// sourceRepo + role are preserved for Agent bootstrap idempotency (the
+/// @@unique([organizationId, sourceRepo, role]) below mirrors Agent's constraint
+/// for targetKind='agent' rows). In Prisma this is a full unique index; the
+/// partial-index (WHERE target_kind = 'agent') variant is applied via a hand-
+/// crafted migration on top so the full-unique index is dropped in favor of
+/// the filtered one. See migration: add_agent_component_and_catalog_distribution.
+model CatalogItem {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  // Nullable for global/curated scope items (organizationId IS NULL).
+  organizationId String?   @map("organization_id") @db.Uuid
+  targetKind     String    @map("target_kind") // plugin|skill|command|agent|hook|mcp
+  source         String    // org_custom|curated|marketplace
+  scope          String    // org|global
+  name           String
+  description    String?
+  version        String    @default("1.0.0")
+  sortOrder      Int       @default(0) @map("sort_order")
+  // S3 asset keys (written after upload confirmation in T-15.3)
+  zipAssetBucket  String?  @map("zip_asset_bucket")
+  zipAssetKey     String?  @map("zip_asset_key")
+  logoAssetBucket String?  @map("logo_asset_bucket")
+  logoAssetKey    String?  @map("logo_asset_key")
+  filesAssetKey   String?  @map("files_asset_key")
+  enabled        Boolean   @default(true)
+  archived       Boolean   @default(false)
+  // Coaching Packs sub-slice (T-22.1): coaching items carry signals[] payload
+  // and are excluded from the generic plugin ranking/leaderboard.
+  coaching       Boolean   @default(false)
+  coachingConfig Json?     @map("coaching_config")
+  // Legacy Agent supersede (T-21.1) — migration traceability
+  legacyAgentId  String?   @map("legacy_agent_id") @db.Uuid
+  // FEA-3050 promote idempotency: the discovered AgentComponent this item was
+  // promoted from (best-of-breed promote, FEA-2923 §J). Bare traceability
+  // column (mirrors legacyAgentId/sourceLoopId — no relation). A hand-written
+  // partial unique index (organization_id, source_agent_component_id) WHERE
+  // source_agent_component_id IS NOT NULL guards against double-promote creating
+  // duplicate org-wide AutoInstall distributions; the pre-existing catalog_items
+  // partial unique indexes only cover target_kind='agent' rows. Prisma cannot
+  // express partial indexes, so the index lives in the migration, not here.
+  sourceAgentComponentId String? @map("source_agent_component_id") @db.Uuid
+  // Preserved for Agent bootstrap idempotency (T-21.1); mirrors Agent.sourceRepo/role
+  sourceRepo     String?   @map("source_repo")
+  role           String?
+  // Stable, org-scoped-unique context-pack slug for targetKind='agent' items,
+  // disambiguated with -2/-3 suffixes at ingest (mirrors the superseded
+  // Agent.slug). Persisted so same-role agents from different sourceRepos keep
+  // distinct harness file names (`.claude/agents/{slug}.md`) instead of
+  // colliding on a role-derived slug recomputed on read (FEA-2923).
+  agentSlug      String?   @map("agent_slug")
+  sourceLoopId   String?   @map("source_loop_id")
+  // Pack authoring (component container): a Pack is a top-level CatalogItem
+  // (parentPackId IS NULL) that holds N child component CatalogItems
+  // (skill/command/agent/hook/plugin/mcp). Cascade so archiving/deleting a Pack
+  // removes its authored components. Null for standalone items + legacy rows.
+  parentPackId   String?   @map("parent_pack_id") @db.Uuid
+  // Content-addressed component identity: uuidv5(source + owner + normalized
+  // content). Stable across author/import origin; the dedup + cloud-analytics
+  // join key. Null for asset-only items and the Pack container itself.
+  componentUuid  String?   @map("component_uuid") @db.Uuid
+  createdById    String?   @map("created_by_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization   Organization?       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy      User?               @relation("CatalogItemCreatedBy", fields: [createdById], references: [id])
+  parentPack     CatalogItem?        @relation("PackComponents", fields: [parentPackId], references: [id], onDelete: Cascade)
+  components     CatalogItem[]       @relation("PackComponents")
+  versions       CatalogItemVersion[]
+  distributions  Distribution[]
+
+  @@index([organizationId, archived])
+  @@index([source, scope])
+  @@index([organizationId, targetKind])
+  @@index([parentPackId])
+  @@index([organizationId, componentUuid])
+  @@map("catalog_items")
+}
+
+/// Versioned history of a CatalogItem's content (prompt/config/content).
+/// Mirrors AgentVersion. 1:N with CatalogItem.
+model CatalogItemVersion {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  catalogItemId String   @map("catalog_item_id") @db.Uuid
+  version       Int
+  name          String
+  // Content/prompt: nullable to allow asset-only items (zip bundle, no inline text)
+  content       String?  @db.Text
+  changeNote    String?  @map("change_note")
+  changedById   String?  @map("changed_by_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  catalogItem CatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  changedBy   User?       @relation("CatalogItemVersionChangedBy", fields: [changedById], references: [id])
+
+  @@unique([catalogItemId, version])
+  @@index([catalogItemId])
+  @@map("catalog_item_versions")
+}
+
+/// A distribution assignment: a CatalogItem pushed to a targeting set with
+/// a mode (auto_install = no user action; opt_in = user accepts). Org-scoped.
+model Distribution {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  catalogItemId  String    @map("catalog_item_id") @db.Uuid
+  mode           String    // auto_install|opt_in
+  targetingType  String    @map("targeting_type") // all|specific
+  desiredEnabled Boolean   @default(true) @map("desired_enabled")
+  createdById    String?   @map("created_by_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization     Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  catalogItem      CatalogItem                @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  createdBy        User?                      @relation("DistributionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  targetStatuses   DistributionTargetStatus[]
+  targetingEntries DistributionTargetingEntry[]
+
+  @@index([catalogItemId])
+  @@index([organizationId])
+  @@map("distributions")
+}
+
+/// Per-(distribution, computeTarget[/user]) install/enable status and version
+/// tracking. Drives compliance dashboards.
+model DistributionTargetStatus {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  distributionId    String    @map("distribution_id") @db.Uuid
+  // Nullable for user-only (non-target) opt-in scoping.
+  computeTargetId   String?   @map("compute_target_id") @db.Uuid
+  // Nullable; populated for user-scoped opt-in tracking.
+  userId            String?   @map("user_id") @db.Uuid
+  status            String    // pending|installed|enabled|failed|opted_in|declined
+  installedVersion  String?   @map("installed_version")
+  // Links to an audit trail row (e.g. pack_install_runs) when available.
+  installRunId      String?   @map("install_run_id")
+  // Coaching Packs sub-slice (T-22.1): true when the user has explicitly chosen
+  // a different (or no) pack locally, overriding the org-distributed default.
+  // Prevents auto-install from clobbering a recorded user choice.
+  overriddenLocally Boolean   @default(false) @map("overridden_locally")
+  failureReason     String?   @map("failure_reason")
+  installedAt       DateTime? @map("installed_at")
+  enabledAt         DateTime? @map("enabled_at")
+  reportedAt        DateTime? @map("reported_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  distribution  Distribution   @relation(fields: [distributionId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget? @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  user          User?          @relation("DistributionTargetStatusUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  // NOTE: The business rule is one status per (distributionId, computeTargetId)
+  // where computeTargetId is non-null. A true partial unique index
+  // (WHERE compute_target_id IS NOT NULL) is maintained via raw migration;
+  // Prisma cannot express partial indexes. Do NOT add @@unique([distributionId,
+  // computeTargetId]) here — it would reject rows where computeTargetId IS NULL.
+  @@index([distributionId])
+  @@index([computeTargetId])
+  @@index([distributionId, status])
+  @@map("distribution_target_status")
+}
+
+/// Specific-targeting rows: which compute targets or users a Distribution
+/// explicitly targets when targetingType = 'specific'.
+model DistributionTargetingEntry {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  distributionId  String   @map("distribution_id") @db.Uuid
+  computeTargetId String?  @map("compute_target_id") @db.Uuid
+  userId          String?  @map("user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  distribution  Distribution   @relation(fields: [distributionId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget? @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+
+  @@index([distributionId])
+  @@index([computeTargetId])
+  @@map("distribution_targeting_entries")
 }

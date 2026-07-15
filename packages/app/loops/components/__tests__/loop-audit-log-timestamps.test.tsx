@@ -1,6 +1,6 @@
 import type {
-  LoopEvent,
   LoopEventsPaginatedResponse,
+  StoredLoopEvent,
 } from "@repo/api/src/types/loop";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,7 @@ vi.mock("@repo/app/loops/hooks/use-loops", () => ({
 import { useLoopEventsPaginated } from "@repo/app/loops/hooks/use-loops";
 import { LoopAuditLog } from "../loop-audit-log";
 
-function makeResponse(events: LoopEvent[]): {
+function makeResponse(events: StoredLoopEvent[]): {
   data: LoopEventsPaginatedResponse;
   isLoading: false;
   error: null;
@@ -33,6 +33,8 @@ describe("LoopAuditLog timestamps", () => {
     vi.mocked(useLoopEventsPaginated).mockReturnValue(
       makeResponse([
         {
+          id: "evt-1",
+          storedAt: "2026-01-01T00:00:00.000Z",
           type: "started",
           loopId: "loop-1",
           timestamp: "not-a-date",

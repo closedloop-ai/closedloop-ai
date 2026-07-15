@@ -102,6 +102,7 @@ export async function resolveGitHubCommentOwner(
     where: {
       installationId: installation.id,
       githubRepoId: String(input.repositoryId),
+      removedAt: null,
     },
     select: { id: true },
     take: 2,

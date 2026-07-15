@@ -149,7 +149,7 @@ describe("leadTimeForChange", () => {
 });
 
 describe("medianPrSize", () => {
-  it("includes merged single-PR branches, folding missing LOC to 0 (dashboard parity)", () => {
+  it("includes only merged single-PR branches with both LOC fields", () => {
     const branches = [
       { additions: 10, deletions: 10, status: "merged", multiPrWarning: false }, // 20
       { additions: 30, deletions: 10, status: "merged", multiPrWarning: false }, // 40
@@ -158,13 +158,12 @@ describe("medianPrSize", () => {
       { additions: 5, deletions: 5, status: "merged", multiPrWarning: true }, // excluded (multi-PR)
       {
         additions: null,
-        deletions: null,
+        deletions: 5,
         status: "merged",
         multiPrWarning: false,
-      }, // included as 0 (no LOC enrichment) — matches the dashboard's `?? 0`
+      }, // excluded (additions null — either missing LOC field excludes the row)
     ];
-    // sizes = [20, 40, 100, 0] → sorted [0, 20, 40, 100] → median (20 + 40) / 2
-    expect(medianPrSize(branches)).toBe(30);
+    expect(medianPrSize(branches)).toBe(40); // median of [20,40,100]
   });
 
   it("returns null when none qualify", () => {

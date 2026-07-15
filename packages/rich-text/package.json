@@ -12,16 +12,16 @@
     "@repo/design-system": "workspace:@closedloop-ai/design-system@*",
     "@tiptap/core": "~3.22.3",
     "@tiptap/extension-list": "~3.22.3",
+    "@tiptap/extension-placeholder": "~3.22.3",
     "@tiptap/extension-table": "~3.22.3",
     "@tiptap/extension-table-cell": "~3.22.3",
     "@tiptap/extension-table-header": "~3.22.3",
     "@tiptap/extension-table-row": "~3.22.3",
-    "@tiptap/extension-placeholder": "~3.22.3",
     "@tiptap/markdown": "~3.22.3",
     "@tiptap/pm": "~3.22.3",
     "@tiptap/react": "~3.22.3",
     "@tiptap/starter-kit": "~3.22.3",
-    "isomorphic-dompurify": "^2.30.0",
+    "isomorphic-dompurify": "^3.18.0",
     "lucide-react": "^0.556.0",
     "mermaid": "^11.12.2",
     "next-themes": "^0.4.6",
@@ -35,6 +35,6 @@
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.14",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.9"
   }
 }

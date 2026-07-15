@@ -1,9 +1,10 @@
+import "server-only";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { keys } from "../keys";
 
 // Lazy initialization to avoid validating env vars at module load time
 let _anthropic: ReturnType<typeof createAnthropic> | null = null;
-function getAnthropic() {
+export function getAnthropic() {
   if (!_anthropic) {
     _anthropic = createAnthropic({
       apiKey: keys().ANTHROPIC_API_KEY,

@@ -16,7 +16,7 @@ type DonutChartProps = {
 };
 
 /**
- * @deprecated Use the cataloged DonutChart from `@repo/design-system/components/ui/donut-chart`
+ * @deprecated Use the cataloged DonutChart from `@closedloop-ai/design-system/components/ui/donut-chart`
  * (DonutDatum API). This primitive variant has no remaining consumers and is a
  * candidate for removal in a follow-up design-system cleanup.
  */

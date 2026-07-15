@@ -4,6 +4,10 @@ import type {
   IssueCommentEditedEvent,
 } from "@octokit/webhooks-types";
 import {
+  GitHubDirtyScopeKind,
+  GitHubDirtyTrigger,
+} from "@repo/api/src/types/github-dirty-scope";
+import {
   GitHubCommentThreadKind,
   GitHubLegacyCommentState,
   type TransactionClient,
@@ -17,7 +21,12 @@ import {
   softDeleteGitHubCommentByRemoteId,
   upsertGitHubIssueCommentThread,
 } from "@/app/comments/github-projection";
+import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { resolveGitHubCommentOwner } from "../comment-owner-resolver";
+import {
+  type GitHubDirtyScopePublicationInput,
+  publishGitHubDirtyScopes,
+} from "./dirty-scope-publisher";
 import {
   type CommentWebhookPrContext,
   loadPrContextForCommentWebhook,
@@ -97,7 +106,7 @@ export async function handleIssueComment(
     installationId,
   });
 
-  await withDb.tx(async (tx) => {
+  const publication = await withDb.tx(async (tx) => {
     const ownerResolution = await resolveGitHubCommentOwner(tx, {
       installationId,
       repositoryId: repository.id,
@@ -113,7 +122,7 @@ export async function handleIssueComment(
         action,
         prNumber: issue.number,
       });
-      return;
+      return null;
     }
 
     const existingPr = await loadPrContextForCommentWebhook(tx, {
@@ -124,16 +133,29 @@ export async function handleIssueComment(
     });
 
     if (!existingPr) {
-      return;
+      return null;
     }
 
-    await dispatchIssueCommentAction(tx, action, {
+    const wroteProjection = await dispatchIssueCommentAction(tx, action, {
       comment,
       issue,
       existingPr,
       organizationId: ownerResolution.organizationId,
     });
+    if (!wroteProjection) {
+      return null;
+    }
+    return buildIssueCommentDirtyScopePublication({
+      comment,
+      issue,
+      organizationId: ownerResolution.organizationId,
+      repositoryId: ownerResolution.repositoryRecordId,
+      repositoryFullName: repository.full_name,
+    });
   });
+  if (publication) {
+    await publishGitHubDirtyScopes(publication);
+  }
 
   log.info("[handleIssueComment] Successfully processed issue_comment event", {
     action,
@@ -159,28 +181,26 @@ async function dispatchIssueCommentAction(
   tx: TransactionClient,
   action: HandledIssueCommentEvent["action"],
   ctx: DispatchContext
-): Promise<void> {
+): Promise<boolean> {
   if (action === "created") {
-    await handleCommentCreated(tx, ctx);
-    return;
+    return await handleCommentCreated(tx, ctx);
   }
   if (action === "edited") {
-    await handleCommentEdited(tx, ctx);
-    return;
+    return await handleCommentEdited(tx, ctx);
   }
   if (action === "deleted") {
-    await handleCommentDeleted(tx, ctx);
-    return;
+    return await handleCommentDeleted(tx, ctx);
   }
   log.warn("[handleIssueComment] Unhandled action type", {
     action: action as string,
   });
+  return false;
 }
 
 async function handleCommentCreated(
   tx: TransactionClient,
   { comment, issue, existingPr, organizationId }: DispatchContext
-): Promise<void> {
+): Promise<boolean> {
   const author = await resolveExternalGitHubAuthorInTransaction(tx, {
     organizationId,
     author: comment.user,
@@ -199,6 +219,7 @@ async function handleCommentCreated(
       htmlUrl: comment.html_url,
       legacyState: GitHubLegacyCommentState.PENDING,
       lastSyncedAt: new Date(),
+      fetchProvenance: githubAppWebhookFetchProvenance(),
       comment: {
         githubCommentId: comment.id,
         githubHtmlUrl: comment.html_url,
@@ -218,19 +239,20 @@ async function handleCommentCreated(
     prNumber: issue.number,
   });
   if (!projectionResult) {
-    return;
+    return false;
   }
 
   log.info("[handleIssueComment] Issue comment created", {
     commentId: comment.id,
     prNumber: issue.number,
   });
+  return true;
 }
 
 async function handleCommentEdited(
   tx: TransactionClient,
   { comment, issue, existingPr, organizationId }: DispatchContext
-): Promise<void> {
+): Promise<boolean> {
   const author = await resolveExternalGitHubAuthorInTransaction(tx, {
     organizationId,
     author: comment.user,
@@ -249,6 +271,7 @@ async function handleCommentEdited(
       htmlUrl: comment.html_url,
       legacyState: GitHubLegacyCommentState.PENDING,
       lastSyncedAt: new Date(),
+      fetchProvenance: githubAppWebhookFetchProvenance(),
       comment: {
         githubCommentId: comment.id,
         githubHtmlUrl: comment.html_url,
@@ -268,19 +291,20 @@ async function handleCommentEdited(
     prNumber: issue.number,
   });
   if (!projectionResult) {
-    return;
+    return false;
   }
 
   log.info("[handleIssueComment] Issue comment edited", {
     commentId: comment.id,
     prNumber: issue.number,
   });
+  return true;
 }
 
 async function handleCommentDeleted(
   tx: TransactionClient,
   { comment, issue, existingPr, organizationId }: DispatchContext
-): Promise<void> {
+): Promise<boolean> {
   const deletedComment = await softDeleteGitHubCommentByRemoteId(tx, {
     organizationId,
     branchArtifactId: existingPr.branchArtifactId,
@@ -288,6 +312,7 @@ async function handleCommentDeleted(
     githubCommentId: comment.id,
     deletedAt: new Date(),
     threadKind: GitHubCommentThreadKind.ISSUE_COMMENT,
+    fetchProvenance: githubAppWebhookFetchProvenance(),
   });
 
   if (deletedComment.comments === 0) {
@@ -295,12 +320,13 @@ async function handleCommentDeleted(
       githubCommentId: comment.id,
       prNumber: issue.number,
     });
-    return;
+    return false;
   }
   log.info("[handleIssueComment] Issue comment deleted", {
     commentId: comment.id,
     prNumber: issue.number,
   });
+  return true;
 }
 
 /**
@@ -333,4 +359,34 @@ async function upsertIssueCommentThreadOrSkip(
     });
     return null;
   }
+}
+
+function buildIssueCommentDirtyScopePublication({
+  comment,
+  issue,
+  organizationId,
+  repositoryId,
+  repositoryFullName,
+}: {
+  comment: HandledIssueCommentEvent["comment"];
+  issue: HandledIssueCommentEvent["issue"];
+  organizationId: string;
+  repositoryId: string;
+  repositoryFullName: string;
+}): GitHubDirtyScopePublicationInput {
+  return {
+    organizationId,
+    repositoryId,
+    repositoryFullName,
+    scopes: [
+      {
+        kind: GitHubDirtyScopeKind.Comment,
+        repositoryId,
+        repositoryFullName,
+        pullRequestNumber: issue.number,
+        commentId: String(comment.id),
+      },
+    ],
+    triggers: [GitHubDirtyTrigger.IssueComment],
+  };
 }

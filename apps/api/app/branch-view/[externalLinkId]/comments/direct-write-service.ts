@@ -45,6 +45,7 @@ import {
 } from "@/app/comments/github-identity";
 import { upsertGitHubReviewCommentThread } from "@/app/comments/github-projection";
 import type { AuthContext } from "@/lib/auth/with-auth";
+import { userOAuthRestFetchProvenance } from "@/lib/github-fetch-provenance";
 import type { PrContext } from "@/lib/resolve-pr-context";
 import { toBranchViewComment } from "../comment-utils";
 import {
@@ -139,6 +140,7 @@ export async function createInlineReviewComment(input: {
     );
     return await projectProviderComment({
       action,
+      auth: input.auth,
       ctx: input.ctx,
       identity: identityResult.value,
       providerComment,
@@ -239,6 +241,7 @@ export async function replyToReviewComment(input: {
     );
     return await projectProviderComment({
       action,
+      auth: input.auth,
       ctx: input.ctx,
       identity: identityResult.value,
       providerComment,
@@ -287,6 +290,7 @@ export async function editReviewComment(input: {
     );
     return await projectProviderComment({
       action,
+      auth: input.auth,
       ctx: input.ctx,
       identity: result.identity,
       providerComment,
@@ -351,8 +355,11 @@ export async function deleteReviewComment(input: {
   try {
     const deletedAt = new Date();
     await withDb.tx(async (tx) => {
-      await tx.gitHubCommentProjection.update({
-        where: { commentId: result.target.commentId },
+      await tx.gitHubCommentProjection.updateMany({
+        where: {
+          commentId: result.target.commentId,
+          githubDeletedAt: null,
+        },
         data: { githubDeletedAt: deletedAt },
       });
       await tx.comment.update({
@@ -646,6 +653,7 @@ async function reconcileReviewThreadResolution(input: {
 
 async function projectProviderComment(input: {
   action: BranchViewCommentActionType;
+  auth: AuthContext;
   ctx: PrContext;
   identity: GitHubWriteIdentity;
   providerComment: GitHubPullRequestReviewComment;
@@ -702,6 +710,9 @@ async function projectProviderComment(input: {
         legacyState: GitHubLegacyCommentState.PENDING,
         resolvable: true,
         lastSyncedAt: new Date(),
+        fetchProvenance: userOAuthRestFetchProvenance({
+          credentialOwnerId: input.auth.user.id,
+        }),
         comments: [
           {
             githubCommentId: input.providerComment.id,

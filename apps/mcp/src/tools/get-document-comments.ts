@@ -4,6 +4,7 @@ import { ThreadStatus } from "@repo/api/src/types/comment.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
+  buildQuery,
   describeIdOrSlug,
   encodePathSegment,
   withErrorHandling,
@@ -36,13 +37,19 @@ export function registerGetDocumentComments(
     },
     ({ documentId, status }) =>
       withErrorHandling(async () => {
+        const query = buildQuery({ status });
+
         const threads = await apiClient.get<CommentThreadWithComments[]>(
-          `/documents/${encodePathSegment(documentId)}/threads${status ? `?status=${status}` : ""}`
+          `/documents/${encodePathSegment(documentId)}/threads`,
+          query
         );
 
         const mappedThreads = threads.map((thread) => ({
           id: thread.id,
           status: thread.status,
+          // NATIVE = unanchored artifact-level note; LIVEBLOCKS = anchored to
+          // document text; GITHUB = projected PR review thread.
+          source: thread.source,
           artifactId: thread.artifactId,
           createdAt: thread.createdAt,
           comments: thread.comments.map((c) => ({

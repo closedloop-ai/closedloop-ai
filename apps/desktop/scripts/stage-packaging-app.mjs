@@ -139,7 +139,7 @@ function runTar(args) {
 // `pnpm pack` rewrites a package's `workspace:`/`link:` deps into concrete
 // registry specs inside its tarball (e.g. @repo/api's deps become
 // `@closedloop-ai/loops-api: 0.5.2` and
-// `@repo/shared-platform: npm:@closedloop-ai/shared-platform@0.1.0`). pnpm will
+// `@closedloop-ai/shared-platform: npm:@closedloop-ai/shared-platform@0.1.0`). pnpm will
 // not satisfy those specs from a sibling top-level `file:` dependency, and its
 // `overrides` are unreliable for multiple `file:` targets — so left alone they
 // escape to npm and 404 (the packages are unpublished). Repoint each such nested
@@ -374,9 +374,10 @@ for (const [
 // Workspace dependencies fall into two buckets. The ones in
 // `workspaceDependencyPackages` are packed as tarballs and installed into the
 // closure because the main process imports them at runtime as externals. The
-// remaining workspace links — @repo/api and @repo/shared-platform (inlined into
-// the main/preload bundle by electron-vite), plus @repo/app and design-system
-// (bundled into the renderer by Vite) — are not imported from node_modules by
+// remaining workspace links — @repo/api, @closedloop-ai/shared-platform, and
+// @closedloop-ai/loops-api (inlined into the main/preload bundle by electron-vite), plus
+// @repo/app and design-system (bundled into the renderer by Vite) — are not
+// imported from node_modules by
 // the packaged app, so they are excluded from the closure. Leaving them in would
 // surface their unresolved `workspace:*`/`link:` spec to `pnpm install` and
 // abort staging.

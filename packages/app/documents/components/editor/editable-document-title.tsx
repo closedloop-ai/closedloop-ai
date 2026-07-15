@@ -45,6 +45,7 @@ export function EditableDocumentTitle({
 
   return (
     <Textarea
+      aria-label="Document title"
       className="min-h-0 resize-none overflow-hidden rounded-none border-none bg-transparent px-0 py-0 font-semibold text-3xl tracking-[-0.6px] shadow-none focus-visible:ring-0 md:text-3xl dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}

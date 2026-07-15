@@ -16,22 +16,32 @@ function rewritePreviewHostname(hostname: string): string | null {
 }
 
 type ApiOriginRequest = {
-  nextUrl: Pick<URL, "hostname" | "protocol">;
+  nextUrl?: Pick<URL, "hostname" | "protocol">;
+  url?: string;
 };
 
 export function resolveApiOrigin(request?: ApiOriginRequest): string {
   if (request) {
-    const rewrittenHostname = rewritePreviewHostname(request.nextUrl.hostname);
-    if (rewrittenHostname) {
-      return `${request.nextUrl.protocol}//${rewrittenHostname}`;
+    const nextUrl = request.nextUrl ?? getRequestUrl(request);
+    const rewrittenHostname = nextUrl
+      ? rewritePreviewHostname(nextUrl.hostname)
+      : null;
+    if (nextUrl && rewrittenHostname) {
+      return `${nextUrl.protocol}//${rewrittenHostname}`;
     }
   }
 
-  if (typeof window !== "undefined") {
-    const rewrittenHostname = rewritePreviewHostname(window.location.hostname);
+  if (globalThis.window !== undefined) {
+    const rewrittenHostname = rewritePreviewHostname(
+      globalThis.window.location.hostname
+    );
     if (rewrittenHostname) {
-      return `${window.location.protocol}//${rewrittenHostname}`;
+      return `${globalThis.window.location.protocol}//${rewrittenHostname}`;
     }
+  }
+
+  if (globalThis.window === undefined && env.SERVER_API_URL) {
+    return env.SERVER_API_URL;
   }
 
   const configured = env.NEXT_PUBLIC_API_URL;
@@ -40,4 +50,16 @@ export function resolveApiOrigin(request?: ApiOriginRequest): string {
   }
 
   return LOCAL_API_FALLBACK;
+}
+
+function getRequestUrl(request: ApiOriginRequest): URL | null {
+  if (!request.url) {
+    return null;
+  }
+
+  try {
+    return new URL(request.url);
+  } catch {
+    return null;
+  }
 }

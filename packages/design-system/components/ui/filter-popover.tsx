@@ -3,22 +3,23 @@ import {
   Avatar,
   AvatarFallback,
   AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
-import { Button } from "@repo/design-system/components/ui/button";
-import { Checkbox } from "@repo/design-system/components/ui/checkbox";
+} from "@closedloop-ai/design-system/components/ui/avatar";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { Checkbox } from "@closedloop-ai/design-system/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuPortal,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import { cn } from "@repo/design-system/lib/utils";
+} from "@closedloop-ai/design-system/components/ui/dropdown-menu";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
   CalendarIcon,
   CheckIcon,
@@ -31,7 +32,7 @@ import {
   UsersIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { StatusIcon } from "./status-icon";
 import {
   TABLE_DATE_PRESET_LABELS,
@@ -529,20 +530,35 @@ function OptionsFilterContent<TValue extends string>({
         placeholder={searchPlaceholder}
         value={search}
       />
-      {filteredOptions.map((option) => {
+      {filteredOptions.map((option, index) => {
         const checked = selectedValues.includes(option.id);
+        const previousOption = filteredOptions[index - 1];
+        const showSectionLabel =
+          option.sectionLabel &&
+          option.sectionLabel !== previousOption?.sectionLabel;
         return (
-          <FilterRow
-            checked={checked}
-            key={option.id}
-            onToggle={() => onToggle(option.id)}
-          >
-            <OptionLeadingVisual option={option} />
-            <span className={cn("min-w-0 flex-1 truncate", checked && "font-medium")}>
-              {option.label}
-            </span>
-            <OptionCount count={option.count} />
-          </FilterRow>
+          <Fragment key={option.id}>
+            {showSectionLabel && (
+              <DropdownMenuLabel className="px-2 pt-2 pb-1 text-muted-foreground text-xs">
+                {option.sectionLabel}
+              </DropdownMenuLabel>
+            )}
+            <FilterRow
+              checked={checked}
+              onToggle={() => onToggle(option.id)}
+            >
+              <OptionLeadingVisual option={option} />
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate",
+                  checked && "font-medium"
+                )}
+              >
+                {option.label}
+              </span>
+              <OptionCount count={option.count} />
+            </FilterRow>
+          </Fragment>
         );
       })}
     </>

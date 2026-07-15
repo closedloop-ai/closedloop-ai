@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  mockGetCommandById,
   mockHeartbeat,
   mockIngestCommandEvent,
   mockIsAgentSessionSyncSupportedForUser,
@@ -11,6 +12,7 @@ const {
   mockSubscribeTargetConnection,
   mockClearOperationBacklog,
 } = vi.hoisted(() => ({
+  mockGetCommandById: vi.fn(),
   mockHeartbeat: vi.fn(),
   mockIngestCommandEvent: vi.fn(),
   mockIsAgentSessionSyncSupportedForUser: vi.fn(),
@@ -36,7 +38,7 @@ vi.mock("@repo/observability/log", () => ({
 
 vi.mock("../desktop-command-store", () => ({
   desktopCommandStore: {
-    getCommandById: vi.fn(),
+    getCommandById: mockGetCommandById,
     ingestCommandEvent: mockIngestCommandEvent,
     listNonTerminalDispatchCommands: mockListNonTerminal,
   },
@@ -147,6 +149,7 @@ describe("handleSocketConnection command telemetry context", () => {
       duplicate: false,
       sequence: 1,
     });
+    mockGetCommandById.mockResolvedValue(null);
   });
 
   it("passes direct socket session context to command event ingestion", async () => {
@@ -193,6 +196,70 @@ describe("handleSocketConnection command telemetry context", () => {
             computeTargetId: "target-direct-1",
             gatewaySessionId: helloAck.sessionId,
             schemaVersion: "1",
+          }),
+        })
+      );
+    });
+
+    handlers.get("disconnect")?.();
+  });
+
+  it("preserves server capabilities on direct sequence-gap hello acks", async () => {
+    const { handlers, socket } = makeSocket();
+    mockIsDirectDesktopAuthSigningEligible.mockResolvedValue({
+      status: "eligible",
+    });
+    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
+    handleSocketConnection(socket as never);
+
+    await handlers.get("desktop.hello")?.({
+      gatewayId: "gateway-1",
+      machineName: "test-machine",
+      maxInFlightCommands: 2,
+      platform: "darwin",
+      pluginVersion: "1.2.3",
+      supportedOperations: [],
+    });
+
+    await vi.waitFor(() => {
+      expect(socket.emit).toHaveBeenCalledWith(
+        "desktop.hello.ack",
+        expect.objectContaining({
+          computeTargetId: "target-direct-1",
+          serverCapabilities: expect.objectContaining({
+            agentSessionSync: true,
+            computeTargetSigning: true,
+          }),
+        })
+      );
+    });
+
+    mockIngestCommandEvent.mockResolvedValueOnce({
+      accepted: false,
+      reason: "sequence_gap",
+    });
+    mockGetCommandById.mockResolvedValueOnce({
+      commandId: "cmd-direct-gap",
+      computeTargetId: "target-direct-1",
+      lastSequenceAcked: 7,
+    });
+
+    await handlers.get("desktop.command.event")?.({
+      commandId: "cmd-direct-gap",
+      data: { terminal: false },
+      eventType: "chunk",
+      sequence: 9,
+    });
+
+    await vi.waitFor(() => {
+      expect(socket.emit).toHaveBeenCalledWith(
+        "desktop.hello.ack",
+        expect.objectContaining({
+          computeTargetId: "target-direct-1",
+          resumeFromSequence: { "cmd-direct-gap": 7 },
+          serverCapabilities: expect.objectContaining({
+            agentSessionSync: true,
+            computeTargetSigning: true,
           }),
         })
       );

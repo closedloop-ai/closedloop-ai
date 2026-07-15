@@ -130,11 +130,9 @@ export function SettingsPage({
             </TabsTrigger>
           ) : null}
           <FeatureFlagged flag="artifact-tags">
-            {isAdmin ? (
-              <TabsTrigger className="flex-initial px-4" value="tags">
-                Tags
-              </TabsTrigger>
-            ) : null}
+            <TabsTrigger className="flex-initial px-4" value="tags">
+              Tags
+            </TabsTrigger>
           </FeatureFlagged>
           <TabsTrigger className="flex-initial px-4" value="integrations">
             Integrations
@@ -223,26 +221,7 @@ export function SettingsPage({
 
         <TabsContent className="mt-3 space-y-6" value="tags">
           <FeatureFlagged flag="artifact-tags">
-            <Show
-              fallback={
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Access Denied</CardTitle>
-                    <CardDescription>
-                      You must be an organization admin or owner to view this
-                      section.
-                    </CardDescription>
-                  </CardHeader>
-                </Card>
-              }
-              when={(
-                has: (
-                  params: { role: string } | { permission: string }
-                ) => boolean
-              ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
-            >
-              <TagsSettingsTab />
-            </Show>
+            <TagsSettingsTab />
           </FeatureFlagged>
         </TabsContent>
 

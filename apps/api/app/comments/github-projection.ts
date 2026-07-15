@@ -8,6 +8,10 @@ import {
   type TransactionClient,
 } from "@repo/database";
 import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
+import {
+  type GitHubFetchProvenance,
+  gitHubFetchProvenanceData,
+} from "@/lib/github-fetch-provenance";
 
 type GitHubProjectionDb = Pick<
   TransactionClient,
@@ -38,7 +42,7 @@ export type GitHubProjectionCommentInput = {
   createdAt: Date;
 };
 
-type BaseGitHubThreadProjectionInput = {
+export type BaseGitHubThreadProjectionInput = {
   organizationId: string;
   branchArtifactId: string;
   pullRequestDetailId: string;
@@ -51,6 +55,7 @@ type BaseGitHubThreadProjectionInput = {
   resolutionStatus?: ThreadStatus | null;
   resolvable?: boolean;
   lastSyncedAt?: Date | null;
+  fetchProvenance?: GitHubFetchProvenance;
 };
 
 export type UpsertGitHubIssueCommentThreadInput =
@@ -72,29 +77,31 @@ export type UpsertGitHubReviewCommentThreadInput =
     comments: GitHubProjectionCommentInput[];
   };
 
-export type SoftDeleteGitHubCommentProjectionInput = {
+type SoftDeleteGitHubCommentProjectionInput = {
   organizationId: string;
   branchArtifactId: string;
   pullRequestDetailId: string;
   threadKind: GitHubCommentThreadKind;
   liveGithubCommentIds: ReadonlySet<string | number>;
   deletedAt: Date;
+  fetchProvenance?: GitHubFetchProvenance;
 };
 
-export type SoftDeleteScopedGitHubCommentProjectionInput = {
+type SoftDeleteScopedGitHubCommentProjectionInput = {
   organizationId: string;
   branchArtifactId: string;
   pullRequestDetailId: string;
   githubCommentId: string | number;
   deletedAt: Date;
+  fetchProvenance?: GitHubFetchProvenance;
 };
 
-export type SoftDeleteGitHubCommentByRemoteIdInput =
+type SoftDeleteGitHubCommentByRemoteIdInput =
   SoftDeleteScopedGitHubCommentProjectionInput & {
     threadKind: GitHubCommentThreadKind;
   };
 
-export type UpsertGitHubProjectionResult = {
+type UpsertGitHubProjectionResult = {
   threadId: string;
   commentIds: string[];
   /**
@@ -127,7 +134,7 @@ export const GitHubReviewThreadResolutionProjectionStatus = {
 export type GitHubReviewThreadResolutionProjectionStatus =
   (typeof GitHubReviewThreadResolutionProjectionStatus)[keyof typeof GitHubReviewThreadResolutionProjectionStatus];
 
-export const GitHubProjectionNoWriteCode = {
+const GitHubProjectionNoWriteCode = {
   AmbiguousThreadProjection: "ambiguous_thread_projection",
   ExternalIdConflict: "external_id_conflict",
 } as const;
@@ -256,7 +263,10 @@ export async function softDeleteGitHubCommentProjection(
   for (const row of staleComments) {
     await tx.gitHubCommentProjection.update({
       where: { commentId: row.commentId },
-      data: { githubDeletedAt: input.deletedAt },
+      data: {
+        githubDeletedAt: input.deletedAt,
+        ...gitHubFetchProvenanceData(input.fetchProvenance),
+      },
     });
     await tx.comment.update({
       where: { id: row.commentId },
@@ -293,7 +303,10 @@ export async function softDeleteGitHubCommentProjection(
 
     await tx.gitHubCommentThreadProjection.update({
       where: { threadId: thread.threadId },
-      data: { deletedAt: input.deletedAt },
+      data: {
+        deletedAt: input.deletedAt,
+        ...gitHubFetchProvenanceData(input.fetchProvenance),
+      },
     });
     threads += 1;
   }
@@ -447,7 +460,10 @@ async function softDeleteGitHubCommentByRemoteIdInScope(
   for (const row of rows) {
     await tx.gitHubCommentProjection.update({
       where: { commentId: row.commentId },
-      data: { githubDeletedAt: input.deletedAt },
+      data: {
+        githubDeletedAt: input.deletedAt,
+        ...gitHubFetchProvenanceData(input.fetchProvenance),
+      },
     });
     await tx.comment.update({
       where: { id: row.commentId },
@@ -471,7 +487,10 @@ async function softDeleteGitHubCommentByRemoteIdInScope(
     }
     await tx.gitHubCommentThreadProjection.update({
       where: { threadId },
-      data: { deletedAt: input.deletedAt },
+      data: {
+        deletedAt: input.deletedAt,
+        ...gitHubFetchProvenanceData(input.fetchProvenance),
+      },
     });
     threads += 1;
   }
@@ -706,6 +725,7 @@ function gitHubThreadProjectionData(
     legacyState: input.legacyState ?? GitHubLegacyCommentState.PENDING,
     deletedAt: null,
     lastSyncedAt: input.lastSyncedAt ?? new Date(),
+    ...gitHubFetchProvenanceData(input.fetchProvenance),
   };
   if (mode === "update" && input.legacyState == null) {
     data.legacyState = undefined;
@@ -787,6 +807,7 @@ async function upsertProjectedGitHubComments(
         githubHtmlUrl: commentInput.githubHtmlUrl ?? null,
         githubUpdatedAt: commentInput.githubUpdatedAt ?? null,
         githubDeletedAt: null,
+        ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
       update: {
         threadId: targetThreadId,
@@ -796,6 +817,7 @@ async function upsertProjectedGitHubComments(
         githubHtmlUrl: commentInput.githubHtmlUrl ?? null,
         githubUpdatedAt: commentInput.githubUpdatedAt ?? null,
         githubDeletedAt: null,
+        ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
     });
 

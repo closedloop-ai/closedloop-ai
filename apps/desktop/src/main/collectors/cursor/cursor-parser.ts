@@ -14,15 +14,16 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
+import { asRecord } from "../../api-response-utils.js";
 import { readStorageTokenCountAlias } from "../../token-counts.js";
 import {
   collectArtifacts,
   isSyntheticModelKey,
+  noteTimestamp,
   pushTurnDuration,
   safeJson,
-  toIso,
   truncateText,
-} from "../parser-utils.js";
+} from "../parsing/parser-utils.js";
 import type {
   NormalizedApiError,
   NormalizedMessage,
@@ -32,16 +33,8 @@ import type {
   NormalizedToolUse,
   NormalizedTurnDuration,
 } from "../types.js";
-import { emptyArtifacts } from "../types.js";
+import { createNormalizedSession, emptyArtifacts } from "../types.js";
 import { sessionIdFromTranscriptPath } from "./cursor-home.js";
-
-/** Coerce an unknown JSON value to a plain object bag for tolerant field access. */
-function asRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
 
 /** Read a string-or-null field tolerantly (Cursor records are untyped JSON). */
 function asStringOrNull(value: unknown): string | null {
@@ -415,19 +408,7 @@ export async function parseTranscriptFile(
 
   const acc = createAccumulator();
 
-  const noteTs = (raw: unknown): string | null => {
-    const iso = toIso(raw);
-    if (!iso) {
-      return null;
-    }
-    if (!acc.firstTimestamp || iso < acc.firstTimestamp) {
-      acc.firstTimestamp = iso;
-    }
-    if (!acc.lastTimestamp || iso > acc.lastTimestamp) {
-      acc.lastTimestamp = iso;
-    }
-    return iso;
-  };
+  const noteTs = (raw: unknown): string | null => noteTimestamp(acc, raw);
 
   for await (const line of rl) {
     if (!line.trim()) {
@@ -504,40 +485,32 @@ export async function parseTranscriptFile(
       ? collectArtifacts(acc.toolUses, acc.cwd)
       : emptyArtifacts();
 
-  return {
+  // Unset fields are filled by createNormalizedSession's defaults.
+  return createNormalizedSession({
     sessionId,
     name: projectName,
     cwd: acc.cwd,
     model: acc.model,
     version: acc.version,
-    slug: null,
     gitBranch: acc.gitBranch,
     startedAt: acc.firstTimestamp,
     endedAt: acc.lastTimestamp,
-    teams: [],
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
     tokensByModel,
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
-    compactions: [],
     apiErrors: acc.apiErrors,
     fileModifiedAt,
     turnDurations: acc.turnDurations,
     entrypoint: "cursor",
-    permissionMode: null,
     thinkingBlockCount: acc.thinkingBlockCount,
     toolResultErrors: acc.toolResultErrors,
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
     // CR-1: Ordered messages with text content
     messages: acc.messages,
     // CR-2: Per-event token records for time-series
     tokenSeries: acc.tokenSeries,
-    // CR-4: Cursor edit tools don't carry diff data in args [absent]
-    diffStats: null,
-    // CR-7: Cursor has no slash commands
-    slashCommands: [],
     // CR-13: Structured artifact references
     artifacts,
-  };
+  });
 }

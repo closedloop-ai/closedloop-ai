@@ -28,6 +28,7 @@ import {
   TelemetrySeverity,
 } from "@repo/observability/telemetry/schema";
 import { BoundedCache } from "@/lib/bounded-cache";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { safeEmit } from "@/lib/telemetry-utils";
 import { isRecord } from "@/lib/type-guards";
 
@@ -434,7 +435,7 @@ async function createEventRow(
       },
     });
   } catch (error) {
-    if ((error as { code?: string }).code === "P2002") {
+    if (getPrismaErrorCode(error) === "P2002") {
       return "duplicate";
     }
     throw error;
@@ -586,14 +587,14 @@ export const desktopCommandStore = {
         })
       )) as StoredCommandRow;
     } catch (error) {
-      if (idempotencyKey && (error as { code?: string }).code === "P2002") {
+      if (idempotencyKey && getPrismaErrorCode(error) === "P2002") {
         return recoverDuplicateCommand(
           computeTargetId,
           idempotencyKey,
           fingerprint
         );
       }
-      if (input.commandId && (error as { code?: string }).code === "P2002") {
+      if (input.commandId && getPrismaErrorCode(error) === "P2002") {
         throw new ClientCommandIdConflictError();
       }
       throw error;

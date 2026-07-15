@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import type { ReactNode } from "react";
 

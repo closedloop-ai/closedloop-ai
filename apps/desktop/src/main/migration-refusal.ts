@@ -1,12 +1,11 @@
 /**
  * @file migration-refusal.ts
- * @description FEA-1791 / PLN-886 Phase 2 — the boot-safe migration-refusal
- * contract: the refusal taxonomy, the error the runner throws, and the
- * sanitized user-facing message catalog.
+ * @description The boot-safe migration-refusal contract: the refusal taxonomy,
+ * the error the runner throws, and the sanitized user-facing message catalog.
  *
  * This lives OUTSIDE `src/main/database/` on purpose. The boot path
  * (`app.ts`) must surface a migration refusal as an Agent Monitor failure,
- * but the boundary guard (`test/agent-dashboard-boundary.test.ts`) forbids
+ * but the boundary guard (`scripts/dependency-cruiser.config.cjs`) forbids
  * boot files from statically importing the database runtime (`src/main/
  * database/**`, which transitively pulls in SQLite). Keeping the contract
  * here lets both the runner (producer) and the boot handler (consumer) share

@@ -5,11 +5,37 @@ import {
   verifyGitHubOAuthReturnToCookie,
 } from "../github-utils";
 
-describe("GitHub OAuth Branch View return helpers", () => {
-  it("accepts only canonical Branch View return paths", () => {
+describe("GitHub OAuth return helpers", () => {
+  it("accepts only canonical GitHub-gated surface return paths", () => {
     expect(getCanonicalBranchViewReturnPath("/acme/build/branch-1")).toBe(
       "/acme/build/branch-1"
     );
+    expect(getCanonicalBranchViewReturnPath("/acme/branches")).toBe(
+      "/acme/branches"
+    );
+    expect(getCanonicalBranchViewReturnPath("/acme/branches/branch-1")).toBe(
+      "/acme/branches/branch-1"
+    );
+    expect(
+      getCanonicalBranchViewReturnPath("/branches", { orgSlug: "acme" })
+    ).toBe("/acme/branches");
+    expect(
+      getCanonicalBranchViewReturnPath("/branches/owner%2Frepo::feature", {
+        orgSlug: "acme",
+      })
+    ).toBe("/acme/branches/owner%2Frepo::feature");
+    expect(getCanonicalBranchViewReturnPath("/acme/insights")).toBe(
+      "/acme/insights"
+    );
+    expect(
+      getCanonicalBranchViewReturnPath("/insights", { orgSlug: "acme" })
+    ).toBe("/acme/insights");
+    expect(getCanonicalBranchViewReturnPath("/acme/agents")).toBe(
+      "/acme/agents"
+    );
+    expect(
+      getCanonicalBranchViewReturnPath("/agents", { orgSlug: "acme" })
+    ).toBe("/acme/agents");
 
     for (const returnTo of [
       "https://evil.example.test/acme/build/branch-1",
@@ -17,10 +43,22 @@ describe("GitHub OAuth Branch View return helpers", () => {
       "/api/integrations/github/callback",
       "/acme/build/branch-1?github=connected",
       "/acme/build/branch-1#fragment",
+      "/acme/branches?github=connected",
+      "/acme/branches/branch-1#fragment",
+      "/acme/insights?github=connected",
+      "/acme/insights/extra",
+      "/acme/agents?github=connected",
+      "/acme/agents/extra",
+      "/acme/branch/branch-1",
       "/acme/build/%2e%2e",
       "/acme/build/foo%2fbar",
+      "/acme/branches/foo%2e%2e",
       "/acme/build/foo\\bar",
       "/acme/build/branch-1/extra",
+      "/acme/branches/branch-1/extra",
+      "/branches",
+      "/insights",
+      "/branches/foo%2e%2e",
       `/${"a".repeat(201)}/build/branch-1`,
     ]) {
       expect(getCanonicalBranchViewReturnPath(returnTo)).toBeNull();

@@ -11,10 +11,19 @@
  */
 
 export function getGitHubConnectUrl(
-  mode: "authorize" | "install" = "authorize"
+  mode: "authorize" | "install" = "authorize",
+  options: { returnTo?: string } = {}
 ): string {
+  const params = new URLSearchParams();
   if (mode === "install") {
-    return "/api/integrations/github?install=true";
+    params.set("install", "true");
+  }
+  if (options.returnTo) {
+    params.set("returnTo", options.returnTo);
+  }
+  const query = params.toString();
+  if (query) {
+    return `/api/integrations/github?${query}`;
   }
   return "/api/integrations/github";
 }

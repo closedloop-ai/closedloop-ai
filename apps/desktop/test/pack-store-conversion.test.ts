@@ -1,20 +1,17 @@
 /**
  * @file pack-store-conversion.test.ts
- * @description FEA-1791 (PLN-886 follow-up) — the pack-store is fully on the
- * single DesktopPrisma client. The upsert WRITES (`upsertPack`/`upsertSkill`/
- * `upsertProjectAssociation`) and the simple reads (`getPack`/`listSkillsForPack`/
- * `collectPackPaths`) use typed delegates; only the aggregation reads
- * (`listPacks`/`listSkills`/`listSkillInvocations`/`listPackUsage`/
- * `listPackSessions`) stay on `prisma.client.$queryRawUnsafe`, where string_agg,
- * COUNT(DISTINCT …), the version CASE, jsonb prompt extraction, and the
- * multi-source path LIKE attribution have no clean typed-delegate form. This
- * test seeds packs/skills/associations via the converted upserts and seeds
- * sessions/events via raw SQL (those tables convert in a later PR), then asserts
- * the reads reproduce the prior SQL — including that every aggregate count is
- * Number()-coerced (COUNT can surface as bigint through the adapter, which would
- * break IPC/JSON). Absorbs the pack DTO coverage formerly in
- * ported-screen-store-contract.test.ts (now deleted — all three ported stores
- * are on Prisma, so the raw-stub contract is obsolete).
+ * @description The pack-store runs fully on the single DesktopPrisma client. The
+ * upsert WRITES (`upsertPack`/`upsertSkill`/`upsertProjectAssociation`) and the
+ * simple reads (`getPack`/`listSkillsForPack`/`collectPackPaths`) use typed
+ * delegates; only the aggregation reads (`listPacks`/`listSkills`/
+ * `listSkillInvocations`/`listPackUsage`/`listPackSessions`) stay on
+ * `prisma.client.$queryRawUnsafe`, where string_agg, COUNT(DISTINCT …), the
+ * version CASE, jsonb prompt extraction, and the multi-source path LIKE
+ * attribution have no clean typed-delegate form. This test seeds
+ * packs/skills/associations via the typed upserts and seeds sessions/events via
+ * raw SQL, then asserts the reads produce the correct results — including that
+ * every aggregate count is Number()-coerced (COUNT can surface as bigint through
+ * the adapter, which would break IPC/JSON).
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -232,6 +229,50 @@ test("listPackSessions: per-session rollup with Number()-coerced tool_calls", as
     assert.deepEqual(sessions.map((s) => s.session_id).sort(), ["s1", "s2"]);
     assert.equal(sessions[0]?.tool_calls, 1);
     assert.equal(typeof sessions[0]?.tool_calls, "number");
+  } finally {
+    await close();
+  }
+});
+
+// FEA-3048 (root cause 4): the legacy Skills-page prompt matcher must match
+// "leading slash + at least one more char" via an escape-safe form (literal
+// '/%' + length > 1), NOT the bare `_` LIKE wildcard. A bare "/" prompt must be
+// excluded; a "/name" prompt must still count.
+test("listSkills: escape-safe leading-slash match excludes bare '/' but counts '/name' (FEA-3048)", async () => {
+  const { db, prisma, close } = await openTestPrisma();
+  try {
+    await upsertSkill(prisma, {
+      skill_id: "sk-esc",
+      pack_id: null,
+      harness: "claude",
+      install_path: "/local/esc-skill",
+      name: "esc-skill",
+    });
+    await seedSession(db, "sess-esc");
+    // A valid "/esc-skill" invocation — MUST be counted.
+    await seedEvent(
+      db,
+      "esc-1",
+      "sess-esc",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/esc-skill go" })
+    );
+    // A bare "/" prompt — MUST NOT be counted (no skill name, length == 1).
+    await seedEvent(
+      db,
+      "esc-2",
+      "sess-esc",
+      "UserPromptSubmit",
+      JSON.stringify({ prompt: "/" })
+    );
+
+    const skills = await listSkills(prisma);
+    const escSkill = skills.find((s) => s.name === "esc-skill");
+    assert.equal(
+      escSkill?.invocationCount,
+      1,
+      "only the '/esc-skill' prompt counts; the bare '/' is excluded"
+    );
   } finally {
     await close();
   }

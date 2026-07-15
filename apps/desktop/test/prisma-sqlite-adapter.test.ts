@@ -21,7 +21,7 @@ import {
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
 } from "../src/main/database/baseline-schema.js";
 import { PrismaClient } from "../src/main/database/generated/client.js";
-import { openLibsqlDatabase } from "../src/main/database/libsql-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
 import { runDesktopMigrations } from "../src/main/database/migration-runner.js";
 import { MIGRATIONS } from "../src/main/database/migrations-manifest.js";
 
@@ -35,7 +35,7 @@ async function createClient(): Promise<{
   // Open the libSQL DB and run the same migration path used at boot so the
   // generated Prisma client sees the current schema. The raw `db` handle drives
   // migrations; the Prisma adapter opens its own connection from `config`.
-  const { db, config } = await openLibsqlDatabase(
+  const { db, config } = await openMigrationDatabase(
     path.join(dir, "agent-dashboard.sqlite")
   );
   await runDesktopMigrations(db, {
@@ -141,7 +141,7 @@ test("interactive transaction commits atomically and rolls back on throw", async
 
 // SQLite is a single-connection database. The FEA-1736 sharp edge: a query
 // issued while an interactive transaction is open must queue, not deadlock the
-// process. This is the property the Phase 3 write-queue rule protects; here we
+// process. This is the property the write-queue rule protects; here we
 // prove the substrate behaves. The explicit timeout makes a deadlock regression
 // fail deterministically rather than hang until the CI job timeout.
 test("concurrent query during an open interactive transaction does not deadlock", {

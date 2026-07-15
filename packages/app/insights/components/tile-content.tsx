@@ -9,12 +9,17 @@ import type {
   UtilizationInsightsResponse,
 } from "@repo/api/src/types/insights";
 import { InsightsSection } from "@repo/api/src/types/insights";
-import { CategoryBarChart } from "@repo/design-system/components/ui/category-bar-chart";
+import {
+  CategoryBarChart,
+  type CategoryDatum,
+} from "@repo/design-system/components/ui/category-bar-chart";
 import { DonutChart } from "@repo/design-system/components/ui/donut-chart";
 import { ActivityHeatmap } from "@repo/design-system/components/ui/primitives/activity-heatmap";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { TimeSeriesAreaChart } from "@repo/design-system/components/ui/time-series-area-chart";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
+import { metricAllowsFractions, metricValueFormatter } from "../lib/format";
 import { type TileDescriptor, TileKind } from "../lib/tile-catalog";
 import { ReviewerTable } from "./reviewer-table";
 
@@ -94,20 +99,35 @@ function renderDelivery(
     return renderTimeSeries(
       getDeliveryTimeSeries(tile.dataKey, response),
       comparison ? getDeliveryTimeSeries(tile.dataKey, comparison) : undefined,
-      comparisonLabel
+      comparisonLabel,
+      metricValueFormatter(tile.metricKey),
+      metricAllowsFractions(tile.metricKey)
     );
   }
   if (tile.kind === TileKind.TimeSeriesBar) {
-    return renderTimeSeriesBar(getDeliveryTimeSeries(tile.dataKey, response));
+    return renderTimeSeriesBar(
+      getDeliveryTimeSeries(tile.dataKey, response),
+      tile.id,
+      metricValueFormatter(tile.metricKey),
+      metricAllowsFractions(tile.metricKey)
+    );
   }
   if (tile.kind === TileKind.Heatmap) {
-    return renderHeatmap(getDeliveryTimeSeries(tile.dataKey, response));
+    return renderHeatmap(
+      getDeliveryTimeSeries(tile.dataKey, response),
+      metricValueFormatter(tile.metricKey)
+    );
   }
 
-  return renderCategory(
-    tile,
-    getDeliveryCategory(tile.dataKey, response.charts)
-  );
+  const categoryData = getDeliveryCategory(tile.dataKey, response.charts);
+  // FEA-2993: the "Merged PRs by repository" bar tile gains an `emergent`-gated
+  // segment drilldown — clicking a repo bar selects it and surfaces a per-repo
+  // summary. Other Delivery category tiles (and the repo donut variant) keep the
+  // shared, non-interactive renderer.
+  if (tile.dataKey === "prByRepo" && tile.kind === TileKind.CategoryBar) {
+    return <DeliveryRepoSegmentChart data={categoryData} tile={tile} />;
+  }
+  return renderCategory(tile, categoryData);
 }
 
 function renderUtilization(
@@ -122,16 +142,24 @@ function renderUtilization(
       comparison
         ? getUtilizationTimeSeries(tile.dataKey, comparison)
         : undefined,
-      comparisonLabel
+      comparisonLabel,
+      metricValueFormatter(tile.metricKey),
+      metricAllowsFractions(tile.metricKey)
     );
   }
   if (tile.kind === TileKind.TimeSeriesBar) {
     return renderTimeSeriesBar(
-      getUtilizationTimeSeries(tile.dataKey, response)
+      getUtilizationTimeSeries(tile.dataKey, response),
+      tile.id,
+      metricValueFormatter(tile.metricKey),
+      metricAllowsFractions(tile.metricKey)
     );
   }
   if (tile.kind === TileKind.Heatmap) {
-    return renderHeatmap(getUtilizationTimeSeries(tile.dataKey, response));
+    return renderHeatmap(
+      getUtilizationTimeSeries(tile.dataKey, response),
+      metricValueFormatter(tile.metricKey)
+    );
   }
   if (tile.kind === TileKind.ReviewerTable) {
     return response.charts.reviewerLoad ? (
@@ -157,14 +185,24 @@ function renderAgents(
     return renderTimeSeries(
       getAgentsTimeSeries(tile.dataKey, response),
       comparison ? getAgentsTimeSeries(tile.dataKey, comparison) : undefined,
-      comparisonLabel
+      comparisonLabel,
+      metricValueFormatter(tile.metricKey),
+      metricAllowsFractions(tile.metricKey)
     );
   }
   if (tile.kind === TileKind.TimeSeriesBar) {
-    return renderTimeSeriesBar(getAgentsTimeSeries(tile.dataKey, response));
+    return renderTimeSeriesBar(
+      getAgentsTimeSeries(tile.dataKey, response),
+      tile.id,
+      metricValueFormatter(tile.metricKey),
+      metricAllowsFractions(tile.metricKey)
+    );
   }
   if (tile.kind === TileKind.Heatmap) {
-    return renderHeatmap(getAgentsTimeSeries(tile.dataKey, response));
+    return renderHeatmap(
+      getAgentsTimeSeries(tile.dataKey, response),
+      metricValueFormatter(tile.metricKey)
+    );
   }
 
   return renderCategory(tile, getAgentsCategory(tile.dataKey, response.charts));
@@ -173,40 +211,123 @@ function renderAgents(
 function renderTimeSeries(
   chart: TimeSeries | undefined,
   comparison: TimeSeries | undefined,
-  comparisonLabel: string | undefined
+  comparisonLabel: string | undefined,
+  valueFormatter: (value: number) => string,
+  allowDecimals: boolean
 ): ReactNode {
   return chart && hasTimeSeriesData(chart) ? (
     <TimeSeriesAreaChart
+      allowDecimals={allowDecimals}
       comparison={comparison}
       comparisonLabel={comparisonLabel}
       points={chart.points}
       series={chart.series}
+      valueFormatter={valueFormatter}
     />
   ) : (
     <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />
   );
 }
 
-function renderTimeSeriesBar(chart: TimeSeries | undefined): ReactNode {
+function renderTimeSeriesBar(
+  chart: TimeSeries | undefined,
+  trackerScopeBaseKey: string,
+  valueFormatter: (value: number) => string,
+  allowDecimals: boolean
+): ReactNode {
   return chart && hasTimeSeriesData(chart) ? (
-    <CategoryBarChart data={timeSeriesToBuckets(chart)} />
+    <TrackedTimeSeriesBarChart
+      allowDecimals={allowDecimals}
+      chart={chart}
+      trackerScopeBaseKey={trackerScopeBaseKey}
+      valueFormatter={valueFormatter}
+    />
   ) : (
     <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />
   );
 }
 
-function renderHeatmap(chart: TimeSeries | undefined): ReactNode {
+type SelectedBucket = {
+  bucketKey: string;
+  scopeKey: string;
+};
+
+function TrackedTimeSeriesBarChart({
+  chart,
+  trackerScopeBaseKey,
+  valueFormatter,
+  allowDecimals,
+}: {
+  chart: TimeSeries;
+  trackerScopeBaseKey: string;
+  valueFormatter: (value: number) => string;
+  allowDecimals: boolean;
+}) {
+  const [selectedBucket, setSelectedBucket] = useState<SelectedBucket | null>(
+    null
+  );
+  const buckets = useMemo(() => timeSeriesToBuckets(chart), [chart]);
+  const trackerScopeKey = useMemo(
+    () => buildTimeSeriesTrackerScopeKey(trackerScopeBaseKey, chart),
+    [chart, trackerScopeBaseKey]
+  );
+  const bucketKeys = useMemo(
+    () => new Set(buckets.map((bucket) => bucket.key)),
+    [buckets]
+  );
+  const selectedKey =
+    selectedBucket?.scopeKey === trackerScopeKey &&
+    bucketKeys.has(selectedBucket.bucketKey)
+      ? selectedBucket.bucketKey
+      : null;
+
+  useEffect(() => {
+    if (
+      selectedBucket &&
+      (selectedBucket.scopeKey !== trackerScopeKey ||
+        !bucketKeys.has(selectedBucket.bucketKey))
+    ) {
+      setSelectedBucket(null);
+    }
+  }, [bucketKeys, selectedBucket, trackerScopeKey]);
+
+  return (
+    <CategoryBarChart
+      allowDecimals={allowDecimals}
+      data={buckets}
+      onDatumClick={(datum: CategoryDatum) =>
+        setSelectedBucket({
+          bucketKey: datum.key,
+          scopeKey: trackerScopeKey,
+        })
+      }
+      selectedKey={selectedKey}
+      valueFormatter={valueFormatter}
+    />
+  );
+}
+
+function renderHeatmap(
+  chart: TimeSeries | undefined,
+  valueFormatter: (value: number) => string
+): ReactNode {
   if (!(chart && hasTimeSeriesData(chart))) {
     return <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />;
   }
-  return <HeatmapChart chart={chart} />;
+  return <HeatmapChart chart={chart} valueFormatter={valueFormatter} />;
 }
 
-function HeatmapChart({ chart }: { chart: TimeSeries }) {
+function HeatmapChart({
+  chart,
+  valueFormatter,
+}: {
+  chart: TimeSeries;
+  valueFormatter: (value: number) => string;
+}) {
   // The sort + iterative Date walk is non-trivial; memoize per chart so it
   // doesn't recompute on every tile re-render.
   const weeks = useMemo(() => timeSeriesToHeatmapWeeks(chart), [chart]);
-  return <ActivityHeatmap weeks={weeks} />;
+  return <ActivityHeatmap valueFormatter={valueFormatter} weeks={weeks} />;
 }
 
 function renderCategory(
@@ -216,10 +337,139 @@ function renderCategory(
   if (!data?.some((bucket) => bucket.value > 0)) {
     return <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />;
   }
+  const valueFormatter = metricValueFormatter(tile.metricKey);
   return tile.kind === TileKind.Donut ? (
-    <DonutChart data={data} />
+    <DonutChart data={data} valueFormatter={valueFormatter} />
   ) : (
-    <CategoryBarChart data={data} horizontal={tile.horizontal} />
+    <CategoryBarChart
+      allowDecimals={metricAllowsFractions(tile.metricKey)}
+      data={data}
+      horizontal={tile.horizontal}
+      showValueLabels={tile.showValueLabels}
+      valueFormatter={valueFormatter}
+    />
+  );
+}
+
+/**
+ * PostHog flag gating the Delivery "segment drilldown" first slice (FEA-2993):
+ * clicking a repository bar in the "Merged PRs by repository" tile selects that
+ * repo and surfaces a per-segment summary. Reuses the shared `emergent`
+ * prototype flag (the same key behind the Insights AI-Impact card and Share
+ * link), so the drilldown ships dark until that flag is enabled. Named locally
+ * per the per-surface flag-key convention.
+ */
+export const DELIVERY_SEGMENT_FEATURE_FLAG_KEY = "emergent";
+
+const PERCENT_SCALE = 100;
+
+/**
+ * "Merged PRs by repository" tile with an `emergent`-gated segment drilldown.
+ * While the flag is off (or there is nothing to drill into) it renders exactly
+ * like every other category tile via {@link renderCategory}, including the empty
+ * state; while on, repo bars become selectable and a compact summary reports the
+ * picked repository's share of delivery throughput. Derived entirely from the
+ * `prByRepo` buckets the dashboard already loads — no new API contract or query,
+ * mirroring the AI-Impact card's first-slice shape, so it works identically on
+ * web and desktop through the shared data port.
+ */
+function DeliveryRepoSegmentChart({
+  tile,
+  data,
+}: {
+  tile: TileDescriptor;
+  data: CategoryBucket[] | undefined;
+}) {
+  const segmentEnabled = useFeatureFlagEnabled(
+    DELIVERY_SEGMENT_FEATURE_FLAG_KEY
+  );
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const bucketKeys = useMemo(
+    () => new Set((data ?? []).map((bucket) => bucket.key)),
+    [data]
+  );
+
+  // Drop a stale selection when the underlying repo set changes (e.g. a
+  // scope/period switch replaces the buckets) so the summary never reports a
+  // repo the current chart no longer shows.
+  useEffect(() => {
+    if (selectedKey !== null && !bucketKeys.has(selectedKey)) {
+      setSelectedKey(null);
+    }
+  }, [bucketKeys, selectedKey]);
+
+  const hasData = data?.some((bucket) => bucket.value > 0) ?? false;
+  if (!(segmentEnabled && hasData)) {
+    return renderCategory(tile, data);
+  }
+
+  const buckets = data ?? [];
+  const selected =
+    selectedKey === null
+      ? undefined
+      : buckets.find((bucket) => bucket.key === selectedKey);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="min-h-0 flex-1">
+        <CategoryBarChart
+          allowDecimals={metricAllowsFractions(tile.metricKey)}
+          data={buckets}
+          horizontal={tile.horizontal}
+          onDatumClick={(datum: CategoryDatum) =>
+            setSelectedKey((current) =>
+              current === datum.key ? null : datum.key
+            )
+          }
+          selectedKey={selected ? selected.key : null}
+          showValueLabels={tile.showValueLabels}
+          valueFormatter={metricValueFormatter(tile.metricKey)}
+        />
+      </div>
+      <RepoSegmentSummary
+        buckets={buckets}
+        metricKey={tile.metricKey}
+        selected={selected}
+      />
+    </div>
+  );
+}
+
+/**
+ * Compact per-repository readout under the drilldown chart. Reports the selected
+ * repo's throughput, its share of the delivery total, and its rank — all derived
+ * from the already-loaded buckets. Prompts for a selection when none is active
+ * so the drilldown affordance stays discoverable.
+ */
+function RepoSegmentSummary({
+  buckets,
+  selected,
+  metricKey,
+}: {
+  buckets: CategoryBucket[];
+  selected: CategoryBucket | undefined;
+  metricKey: string;
+}) {
+  if (!selected) {
+    return (
+      <div className="text-muted-foreground text-xs">
+        Select a repository to drill into its delivery segment.
+      </div>
+    );
+  }
+  const formatValue = metricValueFormatter(metricKey);
+  const total = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+  const share =
+    total > 0 ? Math.round((selected.value / total) * PERCENT_SCALE) : 0;
+  const rank =
+    buckets.filter((bucket) => bucket.value > selected.value).length + 1;
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+      <span className="font-medium text-foreground">{selected.label}</span>
+      <span className="text-muted-foreground">
+        {`${formatValue(selected.value)} · ${share}% of total · #${rank} of ${buckets.length}`}
+      </span>
+    </div>
   );
 }
 
@@ -294,8 +544,6 @@ function getUtilizationCategory(
   switch (key) {
     case "eventsByType":
       return charts.eventsByType;
-    case "sessionsByStatus":
-      return charts.sessionsByStatus;
     case "userBreakdown":
       return charts.userBreakdown;
     case "reviewQueue":
@@ -334,6 +582,24 @@ function timeSeriesToBuckets(chart: TimeSeries): CategoryBucket[] {
       0
     ),
   }));
+}
+
+/**
+ * Tracker selection is tied to the rendered chart identity so filter/range
+ * changes that reuse date keys cannot leave a marker on a stale scale.
+ */
+function buildTimeSeriesTrackerScopeKey(
+  baseKey: string,
+  chart: TimeSeries
+): string {
+  return JSON.stringify({
+    baseKey,
+    points: chart.points.map((point) => ({
+      date: point.date,
+      values: chart.series.map((series) => point.values[series.key] ?? 0),
+    })),
+    series: chart.series.map((series) => series.key),
+  });
 }
 
 function timeSeriesToHeatmapWeeks(

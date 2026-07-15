@@ -71,6 +71,13 @@ export async function insertInlineImageFileForEditor({
 
   try {
     const result = await uploadInlineImage(file);
+    // The editor can unmount (navigation, remount) while the upload is in
+    // flight. The upload already succeeded, so treat a destroyed editor as a
+    // silent no-op rather than letting a post-await dispatch throw and surface
+    // a misleading "Image upload failed" toast.
+    if (editor.isDestroyed) {
+      return;
+    }
     const position = findPlaceholderPosition(editor, uploadId);
     removeInlineImagePlaceholder(uploadId);
     if (position !== null) {

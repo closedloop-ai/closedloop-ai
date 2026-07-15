@@ -17,6 +17,22 @@
     {
       "path": "/cron/cleanup-preview-schemas",
       "schedule": "17 6 * * *"
+    },
+    {
+      "path": "/cron/cleanup-expired-sessions",
+      "schedule": "41 4 * * *"
+    },
+    {
+      "path": "/cron/reconcile-attachments",
+      "schedule": "23 5 * * *"
+    },
+    {
+      "path": "/cron/drain-check-run-retries",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/cron/cleanup-loop-state",
+      "schedule": "47 3 * * *"
     }
   ]
 }

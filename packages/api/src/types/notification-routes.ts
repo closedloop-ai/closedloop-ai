@@ -7,6 +7,8 @@ import { getRoutePrefixForType } from "./document";
 export const NotificationEntityKind = {
   Artifact: "artifact",
   Project: "project",
+  Loop: "loop",
+  Session: "session",
 } as const;
 export type NotificationEntityKind =
   (typeof NotificationEntityKind)[keyof typeof NotificationEntityKind];
@@ -23,6 +25,14 @@ export type NotificationEntityRouteParams =
       kind: typeof NotificationEntityKind.Project;
       teamId: string;
       projectId: string;
+    }
+  | {
+      kind: typeof NotificationEntityKind.Loop;
+      loopId: string;
+    }
+  | {
+      kind: typeof NotificationEntityKind.Session;
+      sessionId: string;
     };
 
 const ARTIFACT_FALLBACK_PREFIX = "documents";
@@ -38,6 +48,10 @@ export function getNotificationEntityPath(
     }
     case NotificationEntityKind.Project:
       return `/teams/${params.teamId}/projects/${params.projectId}`;
+    case NotificationEntityKind.Loop:
+      return `/loops/${params.loopId}`;
+    case NotificationEntityKind.Session:
+      return `/sessions/${params.sessionId}`;
     default: {
       const exhaustive: never = params;
       throw new Error(

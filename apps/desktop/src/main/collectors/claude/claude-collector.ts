@@ -1,7 +1,7 @@
 /**
  * @file claude-collector.ts
- * @description Claude Code harness collector descriptor (FEA-1503). Claude (like
- * Codex) has a live hook path, so its live file watcher is gated OFF by the
+ * @description Claude Code harness collector descriptor (FEA-1503). Claude is the
+ * only harness with a live hook path, so its live file watcher is gated OFF by the
  * CollectorManager whenever hooks are installed — the routing decision is owned by
  * `getActiveCollectionMode` (FEA-1839) (hooks own live capture; a concurrent
  * watcher would double-count turns). Historical import remains idempotent
@@ -9,7 +9,7 @@
  */
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import type { HarnessCollector } from "../types.js";
+import type { FileHarnessCollector } from "../types.js";
 import {
   getProjectsDir,
   listAllTranscriptFiles,
@@ -19,16 +19,32 @@ import { parseSessionFile } from "./claude-parser.js";
 
 const PATH_SEGMENT_SEPARATOR_RE = /[\\/]+/;
 
-export function createClaudeCollector(): HarnessCollector {
+/**
+ * FEA-2648: source/root overrides mirroring `CreateCodexCollectorOptions`, used
+ * by golden mode to point the real collector at a staged corpus tree. Both
+ * default to the live `~/.claude` layout, so an argless call is unchanged. The
+ * remaining path-derived members (`sourcePathsForWatchEvent`, `sessionIdForSource`,
+ * `extraMtime`) operate on the path they are handed and need no override.
+ */
+export type CreateClaudeCollectorOptions = {
+  listSources?: () => string[];
+  watchRoots?: () => string[];
+};
+
+export function createClaudeCollector(
+  options: CreateClaudeCollectorOptions = {}
+): FileHarnessCollector {
+  const listSources = options.listSources ?? listAllTranscriptFiles;
+  const watchRoots = options.watchRoots ?? defaultClaudeWatchRoots;
   return {
     key: "claude",
     cacheName: "claude",
-    watchRoots: () => [getProjectsDir()],
+    watchRoots,
     watchMatch: (filename: string) => filename.endsWith(".jsonl"),
     sourcePathsForWatchEvent: (root: string, filename: string): string[] => [
       sourcePathFromClaudeWatchEvent(root, filename),
     ],
-    listSources: () => listAllTranscriptFiles(),
+    listSources,
     parse: async (filePath: string) => {
       const session = await parseSessionFile(filePath);
       return session ? [session] : [];
@@ -41,6 +57,11 @@ export function createClaudeCollector(): HarnessCollector {
     sessionIdForSource: (source: string): string | null =>
       sessionIdFromTranscriptPath(source),
   };
+}
+
+/** Live-layout default watch root — resolved lazily so `CLAUDE_HOME` is honored. */
+function defaultClaudeWatchRoots(): string[] {
+  return [getProjectsDir()];
 }
 
 /**

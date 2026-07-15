@@ -19,6 +19,8 @@ export const SESSIONS_TOGGLEABLE_COLUMNS = [
   { id: "status", label: "Status" },
   { id: "repo", label: "Repository" },
   { id: "branch", label: "Branch" },
+  { id: "pr", label: "PR" },
+  { id: "merge", label: "Merge" },
   { id: "harness", label: "Harness" },
   { id: "model", label: "Model" },
   { id: "duration", label: "Duration" },

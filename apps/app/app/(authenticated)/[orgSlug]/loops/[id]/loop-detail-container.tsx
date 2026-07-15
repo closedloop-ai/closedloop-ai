@@ -41,6 +41,10 @@ import {
   formatTokenCount,
 } from "@repo/app/shared/lib/format-utils";
 import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -77,7 +81,7 @@ import {
   TerminalIcon,
   UserIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCancelLoop } from "@/hooks/queries/use-loops";
 import { useOrgSlug } from "@/hooks/use-org-slug";
 
@@ -509,6 +513,76 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     { enabled: loop?.status === LoopStatus.Failed && !!ghostLoopUx }
   );
 
+  // Celebrate the moment a running loop ships. The status refreshes via the
+  // mounted LoopProgressPanel's useLoopPolling (useLoop itself does not poll),
+  // so we watch the RUNNING -> COMPLETED edge here and toast once.
+  const shipCelebrationFlag = useFeatureFlag("loop-ship-celebration");
+  const shipCelebrationEnabled = shipCelebrationFlag?.enabled === true;
+  const prevStatusRef = useRef<LoopStatus | undefined>(undefined);
+  useEffect(() => {
+    const status = loop?.status;
+    const previousStatus = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (
+      !(
+        shipCelebrationEnabled &&
+        previousStatus === LoopStatus.Running &&
+        status === LoopStatus.Completed
+      )
+    ) {
+      return;
+    }
+    // Enrich the celebration with the already-loaded loop context: the shipped
+    // PR as a deep link and a one-line duration summary. KLOC is not part of the
+    // loaded LoopDetail, so we only surface data we actually have.
+    //
+    // Prefer the document-projected `primaryPullRequest`, but fall back to the
+    // legacy per-loop PR fields (`loop.prNumber`/`loop.prUrl`) when it is
+    // absent — document-less/legacy loops only carry PR data on the loop row
+    // (the API only builds `primaryPullRequest` from document PR projections),
+    // so without this fallback the toast would drop both the PR number and the
+    // "View PR" action even though the data is loaded. Mirrors
+    // renderLegacyLoopPrLink above.
+    const shippedPr = loop?.primaryPullRequest;
+    const shippedPrNumber = shippedPr?.number ?? loop?.prNumber ?? null;
+    const shippedPrUrl = shippedPr?.htmlUrl ?? loop?.prUrl ?? undefined;
+    // Require BOTH endpoints: formatDuration treats a null completedAt as
+    // "still running" and measures start→now, which would show a running-clock
+    // value for an already-completed loop if completedAt lags the status flip at
+    // this RUNNING→COMPLETED edge. Drop the segment until the merge instant is
+    // known rather than surfacing an ever-growing duration.
+    const duration =
+      loop?.startedAt && loop?.completedAt
+        ? formatDuration(loop.startedAt, loop.completedAt)
+        : null;
+    const summaryParts: string[] = [];
+    if (shippedPrNumber !== null) {
+      summaryParts.push(`PR #${shippedPrNumber}`);
+    }
+    if (duration && duration !== "-") {
+      summaryParts.push(`shipped in ${duration}`);
+    }
+    toast.success("Shipped! 🎉", {
+      description:
+        summaryParts.length > 0 ? summaryParts.join(" · ") : undefined,
+      action: shippedPrUrl
+        ? {
+            label: "View PR",
+            onClick: () =>
+              window.open(shippedPrUrl, "_blank", "noopener,noreferrer"),
+          }
+        : undefined,
+    });
+  }, [
+    loop?.status,
+    loop?.startedAt,
+    loop?.completedAt,
+    loop?.primaryPullRequest,
+    loop?.prNumber,
+    loop?.prUrl,
+    shipCelebrationEnabled,
+  ]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -519,9 +593,11 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
 
   if (error) {
     return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message ?? "Failed to load loop"}
-      </div>
+      <Alert variant="error">
+        <AlertDescription>
+          {error.message ?? "Failed to load loop"}
+        </AlertDescription>
+      </Alert>
     );
   }
 

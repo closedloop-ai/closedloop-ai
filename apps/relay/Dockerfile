@@ -17,6 +17,10 @@ WORKDIR /app
 
 # Copy workspace root files needed for pnpm install (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# pnpm-workspace.yaml declares workspace patchedDependencies (e.g. the
+# desktop-only @libsql/client patch); pnpm resolves the patch files at install
+# time even when the patched package is outside this filter's closure.
+COPY patches/ patches/
 RUN corepack prepare --activate
 COPY tsconfig.json ./
 
@@ -31,8 +35,8 @@ COPY packages/redis/ packages/redis/
 COPY packages/loops-api/ packages/loops-api/
 # shared-platform is now a DIRECT relay dependency — FEA-1989 imports
 # @closedloop-ai/shared-platform/keyless-telemetry — as well as a transitive dep
-# of @repo/api. Copy the full package so it can be built; its dist is required at
-# runtime for the keyless telemetry ingress (copied into the runtime stage).
+# of @repo/api. Copy the full package; its source is required at runtime for the
+# keyless telemetry ingress (copied into the runtime stage).
 COPY packages/shared-platform/ packages/shared-platform/
 
 # Install dependencies (workspace mode, only for the relay app and its deps)
@@ -41,14 +45,9 @@ RUN pnpm install --frozen-lockfile --filter relay... --ignore-scripts
 # Copy relay source code
 COPY apps/relay/src/ apps/relay/src/
 
-# Build shared workspace packages required at runtime, then relay itself.
-# @repo/observability transitively imports @closedloop-ai/loops-api/commands,
-# whose package.json exports resolve to ./dist/*.js — the dist output must
-# exist in the runtime image, so build loops-api here.
-RUN pnpm --filter @closedloop-ai/loops-api build
-# shared-platform must be built before relay: relay imports its `keyless-telemetry`
-# subpath export, whose package.json `exports` resolve to ./dist/*.js (+ .d.ts).
-RUN pnpm --filter @closedloop-ai/shared-platform build
+# @closedloop-ai/loops-api and @closedloop-ai/shared-platform are consumed from source (their
+# exports resolve to ./src/*.ts), so there is nothing to pre-build — runtime tsx
+# resolves them directly. Build relay itself.
 RUN pnpm --filter relay build
 
 # ---------------------------------------------------------------------------
@@ -62,6 +61,8 @@ WORKDIR /app
 
 # Copy workspace root files (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Workspace patchedDependencies patch files — required by pnpm install (see builder stage).
+COPY patches/ patches/
 RUN corepack prepare --activate
 COPY tsconfig.json ./
 
@@ -73,7 +74,7 @@ COPY packages/api/package.json packages/api/
 COPY packages/redis/package.json packages/redis/
 COPY packages/loops-api/package.json packages/loops-api/
 # shared-platform manifest for prod workspace-symlink resolution; relay imports
-# @closedloop-ai/shared-platform/keyless-telemetry at runtime, so its dist is
+# @closedloop-ai/shared-platform/keyless-telemetry at runtime, so its source is
 # copied below (alongside the manifest).
 COPY packages/shared-platform/package.json packages/shared-platform/
 
@@ -93,14 +94,20 @@ COPY --from=builder /app/packages/api/src/ packages/api/src/
 # @repo/redis source for tsx resolution
 COPY --from=builder /app/packages/redis/src/ packages/redis/src/
 # @repo/observability imports @closedloop-ai/loops-api/commands at runtime;
-# its exports map resolves to ./dist/commands.js, which must be present.
-COPY --from=builder /app/packages/loops-api/dist/ packages/loops-api/dist/
+# its exports map resolves to ./src/commands.ts, resolved by tsx.
+COPY --from=builder /app/packages/loops-api/src/ packages/loops-api/src/
 # relay imports @closedloop-ai/shared-platform/keyless-telemetry at runtime;
-# its exports map resolves to ./dist/keyless-telemetry.js, which must be present.
-COPY --from=builder /app/packages/shared-platform/dist/ packages/shared-platform/dist/
+# its exports map resolves to ./src/keyless-telemetry.ts, resolved by tsx.
+COPY --from=builder /app/packages/shared-platform/src/ packages/shared-platform/src/
 
 ENV NODE_ENV=production
 ENV RELAY_PORT=3020
+# Disable pnpm's pre-run deps-status check — deps are fully baked at build time,
+# so the `pnpm exec` CMD below must not trigger a network `pnpm install` at boot.
+# Same failure mode that rolled back the mcp prod deploy (FEA-2653): the check
+# evaluates all workspace projects at container start and can OOM-kill the task
+# before it becomes healthy. A production container must never install at boot.
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
 
 EXPOSE 3020
 

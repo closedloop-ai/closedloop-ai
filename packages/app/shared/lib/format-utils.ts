@@ -2,6 +2,10 @@
  * Shared formatting utilities for loops UI.
  */
 
+const B = 1_000_000_000;
+const M = 1_000_000;
+const K = 1000;
+
 /**
  * Format a token count for display with abbreviated tiers (k, M, B).
  * Uses 2 decimal places for abbreviated output.
@@ -9,10 +13,6 @@
  * Tiers down when value is less than 1 of current tier (e.g., 0.5M → 500k).
  */
 export function formatTokenCount(count: number): string {
-  const B = 1_000_000_000;
-  const M = 1_000_000;
-  const K = 1000;
-
   if (count >= B) {
     return `${(count / B).toFixed(2)}B`;
   }
@@ -153,23 +153,64 @@ export function parseDateRange(value: string | null): DateRange {
   return "30d";
 }
 
-export function getStartDateForRange(range: DateRange): string | undefined {
-  if (range === "all") {
+/**
+ * The inclusive lower bound (ISO timestamp) for a rolling day window, or
+ * `undefined` for an unbounded ("all") window (`days === undefined`). `now` is
+ * injectable so callers/tests get deterministic output. Shared by every
+ * time-window selector's start-date helper (`getStartDateForRange`,
+ * `getAgentsRangeStartIso`, …) so the day-subtraction lives in one place; each
+ * selector keeps its own range→days map local.
+ */
+export function getStartIsoForDays(
+  days: number | undefined,
+  now: Date = new Date()
+): string | undefined {
+  if (days === undefined) {
     return undefined;
   }
+  const date = new Date(now);
+  date.setDate(date.getDate() - days);
+  return date.toISOString();
+}
+
+export function getStartDateForRange(range: DateRange): string | undefined {
   const daysMap: Record<Exclude<DateRange, "all">, number> = {
     "7d": 7,
     "30d": 30,
     "90d": 90,
   };
-  const days = daysMap[range];
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString();
+  return getStartIsoForDays(range === "all" ? undefined : daysMap[range]);
 }
 
 export function formatCost(cost: number | undefined): string {
   return `$${(cost ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+const TRAILING_ZERO_DECIMAL = /\.0$/;
+
+function trimTrailingZero(value: number): string {
+  return value.toFixed(1).replace(TRAILING_ZERO_DECIMAL, "");
+}
+
+/** 1dp compact display (k/M/B) — use formatTokenCount for 2dp token counts. */
+export function formatCompact(value: number): string {
+  if (Math.abs(value) >= B) {
+    return `${trimTrailingZero(value / B)}B`;
+  }
+  if (Math.abs(value) >= M) {
+    return `${trimTrailingZero(value / M)}M`;
+  }
+  if (Math.abs(value) >= K) {
+    return `${trimTrailingZero(value / K)}k`;
+  }
+  return `${Math.round(value)}`;
+}
+
+export function formatLoc(value: number): string {
+  if (Math.abs(value) >= K) {
+    return `${trimTrailingZero(value / K)} KLOC`;
+  }
+  return Math.round(value).toLocaleString("en-US");
 }
 
 /**

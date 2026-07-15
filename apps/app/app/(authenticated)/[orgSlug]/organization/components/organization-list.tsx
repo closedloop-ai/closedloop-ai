@@ -1,6 +1,10 @@
 "use client";
 
 import { useOrganizations } from "@repo/app/organizations/hooks/use-organizations";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Loader2Icon } from "lucide-react";
 
 export function OrganizationList() {
@@ -16,9 +20,9 @@ export function OrganizationList() {
 
   if (error) {
     return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message}
-      </div>
+      <Alert variant="error">
+        <AlertDescription>{error.message}</AlertDescription>
+      </Alert>
     );
   }
 
