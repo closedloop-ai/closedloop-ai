@@ -6,6 +6,12 @@
  * artifacts to include.
  */
 
+import type {
+  CodeEvaluationContext,
+  ContextPackAgent,
+  ContextPackAttachment,
+  ContextPackRepoConfig,
+} from "@closedloop-ai/loops-api/context-pack";
 import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
 import { AGENTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
@@ -13,12 +19,6 @@ import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
-import type {
-  CodeEvaluationContext,
-  ContextPackAgent,
-  ContextPackAttachment,
-  ContextPackRepoConfig,
-} from "@closedloop-ai/loops-api/context-pack";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { listAgentsForContextPack } from "@/app/catalog/service";

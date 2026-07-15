@@ -79,7 +79,9 @@ export default defineConfig({
       // throws at runtime in the `app://` renderer. Alias to source so they
       // bundle. (loops-api/shared-platform keep `exports` maps and resolve on
       // their own, so they need no alias here.)
-      "@closedloop-ai/design-system": path.resolve("../../packages/design-system"),
+      "@closedloop-ai/design-system": path.resolve(
+        "../../packages/design-system"
+      ),
     },
   },
   build: {

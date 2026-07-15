@@ -1,8 +1,11 @@
+import type {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import {
   AGENT_FAILED_STATUS_TERMS,
   AGENT_SUCCESS_STATUS_TERMS,
 } from "@repo/api/src/agent-session-status";
-import type { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import type {
   AnalyticsData,
   DashboardCoreFeatures,

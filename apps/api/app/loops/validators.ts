@@ -1,13 +1,7 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
-import { HarnessType } from "@repo/api/src/types/compute-target";
-import type { LoopEvent } from "@repo/api/src/types/loop";
 import {
-  LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
-  LoopStatus,
-  MAX_ADDITIONAL_REPOS,
-  ManualLoopEventType,
-} from "@repo/api/src/types/loop";
-import { LoopCommandSchema, LoopStatusSchema } from "@closedloop-ai/loops-api/commands";
+  LoopCommandSchema,
+  LoopStatusSchema,
+} from "@closedloop-ai/loops-api/commands";
 import {
   LoopEventCompletedSchema,
   LoopEventErrorSchema,
@@ -17,6 +11,15 @@ import {
   LoopEventTypeSchema,
   RunnerLoopEventTypeSchema,
 } from "@closedloop-ai/loops-api/events";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { HarnessType } from "@repo/api/src/types/compute-target";
+import type { LoopEvent } from "@repo/api/src/types/loop";
+import {
+  LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
+  LoopStatus,
+  MAX_ADDITIONAL_REPOS,
+  ManualLoopEventType,
+} from "@repo/api/src/types/loop";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 import {

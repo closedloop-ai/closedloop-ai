@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import type {
@@ -10,7 +11,6 @@ import {
   SnapshotSource,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 
 /**
  * Factory for creating mock DocumentWithProject objects.

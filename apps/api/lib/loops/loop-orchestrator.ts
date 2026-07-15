@@ -1,3 +1,7 @@
+import {
+  DEFAULT_PRICING,
+  getModelPricing,
+} from "@closedloop-ai/loops-api/tokens";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   AdditionalRepoRef,
@@ -22,7 +26,6 @@ import {
 } from "@repo/auth/loop-runner-jwt";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
-import { DEFAULT_PRICING, getModelPricing } from "@closedloop-ai/loops-api/tokens";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { bulkIngestAgents } from "@/app/catalog/service";

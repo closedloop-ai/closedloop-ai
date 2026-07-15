@@ -1,3 +1,9 @@
+import {
+  kpi,
+  lifespanHistogram,
+  pctDelta,
+  ttmHistogram,
+} from "@closedloop-ai/loops-api/insights";
 import { ssotMergeRateFromCounts } from "@repo/api/src/insights/delivery-kpis/parity";
 import { BranchFileCacheStatus } from "@repo/api/src/types/artifact";
 import { GITHUB_PR_STATE_LABELS } from "@repo/api/src/types/github";
@@ -29,12 +35,6 @@ import {
   ReviewDecision,
   withDb,
 } from "@repo/database";
-import {
-  kpi,
-  lifespanHistogram,
-  pctDelta,
-  ttmHistogram,
-} from "@closedloop-ai/loops-api/insights";
 import { resolveGitHubDataConnectionStatus } from "@/app/integrations/github/data-connection-status";
 import { canonicalizeTimeZone, toLocalDateOnly } from "@/lib/date-only";
 import { toNumber } from "@/lib/prisma-number";

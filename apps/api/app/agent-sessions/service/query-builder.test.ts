@@ -1,8 +1,8 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import { Prisma } from "@repo/database";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSessionsService } from "../service";
 import {

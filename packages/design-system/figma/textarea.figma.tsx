@@ -1,5 +1,5 @@
-import figma from "@figma/code-connect";
 import { Textarea } from "@closedloop-ai/design-system/components/ui/textarea";
+import figma from "@figma/code-connect";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2807-10440";

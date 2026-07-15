@@ -151,7 +151,10 @@ describe("packaging workspace dependencies", () => {
 describe("resolveWorkspaceDependencyTarget", () => {
   test("plain workspace ranges install under the dependency key", () => {
     assert.equal(
-      resolveWorkspaceDependencyTarget("@closedloop-ai/loops-api", "workspace:*"),
+      resolveWorkspaceDependencyTarget(
+        "@closedloop-ai/loops-api",
+        "workspace:*"
+      ),
       "@closedloop-ai/loops-api"
     );
     assert.equal(

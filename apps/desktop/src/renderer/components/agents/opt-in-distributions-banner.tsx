@@ -28,8 +28,8 @@
  * resurrect a banner row the user already dealt with.
  */
 
-import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizePackId } from "../../../shared/normalize-pack-id";
 

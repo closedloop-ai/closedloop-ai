@@ -1,4 +1,3 @@
-import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
@@ -8,6 +7,7 @@ import {
   CardTitle,
 } from "@closedloop-ai/design-system/components/ui/card";
 import { Checkbox } from "@closedloop-ai/design-system/components/ui/checkbox";
+import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { useCallback, useEffect, useState } from "react";
 
 type ActivityEvent = {

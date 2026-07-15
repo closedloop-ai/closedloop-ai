@@ -1,9 +1,9 @@
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   SidebarInset,
   SidebarProvider,
 } from "@closedloop-ai/design-system/components/ui/sidebar";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { parsePath } from "@repo/navigation/href-store";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { useNavigation } from "@repo/navigation/use-navigation";

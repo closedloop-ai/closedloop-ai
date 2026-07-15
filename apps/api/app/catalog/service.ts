@@ -1,5 +1,9 @@
 import "server-only";
 
+import type {
+  ContextPackAgent,
+  ContextPackRepoConfig,
+} from "@closedloop-ai/loops-api/context-pack";
 import {
   type CatalogItemDto,
   CatalogItemSource,
@@ -20,10 +24,6 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
-import type {
-  ContextPackAgent,
-  ContextPackRepoConfig,
-} from "@closedloop-ai/loops-api/context-pack";
 import { log } from "@repo/observability/log";
 import { BoundedCache } from "@/lib/bounded-cache";
 import { getPrismaErrorCode } from "@/lib/db-utils";

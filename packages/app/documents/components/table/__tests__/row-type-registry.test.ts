@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   DocumentStatus,
@@ -19,7 +20,6 @@ import {
   makeRawArtifact,
 } from "@repo/app/shared/test-fixtures/documents";
 import { makeProject } from "@repo/app/shared/test-fixtures/project";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { describe, expect, it } from "vitest";
 
 describe("getRowTypeConfig", () => {

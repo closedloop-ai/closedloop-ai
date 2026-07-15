@@ -1,3 +1,5 @@
+import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
+import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import {
   BranchCloudHydrationStatus,
   type BranchRow as WireBranchRow,
@@ -26,8 +28,6 @@ import {
   type DateRange,
   getStartDateForRange,
 } from "@repo/app/shared/lib/format-utils";
-import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
-import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { desktopBranchDetailHashHref } from "../../shared-branches/branch-hrefs";
 import { DesktopConnectStatus } from "../../shared-branches/desktop-connect-status";

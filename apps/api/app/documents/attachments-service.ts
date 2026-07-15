@@ -1,6 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
+import type { ContextPackAttachmentSchema } from "@closedloop-ai/loops-api/context-pack";
 import { createId } from "@paralleldrive/cuid2";
 import type {
   AttachmentDownloadResponse,
@@ -29,7 +30,6 @@ import {
 } from "@repo/aws";
 import { keys as awsKeys } from "@repo/aws/keys";
 import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
-import type { ContextPackAttachmentSchema } from "@closedloop-ai/loops-api/context-pack";
 import { log } from "@repo/observability/log";
 import type { z } from "zod";
 import { BoundedCache } from "@/lib/bounded-cache";

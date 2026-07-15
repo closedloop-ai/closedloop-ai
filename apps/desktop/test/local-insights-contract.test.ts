@@ -3,11 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   BASELINE_MIGRATIONS,
   LEGACY_SCHEMA_REASSERT_SEQUENCE,

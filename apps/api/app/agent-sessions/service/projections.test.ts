@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { SessionPrLifecycleStatus } from "@repo/api/src/session-trace/derivation";
 import {
   AgentSessionState,
@@ -5,7 +6,6 @@ import {
 } from "@repo/api/src/types/agent-session";
 import { DocumentType, PullRequestState } from "@repo/api/src/types/document";
 import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSessionsService } from "../service";
 import {

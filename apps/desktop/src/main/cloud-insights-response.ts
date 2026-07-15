@@ -1,9 +1,4 @@
 import {
-  InsightsGitHubProvenanceState,
-  InsightsScope,
-  InsightsTileAvailabilityState,
-} from "@repo/api/src/types/insights";
-import {
   type AgentsInsightsResponse,
   type DeliveryInsightsResponse,
   type InsightsPeriod,
@@ -11,6 +6,11 @@ import {
   InsightsSection as InsightsSectionValues,
   type UtilizationInsightsResponse,
 } from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsGitHubProvenanceState,
+  InsightsScope,
+  InsightsTileAvailabilityState,
+} from "@repo/api/src/types/insights";
 import { z } from "zod";
 
 const insightsTileAvailabilitySchema = z.record(

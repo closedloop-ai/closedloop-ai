@@ -1,3 +1,6 @@
+import { MetricCard } from "@closedloop-ai/design-system/components/ui/primitives/metric-card";
+import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
+import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import type {
   AgentSessionListItem,
   AgentSessionListResponse,
@@ -26,9 +29,6 @@ import {
   type DateRange,
   getStartDateForRange,
 } from "@repo/app/shared/lib/format-utils";
-import { MetricCard } from "@closedloop-ai/design-system/components/ui/primitives/metric-card";
-import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
-import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";

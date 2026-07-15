@@ -1,6 +1,6 @@
+import type { HeartbeatResponseData } from "@closedloop-ai/loops-api/token-refresh";
 import { HeartbeatErrorCode } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
-import type { HeartbeatResponseData } from "@closedloop-ai/loops-api/token-refresh";
 import { log } from "@repo/observability/log";
 import { authenticateDesktopManagedPopRequest } from "@/lib/auth/desktop-managed-pop-authenticator";
 import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";

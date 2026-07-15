@@ -1,4 +1,8 @@
 import {
+  SESSION_STATUS,
+  TERMINAL_SESSION_STATUSES,
+} from "@closedloop-ai/loops-api/session-status";
+import {
   autonomyTierRange,
   getSessionCostBucket,
 } from "@repo/api/src/agent-session-filters";
@@ -6,10 +10,6 @@ import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import { Prisma, withDb } from "@repo/database";
-import {
-  SESSION_STATUS,
-  TERMINAL_SESSION_STATUSES,
-} from "@closedloop-ai/loops-api/session-status";
 import type {
   AgentSessionListQuery,
   AgentSessionUsageQuery,

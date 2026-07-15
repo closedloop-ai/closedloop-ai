@@ -1,6 +1,6 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { ReadSource } from "@repo/api/src/types/read-source";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { describe, expect, it } from "vitest";
 import { createHttpAgentSessionsDataSource } from "../agent-sessions-data-source";
 

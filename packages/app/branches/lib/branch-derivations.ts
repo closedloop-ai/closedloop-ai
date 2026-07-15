@@ -1,3 +1,4 @@
+import { computeTokenCost } from "@closedloop-ai/loops-api/genai-cost";
 import {
   type BranchPageDetail,
   BranchPhase,
@@ -10,7 +11,6 @@ import {
   type MergedTraceItem,
 } from "@repo/api/src/types/branch";
 import { median } from "@repo/api/src/utils/math";
-import { computeTokenCost } from "@closedloop-ai/loops-api/genai-cost";
 
 /**
  * Pure, surface-agnostic Branches derivations (PLN-983 / Epic A — A3).

@@ -1,3 +1,10 @@
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
+import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsScope,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
 import {
@@ -18,10 +25,6 @@ import { resolveMissingSourceTileAvailability } from "@repo/app/insights/lib/til
 import type { TileDescriptor } from "@repo/app/insights/lib/tile-catalog";
 import { DateRangeFilter } from "@repo/app/shared/components/date-range-filter";
 import { FeatureFlagged } from "@repo/app/shared/feature-flags/feature-flagged";
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
-import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
-import { InsightsScope, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { CompassIcon, CpuIcon, LayersIcon } from "lucide-react";
 import {
   type ReactNode,

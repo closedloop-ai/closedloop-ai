@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   DocumentStatus,
@@ -6,7 +7,6 @@ import {
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { makeRawArtifact } from "@repo/app/shared/test-fixtures/documents";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen } from "@testing-library/react";
 import type { ReactNode } from "react";

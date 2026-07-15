@@ -1,5 +1,5 @@
-import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
 import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
+import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
 import type { ReactNode } from "react";
 import { type Mock, vi } from "vitest";
 

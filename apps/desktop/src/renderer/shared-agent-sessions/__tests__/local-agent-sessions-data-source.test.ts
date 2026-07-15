@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
@@ -6,7 +7,6 @@ import type {
 } from "@repo/api/src/types/agent-session";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { describe, expect, it, vi } from "vitest";
 import {
   SHARED_AGENT_SESSIONS_NOT_FOUND_CODE,

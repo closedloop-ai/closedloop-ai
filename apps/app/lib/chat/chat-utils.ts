@@ -2,9 +2,9 @@
  * Shared utilities for chat components
  */
 
+import { formatToolResultContent } from "@closedloop-ai/loops-api/stream-types";
 import { readNdjsonLines } from "@repo/app/chat/lib/stream-utils";
 import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
-import { formatToolResultContent } from "@closedloop-ai/loops-api/stream-types";
 import { getWorktreePath as getWorktreePathBase } from "@/lib/git/worktree";
 
 export const getWorktreePath = getWorktreePathBase;

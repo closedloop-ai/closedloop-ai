@@ -1,4 +1,8 @@
 import {
+  SESSION_STATUS,
+  TERMINAL_SESSION_STATUSES,
+} from "@closedloop-ai/loops-api/session-status";
+import {
   DocumentStatus,
   DocumentType,
   isTerminalStatusForSubtype,
@@ -20,10 +24,6 @@ import {
   DOCUMENT_TYPE_ICONS,
 } from "@repo/app/projects/lib/project-constants";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
-import {
-  SESSION_STATUS,
-  TERMINAL_SESSION_STATUSES,
-} from "@closedloop-ai/loops-api/session-status";
 import { GitBranchIcon, TerminalIcon } from "lucide-react";
 import type { ElementType } from "react";
 

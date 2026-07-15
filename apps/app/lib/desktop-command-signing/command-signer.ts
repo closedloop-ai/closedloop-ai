@@ -1,5 +1,6 @@
 "use client";
 
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import {
   CURRENT_DESKTOP_API_NAMESPACE,
   getDesktopApiNamespaceFromCapabilities,
@@ -12,7 +13,6 @@ import type {
   ComputeTarget,
 } from "@repo/api/src/types/compute-target";
 import { COMMAND_SIGNING_CAPABILITY_KEY } from "@repo/api/src/types/compute-target";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { bytesToBase64, bytesToBase64Url } from "./crypto-utils";
 import { getStoredBrowserSigningKey } from "./key-store";
 

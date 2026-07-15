@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   SESSION_TRACE_SOURCE_LIMITS,
   SessionPrLifecycleStatus,
@@ -11,7 +12,6 @@ import {
 } from "@repo/api/src/session-trace/derivation";
 import { PullRequestState } from "@repo/api/src/types/document";
 import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   buildAgentSessionSyncSourceKey,
   SESSION_PAYLOAD_BYTE_CAP,

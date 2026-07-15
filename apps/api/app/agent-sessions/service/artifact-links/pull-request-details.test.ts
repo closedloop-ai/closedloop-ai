@@ -1,9 +1,9 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionState,
   AgentSessionSyncMode,
 } from "@repo/api/src/types/agent-session";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSessionsService } from "../../service";
 import {

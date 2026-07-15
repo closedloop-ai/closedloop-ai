@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, mock, test } from "node:test";
-import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
 import type { DesktopAnalyticsEvent } from "../src/main/cloud-protocol.js";
 import { Observability } from "../src/main/observability.js";
 import type { TelemetryCategory } from "../src/main/telemetry-protocol.js";

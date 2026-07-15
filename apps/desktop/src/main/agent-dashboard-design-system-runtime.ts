@@ -1,5 +1,14 @@
 import path from "node:path";
 import {
+  INSIGHTS_PERIOD_OPTIONS,
+  INSIGHTS_SECTION_OPTIONS,
+  type InsightsPeriod,
+  InsightsPeriod as InsightsPeriodValues,
+  InsightsScope as InsightsScopeValues,
+  type InsightsSection,
+  InsightsSection as InsightsSectionValues,
+} from "@closedloop-ai/loops-api/insights";
+import {
   TRACE_COMMENT_ID_MAX_LENGTH,
   type TraceComment,
   type TraceCommentDeleteResult,
@@ -18,15 +27,6 @@ import {
 import type { ApiResult } from "@repo/api/src/types/common";
 import { parseGitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope";
 import type { GitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope-constants";
-import {
-  INSIGHTS_PERIOD_OPTIONS,
-  INSIGHTS_SECTION_OPTIONS,
-  type InsightsPeriod,
-  InsightsPeriod as InsightsPeriodValues,
-  InsightsScope as InsightsScopeValues,
-  type InsightsSection,
-  InsightsSection as InsightsSectionValues,
-} from "@closedloop-ai/loops-api/insights";
 import {
   app,
   type BrowserWindow,

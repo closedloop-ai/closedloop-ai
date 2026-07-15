@@ -266,9 +266,15 @@ export function getResolvedClaudePath(): string {
 // Types — shared contract from @closedloop-ai/loops-api
 // ---------------------------------------------------------------------------
 
-import { LoopArtifactFile, LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
+import {
+  LoopArtifactFile,
+  LoopArtifactType,
+} from "@closedloop-ai/loops-api/artifacts";
 import { validateResultBundle } from "@closedloop-ai/loops-api/bundles";
-import { LoopCommand, validateCommandInputs } from "@closedloop-ai/loops-api/commands";
+import {
+  LoopCommand,
+  validateCommandInputs,
+} from "@closedloop-ai/loops-api/commands";
 import type {
   ContextPackAgent,
   ContextPackRepoConfig,

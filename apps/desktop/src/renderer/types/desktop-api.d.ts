@@ -1,4 +1,11 @@
 import type {
+  AgentsInsightsResponse,
+  DeliveryInsightsResponse,
+  InsightsPeriod,
+  InsightsSection,
+  UtilizationInsightsResponse,
+} from "@closedloop-ai/loops-api/insights";
+import type {
   AgentComponentDetail,
   AgentComponentListResponse,
   AgentComponentQueryFilters,
@@ -32,13 +39,6 @@ import type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
 import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
 import type { GitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope-constants";
-import type {
-  AgentsInsightsResponse,
-  DeliveryInsightsResponse,
-  InsightsPeriod,
-  InsightsSection,
-  UtilizationInsightsResponse,
-} from "@closedloop-ai/loops-api/insights";
 import type {
   RelayHttpRequestPayload,
   RelayResponseEnvelope,

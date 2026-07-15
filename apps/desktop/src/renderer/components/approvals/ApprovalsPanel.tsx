@@ -1,6 +1,9 @@
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import { Card, CardContent } from "@closedloop-ai/design-system/components/ui/card";
+import {
+  Card,
+  CardContent,
+} from "@closedloop-ai/design-system/components/ui/card";
 import { useCallback, useEffect, useState } from "react";
 
 type Approval = {

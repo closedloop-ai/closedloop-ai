@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
+import {
   InsightsGitHubProvenanceState,
   InsightsTileAvailabilityState,
 } from "@repo/api/src/types/insights";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   buildUnavailableCloudInsightsResponse,
   fetchCloudInsights,

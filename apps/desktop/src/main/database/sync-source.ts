@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { SESSION_TRACE_SOURCE_LIMITS } from "@repo/api/src/session-trace/derivation";
 import type {
   SyncedComponent,
@@ -22,7 +23,6 @@ import {
   MAX_SYNCED_SESSION_PR_REFS,
   PR_INT_MAX,
 } from "@repo/api/src/types/session-artifact-link";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { isMeteredApi } from "../../shared/billing-mode.js";
 import type {
   SyncedAgentSession,

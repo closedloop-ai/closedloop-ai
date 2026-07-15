@@ -21,7 +21,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve("src/renderer"),
-      "@closedloop-ai/design-system": path.resolve("../../packages/design-system"),
+      "@closedloop-ai/design-system": path.resolve(
+        "../../packages/design-system"
+      ),
       // `@closedloop-ai/loops-api/*` exports now resolve to `src/` directly; this alias
       // is kept as an explicit source pin (mirrors the design-system alias
       // above) for renderer components that import loops-api directly (e.g.

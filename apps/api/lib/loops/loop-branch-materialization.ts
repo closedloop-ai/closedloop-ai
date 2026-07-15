@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
+import {
+  getMultiRepoPolicy,
+  PeerWriteMode,
+} from "@closedloop-ai/loops-api/multi-repo-policy";
 import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
 import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import {
@@ -6,11 +11,6 @@ import {
   type LoopBranchMaterializationEnvelope,
   LoopBranchMaterializationRole,
 } from "@repo/api/src/types/loop-body";
-import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
-import {
-  getMultiRepoPolicy,
-  PeerWriteMode,
-} from "@closedloop-ai/loops-api/multi-repo-policy";
 import { z } from "zod";
 
 type BranchRepoRef = {

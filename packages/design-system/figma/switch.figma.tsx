@@ -1,5 +1,5 @@
-import figma from "@figma/code-connect";
 import { Switch } from "@closedloop-ai/design-system/components/ui/switch";
+import figma from "@figma/code-connect";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2769-29914";

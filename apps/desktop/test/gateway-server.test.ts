@@ -8,13 +8,13 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, mock, test } from "node:test";
+import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import {
   BranchCommentsFailureReason,
   BranchCommentsState,
   BranchPrCommentKind,
   encodeBranchId,
 } from "@repo/api/src/types/branch.js";
-import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import type { LocalJob, LocalJobStatus } from "../src/main/job-store.js";
 import { JobStore } from "../src/main/job-store.js";
 import { Observability } from "../src/main/observability.js";

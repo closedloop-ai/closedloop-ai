@@ -20,6 +20,8 @@
  * (`getPackAnalytics`, main → cloud) overlay the Team-usage + Performance tabs.
  */
 
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
+import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import type { Harness } from "@repo/app/agents/lib/session-types";
 import type { InstallPending } from "@repo/app/packs/components/install-controls";
@@ -31,8 +33,6 @@ import {
 } from "@repo/app/packs/lib/packs-context";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { PACK_EXTENDED_CONTENT_KINDS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
-import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
-import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CatalogContentItem,

@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   type AgentSessionAnalytics,
   type AgentSessionDetail,
@@ -6,7 +7,6 @@ import {
   AgentSessionState,
   type AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   cleanup,
   configure,

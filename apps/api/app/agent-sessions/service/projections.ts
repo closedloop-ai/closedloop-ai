@@ -1,4 +1,9 @@
 // Record→DTO projection helpers for agent-session list/detail surfaces.
+
+import {
+  SESSION_STATUS,
+  TERMINAL_SESSION_STATUSES,
+} from "@closedloop-ai/loops-api/session-status";
 import { deriveAgentSessionFallbackState } from "@repo/api/src/agent-session-detail-projection";
 import {
   SessionPrLifecycleStatus,
@@ -26,10 +31,6 @@ import { ArtifactType } from "@repo/api/src/types/artifact";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import { DocumentType } from "@repo/api/src/types/document";
 import type { BasicUser } from "@repo/api/src/types/user";
-import {
-  SESSION_STATUS,
-  TERMINAL_SESSION_STATUSES,
-} from "@closedloop-ai/loops-api/session-status";
 import { z } from "zod";
 import {
   activityBucketSchema,

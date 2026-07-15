@@ -1,5 +1,8 @@
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import { Card, CardContent } from "@closedloop-ai/design-system/components/ui/card";
+import {
+  Card,
+  CardContent,
+} from "@closedloop-ai/design-system/components/ui/card";
 import { BarChart3 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { PageShell } from "../layout/page-shell";

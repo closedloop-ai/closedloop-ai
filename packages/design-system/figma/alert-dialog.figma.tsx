@@ -1,4 +1,3 @@
-import figma from "@figma/code-connect";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,6 +10,7 @@ import {
   AlertDialogTrigger,
 } from "@closedloop-ai/design-system/components/ui/alert-dialog";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import figma from "@figma/code-connect";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2759-16912";

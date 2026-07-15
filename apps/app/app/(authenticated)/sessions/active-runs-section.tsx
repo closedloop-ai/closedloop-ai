@@ -1,8 +1,8 @@
 "use client";
 
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { ActiveRunsPanel } from "@repo/app/agents/components/sessions/active-runs-panel";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 
 /**
  * Live "Active runs" section for the Sessions list (emergent Feature).

@@ -1,5 +1,5 @@
-import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
+import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { describe, expect, it, vi } from "vitest";
 import { createAgentSessionUsageSummaryFixture } from "../../components/sessions/session-list-fixtures";
 import {

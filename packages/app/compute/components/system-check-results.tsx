@@ -1,15 +1,15 @@
 "use client";
 
 import {
+  type CheckResult,
+  PluginUpdateOutcome,
+} from "@closedloop-ai/loops-api/compute-target";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
-import {
-  type CheckResult,
-  PluginUpdateOutcome,
-} from "@closedloop-ai/loops-api/compute-target";
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { type MouseEvent, type ReactNode, useEffect } from "react";
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   SessionArtifactLinkKind,
   SessionPrRelationType,
@@ -11,7 +12,6 @@ import {
   withDb,
 } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { describe, expect, it } from "vitest";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import {

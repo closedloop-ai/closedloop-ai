@@ -1,5 +1,6 @@
 "use client";
 
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
 import { AgentSessionsListContent } from "@repo/app/agents/components/sessions/agent-sessions-list";
@@ -26,7 +27,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";

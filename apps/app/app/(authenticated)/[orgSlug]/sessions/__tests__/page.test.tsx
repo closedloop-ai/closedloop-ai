@@ -1,3 +1,4 @@
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
 import { expectCriticalAxeClean } from "@repo/app/test/a11y/axe";
 import {
@@ -6,7 +7,6 @@ import {
   themeBackground,
 } from "@repo/app/test/a11y/contrast";
 import { A11yThemeRoot } from "@repo/app/test/a11y/react";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";

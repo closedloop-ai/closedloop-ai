@@ -1,5 +1,3 @@
-import { median } from "@repo/api/src/utils/math";
-import { labelize } from "@repo/api/src/utils/string";
 import type {
   AgentsInsightsResponse,
   DeliveryInsightsResponse,
@@ -18,6 +16,8 @@ import {
   pctDelta,
   ttmHistogram,
 } from "@closedloop-ai/loops-api/insights";
+import { median } from "@repo/api/src/utils/math";
+import { labelize } from "@repo/api/src/utils/string";
 import { PrState } from "../enrichment/types.js";
 import {
   addStorageTokenCounts,

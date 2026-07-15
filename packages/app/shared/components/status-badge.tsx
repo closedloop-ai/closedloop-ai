@@ -1,17 +1,20 @@
 "use client";
 
-import { FEATURE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
-import { Badge } from "@repo/design-system/components/ui/badge";
-import { cn } from "@repo/design-system/lib/utils";
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
 import { Priority } from "@closedloop-ai/loops-api/common";
-import { DocumentStatus, FeatureStatus } from "@closedloop-ai/loops-api/document";
+import {
+  DocumentStatus,
+  FeatureStatus,
+} from "@closedloop-ai/loops-api/document";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import {
   LoopEventType,
   type LoopEventType as LoopEventTypeType,
 } from "@closedloop-ai/loops-api/events";
 import { resolveFriendlyError } from "@closedloop-ai/loops-api/friendly-error";
+import { FEATURE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { cn } from "@repo/design-system/lib/utils";
 
 type StatusBadgeProps = {
   status: string;

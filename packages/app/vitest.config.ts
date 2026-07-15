@@ -19,7 +19,10 @@ export default defineConfig({
       // their specific aliases MUST precede the catch-all `@repo` (Vite matches
       // aliases in declaration order). `@repo/api`'s type modules re-export from
       // both, so these are reachable transitively even without a direct import.
-      "@closedloop-ai/loops-api": path.resolve(import.meta.dirname, "../loops-api/src"),
+      "@closedloop-ai/loops-api": path.resolve(
+        import.meta.dirname,
+        "../loops-api/src"
+      ),
       "@repo/shared-platform": path.resolve(
         import.meta.dirname,
         "../shared-platform/src"

@@ -1,4 +1,3 @@
-import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,6 +15,7 @@ import {
 } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { SidebarCollapsibleSection } from "@closedloop-ai/design-system/components/ui/sidebar-collapsible-section";
 import { ThemeSubmenu } from "@closedloop-ai/design-system/components/ui/theme-submenu";
+import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { ChevronsUpDownIcon, Loader2Icon, SunMoonIcon } from "lucide-react";
