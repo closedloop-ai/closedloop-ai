@@ -88,6 +88,12 @@ No sycophantic language. Brief, factual — state what changed.
 - Never use inline imports. Imports belong first in the file.
 
 ### Biome
+- `lint`/`lint:fix` must invoke the pinned `@biomejs/biome` devDependency directly. Do NOT
+  route them through `ultracite check`/`ultracite fix`: ultracite shells out to
+  `pnpm dlx @biomejs/biome` with no version, so lint silently runs whatever is `latest` on
+  npm. That makes CI non-reproducible (an unchanged commit passes, then fails once a new
+  Biome ships) and bypasses the `minimumReleaseAge` window in `pnpm-workspace.yaml`.
+  Ultracite stays a devDependency — `biome.jsonc` extends `ultracite/core|react|next`.
 - Run `pnpm lint:fix` after modifying React components (auto-fixes import/CSS/JSX ordering)
 - `@repo/*` imports before `@/*` path alias imports
 - Single file: `npx biome check <file>` (monorepo `pnpm lint --filter` doesn't support single-file)
