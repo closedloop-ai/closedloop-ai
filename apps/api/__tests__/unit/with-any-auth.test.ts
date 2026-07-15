@@ -1,10 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { withApiKeyAuthMock, withAuthMock } = vi.hoisted(() => ({
+const {
+  withApiKeyAuthMock,
+  withAuthMock,
+  withDesktopSessionAuthMock,
+  isDesktopSessionTokenMock,
+} = vi.hoisted(() => ({
   withApiKeyAuthMock: vi.fn(
     () => async () => ({}) as unknown as Promise<never>
   ),
   withAuthMock: vi.fn(() => async () => ({}) as unknown as Promise<never>),
+  withDesktopSessionAuthMock: vi.fn(
+    () => async () => ({}) as unknown as Promise<never>
+  ),
+  isDesktopSessionTokenMock: vi.fn(() => false),
 }));
 
 vi.mock("@/lib/auth/with-api-key-auth", () => ({
@@ -13,6 +22,14 @@ vi.mock("@/lib/auth/with-api-key-auth", () => ({
 
 vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: withAuthMock,
+}));
+
+vi.mock("@/lib/auth/with-desktop-session-auth", () => ({
+  withDesktopSessionAuth: withDesktopSessionAuthMock,
+}));
+
+vi.mock("@repo/auth/desktop-session-jwt", () => ({
+  isDesktopSessionToken: isDesktopSessionTokenMock,
 }));
 
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -35,6 +52,9 @@ describe("withAnyAuth", () => {
   beforeEach(() => {
     withApiKeyAuthMock.mockClear();
     withAuthMock.mockClear();
+    withDesktopSessionAuthMock.mockClear();
+    isDesktopSessionTokenMock.mockClear();
+    isDesktopSessionTokenMock.mockReturnValue(false);
   });
 
   it("defaults api-key GET requests to required read scope", async () => {
@@ -96,5 +116,34 @@ describe("withAnyAuth", () => {
 
     expect(withAuthMock).toHaveBeenCalledOnce();
     expect(withApiKeyAuthMock).not.toHaveBeenCalled();
+    expect(withDesktopSessionAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("routes desktop-classified bearer tokens to desktop-session auth, not Clerk", async () => {
+    isDesktopSessionTokenMock.mockReturnValue(true);
+    const wrapped = withAnyAuth(async () => ({}) as never);
+    await wrapped(
+      createRequest("GET", "Bearer desktop-access-token") as never,
+      { params: Promise.resolve({}) } as never
+    );
+
+    expect(isDesktopSessionTokenMock).toHaveBeenCalledWith(
+      "desktop-access-token"
+    );
+    expect(withDesktopSessionAuthMock).toHaveBeenCalledOnce();
+    expect(withAuthMock).not.toHaveBeenCalled();
+    expect(withApiKeyAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("does not desktop-classify api-key tokens (sk_live_ short-circuits first)", async () => {
+    const wrapped = withAnyAuth(async () => ({}) as never);
+    await wrapped(
+      createRequest("GET", "Bearer sk_live_test") as never,
+      { params: Promise.resolve({}) } as never
+    );
+
+    expect(withApiKeyAuthMock).toHaveBeenCalledOnce();
+    expect(isDesktopSessionTokenMock).not.toHaveBeenCalled();
+    expect(withDesktopSessionAuthMock).not.toHaveBeenCalled();
   });
 });

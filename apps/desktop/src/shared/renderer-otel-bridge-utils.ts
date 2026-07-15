@@ -9,8 +9,8 @@ import {
 // (`src/main/app-otel-runtime.ts`) and renderer-process
 // (`src/renderer/app-otel-runtime.ts`) OTel runtimes. This module deliberately
 // avoids zod / Node built-ins so the renderer can import it without tripping
-// RENDERER_OTEL_RUNTIME_BANNED_IMPORT_PATTERNS (see
-// `test/agent-dashboard-boundary.test.ts`).
+// the `renderer-otel-runtime-local-only` dependency-cruiser rule (see
+// `scripts/dependency-cruiser.config.cjs`).
 
 const CONTROL_CHARACTER_MAX_CODE = 0x1f;
 const DELETE_CHARACTER_CODE = 0x7f;

@@ -17,42 +17,16 @@ const TOP_FAMILY_LIMIT = 6;
  */
 export function summarizeLookback(
   input: AgentCoachingInput,
-  lookbackDays: number = DEFAULT_LOOKBACK_DAYS
+  fallbackLookbackDays: number = DEFAULT_LOOKBACK_DAYS
 ): AgentCoachingGroundedMetrics {
   const analytics = input.analytics;
+  const inputTokens = analytics?.tokens.totalInputTokens ?? 0;
+  const outputTokens = analytics?.tokens.totalOutputTokens ?? 0;
   const byDay = analytics?.tokens.byDay ?? [];
-  // byDay is chronological; the trailing `lookbackDays` entries are the window.
-  const windowDays = byDay.slice(-lookbackDays);
-  const totalInputTokens = windowDays.reduce(
-    (sum, day) => sum + day.inputTokens,
-    0
-  );
-  const totalOutputTokens = windowDays.reduce(
-    (sum, day) => sum + day.outputTokens,
-    0
-  );
-  // When per-day token history is unavailable (empty window), fall back to the
-  // aggregate. Guard with `> 0` so a genuine zero-token window isn't treated as
-  // "missing" and overwritten by the aggregate.
-  const inputTokens =
-    windowDays.length > 0
-      ? totalInputTokens
-      : (analytics?.tokens.totalInputTokens ?? 0);
-  const outputTokens =
-    windowDays.length > 0
-      ? totalOutputTokens
-      : (analytics?.tokens.totalOutputTokens ?? 0);
-
-  const costRows = (analytics?.tokens.byModel ?? []).filter(
-    (model) => typeof model.estimatedCostUsd === "number"
-  );
-  const estimatedCostUsd =
-    costRows.length > 0
-      ? costRows.reduce((sum, model) => sum + (model.estimatedCostUsd ?? 0), 0)
-      : null;
+  const estimatedCostUsd = sumOptionalCost(byDay);
 
   return {
-    lookbackDays: windowDays.length > 0 ? windowDays.length : lookbackDays,
+    lookbackDays: analytics?.tokens.windowDays || fallbackLookbackDays,
     sessionsAnalyzed:
       analytics?.totalSessions ?? input.workflow?.stats.totalSessions ?? 0,
     eventsAnalyzed: analytics?.totalEvents ?? input.recentEvents.length,
@@ -68,6 +42,22 @@ export function summarizeLookback(
       0
     ),
   };
+}
+
+/**
+ * Sum `estimatedCostUsd` over rows that actually carry it. Returns null when no
+ * row has a numeric cost, so callers can omit the cost claim rather than report
+ * a misleading $0.
+ */
+function sumOptionalCost(
+  rows: ReadonlyArray<{ estimatedCostUsd?: number }>
+): number | null {
+  const costRows = rows.filter(
+    (row) => typeof row.estimatedCostUsd === "number"
+  );
+  return costRows.length > 0
+    ? costRows.reduce((sum, row) => sum + (row.estimatedCostUsd ?? 0), 0)
+    : null;
 }
 
 function commandText(

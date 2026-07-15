@@ -1118,7 +1118,7 @@ async function createWorktree(
 
   const gitBin = getResolvedGitPath();
   try {
-    execSync(`${gitBin} fetch origin`, {
+    execSync(`${shellEscapeArg(gitBin)} fetch origin`, {
       cwd: expandedRepoPath,
       stdio: "pipe",
     });

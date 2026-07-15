@@ -53,7 +53,7 @@ export function createFixtureFetch(
           method,
           body,
         })
-      : {};
+      : defaultFixtureData(method, pathname);
     return jsonResponse(
       status >= 200 && status < 300
         ? { success: true, data }
@@ -61,6 +61,13 @@ export function createFixtureFetch(
       status
     );
   };
+}
+
+function defaultFixtureData(method: string, pathname: string): unknown {
+  if (method === "GET" && pathname.endsWith("/trace-comments")) {
+    return [];
+  }
+  return {};
 }
 
 function routeMatches(

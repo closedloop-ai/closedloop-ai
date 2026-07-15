@@ -3,6 +3,10 @@ import type {
   AgentSessionListItem,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import {
+  AgentSessionViewerScope,
+  SessionPrLifecycleStatus,
+} from "@repo/api/src/types/agent-session";
 import { DocumentType } from "@repo/api/src/types/document";
 
 /**
@@ -36,11 +40,23 @@ export function createAgentSessionListItemFixture(
     harness: "codex",
     id: "session-1",
     inputTokens: 48_000,
-    issueId: null,
     lastActivityAt: new Date("2026-06-01T14:44:00.000Z"),
     model: "gpt-5.5",
     name: "Shared sessions list extraction",
     outputTokens: 12_000,
+    prs: [
+      {
+        num: 42,
+        title: "Add session PR columns",
+        status: SessionPrLifecycleStatus.Open,
+      },
+      {
+        num: 43,
+        title: "Merge session sync",
+        status: SessionPrLifecycleStatus.Merged,
+      },
+    ],
+    prsMerged: 1,
     project: null,
     repositoryFullName: "closedloop-ai/symphony-alpha",
     sourceArtifact: {
@@ -157,7 +173,7 @@ export function createAgentSessionUsageSummaryFixture(
  * Builds analytics breakdowns for shared monitoring stories and tests.
  */
 export function createAgentSessionAnalyticsFixture(
-  viewerScope: AgentSessionAnalytics["viewerScope"] = "organization",
+  viewerScope: AgentSessionAnalytics["viewerScope"] = AgentSessionViewerScope.Organization,
   overrides: Partial<AgentSessionAnalytics> = {}
 ): AgentSessionAnalytics {
   return {

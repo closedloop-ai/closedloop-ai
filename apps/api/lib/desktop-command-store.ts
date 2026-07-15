@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   CreateDesktopCommandInput,
@@ -13,6 +12,7 @@ import {
   isTerminalStatus,
 } from "@repo/api/src/types/compute-target";
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
 import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
@@ -28,6 +28,7 @@ import {
   TelemetrySeverity,
 } from "@repo/observability/telemetry/schema";
 import { BoundedCache } from "@/lib/bounded-cache";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { safeEmit } from "@/lib/telemetry-utils";
 import { isRecord } from "@/lib/type-guards";
 
@@ -434,7 +435,7 @@ async function createEventRow(
       },
     });
   } catch (error) {
-    if ((error as { code?: string }).code === "P2002") {
+    if (getPrismaErrorCode(error) === "P2002") {
       return "duplicate";
     }
     throw error;
@@ -586,14 +587,14 @@ export const desktopCommandStore = {
         })
       )) as StoredCommandRow;
     } catch (error) {
-      if (idempotencyKey && (error as { code?: string }).code === "P2002") {
+      if (idempotencyKey && getPrismaErrorCode(error) === "P2002") {
         return recoverDuplicateCommand(
           computeTargetId,
           idempotencyKey,
           fingerprint
         );
       }
-      if (input.commandId && (error as { code?: string }).code === "P2002") {
+      if (input.commandId && getPrismaErrorCode(error) === "P2002") {
         throw new ClientCommandIdConflictError();
       }
       throw error;

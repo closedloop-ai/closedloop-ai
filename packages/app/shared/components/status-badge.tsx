@@ -1,16 +1,17 @@
 "use client";
 
+import { FEATURE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { cn } from "@repo/design-system/lib/utils";
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
 import { Priority } from "@closedloop-ai/loops-api/common";
-import { DocumentStatus } from "@closedloop-ai/loops-api/document";
+import { DocumentStatus, FeatureStatus } from "@closedloop-ai/loops-api/document";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import {
   LoopEventType,
   type LoopEventType as LoopEventTypeType,
 } from "@closedloop-ai/loops-api/events";
 import { resolveFriendlyError } from "@closedloop-ai/loops-api/friendly-error";
-import { Badge } from "@repo/design-system/components/ui/badge";
-import { cn } from "@repo/design-system/lib/utils";
 
 type StatusBadgeProps = {
   status: string;
@@ -59,23 +60,22 @@ export const previewDeploymentStateColors: Record<string, string> = {
   ERROR: COLOR_FAILURE,
 };
 
+// Document (PRD / IMPLEMENTATION_PLAN / TEMPLATE) status vocabulary (PRD-495).
 export const artifactStatusColors: Record<DocumentStatus, string> = {
   [DocumentStatus.Draft]: "bg-muted text-muted-foreground border-muted",
-  [DocumentStatus.InProgress]: COLOR_PROGRESS,
   [DocumentStatus.InReview]: COLOR_PROGRESS,
-  [DocumentStatus.Approved]: COLOR_PROGRESS,
-  [DocumentStatus.Executed]: COLOR_PROGRESS,
-  [DocumentStatus.Done]: COLOR_SUCCESS,
+  [DocumentStatus.ChangesRequested]: COLOR_PENDING,
+  [DocumentStatus.Approved]: COLOR_SUCCESS,
+  [DocumentStatus.Executed]: COLOR_SUCCESS,
   [DocumentStatus.Obsolete]: COLOR_INACTIVE,
 };
 
 export const artifactStatusLabels: Record<DocumentStatus, string> = {
   [DocumentStatus.Draft]: "Draft",
-  [DocumentStatus.InProgress]: "In Progress",
   [DocumentStatus.InReview]: "In Review",
+  [DocumentStatus.ChangesRequested]: "Changes Requested",
   [DocumentStatus.Approved]: "Approved",
   [DocumentStatus.Executed]: "Executed",
-  [DocumentStatus.Done]: "Done",
   [DocumentStatus.Obsolete]: "Obsolete",
 };
 
@@ -99,9 +99,43 @@ export function DocumentStatusBadge({
 
 export const PrdStatusBadge = DocumentStatusBadge;
 export const ImplementationPlanStatusBadge = DocumentStatusBadge;
-export const featureStatusColors = artifactStatusColors;
-export const featureStatusLabels = artifactStatusLabels;
-export const FeatureStatusBadge = DocumentStatusBadge;
+
+// Feature (subtype = FEATURE) delivery-lifecycle vocabulary (PRD-495). Distinct
+// from the Document maps above — no longer an alias.
+export const featureStatusColors: Record<FeatureStatus, string> = {
+  [FeatureStatus.Triage]: COLOR_AI,
+  [FeatureStatus.Backlog]: "bg-muted text-muted-foreground border-muted",
+  [FeatureStatus.Todo]: COLOR_PENDING,
+  [FeatureStatus.InProgress]: COLOR_PROGRESS,
+  [FeatureStatus.InReview]: COLOR_PROGRESS,
+  [FeatureStatus.Blocked]: COLOR_FAILURE,
+  [FeatureStatus.Done]: COLOR_SUCCESS,
+  [FeatureStatus.Canceled]: COLOR_INACTIVE,
+};
+
+// Labels are owned by project-constants (single source of truth); re-exported
+// here so the badge and its consumers keep one import surface. Colors above are
+// badge-specific tokens and intentionally distinct from the icon/text colors in
+// project-constants. (PRD-495 review: dedupe the duplicated label strings.)
+export const featureStatusLabels = FEATURE_STATUS_LABELS;
+
+export function FeatureStatusBadge({
+  status,
+}: Readonly<{ status: FeatureStatus }>) {
+  const displayStatus = featureStatusLabels[status] ?? status;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        featureStatusColors[status] ??
+          featureStatusColors[FeatureStatus.Backlog]
+      )}
+      variant="outline"
+    >
+      {displayStatus}
+    </Badge>
+  );
+}
 
 export const featurePriorityColors: Record<Priority, string> = {
   [Priority.Low]: COLOR_PROGRESS,
@@ -286,7 +320,7 @@ export const loopCommandColors: Record<LoopCommand, string> = {
   [LoopCommand.Manual]: COLOR_PENDING,
 };
 
-const loopCommandLabels: Record<LoopCommand, string> = {
+export const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.Plan]: "Plan",
   [LoopCommand.Execute]: "Execute",
   [LoopCommand.Chat]: "Chat",

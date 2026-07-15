@@ -22,6 +22,7 @@ import {
   startDesktopOtelRuntimeForBoot,
 } from "../src/main/app-otel-runtime-lifecycle.js";
 import { getDesktopAppOperatingModeForTelemetry } from "../src/main/app-telemetry-operating-mode.js";
+import { UNRESOLVED_DESKTOP_SERVICE_VERSION } from "../src/main/desktop-service-version.js";
 import {
   DesktopOtelSignal,
   RendererOtelExportFailureReason,
@@ -99,6 +100,54 @@ test("exports trace, log, and metric records to the local buffer with app resour
   assert.deepEqual(
     collectResourceAttributeMismatches(metricRecord?.resourceAttributes),
     []
+  );
+});
+
+test("backstop guard rewrites an unusable service.version to the sentinel, never 0.0 (FEA-2199)", async () => {
+  const runtime = createTestRuntime({
+    appVersion: "0.0",
+    env: { CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod" },
+    getAppInstallationId: () => "install_unusable_version",
+  });
+  await runtime.start();
+  logs.getLogger("desktop-otel-test", "1.0.0").emit({
+    eventName: "desktop.log",
+    attributes: { "test.signal": "log" },
+  });
+  await runtime.shutdown();
+
+  const record = runtime
+    .getBufferedRecords()
+    .find((item) => item.signal === DesktopOtelSignal.Log);
+  assert.equal(
+    record?.resourceAttributes[TelemetryAttribute.ServiceVersion],
+    UNRESOLVED_DESKTOP_SERVICE_VERSION
+  );
+  assert.notEqual(
+    record?.resourceAttributes[TelemetryAttribute.ServiceVersion],
+    "0.0"
+  );
+});
+
+test("backstop guard passes a usable service.version through unchanged (FEA-2199)", async () => {
+  const runtime = createTestRuntime({
+    appVersion: "0.16.109",
+    env: { CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod" },
+    getAppInstallationId: () => "install_usable_version",
+  });
+  await runtime.start();
+  logs.getLogger("desktop-otel-test", "1.0.0").emit({
+    eventName: "desktop.log",
+    attributes: { "test.signal": "log" },
+  });
+  await runtime.shutdown();
+
+  const record = runtime
+    .getBufferedRecords()
+    .find((item) => item.signal === DesktopOtelSignal.Log);
+  assert.equal(
+    record?.resourceAttributes[TelemetryAttribute.ServiceVersion],
+    "0.16.109"
   );
 });
 
@@ -204,6 +253,167 @@ test("emits app lifecycle records through the typed app schema channel", async (
   }
 });
 
+test("emits IPC perf wide-event spans and no-ops before the runtime starts", async () => {
+  const runtime = createTestRuntime({
+    appVersion: "1.2.3",
+    env: {
+      CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod",
+    },
+    getAppInstallationId: () => "install_0123456789abcdef",
+  });
+
+  // No-op before start: must not throw and must not buffer anything.
+  runtime.emitIpcPerfEvent({
+    operation: "usage",
+    startTimeUnixMs: 1_700_000_000_000,
+    durationMs: 5,
+    payloadBytes: 16,
+    resultCount: 1,
+    sessionCount: 3,
+  });
+
+  await runtime.start();
+
+  runtime.emitIpcPerfEvent({
+    operation: "list",
+    startTimeUnixMs: 1_700_000_000_000,
+    durationMs: 1234,
+    payloadBytes: 4096,
+    resultCount: 50,
+    sessionCount: 2048,
+  });
+  runtime.emitIpcPerfEvent({
+    operation: "detail",
+    startTimeUnixMs: 1_700_000_000_000,
+    durationMs: 3000,
+    payloadBytes: 0,
+    resultCount: 0,
+    sessionCount: 2048,
+    errorType: "DesktopMigrationError",
+  });
+
+  await runtime.shutdown();
+
+  const spans = runtime
+    .getBufferedRecords()
+    .filter((record) => record.signal === DesktopOtelSignal.Trace);
+  const ipcSpans = spans.filter((record) => record.name?.startsWith("ipc."));
+
+  // Only the two post-start spans — the pre-start emit was a no-op.
+  assert.deepEqual(ipcSpans.map((record) => record.name).sort(), [
+    "ipc.detail",
+    "ipc.list",
+  ]);
+
+  const listSpan = ipcSpans.find((record) => record.name === "ipc.list");
+  assert.equal(listSpan?.attributes?.[TelemetryAttribute.IpcOperation], "list");
+  assert.equal(listSpan?.attributes?.[TelemetryAttribute.DurationMs], 1234);
+  assert.equal(
+    listSpan?.attributes?.[TelemetryAttribute.IpcPayloadBytes],
+    4096
+  );
+  assert.equal(listSpan?.attributes?.[TelemetryAttribute.IpcResultCount], 50);
+  assert.equal(
+    listSpan?.attributes?.[TelemetryAttribute.IpcSessionCount],
+    2048
+  );
+  assert.equal(listSpan?.attributes?.[TelemetryAttribute.ErrorType], undefined);
+  assert.deepEqual(
+    collectResourceAttributeMismatches(listSpan?.resourceAttributes),
+    []
+  );
+
+  // Failed calls carry error.type (and the span is marked ERROR for tail
+  // retention) with zeroed payload/result.
+  const detailSpan = ipcSpans.find((record) => record.name === "ipc.detail");
+  assert.equal(
+    detailSpan?.attributes?.[TelemetryAttribute.ErrorType],
+    "DesktopMigrationError"
+  );
+  assert.equal(detailSpan?.attributes?.[TelemetryAttribute.IpcPayloadBytes], 0);
+});
+
+test("attaches the organization id to multiplayer lifecycle records but never to single-player ones (FEA-1996)", async () => {
+  const runtime = createTestRuntime({
+    appVersion: "1.2.3",
+    env: {
+      CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod",
+    },
+    getAppInstallationId: () => "install_0123456789abcdef",
+  });
+  await runtime.start();
+
+  runtime.emitAppLifecycleEvent({
+    event: DesktopAppLifecycleEvent.Start,
+    operatingMode: DesktopAppOperatingMode.Multiplayer,
+    organizationId: "019c24db-a261-738f-8eff-ea275fb27470",
+  });
+  // Single-player: even if a caller passes no org, the record must omit it.
+  runtime.emitAppLifecycleEvent({
+    event: DesktopAppLifecycleEvent.Heartbeat,
+    operatingMode: DesktopAppOperatingMode.SinglePlayer,
+  });
+  await runtime.shutdown();
+
+  const lifecycleRecords = runtime
+    .getBufferedRecords()
+    .filter(
+      (record) =>
+        record.signal === DesktopOtelSignal.Log &&
+        record.name === "app.lifecycle"
+    );
+
+  const [multiplayer, singlePlayer] = lifecycleRecords;
+  assert.equal(
+    multiplayer?.attributes?.[TelemetryAttribute.AppOrganizationId],
+    "019c24db-a261-738f-8eff-ea275fb27470"
+  );
+  assert.equal(
+    Object.hasOwn(
+      singlePlayer?.attributes ?? {},
+      TelemetryAttribute.AppOrganizationId
+    ),
+    false,
+    "single-player lifecycle records must not carry an organization id"
+  );
+});
+
+test("the lifecycle driver threads the resolved organization id into emitted events (FEA-1996)", () => {
+  const inputs: Array<{ event: DesktopAppLifecycleEvent; org?: string }> = [];
+  const recordingRuntime: DesktopOtelRuntime = {
+    start: () => Promise.resolve(),
+    emitAppLifecycleEvent: (input) =>
+      inputs.push({ event: input.event, org: input.organizationId }),
+    emitAppExceptionEvent: () => {},
+    shutdown: () => Promise.resolve(),
+    getBufferedRecords: () => [],
+    resetBuffer: () => {},
+    exportExternalRecords: () => ({
+      ok: false,
+      reason: RendererOtelExportFailureReason.Unavailable,
+    }),
+  };
+
+  let organizationId: string | undefined = "org_multiplayer";
+  const lifecycle = createDesktopAppLifecycleTelemetry({
+    runtime: recordingRuntime,
+    getOperatingMode: () => DesktopAppOperatingMode.Multiplayer,
+    getOrganizationId: () => organizationId,
+    setIntervalFn: () => ({}),
+    clearIntervalFn: () => {},
+    logWarning: () => {},
+  });
+
+  lifecycle.start(); // multiplayer: org present
+  organizationId = undefined; // simulate sign-out before shutdown
+  lifecycle.emitShutdown(); // single-player: org omitted
+
+  assert.deepEqual(inputs, [
+    { event: DesktopAppLifecycleEvent.Start, org: "org_multiplayer" },
+    { event: DesktopAppLifecycleEvent.Shutdown, org: undefined },
+  ]);
+});
+
 test("emits scrubbed app exception records through the typed app schema channel", async () => {
   const runtime = createTestRuntime({
     appVersion: "1.2.3",
@@ -304,6 +514,93 @@ test("app exception emission no-ops when runtime is unavailable or disabled", as
   disabledRuntime.emitAppExceptionEvent({
     error: new Error("disabled"),
     origin: AppExceptionOrigin.Main,
+  });
+  assert.deepEqual(disabledRuntime.getBufferedRecords(), []);
+});
+
+test("emits sync.batch records through the typed sync schema channel", async () => {
+  const runtime = createTestRuntime({
+    appVersion: "1.2.3",
+    env: {
+      CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod",
+    },
+    getAppInstallationId: () => "install_0123456789abcdef",
+  });
+  await runtime.start();
+
+  runtime.emitSyncBatchEvent({
+    outcome: "success",
+    payloadBytes: 2048,
+    latencyMs: 37,
+  });
+  runtime.emitSyncBatchEvent({
+    outcome: "failure",
+    payloadBytes: 512,
+    latencyMs: 9,
+  });
+  // dead-lettered before any send → no latency to report.
+  runtime.emitSyncBatchEvent({
+    outcome: "dead_letter",
+    payloadBytes: 300_000,
+  });
+  await runtime.shutdown();
+
+  const syncRecords = runtime
+    .getBufferedRecords()
+    .filter(
+      (record) =>
+        record.signal === DesktopOtelSignal.Log && record.name === "sync.batch"
+    );
+
+  assert.equal(syncRecords.length, 3);
+  for (const record of syncRecords) {
+    assert.equal(
+      record.attributes?.[TelemetryEmitMetadataKey.SchemaName],
+      TelemetrySchemaName.Sync
+    );
+    assert.equal(record.attributes?.[TelemetryAttribute.SyncEvent], "batch");
+    assert.equal(record.instrumentationScope?.name, "closedloop-desktop-sync");
+    assert.deepEqual(
+      collectResourceAttributeMismatches(record.resourceAttributes),
+      []
+    );
+  }
+  assert.deepEqual(
+    syncRecords.map(
+      (record) => record.attributes?.[TelemetryAttribute.SyncOutcome]
+    ),
+    ["success", "failure", "dead_letter"]
+  );
+  assert.deepEqual(
+    syncRecords.map(
+      (record) => record.attributes?.[TelemetryAttribute.SyncPayloadBytes]
+    ),
+    [2048, 512, 300_000]
+  );
+  assert.deepEqual(
+    syncRecords.map(
+      (record) => record.attributes?.[TelemetryAttribute.SyncLatencyMs]
+    ),
+    [37, 9, undefined]
+  );
+});
+
+test("sync batch emission no-ops when runtime is unavailable or disabled", async () => {
+  const idleRuntime = createTestRuntime();
+  idleRuntime.emitSyncBatchEvent({
+    outcome: "success",
+    payloadBytes: 1,
+    latencyMs: 1,
+  });
+  assert.deepEqual(idleRuntime.getBufferedRecords(), []);
+
+  const disabledRuntime = createTestRuntime({
+    env: { OTEL_SDK_DISABLED: "1" },
+  });
+  await disabledRuntime.start();
+  disabledRuntime.emitSyncBatchEvent({
+    outcome: "dead_letter",
+    payloadBytes: 999_999,
   });
   assert.deepEqual(disabledRuntime.getBufferedRecords(), []);
 });
@@ -787,6 +1084,8 @@ function createRejectingRuntime({
     },
     emitAppLifecycleEvent() {},
     emitAppExceptionEvent() {},
+    emitIpcPerfEvent() {},
+    emitSyncBatchEvent() {},
     shutdown() {
       if (shutdownError) {
         return Promise.reject(shutdownError);
@@ -818,6 +1117,8 @@ function createRecordingRuntime(
       onEmit(input.event);
     },
     emitAppExceptionEvent() {},
+    emitIpcPerfEvent() {},
+    emitSyncBatchEvent() {},
     shutdown() {
       onShutdown();
       return Promise.resolve();

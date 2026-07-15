@@ -1,6 +1,6 @@
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import type { ApiResult, JsonValue } from "@repo/api/src/types/common";
 import { COMMAND_SIGNING_CAPABILITY_KEY } from "@repo/api/src/types/compute-target";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import type { NextResponse } from "next/server";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { enforceRegisteredBrowserPublicKey } from "@/lib/browser-command-public-key-enforcement";

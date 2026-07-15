@@ -105,10 +105,15 @@ export function DashboardCard({
   contentClassName?: string;
 }) {
   return (
-    <Card className={cx("rounded-[1.25rem] border-border bg-card", className)}>
+    <Card
+      className={cx(
+        "min-w-0 rounded-[1.25rem] border-border bg-card",
+        className
+      )}
+    >
       {title ? (
-        <CardHeader className="px-6">
-          <CardTitle className="font-semibold text-xl tracking-tight">
+        <CardHeader className="px-4 sm:px-6">
+          <CardTitle className="min-w-0 font-semibold text-xl tracking-tight">
             {title}
           </CardTitle>
           {description ? (
@@ -116,7 +121,7 @@ export function DashboardCard({
           ) : null}
         </CardHeader>
       ) : null}
-      <CardContent className={cx("px-6", contentClassName)}>
+      <CardContent className={cx("min-w-0 px-4 sm:px-6", contentClassName)}>
         {children}
       </CardContent>
     </Card>

@@ -1,3 +1,9 @@
+import {
+  PACKAGED_UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE,
+  PackagedUpdateInstallBlockedReason,
+  type PackagedUpdateInstallBlockedReason as PackagedUpdateInstallBlockedReasonValue,
+} from "../../shared/packaged-update-install-blocked-reason";
+
 /**
  * Renderer-side model of the desktop auto-update banner.
  *
@@ -29,7 +35,11 @@ export type UpdateBannerState = {
   version?: string;
   percent?: number;
   error?: string;
+  installBlockedReason?: PackagedUpdateInstallBlockedReasonValue;
 };
+
+export const UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE =
+  PACKAGED_UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE;
 
 export const INITIAL_UPDATE_BANNER_STATE: UpdateBannerState = {
   status: "idle",
@@ -59,6 +69,14 @@ function asStatus(value: unknown): UpdateBannerStatus | null {
     : null;
 }
 
+function asInstallBlockedReason(
+  value: unknown
+): PackagedUpdateInstallBlockedReasonValue | undefined {
+  return value === PackagedUpdateInstallBlockedReason.ReadOnlyVolume
+    ? value
+    : undefined;
+}
+
 /**
  * Applies a `desktop:update-status` event (the canonical
  * PackagedUpdateStatusPayload) over the previous banner state. Payloads without
@@ -80,6 +98,7 @@ export function reduceUpdateStatusEvent(
     version: typeof record.version === "string" ? record.version : undefined,
     percent: typeof record.percent === "number" ? record.percent : undefined,
     error: typeof record.error === "string" ? record.error : undefined,
+    installBlockedReason: asInstallBlockedReason(record.installBlockedReason),
   };
 }
 
@@ -98,6 +117,9 @@ export function reduceUpdateAvailableEvent(
   }
   const version =
     typeof record.version === "string" ? record.version : prev.version;
+  if (isUpdateInstallBlocked(prev)) {
+    return { ...prev, updateAvailable: true, version };
+  }
   if (prev.status === "downloading" || prev.status === "downloaded") {
     return { ...prev, updateAvailable: true, version };
   }
@@ -121,6 +143,15 @@ export function isUpdateBannerVisible(state: UpdateBannerState): boolean {
   return state.updateAvailable || state.readyToInstall;
 }
 
+/** True when installation is blocked until macOS moves the app bundle. */
+export function isUpdateInstallBlocked(state: UpdateBannerState): boolean {
+  return (
+    state.status === "error" &&
+    state.installBlockedReason ===
+      PackagedUpdateInstallBlockedReason.ReadOnlyVolume
+  );
+}
+
 /**
  * The Apply / Restart action is only enabled once the update is fully
  * downloaded. This mirrors the main-process invariant
@@ -128,11 +159,19 @@ export function isUpdateBannerVisible(state: UpdateBannerState): boolean {
  * action the main process would reject.
  */
 export function isUpdateApplyEnabled(state: UpdateBannerState): boolean {
-  return state.status === "downloaded" && state.readyToInstall === true;
+  return (
+    !isUpdateInstallBlocked(state) &&
+    state.status === "downloaded" &&
+    state.readyToInstall === true
+  );
 }
 
 /** Human-readable banner message for the current state. */
 export function updateBannerMessage(state: UpdateBannerState): string {
+  if (isUpdateInstallBlocked(state)) {
+    return UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE;
+  }
+
   switch (state.status) {
     case "downloaded":
       return state.version

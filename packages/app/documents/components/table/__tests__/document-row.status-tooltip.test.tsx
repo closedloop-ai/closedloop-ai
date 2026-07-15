@@ -1,4 +1,12 @@
-import { DocumentStatus } from "@repo/api/src/types/document";
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import { makeRawArtifact } from "@repo/app/shared/test-fixtures/documents";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -72,7 +80,10 @@ describe("NameCell status icon tooltip", () => {
   it("shows 'In Progress' tooltip for IN_PROGRESS status in read-only mode", () => {
     const item: DocumentRowItem = {
       kind: "document",
-      data: makeArtifact({ status: DocumentStatus.InProgress }),
+      data: makeArtifact({
+        type: DocumentType.Feature,
+        status: FeatureStatus.InProgress,
+      }),
     };
 
     renderRow(item);
@@ -103,5 +114,37 @@ describe("NameCell status icon tooltip", () => {
     const allTooltips = tooltipTexts();
     const statusTooltip = allTooltips.find((t) => t === "Draft");
     expect(statusTooltip).toBeUndefined();
+  });
+
+  it("shows branch status tooltip and matching accessible name", () => {
+    const item: DocumentRowItem = {
+      kind: "branch",
+      data: makeRawArtifact(ArtifactType.Branch, {
+        id: "branch-1",
+        name: "Merged branch",
+        status: GitHubPRState.Merged,
+      }),
+    };
+
+    renderRow(item);
+
+    expect(hasTooltipText("Merged")).toBe(true);
+    expect(screen.getByRole("img", { name: "Merged" })).toBeInTheDocument();
+  });
+
+  it("shows session status tooltip and matching accessible name", () => {
+    const item: DocumentRowItem = {
+      kind: "session",
+      data: makeRawArtifact(ArtifactType.Session, {
+        id: "session-1",
+        name: "Waiting session",
+        status: SESSION_STATUS.WAITING,
+      }),
+    };
+
+    renderRow(item);
+
+    expect(hasTooltipText("Waiting")).toBe(true);
+    expect(screen.getByRole("img", { name: "Waiting" })).toBeInTheDocument();
   });
 });

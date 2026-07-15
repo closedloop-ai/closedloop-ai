@@ -59,10 +59,11 @@ function toChunk(jsonl: string): Buffer {
 }
 
 /**
- * Poll `predicate(events)` every `intervalMs` until it returns true or
- * `timeoutMs` elapses. Returns the elapsed-ms count regardless. Tests use
- * this instead of fixed sleeps for fs.watch-driven assertions so fast machines
- * resolve quickly while loaded CI runners get the headroom they need.
+ * Poll `predicate()` every `intervalMs` until it returns true — then resolve —
+ * or throw once `timeoutMs` elapses (fail loud; see the timeout branch below).
+ * Returns `Promise<void>`. Tests use this instead of fixed sleeps for
+ * fs.watch-driven assertions so fast machines resolve quickly while loaded CI
+ * runners get the headroom they need.
  */
 async function pollUntil(
   predicate: () => boolean,
@@ -76,6 +77,12 @@ async function pollUntil(
     }
     await new Promise<void>((resolve) => setTimeout(resolve, interval));
   }
+  // Fail loud on timeout instead of falling through: a silent return would let
+  // the caller assert against stale state and surface as a confusing count
+  // mismatch rather than an explicit "condition never held" error (FEA-2399).
+  throw new Error(
+    `pollUntil: predicate did not hold within ${options.timeoutMs}ms`
+  );
 }
 
 /** Minimal trace context used by all tests. */
@@ -1329,7 +1336,7 @@ test("T-5.8: watcher handle from failure returns a no-op stop() and valid getHwm
 // T-5.9: Watcher streams records when perf.jsonl is created after watcher starts
 // ---------------------------------------------------------------------------
 
-test("T-5.9: startLoopPerfTelemetryWatcher streams records via fs.watch when perf.jsonl is created after the watcher starts", async () => {
+test("T-5.9: startLoopPerfTelemetryWatcher streams records via fs.watch or the fallback poll when perf.jsonl is created after the watcher starts", async () => {
   const workdir = await fs.mkdtemp(path.join(os.tmpdir(), "loop-perf-t59-"));
   tempPathsToClean.push(workdir);
 
@@ -1357,12 +1364,13 @@ test("T-5.9: startLoopPerfTelemetryWatcher streams records via fs.watch when per
     "initial tick must not emit anything when perf.jsonl does not exist yet"
   );
 
-  // Now create the file. fs.watch on `workdir` must fire for perf.jsonl,
-  // schedule another debounced tick, and emit both records — strictly before
-  // stop() is called. Poll up to 2s instead of using a fixed sleep so fast
-  // machines return quickly and loaded CI runners (where inotify/kqueue
-  // delivery + the 250ms debounce + tick can comfortably exceed 500ms) still
-  // succeed deterministically.
+  // Now create the file. The watcher must pick perf.jsonl up and emit both
+  // records strictly before stop() is called: on Linux via the fs.watch
+  // directory event, and on macOS (where fs.watch does not reliably deliver a
+  // child-file creation event) via the fallback poll. Poll up to 2s instead of
+  // using a fixed sleep so fast machines return quickly and loaded CI runners
+  // (where event delivery / the poll interval + the 250ms debounce + tick can
+  // comfortably exceed 500ms) still succeed deterministically.
   const perfFile = path.join(workdir, "perf.jsonl");
   const lines = [makeRunLine(), makeIterationLine()]
     .map((l) => `${l}\n`)

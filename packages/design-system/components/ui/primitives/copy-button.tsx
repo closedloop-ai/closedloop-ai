@@ -1,7 +1,7 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
-import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { useCopyToClipboard } from "@closedloop-ai/design-system/hooks/use-copy-to-clipboard";
 import { Check, Copy } from "lucide-react";
 
 type CopyButtonProps = {

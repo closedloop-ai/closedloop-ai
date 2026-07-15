@@ -11,7 +11,30 @@ import {
   type AgentSessionSyncSource,
 } from "../src/main/agent-session-sync-service.js";
 
-test("agent-session sync sends all source sessions and sanitizes event content", async () => {
+// FEA-2718: every synced event is reconstructed from retained columnar metadata
+// only — turn text (`summary`/`data`) never crosses the wire, so the sanitized
+// event has exactly these keys and nothing else.
+const SLIM_EVENT_KEYS = JSON.stringify(
+  [
+    "externalEventId",
+    "agentExternalId",
+    "eventType",
+    "toolName",
+    "createdAt",
+  ].sort()
+);
+
+// Boolean-only (no assertions) so callers assert inside their own test() body,
+// per Biome's noMisplacedAssertion rule.
+function isSlimSyncedEvent(event: Record<string, unknown>): boolean {
+  return (
+    Object.hasOwn(event, "summary") === false &&
+    Object.hasOwn(event, "data") === false &&
+    JSON.stringify(Object.keys(event).sort()) === SLIM_EVENT_KEYS
+  );
+}
+
+test("agent-session sync sends all source sessions with turn-text-free events", async () => {
   const sourceSession = makeSyncedSession();
   const source: AgentSessionSyncSource = {
     listAllSessionCursorRows: () => [
@@ -39,51 +62,43 @@ test("agent-session sync sends all source sessions and sanitizes event content",
   service.stop();
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].sessions[0].externalSessionId, "outside-sandbox");
-  assert.equal(sent[0].sessions[0].cwd, "/outside/sandbox/project");
-  assert.equal(sent[0].sessions[0].events[0].summary, null);
-  assert.deepEqual(sent[0].sessions[0].events[0].data, {
-    arguments: ["-C", "packages/api", "test"],
-    command: "pnpm",
-    exitCode: 0,
-    nested: {
-      arguments: ["status", "--short"],
-      command: "git",
-      safe: "preserved",
-    },
-  });
-
-  const apiPersistedEvents = sent[0].sessions[0].events.map((event) => ({
-    ...event,
-    data:
-      event.data == null ? event.data : JSON.parse(JSON.stringify(event.data)),
-  }));
-  const timeline = projectAgentSessionTimelineEvents(apiPersistedEvents);
-
-  assert.deepEqual(
-    timeline.map((event) => [event.title, event.detail]),
-    [
-      ["exec_command", "pnpm -C packages/api test · exit 0"],
-      ["exec_command", "git diff --stat · exit 0"],
-    ]
+  const syncedSession = sent[0].sessions[0];
+  assert.equal(syncedSession.externalSessionId, "outside-sandbox");
+  assert.equal(syncedSession.cwd, "/outside/sandbox/project");
+  assert.equal(syncedSession.events.length, 2);
+  assert.equal(
+    syncedSession.events.every((event) =>
+      isSlimSyncedEvent(event as unknown as Record<string, unknown>)
+    ),
+    true
   );
 });
 
-test("sanitizeSessionForSync strips transcript content while preserving command detail", () => {
-  const sanitized = sanitizeSessionForSync(makeSyncedSession());
-  const data = sanitized.events[0].data as Record<string, unknown>;
+test("sanitizeSessionForSync drops turn text but the desktop-local projection keeps detail", () => {
+  const local = makeSyncedSession();
+  const sanitized = sanitizeSessionForSync(local);
 
-  assert.equal(sanitized.events[0].summary, null);
-  assert.deepEqual(data.command, "pnpm");
-  assert.deepEqual(data.arguments, ["-C", "packages/api", "test"]);
-  for (const key of CONTENT_KEYS_STRIPPED_FOR_SYNC) {
-    assert.equal(Object.hasOwn(data, key), false, `${key} must be stripped`);
-  }
-  assert.deepEqual(data.nested, {
-    arguments: ["status", "--short"],
-    command: "git",
-    safe: "preserved",
-  });
+  assert.equal(
+    sanitized.events.every((event) =>
+      isSlimSyncedEvent(event as unknown as Record<string, unknown>)
+    ),
+    true
+  );
+
+  // The UNSANITIZED local events still hydrate detail for the local trace...
+  const localTimeline = projectAgentSessionTimelineEvents(local.events);
+  assert.ok(localTimeline.length > 0);
+  assert.equal(
+    localTimeline.every((event) => event.detail),
+    true
+  );
+  // ...while the sanitized (cloud) events yield no detail at all.
+  assert.equal(
+    projectAgentSessionTimelineEvents(sanitized.events).every(
+      (event) => event.detail === undefined
+    ),
+    true
+  );
 });
 
 function makeSyncedSession(): SyncedAgentSession {
@@ -155,19 +170,6 @@ function makeSyncedSession(): SyncedAgentSession {
     tokenUsageByModel: [],
   };
 }
-
-const CONTENT_KEYS_STRIPPED_FOR_SYNC = [
-  "content",
-  "new_string",
-  "old_string",
-  "output",
-  "patch",
-  "prompt",
-  "reasoning",
-  "stderr",
-  "stdout",
-  "text",
-];
 
 async function flushAgentSessionSync(): Promise<void> {
   await Promise.resolve();

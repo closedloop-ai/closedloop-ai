@@ -22,7 +22,7 @@ beforeAll(() => {
 import { HarnessSelector } from "../harness-selector";
 
 describe("HarnessSelector — neither available", () => {
-  it("renders a destructive Alert with 'No AI harness available'", () => {
+  it("renders an error Alert with 'No AI harness available'", () => {
     render(
       <HarnessSelector
         availableHarnesses={[]}

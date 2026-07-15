@@ -1,10 +1,9 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
-// `@repo/shared-platform/*` resolves to `dist/` via package exports, but
-// `pnpm test:renderer` doesn't build deps first — so point the subpaths the
-// renderer uses at source (mirrors apps/app/vitest-shared-aliases.ts). Without
-// this, a fresh checkout fails to resolve these imports.
+// `@repo/shared-platform/*` now resolves to `src/` directly via its package
+// exports; these explicit source aliases are kept as belt-and-suspenders and to
+// mirror apps/app/vitest-shared-aliases.ts.
 const sharedPlatformSrc = path.resolve("../../packages/shared-platform/src");
 
 // Renderer (React/jsdom) tests. Main-process tests stay on node:test via
@@ -22,12 +21,18 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve("src/renderer"),
-      "@closedloop-ai/design-system": path.resolve(
-        "../../packages/design-system"
-      ),
+      "@closedloop-ai/design-system": path.resolve("../../packages/design-system"),
+      // `@closedloop-ai/loops-api/*` exports now resolve to `src/` directly; this alias
+      // is kept as an explicit source pin (mirrors the design-system alias
+      // above) for renderer components that import loops-api directly (e.g.
+      // first-launch-dashboard).
+      "@closedloop-ai/loops-api": path.resolve("../../packages/loops-api/src"),
       "@repo/api": path.resolve("../../packages/api"),
       "@repo/app": path.resolve("../../packages/app"),
-      "@repo/design-system": path.resolve("../../packages/design-system"),
+      // FEA-2717: `@repo/app`'s session-detail transcript panel deep-imports the
+      // harness parser cores (`@repo/lib/harness/...`); resolve to source (same
+      // as the renderer build config's `@repo/lib` alias).
+      "@repo/lib": path.resolve("../../packages/lib"),
       "@repo/shared-platform/gateway-dispatch": path.join(
         sharedPlatformSrc,
         "gateway-dispatch.ts"

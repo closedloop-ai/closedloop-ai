@@ -1,4 +1,8 @@
 import { log } from "@repo/observability/log";
+import {
+  redactGatewaySessionId,
+  redactTraceGatewaySessionId,
+} from "@repo/observability/redact-correlation";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
@@ -138,7 +142,9 @@ export function handleTelemetryEvent(
         eventCategory: event.category,
         loopPerfEvent: loopPerfEvent ?? null,
         commandId: event.trace.commandId,
-        gatewaySessionId: event.trace.gatewaySessionId,
+        gatewaySessionIdHash: redactGatewaySessionId(
+          event.trace.gatewaySessionId
+        ),
       });
     }
   }
@@ -164,7 +170,9 @@ export function handleTelemetryEvent(
       category: event.category,
       severity: event.severity,
       timestamp: event.timestamp,
-      trace: enrichedTrace,
+      // gatewaySessionId is hashed before logging; the raw token stays in the
+      // store/DB context, never in a log sink.
+      trace: redactTraceGatewaySessionId(enrichedTrace),
       ...(sanitizedDiagnostics !== undefined && {
         diagnostics: sanitizedDiagnostics,
       }),
@@ -189,7 +197,7 @@ export function handleTelemetryEvent(
       category: event.category,
       severity: event.severity,
       timestamp: event.timestamp,
-      trace: event.trace,
+      trace: redactTraceGatewaySessionId(event.trace),
       ...(event.message !== undefined && { telemetryMessage: event.message }),
       ...(event.errorClass !== undefined && { errorClass: event.errorClass }),
       origin: Origin.Desktop,
@@ -202,7 +210,9 @@ export function handleTelemetryEvent(
     // Structured warning — only bounded-cardinality fields, no PII.
     log.warn("telemetry.enrichment_failed", {
       commandId: event.trace?.commandId,
-      gatewaySessionId: event.trace?.gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(
+        event.trace?.gatewaySessionId
+      ),
       category: event.category,
       errorClass,
     });

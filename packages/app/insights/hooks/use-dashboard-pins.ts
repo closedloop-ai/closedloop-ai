@@ -1,37 +1,40 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { useLocalStorageState } from "../../shared/hooks/use-local-storage-state";
-import { DEFAULT_DASHBOARD_TILE_IDS, getTile } from "../lib/tile-catalog";
+import {
+  type DashboardTileSettings,
+  type GridPosition,
+  gridPositionSchema,
+  type SharedDashboard,
+  tileSettingsSchema,
+} from "../lib/dashboard-schema";
+import {
+  DEFAULT_DASHBOARD_TILE_IDS,
+  getTile,
+  REMOVED_DASHBOARD_TILE_IDS,
+} from "../lib/tile-catalog";
+
+export type {
+  DashboardTileSettings,
+  GridPosition,
+  SharedDashboard,
+} from "../lib/dashboard-schema";
 
 const STORAGE_VERSION = 7;
 const STORAGE_PREFIX = "closedloop:insights-dashboard:v1";
+const REMOVED_TILE_IDS = new Set<string>(
+  Object.values(REMOVED_DASHBOARD_TILE_IDS)
+);
 const ANALYTICS_PIE_TILE_IDS = [
   "chart:tokenDistribution",
-  "chart:sessionsByStatus",
   "chart:agentsByStatus",
   "chart:eventsByType",
   "chart:agentsByType:donut",
   "chart:toolUsage:donut",
   "chart:modelBreakdown:donut",
 ] as const;
-
-export type GridPosition = { x: number; y: number; w: number; h: number };
-export type DashboardTileSettings = {
-  comparisonOverlay?: boolean;
-};
-
-const gridPositionSchema = z.object({
-  x: z.number(),
-  y: z.number(),
-  w: z.number(),
-  h: z.number(),
-});
-
-const tileSettingsSchema = z.object({
-  comparisonOverlay: z.boolean().optional(),
-});
 
 const storedPinsSchema = z.object({
   version: z.literal(STORAGE_VERSION),
@@ -81,20 +84,59 @@ export type DashboardPins = {
   resetToDefault: () => void;
 };
 
-export function useDashboardPins(namespace: string): DashboardPins {
+export function useDashboardPins(
+  namespace: string,
+  sharedOverride?: SharedDashboard | null
+): DashboardPins {
   const [stored, setStored] = useLocalStorageState<unknown>(
     `${STORAGE_PREFIX}:${namespace}`,
     defaultStored()
   );
+  // Local, non-persisted edits made while previewing a shared dashboard. Kept
+  // separate from localStorage so opening a `?dash=` link never overwrites the
+  // recipient's own saved dashboard; it only seeds once the recipient edits.
+  const [overrideEdits, setOverrideEdits] = useState<StoredPins | null>(null);
+
+  // Discard the ephemeral edits whenever the active shared dashboard changes
+  // identity (e.g. navigating `?dash=A` -> `?dash=B`). Otherwise the memo below
+  // keeps returning dashboard A's edits — `overrideEdits` is non-null, so the
+  // `?? normalizeSharedOverride` fallback never fires — and the recipient sees
+  // A's edits painted onto B's snapshot. Resetting during render (rather than in
+  // an effect) avoids a frame where the stale edits are shown over the new
+  // snapshot.
+  const previousSharedOverrideRef = useRef(sharedOverride);
+  if (previousSharedOverrideRef.current !== sharedOverride) {
+    previousSharedOverrideRef.current = sharedOverride;
+    if (overrideEdits !== null) {
+      setOverrideEdits(null);
+    }
+  }
 
   const value = useMemo<StoredPins>(() => {
+    if (sharedOverride) {
+      return overrideEdits ?? normalizeSharedOverride(sharedOverride);
+    }
     return parseStoredPins(stored);
-  }, [stored]);
+  }, [sharedOverride, overrideEdits, stored]);
+
+  // Single write path: route edits to the ephemeral override copy while a
+  // shared dashboard is active, otherwise persist to localStorage.
+  const updatePins = useCallback(
+    (updater: (current: StoredPins) => StoredPins) => {
+      if (sharedOverride) {
+        setOverrideEdits((prev) =>
+          updater(prev ?? normalizeSharedOverride(sharedOverride))
+        );
+        return;
+      }
+      setStored((prev: unknown) => updater(parseStoredPins(prev)));
+    },
+    [sharedOverride, setStored]
+  );
 
   const togglePin = useCallback(
     (id: string) => {
-      setStored((prev: unknown) => {
-        const current = parseStoredPins(prev);
+      updatePins((current) => {
         if (current.tiles.includes(id)) {
           const settings = { ...current.settings };
           Reflect.deleteProperty(settings, id);
@@ -107,13 +149,12 @@ export function useDashboardPins(namespace: string): DashboardPins {
         return { ...current, tiles: [...current.tiles, id] };
       });
     },
-    [setStored]
+    [updatePins]
   );
 
   const pinTile = useCallback(
     (id: string, settings: DashboardTileSettings = {}) => {
-      setStored((prev: unknown) => {
-        const current = parseStoredPins(prev);
+      updatePins((current) => {
         return {
           ...current,
           settings: { ...current.settings, [id]: settings },
@@ -123,13 +164,12 @@ export function useDashboardPins(namespace: string): DashboardPins {
         };
       });
     },
-    [setStored]
+    [updatePins]
   );
 
   const replaceTile = useCallback(
     (fromId: string, toId: string, settings: DashboardTileSettings = {}) => {
-      setStored((prev: unknown) => {
-        const current = parseStoredPins(prev);
+      updatePins((current) => {
         const settingsByTile = { ...current.settings };
         Reflect.deleteProperty(settingsByTile, fromId);
         settingsByTile[toId] = settings;
@@ -160,13 +200,12 @@ export function useDashboardPins(namespace: string): DashboardPins {
         };
       });
     },
-    [setStored]
+    [updatePins]
   );
 
   const unpinTile = useCallback(
     (id: string) => {
-      setStored((prev: unknown) => {
-        const current = parseStoredPins(prev);
+      updatePins((current) => {
         const settings = { ...current.settings };
         Reflect.deleteProperty(settings, id);
         return {
@@ -176,35 +215,33 @@ export function useDashboardPins(namespace: string): DashboardPins {
         };
       });
     },
-    [setStored]
+    [updatePins]
   );
 
   const setTileSettings = useCallback(
     (id: string, settings: DashboardTileSettings) => {
-      setStored((prev: unknown) => {
-        const current = parseStoredPins(prev);
+      updatePins((current) => {
         return {
           ...current,
           settings: { ...current.settings, [id]: settings },
         };
       });
     },
-    [setStored]
+    [updatePins]
   );
 
   const setLayout = useCallback(
     (layout: Record<string, GridPosition>) => {
-      setStored((prev: unknown) => {
-        const current = parseStoredPins(prev);
+      updatePins((current) => {
         return { ...current, layout };
       });
     },
-    [setStored]
+    [updatePins]
   );
 
   const resetToDefault = useCallback(() => {
-    setStored(defaultStored());
-  }, [setStored]);
+    updatePins(() => defaultStored());
+  }, [updatePins]);
 
   const isPinned = useCallback(
     (id: string) => value.tiles.includes(id),
@@ -232,6 +269,18 @@ export function useDashboardPins(namespace: string): DashboardPins {
   };
 }
 
+// Project a shared dashboard snapshot into the internal StoredPins shape,
+// running it through the same retired-tile cleanup as stored dashboards so a
+// link that predates a tile removal can never resurrect a dead tile.
+function normalizeSharedOverride(override: SharedDashboard): StoredPins {
+  return removeRetiredTiles({
+    version: STORAGE_VERSION,
+    tiles: uniqueTileIds(override.tiles),
+    layout: { ...override.layout },
+    settings: { ...override.settings },
+  });
+}
+
 function defaultStored(): StoredPins {
   return {
     version: STORAGE_VERSION,
@@ -244,7 +293,7 @@ function defaultStored(): StoredPins {
 function parseStoredPins(value: unknown): StoredPins {
   const parsed = storedPinsSchema.safeParse(value);
   if (parsed.success) {
-    return parsed.data;
+    return removeRetiredTiles(parsed.data);
   }
 
   const analyticsBackfillParsed =
@@ -269,22 +318,22 @@ function parseStoredPins(value: unknown): StoredPins {
 function migrateAnalyticsBackfillStoredPins(
   value: AnalyticsBackfillStoredPins
 ): StoredPins {
-  return {
+  return removeRetiredTiles({
     ...value,
     version: STORAGE_VERSION,
     layout: {},
     tiles: mergeTileIds(value.tiles, ANALYTICS_PIE_TILE_IDS),
-  };
+  });
 }
 
 function migrateLayoutResetStoredPins(
   value: LayoutResetStoredPins
 ): StoredPins {
-  return {
+  return removeRetiredTiles({
     ...value,
     version: STORAGE_VERSION,
     layout: {},
-  };
+  });
 }
 
 function migrateV6StoredPins(value: V6StoredPins): StoredPins {
@@ -292,11 +341,11 @@ function migrateV6StoredPins(value: V6StoredPins): StoredPins {
   // edited at the collapsed sm breakpoint rewrote every tile into a single
   // full-width column (all positions at x:0). Reset only that corrupted shape
   // so customized, genuinely multi-column v6 layouts survive the upgrade.
-  return {
+  return removeRetiredTiles({
     ...value,
     version: STORAGE_VERSION,
     layout: isSingleColumnStack(value.layout) ? {} : value.layout,
-  };
+  });
 }
 
 // A single-column stack — every tile pinned to column 0 — is the signature of
@@ -321,6 +370,25 @@ function mergeTileIds(
     }
   }
   return merged;
+}
+
+function removeRetiredTiles(value: StoredPins): StoredPins {
+  return {
+    ...value,
+    layout: removeRetiredRecordEntries(value.layout),
+    settings: removeRetiredRecordEntries(value.settings),
+    tiles: value.tiles.filter((id) => !REMOVED_TILE_IDS.has(id)),
+  };
+}
+
+function removeRetiredRecordEntries<T>(
+  record: Record<string, T>
+): Record<string, T> {
+  const next = { ...record };
+  for (const id of REMOVED_TILE_IDS) {
+    Reflect.deleteProperty(next, id);
+  }
+  return next;
 }
 
 function uniqueTileIds(ids: readonly string[]): string[] {

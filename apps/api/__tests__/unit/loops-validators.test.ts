@@ -1,6 +1,6 @@
-import { LoopEventType } from "@closedloop-ai/loops-api/events";
 import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
 import { LoopStatus } from "@repo/api/src/types/loop";
+import { LoopEventType } from "@closedloop-ai/loops-api/events";
 import { describe, expect, it } from "vitest";
 import {
   loopEventPayloadValidator,

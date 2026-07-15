@@ -10,6 +10,8 @@ import {
   artifactRepositorySnapshotSchema,
   DocumentStatus,
   DocumentType,
+  FEATURE_STATUS_OPTIONS,
+  FeatureStatus,
   PullRequestState,
 } from "../src/document";
 import { resolveFriendlyError } from "../src/friendly-error";
@@ -19,6 +21,13 @@ describe("shared contract exports", () => {
     expect(DocumentType.Feature).toBe("FEATURE");
     expect(DocumentStatus.InReview).toBe("IN_REVIEW");
     expect(PullRequestState.Open).toBe("OPEN");
+  });
+
+  it("exposes the full Feature status vocabulary incl. TRIAGE (PRD-495)", () => {
+    // TRIAGE is a normal, human-selectable status; it is only excluded as the
+    // human-create *default* (handled in the create paths), not as an option.
+    expect(FEATURE_STATUS_OPTIONS).toContain(FeatureStatus.Triage);
+    expect(FEATURE_STATUS_OPTIONS).toContain(FeatureStatus.Backlog);
   });
 
   it("exposes compute-target and comment enums used by design-system", () => {

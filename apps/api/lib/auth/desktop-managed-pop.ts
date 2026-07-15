@@ -1,22 +1,17 @@
-import {
-  createPublicKey,
-  type KeyObject,
-  verify as verifySignature,
-} from "node:crypto";
+import { verify as verifySignature } from "node:crypto";
 import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
-import {
-  DESKTOP_POP_GATEWAY_ID_HEADER,
-  DESKTOP_POP_SIGNATURE_HEADER,
-  DESKTOP_POP_TIMESTAMP_HEADER,
-} from "@repo/api/src/types/api-key";
 import { ApiKeySource } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
+import {
+  BASE64URL_SIGNATURE_PATTERN,
+  createEd25519PublicKey,
+  POP_TIMESTAMP_FRESHNESS_SECONDS,
+  readDesktopPopHeaders,
+  TIMESTAMP_SECONDS_PATTERN,
+} from "./desktop-pop-utils";
 
-const POP_TIMESTAMP_FRESHNESS_SECONDS = 60;
-const TIMESTAMP_SECONDS_PATTERN = /^\d+$/;
-const BASE64URL_SIGNATURE_PATTERN = /^[A-Za-z0-9_-]+={0,2}$/;
 export const DESKTOP_MANAGED_POP_ENFORCEMENT_FLAG =
   "desktop-managed-pop-enforcement";
 
@@ -290,39 +285,6 @@ export async function getDesktopManagedPopRequestFailure(input: {
     request: input.request,
   });
   return getDesktopManagedPopFailure(popDecision);
-}
-
-function createEd25519PublicKey(pem: string): KeyObject | null {
-  try {
-    const key = createPublicKey(pem.trim());
-    if (key.type !== "public" || key.asymmetricKeyType !== "ed25519") {
-      return null;
-    }
-    return key;
-  } catch {
-    return null;
-  }
-}
-
-function readDesktopPopHeaders(headers: Headers): {
-  gatewayId: string | null;
-  timestamp: string | null;
-  signature: string | null;
-} {
-  return {
-    gatewayId: normalizeHeaderValue(headers.get(DESKTOP_POP_GATEWAY_ID_HEADER)),
-    timestamp: normalizeHeaderValue(headers.get(DESKTOP_POP_TIMESTAMP_HEADER)),
-    signature: normalizeHeaderValue(headers.get(DESKTOP_POP_SIGNATURE_HEADER)),
-  };
-}
-
-function normalizeHeaderValue(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 function toDecision(

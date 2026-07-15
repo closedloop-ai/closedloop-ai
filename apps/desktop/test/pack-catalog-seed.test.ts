@@ -1,8 +1,7 @@
 /**
  * @file pack-catalog-seed.test.ts
- * @description FEA-1791 / PLN-886 Phase 3 — upsertCatalogSeed converted to the
- * typed Prisma client (catalog-store.ts). Proves the conversion is faithful to
- * the prior raw SQL:
+ * @description upsertCatalogSeed on the typed Prisma client (catalog-store.ts).
+ * Proves:
  *  - JSON columns round-trip (Prisma write → raw read);
  *  - absent JSON fields persist as SQL NULL (Prisma.DbNull, not JSON null);
  *  - seed_version gating skips rows whose stored version is already >= incoming;

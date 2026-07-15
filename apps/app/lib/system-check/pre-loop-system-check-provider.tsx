@@ -37,11 +37,11 @@ import { useApiClient } from "@/hooks/use-api-client";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { getHealthCheckCacheAgeMs } from "./health-check-freshness";
+import { getPreLoopHealthCheckTimeoutMs } from "./health-check-timeouts";
 import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "./plugin-auto-update";
 import {
   buildPreLoopAnalyticsProperties,
   createPreLoopAttemptId,
-  getPreLoopHealthCheckTimeoutMs,
   getPreLoopTargetKey,
   getRequiredFailureSummary,
   isPreLoopHealthCheckFresh,

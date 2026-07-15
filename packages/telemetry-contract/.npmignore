@@ -1,0 +1,2 @@
+# Override the root .gitignore so generated dist release artifacts are packable.
+# The package.json files list intentionally ships dist/schemas and dist/samples.

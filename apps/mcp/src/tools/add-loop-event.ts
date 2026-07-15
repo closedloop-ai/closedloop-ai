@@ -1,7 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { LoopEventReceivedResponse } from "@repo/api/src/types/loop.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
+import {
+  buildLoopUrl,
+  encodePathSegment,
+  withErrorHandling,
+} from "./tool-utils.js";
 
 /**
  * Register the add-loop-event tool on the given MCP server.
@@ -36,7 +41,10 @@ export function registerAddLoopEvent(
     },
     ({ loopId, message }) =>
       withErrorHandling(async () => {
-        const result = await apiClient.post<unknown>(
+        // The /manual-events endpoint responds with the shared
+        // LoopEventReceivedResponse contract ({ received: true; ignored?: true });
+        // type the ApiClient response to it instead of unknown + asRecord.
+        const result = await apiClient.post<LoopEventReceivedResponse>(
           `/loops/${encodePathSegment(loopId)}/manual-events`,
           {
             type: "output",
@@ -46,11 +54,18 @@ export function registerAddLoopEvent(
             },
           }
         );
+        // Normalize to the shared loop-tool contract ({...response, webUrl}) so
+        // callers don't have to special-case this one tool. The receipt response
+        // carries no loopId, so surface it too. Narrow at the boundary in case a
+        // proxy hands back a non-object body.
+        const receipt: Partial<LoopEventReceivedResponse> =
+          result && typeof result === "object" ? result : {};
+        const webUrl = buildLoopUrl(loopId);
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify({ loopId, ...receipt, webUrl }, null, 2),
             },
           ],
         };

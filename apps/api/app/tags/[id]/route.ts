@@ -1,10 +1,8 @@
-import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   conflictResponse,
   deleteResponse,
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
@@ -17,13 +15,8 @@ import {
 import { updateTagValidator } from "../validators";
 
 export const PATCH = withAnyAuth(
-  async ({ user, clerkOrgId, clerkUserId }, request, params) => {
+  async ({ user }, request, params) => {
     try {
-      const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!adminCheck) {
-        return forbiddenResponse();
-      }
-
       const { id } = await params;
       const { body, errorResponse: parseError } = await parseBody(
         request,
@@ -49,13 +42,8 @@ export const PATCH = withAnyAuth(
 );
 
 export const DELETE = withAnyAuth(
-  async ({ user, clerkOrgId, clerkUserId }, _, params) => {
+  async ({ user }, _, params) => {
     try {
-      const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!adminCheck) {
-        return forbiddenResponse();
-      }
-
       const { id } = await params;
       await tagService.delete(id, user.organizationId);
       return deleteResponse();

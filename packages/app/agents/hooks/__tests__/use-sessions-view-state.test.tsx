@@ -15,6 +15,8 @@ describe("useSessionsViewState", () => {
     expect(result.current.dateRange).toBe("7d");
     expect(result.current.visibleColumns.has("repo")).toBe(true);
     expect(result.current.visibleColumns.has("branch")).toBe(true);
+    expect(result.current.visibleColumns.has("pr")).toBe(true);
+    expect(result.current.visibleColumns.has("merge")).toBe(true);
     expect(result.current.visibleColumns.has("cost")).toBe(true);
   });
 
@@ -69,6 +71,24 @@ describe("useSessionsViewState", () => {
     const { result } = renderHook(() => useSessionsViewState("sessions:test"));
     expect(result.current.visibleColumns.has("branch")).toBe(false);
     expect(result.current.visibleColumns.has("repo")).toBe(true);
+    expect(result.current.visibleColumns.has("pr")).toBe(true);
+    expect(result.current.visibleColumns.has("merge")).toBe(true);
     expect([...result.current.visibleColumns]).not.toContain("future-column");
+  });
+
+  it("can explicitly hide restored PR and Merge columns", () => {
+    localStorage.setItem(
+      "sessions:saved-view:sessions:test",
+      JSON.stringify({
+        sortKey: null,
+        sortDir: SessionSortDir.Desc,
+        hiddenColumns: ["pr", "merge"],
+      })
+    );
+
+    const { result } = renderHook(() => useSessionsViewState("sessions:test"));
+    expect(result.current.visibleColumns.has("pr")).toBe(false);
+    expect(result.current.visibleColumns.has("merge")).toBe(false);
+    expect(result.current.visibleColumns.has("branch")).toBe(true);
   });
 });

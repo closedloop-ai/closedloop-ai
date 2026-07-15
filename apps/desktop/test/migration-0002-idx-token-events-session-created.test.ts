@@ -13,7 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openLibsqlDatabase } from "../src/main/database/libsql-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
 const MIGRATIONS_DIR = path.join(APP_DIR, "prisma", "migrations");
@@ -28,11 +28,11 @@ test.after(async () => {
 });
 
 async function applyMigrationChain(): Promise<
-  Awaited<ReturnType<typeof openLibsqlDatabase>>["db"]
+  Awaited<ReturnType<typeof openMigrationDatabase>>["db"]
 > {
   const dir = await mkdtemp(path.join(os.tmpdir(), "migration-0002-"));
   tempDirs.push(dir);
-  const { db } = await openLibsqlDatabase(path.join(dir, "store.sqlite"));
+  const { db } = await openMigrationDatabase(path.join(dir, "store.sqlite"));
   for (const name of MIGRATION_NAMES) {
     const sql = readFileSync(
       path.join(MIGRATIONS_DIR, name, "migration.sql"),

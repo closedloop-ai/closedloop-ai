@@ -337,6 +337,21 @@ export const LoopEventSchema = z.discriminatedUnion("type", [
 
 // --- Query/response types ---
 
+/**
+ * A {@link LoopEvent} enriched with server-authoritative storage metadata, as
+ * returned by the read APIs (`getEvents` / `getEventsSince`).
+ *
+ * - `id` is the DB row id (uuid7) — a stable identity for client-side dedup
+ *   and React list keys.
+ * - `storedAt` is the DB `createdAt` as an ISO string. Unlike the event's own
+ *   `timestamp` (producer-set), `storedAt` reflects DB insertion order, so it
+ *   is the keyset cursor incremental polling uses to fetch only newer events.
+ */
+export type StoredLoopEvent = LoopEvent & {
+  id: string;
+  storedAt: string;
+};
+
 export type LoopEventsFilters = {
   type?: LoopEventType;
   limit?: number;
@@ -345,6 +360,6 @@ export type LoopEventsFilters = {
 };
 
 export type LoopEventsPaginatedResponse = {
-  data: LoopEvent[];
+  data: StoredLoopEvent[];
   total: number;
 };

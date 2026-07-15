@@ -2,7 +2,7 @@
 
 import { ChevronDownIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
   Collapsible,
   CollapsibleContent,

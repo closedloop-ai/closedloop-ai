@@ -2,7 +2,7 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import type {
-  DocumentStatus,
+  ArtifactStatus,
   DocumentWithProject,
 } from "@repo/api/src/types/document";
 import { transformApiUserToSelectUser } from "@repo/app/shared/lib/user-utils";
@@ -107,7 +107,7 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
   const handleMetadataUpdate = useCallback(
     (
       updates: Partial<{
-        status: DocumentStatus;
+        status: ArtifactStatus;
         priority: Priority;
         parentId: string | null;
         approverId: string | null;
@@ -131,7 +131,7 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
    * Updates local state and immediately saves to server.
    */
   const handleStatusChange = useCallback(
-    (newStatus: DocumentStatus) => {
+    (newStatus: ArtifactStatus) => {
       setStatus(newStatus);
       handleMetadataUpdate({ status: newStatus });
     },

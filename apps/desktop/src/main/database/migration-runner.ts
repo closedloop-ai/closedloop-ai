@@ -1,7 +1,7 @@
 /**
  * @file migration-runner.ts
- * @description FEA-1791 / PLN-886 Phase 2 — forward-only migration runner for
- * the desktop SQLite store, modelled on `prisma migrate deploy`.
+ * @description Forward-only migration runner for the desktop SQLite store,
+ * modelled on `prisma migrate deploy`.
  *
  * On open the runner:
  *  1. ensures the `_desktop_migrations` tracking table exists;

@@ -525,7 +525,9 @@ describe("BranchPropertiesBar PR lifecycle badge", () => {
       <BranchPropertiesBar
         data={branchViewData({
           checks: checksProjection({
+            items: [],
             providerState: BranchViewChecksProviderState.ProviderUnavailable,
+            totalCount: 0,
             unavailableReason: StatusCheckRollupFailureReason.RateLimited,
           }),
           checksStatus: ChecksStatus.Failing,
@@ -539,7 +541,7 @@ describe("BranchPropertiesBar PR lifecycle badge", () => {
       screen.getByRole("button", { name: "Checks failing details" })
     );
     expect(screen.getByText("Check details unavailable")).toBeInTheDocument();
-    expect(screen.getByText("Unit tests")).toBeInTheDocument();
+    expect(screen.queryByText("Unit tests")).not.toBeInTheDocument();
   });
 
   it("renders checks details when no secondary PR status is selected", async () => {

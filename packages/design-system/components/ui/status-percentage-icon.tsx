@@ -1,17 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { cn } from "@repo/design-system/lib/utils";
 import {
-  CENTER,
-  CIRCUMFERENCE,
-  FilledCheckCircle,
-  INNER_CIRCUMFERENCE,
-  INNER_PATH_RADIUS,
-  INNER_STROKE_WIDTH,
-  RADIUS,
-  STROKE_WIDTH,
-} from "./internal/status-icon-shared";
+  FilledStatusCircle,
+  StatusRing,
+} from "./status-icon-primitives";
 
 interface StatusPercentageIconProps
   extends React.SVGAttributes<SVGSVGElement> {
@@ -35,94 +28,31 @@ function StatusPercentageIcon({
 
   if (clamped >= 100) {
     return (
-      <svg
-        role="img"
+      <FilledStatusCircle
         aria-label={defaultLabel}
+        className={className}
         data-slot="status-percentage-icon"
-        width={size}
-        height={size}
-        viewBox="0 0 20 20"
-        fill="none"
-        className={cn("shrink-0", className)}
+        fill="var(--success)"
+        glyph="check"
+        label={defaultLabel}
+        size={size}
         {...props}
-      >
-        <FilledCheckCircle fill="var(--success)" />
-      </svg>
+      />
     );
   }
 
-  const outerOffset = CIRCUMFERENCE * (1 - clamped / 100);
-  const innerOffset = INNER_CIRCUMFERENCE * (1 - clamped / 100);
-  const spinnerDash = CIRCUMFERENCE * 0.25;
-  const spinnerGap = CIRCUMFERENCE - spinnerDash;
-
   return (
-    <svg
-      role="img"
+    <StatusRing
       aria-label={defaultLabel}
+      className={className}
+      color="var(--progress-foreground)"
       data-slot="status-percentage-icon"
-      width={size}
-      height={size}
-      viewBox="0 0 20 20"
-      fill="none"
-      className={cn("shrink-0", className)}
+      label={defaultLabel}
+      percentage={clamped}
+      size={size}
+      thinking={thinking}
       {...props}
-    >
-      {/* Outer track circle */}
-      <circle
-        cx={CENTER}
-        cy={CENTER}
-        r={RADIUS}
-        stroke="var(--progress)"
-        strokeWidth={STROKE_WIDTH}
-        fill="none"
-      />
-      {/* Outer progress arc — hidden when thinking (replaced by spinner) */}
-      {!thinking && clamped > 0 && (
-        <circle
-          cx={CENTER}
-          cy={CENTER}
-          r={RADIUS}
-          stroke="var(--progress-foreground)"
-          strokeWidth={STROKE_WIDTH}
-          strokeLinecap="round"
-          fill="none"
-          strokeDasharray={CIRCUMFERENCE}
-          strokeDashoffset={outerOffset}
-          transform={`rotate(-90 ${CENTER} ${CENTER})`}
-          className="transition-all duration-300 ease-in-out"
-        />
-      )}
-      {/* Thinking spinner — replaces outer progress arc */}
-      {thinking && (
-        <circle
-          cx={CENTER}
-          cy={CENTER}
-          r={RADIUS}
-          stroke="var(--thinking)"
-          strokeWidth={STROKE_WIDTH}
-          strokeLinecap="round"
-          fill="none"
-          strokeDasharray={`${spinnerDash} ${spinnerGap}`}
-          className="animate-spin origin-center"
-        />
-      )}
-      {/* Inner filled circle — always visible, shows percentage */}
-      {clamped > 0 && (
-        <circle
-          cx={CENTER}
-          cy={CENTER}
-          r={INNER_PATH_RADIUS}
-          stroke="var(--progress-foreground)"
-          strokeWidth={INNER_STROKE_WIDTH}
-          fill="none"
-          strokeDasharray={INNER_CIRCUMFERENCE}
-          strokeDashoffset={innerOffset}
-          transform={`rotate(-90 ${CENTER} ${CENTER})`}
-          className="transition-all duration-300 ease-in-out"
-        />
-      )}
-    </svg>
+    />
   );
 }
 

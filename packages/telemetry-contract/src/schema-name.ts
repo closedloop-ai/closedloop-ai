@@ -6,6 +6,7 @@ export const TelemetrySchemaName = {
   GenAi: "gen_ai",
   Sync: "sync",
   Permission: "permission",
+  Ipc: "ipc",
 } as const;
 
 /** Literal union of supported telemetry schema names. */

@@ -5,6 +5,7 @@ import type {
 } from "@repo/api/src/types/custom-field";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import {
   MAX_CUSTOM_FIELDS_PER_ORG,
   validateFieldNameNotReserved,
@@ -84,7 +85,7 @@ export const customFieldsService = {
 
       return toCustomField(field);
     } catch (error) {
-      if ((error as { code?: string }).code === "P2002") {
+      if (getPrismaErrorCode(error) === "P2002") {
         throw new DuplicateNameError(input.name);
       }
       throw error;
@@ -168,7 +169,7 @@ export const customFieldsService = {
       });
       return toCustomField(field);
     } catch (error) {
-      if ((error as { code?: string }).code === "P2002") {
+      if (getPrismaErrorCode(error) === "P2002") {
         throw new DuplicateNameError(input.name ?? "");
       }
       throw error;

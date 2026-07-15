@@ -12,6 +12,9 @@ const noopClient = {
   identify: () => {},
   capture: () => undefined,
   reset: () => {},
+  startSessionRecording: () => {},
+  stopSessionRecording: () => {},
+  set_config: () => {},
 };
 
 export function PostHogProvider({ children }: PostHogProviderProps) {

@@ -2,6 +2,11 @@
 
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { useJudgeDetail } from "@repo/app/judges-analytics/hooks/use-judges-analytics";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@repo/design-system/components/ui/alert";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { Link } from "@repo/navigation/link";
 import { useRouteParams } from "@repo/navigation/use-route-params";
@@ -51,14 +56,14 @@ export default function JudgeDetailPage() {
           <ArrowLeftIcon className="h-4 w-4" />
           Back to Judges Analytics
         </Link>
-        <div className="rounded-lg border border-destructive bg-destructive/10 p-4">
-          <p className="font-medium text-destructive">
+        <Alert variant="error">
+          <AlertTitle>
             {isError ? "Error loading judge detail" : "Judge not found"}
-          </p>
-          <p className="text-muted-foreground text-sm">
+          </AlertTitle>
+          <AlertDescription>
             {error?.message || "The requested judge could not be found."}
-          </p>
-        </div>
+          </AlertDescription>
+        </Alert>
       </div>
     );
   }

@@ -30,7 +30,7 @@ vi.mock("@/lib/resolve-pr-context", () => ({
   },
 }));
 
-import { getFileDiff, isRequestedDiffInPullRequest } from "./service";
+import { getFileDiff } from "./service";
 
 const prContext = {
   externalLink: {
@@ -95,22 +95,6 @@ const prContext = {
 describe("branch-view file diff authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  it("requires an exact path and previousPath match for renamed files", () => {
-    const files = [
-      {
-        filename: "src/new-name.ts",
-        previous_filename: "src/old-name.ts",
-      },
-    ];
-
-    expect(
-      isRequestedDiffInPullRequest(files, "src/new-name.ts", "src/old-name.ts")
-    ).toBe(true);
-    expect(isRequestedDiffInPullRequest(files, "src/new-name.ts", null)).toBe(
-      false
-    );
   });
 
   it("rejects file reads for paths that are not in the pull request", async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -18,7 +19,7 @@ import { getGitHubConnectUrl } from "@/lib/integration-connect-urls";
 
 export function AgentOnboardingCard() {
   return (
-    <FeatureFlagged flag="agents">
+    <FeatureFlagged flag={AGENTS_FEATURE_FLAG_KEY}>
       <AgentOnboardingCardInner />
     </FeatureFlagged>
   );

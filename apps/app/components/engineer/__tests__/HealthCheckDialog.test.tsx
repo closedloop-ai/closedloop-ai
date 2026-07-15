@@ -1069,6 +1069,91 @@ describe("Blocking pre-loop mode", () => {
   });
 });
 
+describe("Query error rendering", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetHealthCheckDialogVisibilityForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens the ambient dialog with a terminal error row when the initial health check times out", async () => {
+    mockQueryFn.mockRejectedValue(
+      new DOMException("The operation timed out.", "TimeoutError")
+    );
+    const Wrapper = createWrapper();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      isLoading: false,
+      checks: [
+        expect.objectContaining({
+          id: "health-check-request",
+          error: "System check timed out",
+          passed: false,
+          required: true,
+        }),
+      ],
+    });
+  });
+
+  it("shows the timeout error instead of stale passing data when Re-check fails", async () => {
+    const onResolvedAfterRecheck = vi.fn();
+    mockQueryFn.mockRejectedValueOnce(
+      new DOMException("The operation timed out.", "TimeoutError")
+    );
+    const Wrapper = createWrapper();
+
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={passingData}
+          mode="blocking-pre-loop"
+          onCancel={vi.fn()}
+          onResolvedAfterRecheck={onResolvedAfterRecheck}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+    act(() => {
+      screen.getByRole("button", { name: /re-check/i }).click();
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+    await act(async () => {});
+
+    expect(onResolvedAfterRecheck).not.toHaveBeenCalled();
+    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
+      checks: [
+        expect.objectContaining({
+          id: "health-check-request",
+          error: "System check timed out",
+          passed: false,
+        }),
+      ],
+      revealedCount: 1,
+    });
+  });
+});
+
 describe("Checking indicator behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();

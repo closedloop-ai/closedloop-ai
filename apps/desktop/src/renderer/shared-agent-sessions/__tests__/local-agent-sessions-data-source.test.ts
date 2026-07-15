@@ -4,7 +4,9 @@ import type {
   AgentSessionListResponse,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import { ReadSource } from "@repo/api/src/types/read-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { describe, expect, it, vi } from "vitest";
 import {
   SHARED_AGENT_SESSIONS_NOT_FOUND_CODE,
@@ -51,9 +53,11 @@ describe("createLocalAgentSessionsDataSource", () => {
     const api = fakeDesktopApi();
     const source = createLocalAgentSessionsDataSource(api);
 
+    // FEA-3120: the local source stamps `readSource: local` at the boundary, so
+    // the returned envelope carries the local rows *plus* the source tag.
     await expect(
       source.list({ harness: "claude", search: "session" })
-    ).resolves.toBe(LIST);
+    ).resolves.toEqual({ ...LIST, readSource: ReadSource.Local });
     await expect(source.usage({ status: "active" })).resolves.toBe(USAGE);
     await expect(source.analytics({})).resolves.toBe(ANALYTICS);
 
@@ -65,6 +69,39 @@ describe("createLocalAgentSessionsDataSource", () => {
       status: "active",
     });
     expect(api.agentSessionsApi.analytics).toHaveBeenCalledWith({});
+  });
+
+  it("forwards multi-status filters unchanged to every aggregate IPC read", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalAgentSessionsDataSource(api);
+    const filters = {
+      statuses: [
+        SESSION_STATUS.ACTIVE,
+        SESSION_STATUS.COMPLETED,
+        SESSION_STATUS.ABANDONED,
+      ],
+    };
+
+    await source.list(filters);
+    await source.usage(filters);
+    await source.analytics(filters);
+
+    expect(api.agentSessionsApi.list).toHaveBeenCalledWith(filters);
+    expect(api.agentSessionsApi.usage).toHaveBeenCalledWith(filters);
+    expect(api.agentSessionsApi.analytics).toHaveBeenCalledWith(filters);
+  });
+
+  // FEA-3120: an explicit source the IPC layer already reported wins — the
+  // boundary never clobbers it back to `local`.
+  it("preserves an explicit readSource from the IPC list payload", async () => {
+    const api = fakeDesktopApi({
+      list: vi.fn(async () => ({ ...LIST, readSource: ReadSource.Fallback })),
+    });
+    const source = createLocalAgentSessionsDataSource(api);
+
+    await expect(source.list({})).resolves.toMatchObject({
+      readSource: ReadSource.Fallback,
+    });
   });
 
   it("returns a present detail unchanged", async () => {

@@ -10,6 +10,7 @@ import {
   type BranchViewCommentIdentityBlocker,
   GitHubCommentThreadKind,
   PrCommentAuthorKind,
+  parseNumericGithubCommentId,
 } from "@repo/api/src/types/branch-view";
 import type { User } from "@repo/api/src/types/user";
 import { type TransactionClient, withDb } from "@repo/database";
@@ -35,6 +36,7 @@ import {
   softDeleteScopedGitHubCommentProjection,
   upsertGitHubIssueCommentThread,
 } from "@/app/comments/github-projection";
+import { userOAuthRestFetchProvenance } from "@/lib/github-fetch-provenance";
 import type { PrContext } from "@/lib/resolve-pr-context";
 import { toBranchViewComment } from "../comment-utils";
 import type { BranchViewAuthContext } from "../service";
@@ -156,6 +158,7 @@ async function createBranchViewConversationComment(input: {
   return await projectProviderMutation({
     action: BranchViewCommentAction.CreateConversation,
     ctx: mutationContext,
+    credentialOwnerId: input.user.id,
     githubComment,
   });
 }
@@ -287,6 +290,7 @@ async function editBranchViewConversationComment(input: {
   return await projectProviderMutation({
     action: BranchViewCommentAction.Edit,
     ctx: mutationContext,
+    credentialOwnerId: input.user.id,
     githubComment,
   });
 }
@@ -415,6 +419,7 @@ async function deleteBranchViewConversationComment(input: {
   return await projectLocalDelete({
     action: BranchViewCommentAction.Delete,
     ctx: mutationContext,
+    credentialOwnerId: input.user.id,
     githubCommentId: input.githubCommentId,
     preDeleteComment: target.branchViewComment,
   });
@@ -488,10 +493,15 @@ function activeGithubIdentityStatus(identity: GitHubWriteIdentityStatus) {
 async function projectProviderMutation(input: {
   action: BranchViewCommentAction;
   ctx: MutationContext;
+  credentialOwnerId: string;
   githubComment: GitHubPullRequestIssueComment;
 }): Promise<BranchViewConversationMutationResult> {
   const project = () =>
-    upsertIssueCommentProjection(input.ctx, input.githubComment);
+    upsertIssueCommentProjection(
+      input.ctx,
+      input.githubComment,
+      input.credentialOwnerId
+    );
   try {
     const comment = await project();
     return successActionResult(input.action, comment);
@@ -523,6 +533,7 @@ async function projectProviderMutation(input: {
 async function projectLocalDelete(input: {
   action: BranchViewCommentAction;
   ctx: MutationContext;
+  credentialOwnerId: string;
   githubCommentId: string;
   preDeleteComment: BranchViewComment;
 }): Promise<BranchViewConversationMutationResult> {
@@ -534,6 +545,9 @@ async function projectLocalDelete(input: {
         pullRequestDetailId: input.ctx.pullRequestDetailId,
         githubCommentId: input.githubCommentId,
         deletedAt: new Date(),
+        fetchProvenance: userOAuthRestFetchProvenance({
+          credentialOwnerId: input.credentialOwnerId,
+        }),
       })
     );
   try {
@@ -566,7 +580,8 @@ async function projectLocalDelete(input: {
 
 async function upsertIssueCommentProjection(
   ctx: MutationContext,
-  githubComment: GitHubPullRequestIssueComment
+  githubComment: GitHubPullRequestIssueComment,
+  credentialOwnerId: string
 ): Promise<BranchViewComment> {
   return await withDb.tx(async (tx) => {
     const author = await resolveGitHubAuthorForIssueComment(
@@ -579,6 +594,7 @@ async function upsertIssueCommentProjection(
       branchArtifactId: ctx.branchArtifactId,
       pullRequestDetailId: ctx.pullRequestDetailId,
       htmlUrl: githubComment.html_url,
+      fetchProvenance: userOAuthRestFetchProvenance({ credentialOwnerId }),
       comment: {
         githubCommentId: githubComment.id,
         githubHtmlUrl: githubComment.html_url,
@@ -815,14 +831,6 @@ function projectionFailureResult(
       github: { commentId: githubCommentId },
     },
   };
-}
-
-function parseNumericGithubCommentId(githubCommentId: string): number | null {
-  const parsed = Number(githubCommentId.trim());
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
 }
 
 /** Direct GitHub issue-comment mutations for branch-view conversation rows. */

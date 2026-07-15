@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyJitter,
   backoffMs,
   formatRetryAttemptLine,
   formatRetryExhaustedLine,
+  isPrismaAdvisoryLockError,
   isPrismaUnreachableError,
   isTransientConnectionError,
   isTransientMigrateDeployError,
+  MIGRATE_DEPLOY_RETRY,
   subprocessErrorOutput,
   TRANSIENT_ERROR_CODES,
   withRetry,
@@ -25,6 +28,16 @@ function deployError(stderr: string, stdout = ""): Error {
 
 const P1001_STDERR =
   "Error: P1001: Can't reach database server at `db.example.com:5432`\n\nPlease make sure your database server is running at `db.example.com:5432`.";
+
+// Verbatim shape of the FEA-3062 production failure: P1002 emitted WITH the
+// advisory-lock acquire-timeout context (from the api-stage deploy build logs).
+const ADVISORY_LOCK_STDERR =
+  "Error: P1002\n\nThe database server was reached but timed out.\n\nPlease try again.\n\nContext: Timed out trying to acquire a postgres advisory lock (SELECT pg_advisory_lock(72707369)). Timeout: 10000ms. See https://pris.ly/d/migrate-advisory-locking for details.";
+
+// A genuine reached-but-timed-out P1002 with NO advisory-lock context — must
+// stay non-transient so a real outage is not masked by minutes of retries.
+const BARE_P1002_STDERR =
+  "Error: P1002\n\nThe database server was reached but timed out.\n\nPlease make sure your database server is running at the configured address.";
 
 // ---------------------------------------------------------------------------
 // isTransientConnectionError
@@ -654,6 +667,251 @@ describe("withRetry + isTransientMigrateDeployError (build-time deploy)", () => 
         attempts: 3,
         sleep: sleepFn,
         operation: "Migrate deploy",
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBe(orig);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(sleepFn).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPrismaAdvisoryLockError (FEA-3062 — migration advisory-lock contention)
+// ---------------------------------------------------------------------------
+
+describe("isPrismaAdvisoryLockError", () => {
+  it("advisory-lock P1002 (production shape) → true", () => {
+    expect(isPrismaAdvisoryLockError(deployError(ADVISORY_LOCK_STDERR))).toBe(
+      true
+    );
+  });
+
+  it("advisory-lock context on stdout → true (output scanned regardless of stream)", () => {
+    expect(
+      isPrismaAdvisoryLockError(deployError("", ADVISORY_LOCK_STDERR))
+    ).toBe(true);
+  });
+
+  it("bare P1002 with no advisory-lock context → false (a real outage is not masked)", () => {
+    expect(isPrismaAdvisoryLockError(deployError(BARE_P1002_STDERR))).toBe(
+      false
+    );
+  });
+
+  it("P1001 unreachable → false (that is connectivity, not lock contention)", () => {
+    expect(isPrismaAdvisoryLockError(deployError(P1001_STDERR))).toBe(false);
+  });
+
+  it("non-Error throw → false", () => {
+    expect(isPrismaAdvisoryLockError("boom")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isTransientMigrateDeployError — advisory-lock additions (FEA-3062)
+// ---------------------------------------------------------------------------
+
+describe("isTransientMigrateDeployError (advisory lock)", () => {
+  it("advisory-lock P1002 → transient (retried)", () => {
+    expect(
+      isTransientMigrateDeployError(deployError(ADVISORY_LOCK_STDERR))
+    ).toBe(true);
+  });
+
+  it("bare P1002 (no advisory-lock context) → NOT transient", () => {
+    expect(isTransientMigrateDeployError(deployError(BARE_P1002_STDERR))).toBe(
+      false
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyJitter (equal-jitter, deterministic under injected random)
+// ---------------------------------------------------------------------------
+
+describe("applyJitter", () => {
+  it("random()=0 → exactly half the delay (lower bound)", () => {
+    expect(applyJitter(1000, () => 0)).toBe(500);
+  });
+
+  it("random()→1 → approaches the full delay (upper bound)", () => {
+    // half + 1*half = full; floor keeps it an integer.
+    expect(applyJitter(1000, () => 0.999_999)).toBe(999);
+  });
+
+  it("random()=0.5 → three-quarters of the delay", () => {
+    expect(applyJitter(1000, () => 0.5)).toBe(750);
+  });
+
+  it("always returns an integer within [delay/2, delay]", () => {
+    for (const r of [0, 0.1, 0.37, 0.5, 0.83, 0.999]) {
+      const out = applyJitter(2000, () => r);
+      expect(Number.isInteger(out)).toBe(true);
+      expect(out).toBeGreaterThanOrEqual(1000);
+      expect(out).toBeLessThanOrEqual(2000);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// backoffMs — per-call cap override (FEA-3062 uses a larger cap)
+// ---------------------------------------------------------------------------
+
+describe("backoffMs (maxMs override)", () => {
+  it("honors a larger cap so the deploy path can wait longer than 2s", () => {
+    // 500 * 2^5 = 16000, capped to the 15000 override (not the 2000 default).
+    expect(backoffMs(6, 500, 15_000)).toBe(15_000);
+    expect(backoffMs(4, 500, 15_000)).toBe(4000); // 500*8, under the cap
+  });
+
+  it("still defaults to the 2000ms cap when maxMs is omitted", () => {
+    expect(backoffMs(6, 100)).toBe(2000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withRetry — jitter wiring (FEA-3062)
+// ---------------------------------------------------------------------------
+
+describe("withRetry (jitter)", () => {
+  it("applies equal-jitter to the backoff via the injected random", async () => {
+    const transientErr = Object.assign(new Error("conn drop"), {
+      code: "08006",
+    });
+    const sleepFn = vi
+      .fn<(ms: number) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(transientErr)
+      .mockResolvedValueOnce("ok");
+
+    await withRetry(fn, isTransientConnectionError, {
+      attempts: 3,
+      sleep: sleepFn,
+      baseDelayMs: 1000,
+      maxDelayMs: 15_000,
+      jitter: true,
+      random: () => 0.5,
+    });
+
+    // backoffMs(1, 1000, 15000) = 1000 → applyJitter(1000, 0.5) = 750.
+    expect(sleepFn).toHaveBeenCalledTimes(1);
+    expect(sleepFn.mock.calls[0][0]).toBe(750);
+  });
+
+  it("without jitter, sleeps the exact computed backoff (unchanged default)", async () => {
+    const transientErr = Object.assign(new Error("conn drop"), {
+      code: "08006",
+    });
+    const sleepFn = vi
+      .fn<(ms: number) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(transientErr)
+      .mockResolvedValueOnce("ok");
+
+    await withRetry(fn, isTransientConnectionError, {
+      attempts: 3,
+      sleep: sleepFn,
+      baseDelayMs: 1000,
+    });
+
+    expect(sleepFn.mock.calls[0][0]).toBe(1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MIGRATE_DEPLOY_RETRY — production tuning + end-to-end deploy seam (FEA-3062)
+// ---------------------------------------------------------------------------
+
+describe("MIGRATE_DEPLOY_RETRY", () => {
+  const noopSleep = () => Promise.resolve();
+
+  it("is configured to wait out a contended lock (wide, jittered)", () => {
+    expect(MIGRATE_DEPLOY_RETRY.attempts).toBeGreaterThanOrEqual(6);
+    expect(MIGRATE_DEPLOY_RETRY.jitter).toBe(true);
+  });
+
+  it("the actual worst-case backoff driven through withRetry stays under the IAM-token window", async () => {
+    // Behaviour test (not constant arithmetic): exhaust every attempt against a
+    // persistent advisory-lock failure and sum the real delays withRetry passes
+    // to sleep(). random()→~1 makes equal-jitter pick the full (worst-case)
+    // delay each time, so this exercises the true backoffMs+cap+jitter path.
+    const observedDelays: number[] = [];
+    const recordingSleep = (ms: number) => {
+      observedDelays.push(ms);
+      return Promise.resolve();
+    };
+    const orig = deployError(ADVISORY_LOCK_STDERR);
+    const fn = vi.fn().mockRejectedValue(orig);
+
+    await expect(
+      withRetry(fn, isTransientMigrateDeployError, {
+        ...MIGRATE_DEPLOY_RETRY,
+        sleep: recordingSleep,
+        random: () => 0.999_999,
+      })
+    ).rejects.toBe(orig);
+
+    // withRetry sleeps between attempts only → attempts - 1 delays.
+    expect(observedDelays).toHaveLength(MIGRATE_DEPLOY_RETRY.attempts - 1);
+    const actualSleepMs = observedDelays.reduce((sum, ms) => sum + ms, 0);
+    // Each attempt itself can block up to Prisma's fixed 10s advisory-lock
+    // acquire timeout; total must stay well under the 15-minute (900s) RDS
+    // IAM-token validity window (retries reuse the same IAM-signed URL).
+    const lockWaitMs = MIGRATE_DEPLOY_RETRY.attempts * 10_000;
+    expect(actualSleepMs + lockWaitMs).toBeLessThan(15 * 60 * 1000);
+  });
+
+  it("retries an advisory-lock P1002 then succeeds (deploy seam)", async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(deployError(ADVISORY_LOCK_STDERR))
+      .mockResolvedValueOnce(undefined);
+
+    await withRetry(fn, isTransientMigrateDeployError, {
+      ...MIGRATE_DEPLOY_RETRY,
+      sleep: noopSleep,
+      random: () => 0.5,
+    });
+
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("exhausts on a persistent advisory-lock P1002 and rethrows the original error", async () => {
+    const orig = deployError(ADVISORY_LOCK_STDERR);
+    const fn = vi.fn().mockRejectedValue(orig);
+
+    let thrown: unknown;
+    try {
+      await withRetry(fn, isTransientMigrateDeployError, {
+        ...MIGRATE_DEPLOY_RETRY,
+        sleep: noopSleep,
+        random: () => 0.5,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBe(orig);
+    expect(fn).toHaveBeenCalledTimes(MIGRATE_DEPLOY_RETRY.attempts);
+  });
+
+  it("does NOT retry a bare P1002 (no advisory-lock context) — one attempt, rethrown", async () => {
+    const orig = deployError(BARE_P1002_STDERR);
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+    const fn = vi.fn().mockRejectedValue(orig);
+
+    let thrown: unknown;
+    try {
+      await withRetry(fn, isTransientMigrateDeployError, {
+        ...MIGRATE_DEPLOY_RETRY,
+        sleep: sleepFn,
       });
     } catch (err) {
       thrown = err;

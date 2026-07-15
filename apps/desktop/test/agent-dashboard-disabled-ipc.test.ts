@@ -1,7 +1,7 @@
 /**
  * @file agent-dashboard-disabled-ipc.test.ts
- * @description FEA-1791 / PLN-886 Phase 2 — regression for disabled responder
- * installation. The boot and shutdown paths must install disabled responders
+ * @description Regression for disabled responder installation. The boot and
+ * shutdown paths must install disabled responders
  * WITHOUT colliding with already-registered live handlers (Electron's
  * ipcMain.handle throws on a second registration for a channel).
  *
@@ -30,6 +30,12 @@ import {
   SHARED_BRANCHES_IPC_CHANNEL_LIST,
   SHARED_BRANCHES_IPC_CHANNELS,
 } from "../src/shared/shared-branches-contract.js";
+import {
+  SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST,
+  SHARED_TRACE_COMMENTS_IPC_CHANNELS,
+} from "../src/shared/shared-trace-comments-contract.js";
+
+const LOCAL_STORE_UNAVAILABLE_RE = /local store is unavailable/;
 
 type Listener = (event: unknown, ...args: unknown[]) => unknown;
 
@@ -105,6 +111,11 @@ test("installs disabled shared-branches responders returning canonical empty/nul
     handlers.get(SHARED_BRANCHES_IPC_CHANNELS.detail)?.(undefined),
     null
   );
+  // PLN-1148 Phase 2: the lazy trace channel degrades to an empty trace array.
+  assert.deepEqual(
+    handlers.get(SHARED_BRANCHES_IPC_CHANNELS.trace)?.(undefined),
+    []
+  );
 });
 
 test("installs disabled shared-session responders returning canonical empty/null", () => {
@@ -129,6 +140,23 @@ test("installs disabled shared-session responders returning canonical empty/null
   assert.equal(
     handlers.get(SHARED_AGENT_SESSIONS_IPC_CHANNELS.detail)?.(undefined),
     null
+  );
+});
+
+test("installs disabled shared trace-comment responders for every exposed channel", () => {
+  const { registrar, handlers } = makeFakeRegistrar();
+  installDisabledAgentDashboardDbIpcHandlers(registrar);
+
+  for (const channel of SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST) {
+    assert.ok(handlers.has(channel), `missing disabled handler for ${channel}`);
+  }
+  assert.throws(
+    () => handlers.get(SHARED_TRACE_COMMENTS_IPC_CHANNELS.list)?.(undefined),
+    LOCAL_STORE_UNAVAILABLE_RE
+  );
+  assert.throws(
+    () => handlers.get(SHARED_TRACE_COMMENTS_IPC_CHANNELS.create)?.(undefined),
+    LOCAL_STORE_UNAVAILABLE_RE
   );
 });
 

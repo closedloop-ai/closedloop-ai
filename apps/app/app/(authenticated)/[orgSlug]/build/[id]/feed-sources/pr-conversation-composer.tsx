@@ -62,6 +62,7 @@ export function PrConversationComposer() {
     <>
       <BranchCommentWriteIdentityPrompt prompt={createPrompt} />
       <CommentComposer
+        ariaLabel="Add a PR comment"
         containerClassName="border-border border-t bg-background p-3"
         helperText={
           <div className="mb-1 flex items-center gap-1.5 text-muted-foreground text-xs">

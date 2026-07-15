@@ -3,12 +3,12 @@ import { BranchesToolbar } from "@repo/app/branches/components/branches-toolbar"
 import { useBranchFilterState } from "@repo/app/branches/hooks/use-branch-filter-state";
 import { useBranchViewState } from "@repo/app/branches/hooks/use-branch-view-state";
 import {
-  BRANCH_SAMPLE_ROWS,
   type BranchRow,
   BranchRowStatus,
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
-} from "@repo/app/branches/lib/branch-sample-data";
+} from "@repo/app/branches/lib/branch-row";
+import { BRANCH_SAMPLE_ROWS } from "@repo/app/branches/lib/branch-sample-data";
 import {
   type BranchSortDir,
   type BranchSortKey,

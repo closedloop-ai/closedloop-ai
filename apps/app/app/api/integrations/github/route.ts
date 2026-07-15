@@ -30,7 +30,7 @@ import {
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
-    const { userId, orgId } = await auth();
+    const { userId, orgId, orgSlug } = await auth();
 
     if (!(userId && orgId)) {
       log.warn("[github/oauth] Not authenticated");
@@ -65,9 +65,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     cookieStore.set(GITHUB_OAUTH_STATE_COOKIE, state, cookieOptions);
     const returnTo = getCanonicalBranchViewReturnPath(
-      request.nextUrl.searchParams.get("returnTo")
+      request.nextUrl.searchParams.get("returnTo"),
+      { orgSlug }
     );
-    if (returnTo && request.nextUrl.searchParams.get("install") !== "true") {
+    if (returnTo) {
       cookieStore.set(
         GITHUB_OAUTH_RETURN_TO_COOKIE,
         createGitHubOAuthReturnToCookie({

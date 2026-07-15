@@ -1,9 +1,7 @@
-import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   conflictResponse,
   errorResponse,
-  forbiddenResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
@@ -20,13 +18,8 @@ export const GET = withAnyAuth(async ({ user }) => {
 });
 
 export const POST = withAnyAuth(
-  async ({ user, clerkOrgId, clerkUserId }, request) => {
+  async ({ user }, request) => {
     try {
-      const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!adminCheck) {
-        return forbiddenResponse();
-      }
-
       const { body, errorResponse: parseError } = await parseBody(
         request,
         createTagValidator

@@ -2,26 +2,20 @@ import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags
 import { COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY } from "@repo/api/src/types/compute-target";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import {
+  type FeatureFlagIdentity,
+  resolveDistinctIdsForIdentity,
+} from "@/lib/feature-flag-identity";
 
-export type ComputeTargetSigningIdentity = {
-  userId: string;
-  clerkUserId?: string | null;
-};
+export type ComputeTargetSigningIdentity = FeatureFlagIdentity;
 
+// NB: unlike the boolean fail-closed helpers, this check surfaces a third
+// `unknown` state so signing callers can distinguish a provider outage from a
+// disabled flag — so it shares only the distinct-id resolution, not the loop.
 export type ComputeTargetSigningFeatureSupportResult =
   | { status: "supported" }
   | { status: "unsupported" }
   | { status: "unknown"; error: unknown };
-
-function resolveDistinctIds(identity: ComputeTargetSigningIdentity): string[] {
-  return [
-    ...new Set(
-      [identity.clerkUserId, identity.userId].filter((value): value is string =>
-        Boolean(value)
-      )
-    ),
-  ];
-}
 
 /**
  * Server-side rollout check that preserves feature-provider failures for
@@ -32,7 +26,7 @@ export async function getComputeTargetSigningFeatureSupport(
   identity: ComputeTargetSigningIdentity
 ): Promise<ComputeTargetSigningFeatureSupportResult> {
   try {
-    for (const distinctId of resolveDistinctIds(identity)) {
+    for (const distinctId of resolveDistinctIdsForIdentity(identity)) {
       if (
         (await isFeatureFlagEnabledForDistinctId(
           COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY,

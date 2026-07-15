@@ -1,11 +1,8 @@
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import {
-  Card,
-  CardContent,
-} from "@closedloop-ai/design-system/components/ui/card";
-import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { Card, CardContent } from "@closedloop-ai/design-system/components/ui/card";
+import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { desktopSessionDetailHashHref } from "../../shared-agent-sessions/session-hrefs";

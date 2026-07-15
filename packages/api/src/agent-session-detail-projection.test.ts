@@ -633,8 +633,8 @@ describe("projectAgentSessionTurnItems", () => {
     expect(sub.sub).toBe("Explorer");
     expect(sub.subagentType).toBe("Explore");
     expect(sub.duration).toBe("1m 30s");
-    expect(sub.tokens).toBe("2,000");
-    expect(sub.cost).toBe("$1.50");
+    expect(sub.tokens).toBeNull();
+    expect(sub.cost).toBeNull();
     expect(sub.body.map((line) => [line.kind, line.text])).toEqual([
       ["task", "Find usages"],
       ["tool", "Grep"],
@@ -672,6 +672,357 @@ describe("projectAgentSessionTurnItems", () => {
     expect(sub.duration).toBeNull();
     expect(sub.tokens).toBeNull();
     expect(sub.cost).toBeNull();
+  });
+});
+
+describe("projectAgentSessionTurnItems — cost attribution", () => {
+  const baseInput = {
+    sessionId: "sess-1",
+    harness: "claude-code",
+    primaryModel: "claude-opus",
+    humanActor: { name: "Ada", color: "var(--human)" },
+    events: [] as SyncedAgentSessionEvent[],
+    tokenUsageByModel: [] as SyncedAgentSessionTokenUsage[],
+  };
+
+  it("attributes a token event before the first cost-bearing turn to the first turn", () => {
+    const timeline: SessionTimelineEvent[] = [
+      {
+        t: "t0",
+        tMs: 1000,
+        kind: "human",
+        title: "Q",
+        detail: "Question",
+        tl: 0,
+      },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [{ tMs: 500, costUsd: 0.01 }],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    expect(prompt.costDelta).toBe(0.01);
+    expect(prompt.cum).toBe(0.01);
+  });
+
+  it("attributes a token event between a prompt and agent turn to the agent turn", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+      {
+        t: "t1",
+        tMs: 2000,
+        kind: "say",
+        title: "opus",
+        detail: "Answer",
+        tl: 1,
+      },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [{ tMs: 1000, costUsd: 0.05 }],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    const say = items[1]!;
+    if (say.type !== "say") {
+      throw new Error("expected say turn");
+    }
+    expect(prompt.costDelta).toBe(0);
+    expect(say.costDelta).toBe(0.05);
+  });
+
+  it("attributes a token event whose tMs matches a turn's tMs to that turn", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+      {
+        t: "t1",
+        tMs: 1000,
+        kind: "say",
+        title: "opus",
+        detail: "Answer",
+        tl: 1,
+      },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [{ tMs: 1000, costUsd: 0.02 }],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    const say = items[1]!;
+    if (say.type !== "say") {
+      throw new Error("expected say turn");
+    }
+    expect(prompt.costDelta).toBe(0);
+    expect(say.costDelta).toBe(0.02);
+  });
+
+  it("attributes a token event after the last turn to the last cost-bearing turn", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [{ tMs: 5000, costUsd: 0.03 }],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    expect(prompt.costDelta).toBe(0.03);
+    expect(prompt.cum).toBe(0.03);
+  });
+
+  it("sum of all costDelta equals the sum of input costUsd", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+      {
+        t: "t1",
+        tMs: 1000,
+        kind: "say",
+        title: "opus",
+        detail: "Answer",
+        tl: 1,
+      },
+      { t: "t2", tMs: 2000, kind: "tool", title: "Bash", detail: "ls", tl: 2 },
+    ];
+    const tokenEvents = [
+      { tMs: 500, costUsd: 0.01 },
+      { tMs: 1500, costUsd: 0.02 },
+      { tMs: 2500, costUsd: 0.03 },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents,
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    const say = items[1]!;
+    if (say.type !== "say") {
+      throw new Error("expected say turn");
+    }
+    const tools = items[2]!;
+    if (tools.type !== "tools") {
+      throw new Error("expected tools turn");
+    }
+
+    const totalDelta =
+      (prompt.costDelta ?? 0) + (say.costDelta ?? 0) + (tools.costDelta ?? 0);
+    const totalInput = tokenEvents.reduce((sum, e) => sum + e.costUsd, 0);
+    expect(totalDelta).toBeCloseTo(totalInput, 10);
+  });
+
+  it("cum is monotonically non-decreasing across cost-bearing turns", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+      { t: "t1", tMs: 1000, kind: "say", title: "opus", detail: "A", tl: 1 },
+      { t: "t2", tMs: 2000, kind: "tool", title: "Bash", detail: "ls", tl: 2 },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [
+        { tMs: 500, costUsd: 0.01 },
+        { tMs: 1500, costUsd: 0.02 },
+        { tMs: 2500, costUsd: 0.03 },
+      ],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    const say = items[1]!;
+    if (say.type !== "say") {
+      throw new Error("expected say turn");
+    }
+    const tools = items[2]!;
+    if (tools.type !== "tools") {
+      throw new Error("expected tools turn");
+    }
+
+    expect(prompt.cum).toBeLessThanOrEqual(say.cum);
+    expect(say.cum).toBeLessThanOrEqual(tools.cum);
+  });
+
+  it("a zero-cost token event contributes 0 to costDelta", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [{ tMs: 500, costUsd: 0 }],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    expect(prompt.costDelta).toBe(0);
+    expect(prompt.cum).toBe(0);
+  });
+
+  it("leaves costDelta undefined and cum at 0 when tokenEvents is not provided", () => {
+    const timeline: SessionTimelineEvent[] = [
+      { t: "t0", tMs: 0, kind: "human", title: "Q", detail: "Question", tl: 0 },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+    });
+
+    const prompt = items[0]!;
+    if (prompt.type !== "prompt") {
+      throw new Error("expected prompt turn");
+    }
+    expect(prompt.costDelta).toBeUndefined();
+    expect(prompt.cum).toBe(0);
+  });
+
+  it("leaves subagent tokens and cost null rather than deriving session totals", () => {
+    const agents: SyncedAgentSessionAgent[] = [
+      agent({
+        externalAgentId: "sub-1",
+        name: "Explorer",
+        type: "subagent",
+        subagentType: "Explore",
+        status: "completed",
+        startedAt: "2026-06-17T00:00:00.000Z",
+        endedAt: "2026-06-17T00:01:00.000Z",
+      }),
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline: [],
+      agents,
+    });
+
+    const sub = items[0]!;
+    if (sub.type !== "subagent") {
+      throw new Error("expected subagent turn");
+    }
+    expect(sub.tokens).toBeNull();
+    expect(sub.cost).toBeNull();
+  });
+
+  it("does not throw when there are no cost-bearing turns and tokenEvents is non-empty", () => {
+    const timeline: SessionTimelineEvent[] = [
+      {
+        t: "t0",
+        tMs: 0,
+        kind: "event",
+        title: "SessionStart",
+        detail: "SessionStart",
+        tl: 0,
+      },
+    ];
+    expect(() =>
+      projectAgentSessionTurnItems({
+        ...baseInput,
+        timeline,
+        agents: [],
+        tokenEvents: [{ tMs: 500, costUsd: 0.01 }],
+      })
+    ).not.toThrow();
+  });
+
+  it("attributes cost events to each of multiple subagent turns based on their tMs window", () => {
+    const sub1Start = Date.parse("2026-06-17T00:00:00.000Z");
+    const agents: SyncedAgentSessionAgent[] = [
+      agent({
+        externalAgentId: "sub-1",
+        name: "Explorer",
+        type: "subagent",
+        subagentType: "Explore",
+        status: "completed",
+        startedAt: "2026-06-17T00:00:00.000Z",
+      }),
+      agent({
+        externalAgentId: "sub-2",
+        name: "Builder",
+        type: "subagent",
+        subagentType: "Build",
+        status: "completed",
+        startedAt: "2026-06-17T00:01:00.000Z",
+      }),
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline: [],
+      agents,
+      tokenEvents: [
+        { tMs: sub1Start + 30_000, costUsd: 0.1 },
+        { tMs: sub1Start + 90_000, costUsd: 0.2 },
+      ],
+    });
+
+    const sub1 = items[0]!;
+    if (sub1.type !== "subagent") {
+      throw new Error("expected subagent turn");
+    }
+    const sub2 = items[1]!;
+    if (sub2.type !== "subagent") {
+      throw new Error("expected subagent turn");
+    }
+
+    expect(sub1.costDelta).toBe(0.1);
+    expect(sub2.costDelta).toBe(0.2);
+    expect(sub2.cum).toBeCloseTo(0.3, 10);
+  });
+
+  it("ignores token events with NaN tMs", () => {
+    const timeline: SessionTimelineEvent[] = [
+      {
+        tl: 0,
+        t: "2026-01-01T00:01:00.000Z",
+        tMs: Date.parse("2026-01-01T00:01:00.000Z"),
+        kind: "say",
+        title: "say",
+      },
+    ];
+    const items = projectAgentSessionTurnItems({
+      ...baseInput,
+      timeline,
+      agents: [],
+      tokenEvents: [
+        { tMs: Number.NaN, costUsd: 0.5 },
+        { tMs: Date.parse("2026-01-01T00:02:00.000Z"), costUsd: 0.1 },
+      ],
+    });
+    const say = items.find((item) => item.type === "say");
+    if (say?.type !== "say") {
+      throw new Error("expected say turn");
+    }
+    expect(say.costDelta).toBe(0.1);
+    expect(say.cum).toBe(0.1);
   });
 });
 

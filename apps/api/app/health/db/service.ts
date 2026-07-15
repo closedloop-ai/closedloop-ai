@@ -1,4 +1,9 @@
-import { withDb } from "@repo/database";
+import {
+  DbHealthCheckStatus,
+  type DbHealthDeployment,
+} from "@repo/api/src/types/db-health";
+import { getDatabaseTransportPosture, withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
 import {
   type CheckResult,
   GENERIC_ERRORS,
@@ -8,20 +13,26 @@ import {
 type HealthChecks = Record<
   "connectivity" | "migrations" | "tables",
   CheckResult
->;
+> & {
+  transport: ReturnType<typeof getDatabaseTransportPosture>;
+};
 
 export async function getDatabaseHealth() {
   const checks: HealthChecks = {
-    connectivity: { status: "error", error: "not_run" },
-    migrations: { status: "error", error: "not_run" },
-    tables: { status: "error", error: "not_run" },
+    connectivity: { status: DbHealthCheckStatus.Error, error: "not_run" },
+    migrations: { status: DbHealthCheckStatus.Error, error: "not_run" },
+    tables: { status: DbHealthCheckStatus.Error, error: "not_run" },
+    transport: getDatabaseTransportPosture(),
   };
 
   try {
     // Check 1: Connectivity + basic query
     const start = Date.now();
     await withDb((db) => db.$queryRaw`SELECT 1 AS health_check`);
-    checks.connectivity = { status: "ok", latencyMs: Date.now() - start };
+    checks.connectivity = {
+      status: DbHealthCheckStatus.Ok,
+      latencyMs: Date.now() - start,
+    };
 
     // Check 2: Migration status
     try {
@@ -37,22 +48,25 @@ export async function getDatabaseHealth() {
       checks.migrations =
         pending > 0
           ? {
-              status: "error",
+              status: DbHealthCheckStatus.Error,
               total,
               pending,
               error: GENERIC_ERRORS.migrations,
             }
-          : { status: "ok", total, pending };
+          : { status: DbHealthCheckStatus.Ok, total, pending };
     } catch (err) {
       if (isMissingTableError(err)) {
         checks.migrations = {
-          status: "ok",
+          status: DbHealthCheckStatus.Ok,
           note: "No migrations table (first deploy)",
         };
       } else {
-        console.error("DB health migrations check failed", err);
+        log.error("health.db_check_failed", {
+          check: "migrations",
+          error: err,
+        });
         checks.migrations = {
-          status: "error",
+          status: DbHealthCheckStatus.Error,
           error: GENERIC_ERRORS.migrations,
         };
       }
@@ -67,27 +81,60 @@ export async function getDatabaseHealth() {
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
       `
       );
-      checks.tables = { status: "ok", count: Number(tableRows[0].count) };
+      checks.tables = {
+        status: DbHealthCheckStatus.Ok,
+        count: Number(tableRows[0].count),
+      };
     } catch (err) {
-      console.error("DB health table count check failed", err);
-      checks.tables = { status: "error", error: GENERIC_ERRORS.tables };
+      log.error("health.db_check_failed", { check: "tables", error: err });
+      checks.tables = {
+        status: DbHealthCheckStatus.Error,
+        error: GENERIC_ERRORS.tables,
+      };
     }
   } catch (err) {
-    console.error("DB health connectivity check failed", err);
+    log.error("health.db_check_failed", { check: "connectivity", error: err });
     checks.connectivity = {
-      status: "error",
+      status: DbHealthCheckStatus.Error,
       error: GENERIC_ERRORS.connectivity,
     };
   }
 
   const ok =
-    checks.connectivity.status === "ok" &&
-    checks.migrations.status !== "error" &&
-    checks.tables.status === "ok";
+    checks.connectivity.status === DbHealthCheckStatus.Ok &&
+    checks.migrations.status !== DbHealthCheckStatus.Error &&
+    checks.tables.status === DbHealthCheckStatus.Ok;
 
   return {
     timestamp: new Date().toISOString(),
     ok,
     checks,
+    ...buildDeploymentMetadata(),
   };
+}
+
+function buildDeploymentMetadata(): { deployment?: DbHealthDeployment } {
+  const deployment: DbHealthDeployment = {};
+
+  if (process.env.VERCEL_GIT_COMMIT_SHA) {
+    deployment.gitSha = process.env.VERCEL_GIT_COMMIT_SHA;
+  }
+
+  if (process.env.VERCEL_GIT_COMMIT_REF) {
+    deployment.gitCommitRef = process.env.VERCEL_GIT_COMMIT_REF;
+  }
+
+  if (process.env.VERCEL_DEPLOYMENT_ID) {
+    deployment.vercelDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+  }
+
+  if (process.env.VERCEL_URL) {
+    deployment.vercelUrl = process.env.VERCEL_URL;
+  }
+
+  if (Object.keys(deployment).length === 0) {
+    return {};
+  }
+
+  return { deployment };
 }

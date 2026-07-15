@@ -2,10 +2,30 @@ import type {
   InstallationRepositoriesAddedEvent,
   InstallationRepositoriesRemovedEvent,
 } from "@octokit/webhooks-types";
+import {
+  GitHubDirtyScopeKind,
+  GitHubDirtyTrigger,
+} from "@repo/api/src/types/github-dirty-scope";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { githubService } from "@/app/integrations/github/service";
+import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
 import { toRepositoryInput } from "./installation-handler";
+
+const installationRepositoriesValidator = z
+  .object({
+    repositories: z
+      .array(
+        z.object({
+          id: z.string(),
+          githubRepoId: z.string(),
+          fullName: z.string(),
+        })
+      )
+      .optional(),
+  })
+  .passthrough();
 
 /**
  * Handle GitHub App installation_repositories added event.
@@ -44,10 +64,30 @@ export async function handleInstallationRepositoriesAdded(
     toRepositoryInput(repo, installation.account.login)
   );
 
-  await githubService.addRepositories(
+  const addedRepositories = await githubService.addRepositories(
     existingInstallation.id,
     repositoryInputs
   );
+  const organizationId = existingInstallation.organizationId;
+  if (organizationId) {
+    await Promise.all(
+      addedRepositories.map((repo) =>
+        publishGitHubDirtyScopes({
+          organizationId,
+          repositoryId: repo.id,
+          repositoryFullName: repo.fullName,
+          scopes: [
+            {
+              kind: GitHubDirtyScopeKind.Repository,
+              repositoryId: repo.id,
+              repositoryFullName: repo.fullName,
+            },
+          ],
+          triggers: [GitHubDirtyTrigger.InstallationRepositories],
+        })
+      )
+    );
+  }
 }
 
 /**
@@ -84,10 +124,42 @@ export async function handleInstallationRepositoriesRemoved(
   }
 
   const githubRepoIds = repositories_removed.map((repo) => String(repo.id));
+  const removedRepositories = getInstallationRepositories(
+    existingInstallation
+  ).filter((repo) => githubRepoIds.includes(repo.githubRepoId));
   await githubService.removeRepositories(
     existingInstallation.id,
     githubRepoIds
   );
+  const organizationId = existingInstallation.organizationId;
+  if (organizationId) {
+    await Promise.all(
+      removedRepositories.map((repo) =>
+        publishGitHubDirtyScopes({
+          organizationId,
+          repositoryId: repo.id,
+          repositoryFullName: repo.fullName,
+          scopes: [
+            {
+              kind: GitHubDirtyScopeKind.Repository,
+              repositoryId: repo.id,
+              repositoryFullName: repo.fullName,
+            },
+          ],
+          triggers: [GitHubDirtyTrigger.InstallationRepositories],
+        })
+      )
+    );
+  }
+}
+
+function getInstallationRepositories(installation: unknown): Array<{
+  id: string;
+  githubRepoId: string;
+  fullName: string;
+}> {
+  const parsed = installationRepositoriesValidator.safeParse(installation);
+  return parsed.success ? (parsed.data.repositories ?? []) : [];
 }
 
 /**

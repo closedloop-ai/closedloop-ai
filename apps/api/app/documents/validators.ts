@@ -1,5 +1,10 @@
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import {
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+  statusOptionsForSubtype,
+} from "@repo/api/src/types/document";
 import { MAX_ADDITIONAL_REPOS } from "@repo/api/src/types/loop";
 import { MovePosition } from "@repo/api/src/types/project-artifact-move";
 import { z } from "zod";
@@ -9,7 +14,13 @@ import {
   repoFullNameSchema,
 } from "@/lib/repo-validator-helpers";
 
-const documentStatusEnum = z.enum(DocumentStatus);
+// Documents (PRD/IMPLEMENTATION_PLAN/TEMPLATE) and Features (FEATURE) carry
+// disjoint status vocabularies on the same freeform column (PRD-495). This
+// union accepts any value from either set; the correct subset is enforced by
+// the artifact's type/subtype — at the validator layer for create (where the
+// type is in the body) and in the service for update/batch (after loading the
+// target artifact's subtype).
+const anyArtifactStatusEnum = z.enum({ ...DocumentStatus, ...FeatureStatus });
 const documentTypeEnum = z.enum(DocumentType);
 const priorityEnum = z.enum(Priority);
 
@@ -38,20 +49,29 @@ export const createDocumentValidator = z
     title: z.string().min(1, "Title is required"),
     fileName: z.string().optional(),
     approverId: z.uuid().nullable().optional(),
-    status: documentStatusEnum.optional(),
+    status: anyArtifactStatusEnum.optional(),
     priority: priorityEnum.optional(),
     content: z.string(),
     assigneeId: z.uuid().nullable().optional(),
     repositorySelection: repositorySelectionInputSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (data) =>
+      data.status === undefined ||
+      statusOptionsForSubtype(data.type).includes(data.status),
+    {
+      message: "status is not a valid value for the document type",
+      path: ["status"],
+    }
+  );
 
 export const updateDocumentValidator = z
   .object({
     title: z.string().min(1).optional(),
     fileName: z.string().optional(),
     approverId: z.uuid().nullable().optional(),
-    status: documentStatusEnum.optional(),
+    status: anyArtifactStatusEnum.optional(),
     priority: priorityEnum.optional(),
     projectId: uuidOrSlug().optional(),
     assigneeId: z.uuid().nullable().optional(),
@@ -100,7 +120,7 @@ export const batchUpdateStatusValidator = z.object({
     .array(z.uuid())
     .min(1, "At least one document ID required")
     .max(500),
-  status: documentStatusEnum,
+  status: anyArtifactStatusEnum,
 });
 
 export const batchDeleteValidator = z.object({

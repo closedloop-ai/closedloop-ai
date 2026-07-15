@@ -35,7 +35,12 @@ const execFileAsync = promisify(execFile);
 const VERSION_REGEX = /(\d+\.\d+[\w.-]*)/;
 const VERSION_PREFIX_REGEX = /^[vV]/;
 const CLOSEDLOOP_MARKETPLACE_NAME = "closedloop-ai";
+const HEALTH_PROBE_COMMAND_TIMEOUT_MS = 3000;
 const PLUGIN_UPDATE_TIMEOUT_MS = 30_000;
+// Keep the full auto-remediation route under the app's 45s timeout.
+const PLUGIN_REMEDIATION_DEADLINE_MS = 40_000;
+const PLUGIN_REMEDIATION_TIMEOUT_MESSAGE =
+  "Closedloop plugin remediation deadline exceeded";
 const STDERR_TAIL_MAX_CHARS = 512;
 const PLUGIN_AUTOUPDATE_DOCS_LINK = {
   label: "Update Closedloop plugins manually",
@@ -144,6 +149,11 @@ type PluginInventoryResult = {
   error?: string;
 };
 
+type PluginRemediationDeadline = {
+  startedAt: number;
+  timeoutMs: number;
+};
+
 function getPluginUpdateOutputTail(
   output: string | Buffer | undefined
 ): string {
@@ -202,33 +212,63 @@ export function registerHealthCheckRoutes(
     const requestedPluginAutoUpdate =
       context.query.get("pluginAutoUpdate") === "1";
     const paths = getBinaryPaths?.();
+    const pluginRemediationDeadline = requestedPluginAutoUpdate
+      ? createPluginRemediationDeadline()
+      : undefined;
     const [pluginListJson, baseChecks, claudeMcp, codexMcp] = await Promise.all(
       [
-        readClaudePluginListJson(paths?.claude),
+        readClaudePluginListJson(paths?.claude, pluginRemediationDeadline),
         Promise.all([
-          checkGit(processManager, paths?.git),
-          checkClaudeCli(processManager, paths?.claude),
-          checkGhCli(processManager, paths?.gh),
-          checkGhAuth(processManager, paths?.gh),
+          checkGit(processManager, paths?.git, pluginRemediationDeadline),
+          checkClaudeCli(
+            processManager,
+            paths?.claude,
+            pluginRemediationDeadline
+          ),
+          checkGhCli(processManager, paths?.gh, pluginRemediationDeadline),
+          checkGhAuth(processManager, paths?.gh, pluginRemediationDeadline),
           checkWorktreeDir(configDir),
-          checkCodex(processManager, paths?.codex),
-          checkPython3(processManager, paths?.python3),
+          checkCodex(processManager, paths?.codex, pluginRemediationDeadline),
+          checkPython3(
+            processManager,
+            paths?.python3,
+            pluginRemediationDeadline
+          ),
         ]),
-        detectMcp("claude", expectedMcpUrl),
-        detectMcp("codex", expectedMcpUrl),
+        detectMcpWithinDeadline(
+          detectMcp,
+          "claude",
+          expectedMcpUrl,
+          pluginRemediationDeadline
+        ),
+        detectMcpWithinDeadline(
+          detectMcp,
+          "codex",
+          expectedMcpUrl,
+          pluginRemediationDeadline
+        ),
       ]
     );
     const pluginAutoUpdateEnabled = shouldEnablePluginAutoUpdate(
       requestedPluginAutoUpdate,
       baseChecks
     );
+    const activePluginRemediationDeadline = pluginAutoUpdateEnabled
+      ? pluginRemediationDeadline
+      : undefined;
     let pluginChecks = CLOSEDLOOP_USER_PLUGINS.map((plugin) =>
       checkPlugin(plugin, pluginListJson, pluginAutoUpdateEnabled)
     );
     if (pluginAutoUpdateEnabled) {
       pluginChecks = await applyPluginEnableChecks(pluginChecks, {
         claudeOverride: paths?.claude,
-        readInventory: () => readClaudePluginInventory(paths?.claude),
+        remediationDeadline: activePluginRemediationDeadline,
+        readInventory: (timeoutMs) =>
+          readClaudePluginInventory(
+            paths?.claude,
+            activePluginRemediationDeadline,
+            timeoutMs
+          ),
       });
     }
     let checks: CheckResult[] = [
@@ -246,6 +286,7 @@ export function registerHealthCheckRoutes(
       checks = await applyPluginVersionChecks(checks, installed, {
         pluginAutoUpdateEnabled,
         claudeOverride: paths?.claude,
+        remediationDeadline: activePluginRemediationDeadline,
         readInstalledVersions: () => getInstalledPluginVersions(),
       });
     }
@@ -289,7 +330,7 @@ const defaultRunCommand: RunCommand = async (cmd, args, options) => {
   const env = await getShellEnv();
   try {
     const { stdout } = await execFileAsync(cmd, args, {
-      timeout: options?.timeoutMs ?? 3000,
+      timeout: options?.timeoutMs ?? HEALTH_PROBE_COMMAND_TIMEOUT_MS,
       env,
     });
     return { stdout: stdout.trim() };
@@ -311,7 +352,8 @@ const defaultRunCommand: RunCommand = async (cmd, args, options) => {
 let runCommand: RunCommand = defaultRunCommand;
 
 async function readClaudePluginListJson(
-  claudeOverride?: string
+  claudeOverride?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<string | null> {
   const resolved = await resolveBinaryFromLoginShell("claude", claudeOverride);
   if (resolved.source === "override_invalid") {
@@ -319,15 +361,35 @@ async function readClaudePluginListJson(
   }
 
   try {
-    const { stdout } = await runCommand(resolved.path, [
-      "plugin",
-      "list",
-      "--json",
-    ]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["plugin", "list", "--json"],
+      { deadline }
+    );
     return stdout;
   } catch {
     return null;
   }
+}
+
+async function detectMcpWithinDeadline(
+  detectMcp: (
+    provider: "claude" | "codex",
+    expectedMcpUrl?: string
+  ) => Promise<McpDetectionResult>,
+  provider: "claude" | "codex",
+  expectedMcpUrl: string | undefined,
+  deadline?: PluginRemediationDeadline
+): Promise<McpDetectionResult> {
+  if (!deadline) {
+    return detectMcp(provider, expectedMcpUrl);
+  }
+
+  return runValueWithinDeadline(
+    () => detectMcp(provider, expectedMcpUrl),
+    deadline,
+    () => createMcpDetectionTimeoutResult()
+  );
 }
 
 type PluginUpdateRunner = (
@@ -506,6 +568,7 @@ let runPluginEnableCommand: PluginUpdateRunner = defaultRunPluginEnableCommand;
 let runPluginMarketplaceUpdateCommand: PluginMarketplaceUpdateRunner =
   defaultRunPluginMarketplaceUpdateCommand;
 const failedPluginUpdateAttempts = new Map<string, PluginUpdateOutcome>();
+let pluginRemediationDeadlineMs = PLUGIN_REMEDIATION_DEADLINE_MS;
 
 /**
  * @internal Test-only. Replace the binary command runner with a stub to
@@ -557,6 +620,13 @@ export function _setPluginEnableCommandForTesting(
   fn?: PluginUpdateRunner
 ): void {
   runPluginEnableCommand = fn ?? defaultRunPluginEnableCommand;
+}
+
+/** @internal Test-only. Override the total plugin remediation deadline. */
+export function _setPluginRemediationDeadlineMsForTesting(
+  timeoutMs?: number
+): void {
+  pluginRemediationDeadlineMs = timeoutMs ?? PLUGIN_REMEDIATION_DEADLINE_MS;
 }
 
 /** @internal Test-only. Returns the bounded plugin-update stderr suffix. */
@@ -846,7 +916,8 @@ function classifyBinaryRemediation(
 
 async function checkGit(
   _processManager: ProcessManager,
-  override?: string
+  override?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<CheckResult> {
   const resolved = await resolveBinaryFromLoginShell("git", override);
   if (resolved.source === "override_invalid") {
@@ -861,7 +932,11 @@ async function checkGit(
     };
   }
   try {
-    const { stdout } = await runCommand(resolved.path, ["--version"]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["--version"],
+      { deadline }
+    );
     return {
       id: "git",
       label: "Git",
@@ -893,7 +968,8 @@ async function checkGit(
 
 async function checkClaudeCli(
   _processManager: ProcessManager,
-  override?: string
+  override?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<CheckResult> {
   const resolved = await resolveBinaryFromLoginShell("claude", override);
   if (resolved.source === "override_invalid") {
@@ -908,7 +984,11 @@ async function checkClaudeCli(
     };
   }
   try {
-    const { stdout } = await runCommand(resolved.path, ["--version"]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["--version"],
+      { deadline }
+    );
     return {
       id: "claude-cli",
       label: "Claude CLI",
@@ -940,7 +1020,8 @@ async function checkClaudeCli(
 
 async function checkGhCli(
   _processManager: ProcessManager,
-  override?: string
+  override?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<CheckResult> {
   const resolved = await resolveBinaryFromLoginShell("gh", override);
   if (resolved.source === "override_invalid") {
@@ -955,7 +1036,11 @@ async function checkGhCli(
     };
   }
   try {
-    const { stdout } = await runCommand(resolved.path, ["--version"]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["--version"],
+      { deadline }
+    );
     return {
       id: "gh-cli",
       label: "GitHub CLI",
@@ -987,7 +1072,8 @@ async function checkGhCli(
 
 async function checkGhAuth(
   _processManager: ProcessManager,
-  override?: string
+  override?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<CheckResult> {
   const resolved = await resolveBinaryFromLoginShell("gh", override);
   if (resolved.source === "override_invalid") {
@@ -1001,7 +1087,9 @@ async function checkGhAuth(
     };
   }
   try {
-    await runCommand(resolved.path, ["auth", "status"]);
+    await runCommandWithOptionalDeadline(resolved.path, ["auth", "status"], {
+      deadline,
+    });
     return {
       id: "gh-auth",
       label: "GitHub Auth",
@@ -1021,7 +1109,9 @@ async function checkGhAuth(
 }
 
 async function readClaudePluginInventory(
-  claudeOverride?: string
+  claudeOverride?: string,
+  deadline?: PluginRemediationDeadline,
+  timeoutMs?: number
 ): Promise<PluginInventoryResult> {
   const resolved = await resolveBinaryFromLoginShell("claude", claudeOverride);
   if (resolved.source === "override_invalid") {
@@ -1034,11 +1124,11 @@ async function readClaudePluginInventory(
 
   let jsonFailure: string | undefined;
   try {
-    const { stdout } = await runCommand(resolved.path, [
-      "plugin",
-      "list",
-      "--json",
-    ]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["plugin", "list", "--json"],
+      { deadline, timeoutMs }
+    );
     return {
       source: "json",
       entries: toPluginInventoryMap(parseClaudePluginListJson(stdout)),
@@ -1053,7 +1143,11 @@ async function readClaudePluginInventory(
   }
 
   try {
-    const { stdout } = await runCommand(resolved.path, ["plugin", "list"]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["plugin", "list"],
+      { deadline, timeoutMs }
+    );
     const entries = parseClaudePluginListText(stdout);
     if (entries.length > 0) {
       return {
@@ -1084,7 +1178,8 @@ async function applyPluginEnableChecks(
   checks: CheckResult[],
   options: {
     claudeOverride?: string;
-    readInventory: () => Promise<PluginInventoryResult>;
+    remediationDeadline?: PluginRemediationDeadline;
+    readInventory: (timeoutMs?: number) => Promise<PluginInventoryResult>;
   }
 ): Promise<CheckResult[]> {
   const disabledPlugins = checks.flatMap((check) => {
@@ -1107,22 +1202,39 @@ async function applyPluginEnableChecks(
   );
 
   const enableResults = new Map<string, PluginUpdateCommandResult>();
+  const remediationDeadline =
+    options.remediationDeadline ?? createPluginRemediationDeadline();
   for (const plugin of disabledPlugins) {
-    const result = await runPluginEnableCommand(plugin.key, {
-      claudeOverride: options.claudeOverride,
-      timeoutMs: PLUGIN_UPDATE_TIMEOUT_MS,
-    });
+    if (hasPluginRemediationDeadlineExpired(remediationDeadline)) {
+      enableResults.set(plugin.key, createPluginRemediationTimeoutResult());
+      continue;
+    }
+    const result = await runPluginCommandWithinDeadline(
+      (timeoutMs) =>
+        runPluginEnableCommand(plugin.key, {
+          claudeOverride: options.claudeOverride,
+          timeoutMs,
+        }),
+      remediationDeadline
+    );
     enableResults.set(plugin.key, result);
   }
 
-  const postInventory = await options.readInventory();
+  const postInventory = await readPluginInventoryWithinDeadline(
+    options.readInventory,
+    remediationDeadline
+  );
+  const inventoryTimedOut =
+    postInventory.error === PLUGIN_REMEDIATION_TIMEOUT_MESSAGE;
   const outcomes = Object.fromEntries(
     disabledPlugins.map((plugin) => {
       const postEntry = postInventory.entries.get(plugin.key);
       const enabled = postEntry?.enabled === true;
       return [
         plugin.key,
-        resolvePostUpdateOutcome(enabled, enableResults.get(plugin.key)),
+        inventoryTimedOut
+          ? "timeout"
+          : resolvePostUpdateOutcome(enabled, enableResults.get(plugin.key)),
       ];
     })
   ) as Record<string, PluginUpdateOutcome>;
@@ -1296,7 +1408,8 @@ async function checkWorktreeDir(
 
 async function checkCodex(
   _processManager: ProcessManager,
-  override?: string
+  override?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<CheckResult> {
   const resolved = await resolveBinaryFromLoginShell("codex", override);
   if (resolved.source === "override_invalid") {
@@ -1312,7 +1425,11 @@ async function checkCodex(
     };
   }
   try {
-    const { stdout } = await runCommand(resolved.path, ["--version"]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["--version"],
+      { deadline }
+    );
     return {
       id: "codex",
       label: "Codex CLI",
@@ -1344,7 +1461,8 @@ async function checkCodex(
 
 async function checkPython3(
   _processManager: ProcessManager,
-  override?: string
+  override?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<CheckResult> {
   const REMEDIATION =
     process.platform === "darwin"
@@ -1364,7 +1482,11 @@ async function checkPython3(
     };
   }
   try {
-    const { stdout } = await runCommand(resolved.path, ["--version"]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["--version"],
+      { deadline }
+    );
     const version = parseVersion(stdout);
     if (!version) {
       return {
@@ -1505,12 +1627,14 @@ async function applyPluginVersionChecks(
   options: {
     pluginAutoUpdateEnabled: boolean;
     claudeOverride?: string;
+    remediationDeadline?: PluginRemediationDeadline;
     readInstalledVersions: () => Record<string, string>;
     preferConfiguredMarketplace?: boolean;
   }
 ): Promise<CheckResult[]> {
   const manifests = await fetchPluginManifests({
     claudeOverride: options.claudeOverride,
+    remediationDeadline: options.remediationDeadline,
     preferConfiguredMarketplace: options.preferConfiguredMarketplace ?? true,
   });
   const versionChecks = new Map<string, Partial<CheckResult>>();
@@ -1559,7 +1683,11 @@ async function applyPluginVersionChecks(
   }
 
   if (options.pluginAutoUpdateEnabled && outdatedPlugins.length > 0) {
-    const updateResults = await runPluginUpdates(outdatedPlugins, options);
+    const updateResults = await runPluginUpdates(outdatedPlugins, {
+      ...options,
+      remediationDeadline:
+        options.remediationDeadline ?? createPluginRemediationDeadline(),
+    });
     const finalInstalled = options.readInstalledVersions();
     const affectedCheckIds = outdatedPlugins.map(
       ({ plugin }) => `plugin-${plugin.folder}`
@@ -1605,21 +1733,49 @@ async function applyPluginVersionChecks(
 
 async function fetchPluginManifests(options: {
   claudeOverride?: string;
+  remediationDeadline?: PluginRemediationDeadline;
   preferConfiguredMarketplace: boolean;
 }): Promise<PluginManifest[]> {
+  if (
+    options.remediationDeadline &&
+    hasPluginRemediationDeadlineExpired(options.remediationDeadline)
+  ) {
+    return createUnavailablePluginManifests();
+  }
   if (options.preferConfiguredMarketplace) {
-    const configuredMarketplaceManifests =
-      await readConfiguredDirectoryMarketplaceManifests(options.claudeOverride);
+    const configuredMarketplaceManifests = options.remediationDeadline
+      ? await runValueWithinDeadline(
+          () =>
+            readConfiguredMarketplaceManifests(
+              options.claudeOverride,
+              options.remediationDeadline
+            ),
+          options.remediationDeadline,
+          createUnavailablePluginManifests,
+          options.remediationDeadline.timeoutMs
+        )
+      : await readConfiguredMarketplaceManifests(
+          options.claudeOverride,
+          options.remediationDeadline
+        );
     if (configuredMarketplaceManifests) {
       return configuredMarketplaceManifests;
     }
+  }
+
+  const timeoutMs = getPluginRemediationBoundedTimeoutMs(
+    options.remediationDeadline,
+    3000
+  );
+  if (timeoutMs <= 0) {
+    return createUnavailablePluginManifests();
   }
 
   const results = await Promise.allSettled(
     CLOSEDLOOP_USER_PLUGINS.map((plugin) =>
       fetch(
         `https://raw.githubusercontent.com/closedloop-ai/claude-plugins/main/plugins/${plugin.folder}/.claude-plugin/plugin.json`,
-        { signal: AbortSignal.timeout(3000) }
+        { signal: AbortSignal.timeout(timeoutMs) }
       )
     )
   );
@@ -1644,10 +1800,11 @@ async function fetchPluginManifests(options: {
   );
 }
 
-async function readConfiguredDirectoryMarketplaceManifests(
-  claudeOverride?: string
+async function readConfiguredMarketplaceManifests(
+  claudeOverride?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<PluginManifest[] | null> {
-  const root = await resolveConfiguredDirectoryMarketplaceRoot(claudeOverride);
+  const root = await resolveConfiguredMarketplaceRoot(claudeOverride, deadline);
   if (!root) {
     return null;
   }
@@ -1706,8 +1863,48 @@ async function readConfiguredDirectoryMarketplaceManifests(
   );
 }
 
-async function resolveConfiguredDirectoryMarketplaceRoot(
-  claudeOverride?: string
+/**
+ * Marketplace source types that expose a local on-disk checkout we can read
+ * plugin manifests from. `directory` marketplaces point straight at a folder;
+ * `github`/`git` marketplaces are cloned locally to `installLocation`. For all
+ * three, that local checkout is the exact source `claude plugin update` installs
+ * from, so comparing against it keeps the staleness verdict actionable. (FEA-2751)
+ */
+const MARKETPLACE_SOURCES_WITH_LOCAL_CHECKOUT = new Set([
+  "directory",
+  "github",
+  "git",
+]);
+
+/**
+ * Resolve the local checkout path for the Closedloop marketplace, if one exists.
+ * `directory` marketplaces expose it via `path`; cloned `github`/`git`
+ * marketplaces expose it via `installLocation`.
+ */
+function resolveMarketplaceCheckoutPath(
+  marketplace: ClaudeMarketplaceListEntry
+): string | undefined {
+  if (
+    typeof marketplace.source !== "string" ||
+    !MARKETPLACE_SOURCES_WITH_LOCAL_CHECKOUT.has(marketplace.source)
+  ) {
+    return undefined;
+  }
+  if (typeof marketplace.path === "string" && marketplace.path.length > 0) {
+    return marketplace.path;
+  }
+  if (
+    typeof marketplace.installLocation === "string" &&
+    marketplace.installLocation.length > 0
+  ) {
+    return marketplace.installLocation;
+  }
+  return undefined;
+}
+
+async function resolveConfiguredMarketplaceRoot(
+  claudeOverride?: string,
+  deadline?: PluginRemediationDeadline
 ): Promise<string | null> {
   const resolved = await resolveBinaryFromLoginShell("claude", claudeOverride);
   if (resolved.source === "override_invalid") {
@@ -1715,12 +1912,11 @@ async function resolveConfiguredDirectoryMarketplaceRoot(
   }
 
   try {
-    const { stdout } = await runCommand(resolved.path, [
-      "plugin",
-      "marketplace",
-      "list",
-      "--json",
-    ]);
+    const { stdout } = await runCommandWithOptionalDeadline(
+      resolved.path,
+      ["plugin", "marketplace", "list", "--json"],
+      { deadline }
+    );
     const entries = JSON.parse(stdout) as unknown;
     if (!Array.isArray(entries)) {
       return null;
@@ -1735,19 +1931,28 @@ async function resolveConfiguredDirectoryMarketplaceRoot(
         return record.name === CLOSEDLOOP_MARKETPLACE_NAME;
       }
     );
-    if (marketplace?.source !== "directory") {
+    if (!marketplace) {
       return null;
     }
 
-    const directoryPath =
-      typeof marketplace.path === "string"
-        ? marketplace.path
-        : typeof marketplace.installLocation === "string"
-          ? marketplace.installLocation
-          : undefined;
-    return directoryPath && path.isAbsolute(directoryPath)
-      ? directoryPath
-      : null;
+    const checkoutRoot = resolveMarketplaceCheckoutPath(marketplace);
+    if (!(checkoutRoot && path.isAbsolute(checkoutRoot))) {
+      return null;
+    }
+
+    // Only treat the local checkout as authoritative when it actually exists.
+    // Otherwise return null so the caller falls back to the GitHub manifest
+    // fetch, rather than reporting an unverifiable version. (FEA-2751)
+    try {
+      await fs.access(
+        path.join(checkoutRoot, ".claude-plugin", "marketplace.json"),
+        constants.F_OK
+      );
+    } catch {
+      return null;
+    }
+
+    return checkoutRoot;
   } catch {
     return null;
   }
@@ -1769,6 +1974,7 @@ async function runPluginUpdates(
   }>,
   options: {
     claudeOverride?: string;
+    remediationDeadline: PluginRemediationDeadline;
     readInstalledVersions: () => Record<string, string>;
   }
 ): Promise<Map<string, PluginUpdateCommandResult>> {
@@ -1790,10 +1996,18 @@ async function runPluginUpdates(
     })}`
   );
 
-  const marketplaceRefresh = await runPluginMarketplaceUpdateCommand({
-    claudeOverride: options.claudeOverride,
-    timeoutMs: PLUGIN_UPDATE_TIMEOUT_MS,
-  });
+  const marketplaceRefresh = hasPluginRemediationDeadlineExpired(
+    options.remediationDeadline
+  )
+    ? createPluginRemediationTimeoutResult()
+    : await runPluginCommandWithinDeadline(
+        (timeoutMs) =>
+          runPluginMarketplaceUpdateCommand({
+            claudeOverride: options.claudeOverride,
+            timeoutMs,
+          }),
+        options.remediationDeadline
+      );
   const marketplaceRefreshSucceeded = marketplaceRefresh.outcome === "success";
   if (!marketplaceRefreshSucceeded) {
     gatewayLog.warn(
@@ -1824,6 +2038,10 @@ async function runPluginUpdates(
 
   if (marketplaceRefreshSucceeded) {
     for (const { plugin, installedVersion, latestVersion } of outdatedPlugins) {
+      if (hasPluginRemediationDeadlineExpired(options.remediationDeadline)) {
+        updateResults.set(plugin.key, createPluginRemediationTimeoutResult());
+        continue;
+      }
       const suppressionKey = getFailedPluginUpdateAttemptKey(
         plugin.key,
         installedVersion,
@@ -1841,10 +2059,14 @@ async function runPluginUpdates(
         continue;
       }
 
-      const result = await runPluginUpdateCommand(plugin.key, {
-        claudeOverride: options.claudeOverride,
-        timeoutMs: PLUGIN_UPDATE_TIMEOUT_MS,
-      });
+      const result = await runPluginCommandWithinDeadline(
+        (timeoutMs) =>
+          runPluginUpdateCommand(plugin.key, {
+            claudeOverride: options.claudeOverride,
+            timeoutMs,
+          }),
+        options.remediationDeadline
+      );
       updateResults.set(plugin.key, result);
       if (result.outcome === "failed" || result.outcome === "timeout") {
         failedPluginUpdateAttempts.set(suppressionKey, result.outcome);
@@ -1964,6 +2186,237 @@ function buildPluginUpdateRemediation(pluginRef: string): string {
     "3. Restart Claude Code if needed.",
     "4. Re-run System Check.",
   ].join("\n");
+}
+
+function createPluginRemediationDeadline(): PluginRemediationDeadline {
+  return {
+    startedAt: Date.now(),
+    timeoutMs: pluginRemediationDeadlineMs,
+  };
+}
+
+function getPluginRemediationRemainingMs(
+  deadline: PluginRemediationDeadline
+): number {
+  return Math.max(0, deadline.timeoutMs - (Date.now() - deadline.startedAt));
+}
+
+function hasPluginRemediationDeadlineExpired(
+  deadline: PluginRemediationDeadline
+): boolean {
+  return getPluginRemediationRemainingMs(deadline) <= 0;
+}
+
+function getPluginRemediationBoundedTimeoutMs(
+  deadline: PluginRemediationDeadline | undefined,
+  maxTimeoutMs: number
+): number {
+  if (!deadline) {
+    return maxTimeoutMs;
+  }
+  const remainingMs = getPluginRemediationRemainingMs(deadline);
+  return remainingMs <= 0
+    ? 0
+    : Math.max(1, Math.min(maxTimeoutMs, remainingMs));
+}
+
+async function runValueWithinDeadline<T>(
+  run: (timeoutMs: number) => Promise<T>,
+  deadline: PluginRemediationDeadline,
+  createTimeoutValue: (startedAt: number) => T,
+  maxTimeoutMs = PLUGIN_UPDATE_TIMEOUT_MS
+): Promise<T> {
+  const timeoutMs = getPluginRemediationBoundedTimeoutMs(
+    deadline,
+    maxTimeoutMs
+  );
+  if (timeoutMs <= 0) {
+    return createTimeoutValue(Date.now());
+  }
+
+  const startedAt = Date.now();
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeoutResult = new Promise<T>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      resolve(createTimeoutValue(startedAt));
+    }, timeoutMs);
+  });
+  const operationResult = Promise.resolve().then(() => run(timeoutMs));
+
+  try {
+    return await Promise.race([operationResult, timeoutResult]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+async function runCommandWithOptionalDeadline(
+  cmd: string,
+  args: string[],
+  options: {
+    deadline?: PluginRemediationDeadline;
+    timeoutMs?: number;
+  } = {}
+): Promise<{ stdout: string }> {
+  if (!options.deadline) {
+    return runCommand(
+      cmd,
+      args,
+      options.timeoutMs === undefined
+        ? undefined
+        : { timeoutMs: options.timeoutMs }
+    );
+  }
+
+  const commandTimeoutMs = options.timeoutMs ?? HEALTH_PROBE_COMMAND_TIMEOUT_MS;
+  return runCommandWithinDeadline(
+    cmd,
+    args,
+    options.deadline,
+    commandTimeoutMs
+  );
+}
+
+async function runCommandWithinDeadline(
+  cmd: string,
+  args: string[],
+  deadline: PluginRemediationDeadline,
+  maxTimeoutMs: number
+): Promise<{ stdout: string }> {
+  const timeoutMs = getPluginRemediationBoundedTimeoutMs(
+    deadline,
+    maxTimeoutMs
+  );
+  if (timeoutMs <= 0) {
+    throw createPluginRemediationCommandTimeoutError();
+  }
+
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeoutError = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(createPluginRemediationCommandTimeoutError());
+    }, timeoutMs);
+  });
+  const commandResult = Promise.resolve().then(() =>
+    runCommand(cmd, args, { timeoutMs })
+  );
+
+  try {
+    return await Promise.race([commandResult, timeoutError]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+async function runPluginCommandWithinDeadline(
+  runCommandWithinTimeout: (
+    timeoutMs: number
+  ) => Promise<PluginUpdateCommandResult>,
+  deadline: PluginRemediationDeadline
+): Promise<PluginUpdateCommandResult> {
+  const remainingMs = getPluginRemediationRemainingMs(deadline);
+  if (remainingMs <= 0) {
+    return createPluginRemediationTimeoutResult();
+  }
+
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(
+    1,
+    Math.min(PLUGIN_UPDATE_TIMEOUT_MS, remainingMs)
+  );
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeoutResult = new Promise<PluginUpdateCommandResult>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      resolve(createPluginRemediationTimeoutResult(startedAt));
+    }, timeoutMs);
+  });
+
+  const commandResult = Promise.resolve()
+    .then(() => runCommandWithinTimeout(timeoutMs))
+    .catch(
+      (error): PluginUpdateCommandResult => ({
+        outcome: "failed",
+        stdout: "",
+        stderrTail: getPluginCommandErrorMessage(error),
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        failureReason: "command_failed",
+      })
+    );
+
+  try {
+    return await Promise.race([commandResult, timeoutResult]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+function createPluginRemediationTimeoutResult(
+  startedAt = Date.now()
+): PluginUpdateCommandResult {
+  return {
+    outcome: "timeout",
+    stdout: "",
+    stderrTail: PLUGIN_REMEDIATION_TIMEOUT_MESSAGE,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    failureReason: "timeout",
+  };
+}
+
+function createPluginRemediationCommandTimeoutError(): CommandError {
+  return {
+    code: "ETIMEDOUT",
+    stderr: PLUGIN_REMEDIATION_TIMEOUT_MESSAGE,
+    message: PLUGIN_REMEDIATION_TIMEOUT_MESSAGE,
+  };
+}
+
+function createPluginInventoryTimeoutResult(): PluginInventoryResult {
+  return {
+    source: "unavailable",
+    entries: new Map(),
+    error: PLUGIN_REMEDIATION_TIMEOUT_MESSAGE,
+  };
+}
+
+async function readPluginInventoryWithinDeadline(
+  readInventory: (timeoutMs?: number) => Promise<PluginInventoryResult>,
+  deadline: PluginRemediationDeadline
+): Promise<PluginInventoryResult> {
+  return runValueWithinDeadline(
+    readInventory,
+    deadline,
+    createPluginInventoryTimeoutResult
+  );
+}
+
+function createMcpDetectionTimeoutResult(): McpDetectionResult {
+  return {
+    available: false,
+    serverName: null,
+    matchedUrl: null,
+    checkedAt: new Date().toISOString(),
+    error: "Discovery timed out",
+    closedloopAvailable: false,
+  };
+}
+
+function createUnavailablePluginManifests(): PluginManifest[] {
+  return CLOSEDLOOP_USER_PLUGINS.map((plugin) => ({
+    plugin,
+    error: "manifest_unavailable",
+  }));
+}
+
+function getPluginCommandErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message.trim().slice(-STDERR_TAIL_MAX_CHARS)
+    : "Plugin remediation command failed";
 }
 
 async function getPlainHealthPluginEnv(): Promise<Record<string, string>> {

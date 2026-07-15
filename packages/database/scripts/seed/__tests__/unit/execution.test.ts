@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { type LoopCommand, LoopStatus } from "../../../../generated/client";
+import { type LoopCommand, LoopStatus } from "../../../../generated/enums";
 import type { CoreSeedResult } from "../../core";
 import { seedExecutionEntities } from "../../execution";
 import { deterministicUuid } from "../../helpers";

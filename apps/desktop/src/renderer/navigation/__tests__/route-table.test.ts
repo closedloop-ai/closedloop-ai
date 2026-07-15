@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentDetailHref,
   branchDetailHref,
   hashToHrefEntries,
   hrefForNavId,
   matchRoute,
+  NavId,
   normalizeNavId,
   sessionDetailHref,
 } from "../route-table";
@@ -18,16 +20,6 @@ describe("matchRoute", () => {
   });
 
   it("maps every nav path to its view", () => {
-    expect(matchRoute("/kanban")).toEqual({
-      kind: "nav",
-      navId: "kanban",
-      params: {},
-    });
-    expect(matchRoute("/pull-requests")).toEqual({
-      kind: "nav",
-      navId: "pull-requests",
-      params: {},
-    });
     expect(matchRoute("/settings")).toEqual({
       kind: "nav",
       navId: "settings",
@@ -43,6 +35,19 @@ describe("matchRoute", () => {
     });
   });
 
+  it("redirects retired /kanban and /my-tasks routes to sessions", () => {
+    expect(matchRoute("/kanban")).toEqual({
+      kind: "nav",
+      navId: "sessions",
+      params: {},
+    });
+    expect(matchRoute("/my-tasks")).toEqual({
+      kind: "nav",
+      navId: "sessions",
+      params: {},
+    });
+  });
+
   it("maps /sessions/:id with a decoded param named like the web route", () => {
     // Param key is `id` — shared session pages read useRouteParams().id
     // (web route is /[orgSlug]/sessions/[id]).
@@ -50,14 +55,6 @@ describe("matchRoute", () => {
       kind: "session-detail",
       sessionId: "abc/123",
       params: { id: "abc/123" },
-    });
-  });
-
-  it("maps the web-canonical /my-tasks alias to the kanban view", () => {
-    expect(matchRoute("/my-tasks")).toEqual({
-      kind: "nav",
-      navId: "kanban",
-      params: {},
     });
   });
 
@@ -151,7 +148,6 @@ describe("href builders", () => {
 
 describe("normalizeNavId", () => {
   it("passes valid ids, aliases analytics, defaults unknowns", () => {
-    expect(normalizeNavId("kanban")).toBe("kanban");
     expect(normalizeNavId("analytics")).toBe("insights");
     expect(normalizeNavId("bogus")).toBe("sessions");
     expect(normalizeNavId(null)).toBe("sessions");
@@ -170,10 +166,6 @@ describe("hashToHrefEntries", () => {
     ]);
   });
 
-  it("migrates a legacy tab-only hash", () => {
-    expect(hashToHrefEntries("#tab=kanban")).toEqual(["/kanban"]);
-  });
-
   it("migrates a legacy analytics tab to insights", () => {
     expect(hashToHrefEntries("#tab=analytics")).toEqual(["/insights"]);
   });
@@ -187,5 +179,169 @@ describe("hashToHrefEntries", () => {
 
   it("falls back to the sessions view for unparseable hashes", () => {
     expect(hashToHrefEntries("#garbage")).toEqual(["/sessions"]);
+  });
+});
+
+// T-18.6: Packs-Lab removal route tests (AC-020, AC-025)
+describe("NavId — Packs-Lab entries removed (T-18.6)", () => {
+  it("does not include Packs, Skills, Tools, or Subagents in NavId", () => {
+    const values = Object.values(NavId);
+    expect(values).not.toContain("packs");
+    expect(values).not.toContain("skills");
+    expect(values).not.toContain("tools");
+    expect(values).not.toContain("subagents");
+  });
+
+  it("includes Agents in NavId", () => {
+    expect(NavId.Agents).toBe("agents");
+  });
+
+  // Type-level guard: ensure the NavId object does not have deprecated keys.
+  // This is a runtime check that mirrors the compile-time absence.
+  it("does not have Packs, Skills, Tools, or Subagents keys on the NavId object", () => {
+    expect("Packs" in NavId).toBe(false);
+    expect("Skills" in NavId).toBe(false);
+    expect("Tools" in NavId).toBe(false);
+    expect("Subagents" in NavId).toBe(false);
+  });
+});
+
+describe("matchRoute — Packs-Lab legacy aliases → Agents (T-18.6)", () => {
+  it("redirects /packs to NavId.Agents", () => {
+    expect(matchRoute("/packs")).toEqual({
+      kind: "nav",
+      navId: "agents",
+      params: {},
+    });
+  });
+
+  it("redirects /skills to NavId.Agents", () => {
+    expect(matchRoute("/skills")).toEqual({
+      kind: "nav",
+      navId: "agents",
+      params: {},
+    });
+  });
+
+  it("redirects /tools to NavId.Agents", () => {
+    expect(matchRoute("/tools")).toEqual({
+      kind: "nav",
+      navId: "agents",
+      params: {},
+    });
+  });
+
+  it("redirects /subagents to NavId.Agents", () => {
+    expect(matchRoute("/subagents")).toEqual({
+      kind: "nav",
+      navId: "agents",
+      params: {},
+    });
+  });
+
+  it("maps /agents to the Agents workspace (not redirected)", () => {
+    expect(matchRoute("/agents")).toEqual({
+      kind: "nav",
+      navId: "agents",
+      params: {},
+    });
+  });
+
+  it("maps /agents/:id to agent-detail with a decoded `id` param", () => {
+    expect(matchRoute("/agents/my-agent-slug")).toEqual({
+      kind: "agent-detail",
+      agentSlug: "my-agent-slug",
+      params: { id: "my-agent-slug" },
+    });
+  });
+
+  it("maps /agents/:id with URL-encoded characters", () => {
+    expect(matchRoute("/agents/some%2Fcomponent")).toEqual({
+      kind: "agent-detail",
+      agentSlug: "some/component",
+      params: { id: "some/component" },
+    });
+  });
+
+  it("does not let /agents/:id shadow the /agents nav view", () => {
+    expect(matchRoute("/agents")).toEqual({
+      kind: "nav",
+      navId: "agents",
+      params: {},
+    });
+  });
+
+  it("returns null for malformed or wrong-arity agent paths", () => {
+    expect(matchRoute("/agents/")).toBeNull();
+    expect(matchRoute("/agents/a/b")).toBeNull();
+    expect(matchRoute("/agents/%")).toBeNull();
+  });
+});
+
+describe("normalizeNavId — Packs-Lab legacy hash values → Agents (T-18.6)", () => {
+  it("maps legacy 'packs' hash tab to Agents", () => {
+    expect(normalizeNavId("packs")).toBe("agents");
+  });
+
+  it("maps legacy 'skills' hash tab to Agents", () => {
+    expect(normalizeNavId("skills")).toBe("agents");
+  });
+
+  it("maps legacy 'tools' hash tab to Agents", () => {
+    expect(normalizeNavId("tools")).toBe("agents");
+  });
+
+  it("maps legacy 'subagents' hash tab to Agents", () => {
+    expect(normalizeNavId("subagents")).toBe("agents");
+  });
+
+  it("still maps 'analytics' to Insights (pre-existing alias)", () => {
+    expect(normalizeNavId("analytics")).toBe("insights");
+  });
+
+  it("passes through valid 'agents' unchanged", () => {
+    expect(normalizeNavId("agents")).toBe("agents");
+  });
+
+  it("defaults unknown values to the default nav (sessions)", () => {
+    expect(normalizeNavId("bogus")).toBe("sessions");
+    expect(normalizeNavId(null)).toBe("sessions");
+  });
+});
+
+describe("hashToHrefEntries — Packs-Lab legacy tab hashes → Agents (T-18.6)", () => {
+  it("migrates a legacy packs tab hash to the Agents workspace", () => {
+    expect(hashToHrefEntries("#tab=packs")).toEqual(["/agents"]);
+  });
+
+  it("migrates a legacy skills tab hash to the Agents workspace", () => {
+    expect(hashToHrefEntries("#tab=skills")).toEqual(["/agents"]);
+  });
+
+  it("migrates a legacy tools tab hash to the Agents workspace", () => {
+    expect(hashToHrefEntries("#tab=tools")).toEqual(["/agents"]);
+  });
+
+  it("migrates a legacy subagents tab hash to the Agents workspace", () => {
+    expect(hashToHrefEntries("#tab=subagents")).toEqual(["/agents"]);
+  });
+});
+
+describe("agentDetailHref (T-18.6)", () => {
+  it("encodes agent slugs", () => {
+    expect(agentDetailHref("some/slug")).toBe("/agents/some%2Fslug");
+  });
+
+  it("round-trips an agent slug through agentDetailHref and matchRoute", () => {
+    const slug = "owner/repo::subagent";
+    expect(matchRoute(agentDetailHref(slug))).toEqual({
+      kind: "agent-detail",
+      agentSlug: slug,
+      params: { id: slug },
+    });
+  });
+
+  it("produces a simple slug href", () => {
+    expect(agentDetailHref("my-agent")).toBe("/agents/my-agent");
   });
 });

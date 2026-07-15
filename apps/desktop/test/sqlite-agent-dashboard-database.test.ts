@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   SESSION_TRACE_SOURCE_LIMITS,
   SessionPrLifecycleStatus,
@@ -11,19 +10,23 @@ import {
   SessionTracePhaseSourceType,
 } from "@repo/api/src/session-trace/derivation";
 import { PullRequestState } from "@repo/api/src/types/document";
+import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
+import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   buildAgentSessionSyncSourceKey,
   SESSION_PAYLOAD_BYTE_CAP,
 } from "../src/main/agent-session-sync-service.js";
+import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
+import { createCodexCollector } from "../src/main/collectors/codex/codex-collector.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
-import {
-  openSqliteAgentDatabase,
-  recomputeSessionLastActivityAt,
-} from "../src/main/database/sqlite.js";
+import { normalizeRepoFullName } from "../src/main/database/db-helpers.js";
+import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { recomputeSessionLastActivityAt } from "../src/main/database/write-core.js";
 import {
   artifactIdFromIdentityKey,
   computeIdentityKey,
 } from "../src/main/enrichment/identity-key.js";
+import { repairPollutedRepoFullNames } from "../src/main/enrichment/repo-fullname-repair.js";
 import { getSharedAgentSessionAnalytics } from "../src/main/shared-agent-sessions-api.js";
 import { getSharedBranches } from "../src/main/shared-branches-api.js";
 import { InvalidTokenCountError } from "../src/main/token-counts.js";
@@ -331,7 +334,9 @@ test("SQLite workflow queries satisfy PostgreSQL GROUP BY rules", async () => {
       "subagent"
     );
     assert.equal(workflow.orchestration.edges[0].source, "main");
-    assert.equal(workflow.orchestration.edges[0].target, "beta");
+    // Same identity rule as the bucket above: a NULL-subagent_type child edge
+    // falls back to the structured `type` ('subagent'), not the free-text `name`.
+    assert.equal(workflow.orchestration.edges[0].target, "subagent");
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -406,13 +411,11 @@ test("SQLite dashboard core features are filled from imported sessions", async (
       "90"
     );
     assert.equal(deliveryInsights.kpis[0].value, 1);
-    assert.deepEqual(deliveryInsights.charts.prByRepo, [
-      {
-        key: "closedloop-ai/closedloop-electron",
-        label: "closedloop-ai/closedloop-electron",
-        value: 1,
-      },
-    ]);
+    // FEA-2862: "Merged PRs by repository" now counts only in-session-created,
+    // merged PRs. This fixture's PR is reference-only (no `gh pr create`) and
+    // un-enriched (no pr_state='merged'), so it is captured (KPI = 1 above) but
+    // excluded from the merged-by-repo breakdown.
+    assert.deepEqual(deliveryInsights.charts.prByRepo, []);
     assert.equal(
       features.tools.some((tool) => tool.toolName === "Skill"),
       true
@@ -510,18 +513,23 @@ test("SQLite importer stamps the session branch only on PRs the session CREATED,
     // Referenced PR #999 must NOT inherit the session branch (root-cause fix):
     // it is another branch's/session's PR the session only looked at.
     assert.equal(branchByNumber.get(999), null);
-    // Created PR #1000 inherits the session's working branch as its head ref.
-    assert.equal(branchByNumber.get(1000), "fea-attribution-A");
+    // FEA-2177: Created PR #1000 with no per-tool gitBranch gets null — the
+    // session.gitBranch fallback was the root cause of mis-attribution. Enrichment
+    // fills the correct branch from GitHub's headRefName on the next sweep.
+    assert.equal(branchByNumber.get(1000), null);
 
-    // End-to-end: the Branches view must surface only PR #1000 under the branch,
-    // never the foreign referenced PR #999 (no cross-session mis-attribution).
+    // End-to-end (FEA-2531): the branch artifact exists (from session.gitBranch)
+    // but carries only a read link with no push evidence, so the Branches
+    // surface must NOT list it — display follows pushed branches only.
     const branches = await getSharedBranches(db, {});
     const branchA = branches.items.find(
       (item) => item.branchName === "fea-attribution-A"
     );
-    assert.ok(branchA, "expected the session's branch to be listed");
-    assert.equal(branchA?.prNumber, 1000);
-    assert.equal(branchA?.multiPrWarning, false);
+    assert.equal(
+      branchA,
+      undefined,
+      "read-only start branch must not be listed"
+    );
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -709,7 +717,65 @@ test("SQLite importer persists OpenCode PR artifacts for delivery insights", asy
       "90"
     );
     assert.equal(deliveryInsights.kpis[0].value, 1);
-    assert.deepEqual(deliveryInsights.charts.prByRepo, [
+    // FEA-2862: the OpenCode PR is captured (KPI = 1) but reference-only and
+    // un-merged, so it does not appear in the merged-by-repository breakdown.
+    assert.deepEqual(deliveryInsights.charts.prByRepo, []);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2862: prByRepo counts only in-session-created, merged PRs — not reference-only or un-merged ones", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-20T12:00:00.000Z",
+  });
+
+  try {
+    // A session that owns some PR artifacts. The relation/state combinations
+    // below are what distinguish a genuinely-merged authored PR from the
+    // reference-only noise (competitor scans, CI `uses:` refs, fixture repos)
+    // that FEA-2862 removed from the "Merged PRs by repository" chart.
+    await db.run(
+      `INSERT INTO sessions (id, status, started_at, updated_at)
+       VALUES ('fea2862-session', 'completed', $1, $1)`,
+      "2026-06-16T10:00:00.000Z"
+    );
+
+    // (a) created + merged → the only PR that should appear.
+    await insertSqlitePrArtifact(db, "fea2862-session", {
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 100,
+      relation: "created",
+      prState: "merged",
+    });
+    // (b) created but NOT merged (still open) → excluded by the merged filter.
+    await insertSqlitePrArtifact(db, "fea2862-session", {
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 101,
+      relation: "created",
+      prState: "open",
+    });
+    // (c) merged but reference-only (relation='workspace', e.g. a competitor PR
+    //     the session only viewed) → excluded by the created filter.
+    await insertSqlitePrArtifact(db, "fea2862-session", {
+      repoFullName: "competitor/tool",
+      prNumber: 999,
+      relation: "workspace",
+      prState: "merged",
+    });
+
+    const delivery = await db.dashboard.getInsights(
+      InsightsSection.Delivery,
+      "90",
+      new Date("2026-06-20T12:00:00.000Z")
+    );
+
+    assert.deepEqual(delivery.charts.prByRepo, [
       {
         key: "closedloop-ai/symphony-alpha",
         label: "closedloop-ai/symphony-alpha",
@@ -852,8 +918,18 @@ test("SQLite token analytics supports sums above PostgreSQL integer range", asyn
       "large-token-session",
       "2026-06-07T10:00:00.000Z"
     );
+    await db.run(
+      `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+       VALUES
+        ($1, 'model-a', $2, 1500000000, 900000000, 800000000, 700000000),
+        ($1, 'model-b', $2, 1500000000, 900000000, 800000000, 700000000)`,
+      "large-token-session",
+      "2026-06-07T10:00:00.000Z"
+    );
 
-    const analytics = await db.dashboard.getAnalytics();
+    const analytics = await db.dashboard.getAnalytics(
+      new Date("2026-06-07T12:00:00.000Z")
+    );
     const summary = await db.dashboard.getSummary();
     const detail = await db.sessions.getDetailsById("large-token-session");
 
@@ -1009,6 +1085,17 @@ test("SQLite sessions pagination preserves details, filters, escaping, and deter
       startedAt: "2024-03-09T16:06:00.000Z",
       awaitingInputSince: "2024-03-09T16:06:30.000Z",
     });
+    // FEA-3149: a non-terminal, awaiting-input session whose `ended_at` is set
+    // must NOT surface in the Waiting facet (cloud parity — its projection
+    // reports PendingApproval only while `!sessionEndedAt`). Before the fix the
+    // read-store predicate lacked the `ended_at IS NULL` guard.
+    await insertSqliteSession(db, "waiting-ended", {
+      name: "Ended While Awaiting",
+      status: "active",
+      startedAt: "2024-03-09T16:06:45.000Z",
+      awaitingInputSince: "2024-03-09T16:06:50.000Z",
+      endedAt: "2024-03-09T16:06:55.000Z",
+    });
     await insertSqliteSession(db, "literal-percent", {
       name: "100% done",
       startedAt: "2024-03-09T16:07:00.000Z",
@@ -1021,6 +1108,7 @@ test("SQLite sessions pagination preserves details, filters, escaping, and deter
       (await db.sessions.getPage({ status: "waiting" })).sessions.map(
         (session) => session.id
       ),
+      // "waiting-ended" is excluded by the FEA-3149 `ended_at IS NULL` guard.
       ["waiting-1"]
     );
     assert.deepEqual(
@@ -1054,7 +1142,12 @@ test("SQLite sessions pagination preserves details, filters, escaping, and deter
       ["running", "waiting", "completed"],
       25
     );
-    assert.equal(kanban.waiting.sessions[0].id, "waiting-1");
+    assert.deepEqual(
+      kanban.waiting.sessions.map((session) => session.id),
+      // FEA-3149: the kanban Waiting bucket (same predicate) also excludes the
+      // ended-but-non-terminal awaiting-input session.
+      ["waiting-1"]
+    );
     assert.ok(kanban.completed.sessions.length > 0);
   } finally {
     await db.close();
@@ -1353,6 +1446,55 @@ test("SQLite session cursor page applies date and search filters before paging",
   }
 });
 
+test("SQLite session cursor page filters the date window by recent activity", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => "2026-06-24T12:00:00.000Z",
+  });
+
+  try {
+    await insertSqliteSession(db, "old-start-recent-activity", {
+      startedAt: "2026-06-01T00:00:00.000Z",
+    });
+    await insertSqliteEvent(
+      db,
+      "old-start-recent-activity",
+      "2026-06-23T00:00:00.000Z"
+    );
+    await insertSqliteSession(db, "recent-start-no-events", {
+      startedAt: "2026-06-22T00:00:00.000Z",
+    });
+    await insertSqliteSession(db, "old-start-old-activity", {
+      startedAt: "2026-06-01T00:00:00.000Z",
+    });
+    await insertSqliteEvent(
+      db,
+      "old-start-old-activity",
+      "2026-06-02T00:00:00.000Z"
+    );
+
+    const page = await db.syncSource.listSessionCursorPage?.({
+      limit: 25,
+      offset: 0,
+      sortBy: "lastActivity",
+      sortDir: "desc",
+      startDate: new Date("2026-06-18T00:00:00.000Z"),
+    });
+
+    assert.deepEqual(
+      page?.rows.map((row) => row.id),
+      ["old-start-recent-activity", "recent-start-no-events"]
+    );
+    assert.equal(page?.total, 2);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("cursor last-activity sort uses denormalized last_activity_at and matches the old MAX(events.created_at) semantics", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
@@ -1512,6 +1654,38 @@ test("cursor last-activity sort uses denormalized last_activity_at and matches t
   }
 });
 
+/**
+ * Metadata that survives compaction at full size: each string sits at the
+ * 1024-char cap, each array at the 100-item cap, and the key count is under the
+ * 80-key cap, so compaction cannot shrink it. ~4 MB compacted — genuinely
+ * un-shippable, which is the only thing the preflight may dead-letter.
+ */
+function buildUncompactableMetadata(): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Array.from({ length: 40 }, (_, index) => [
+        `bulk${index}`,
+        Array.from({ length: 100 }, () => "x".repeat(1024)),
+      ])
+    )
+  );
+}
+
+/**
+ * The real shape of a long session's metadata: thousands of conversation turns
+ * under `messages`. Raw this is ~1 MB, but compaction keeps only the first 100
+ * messages with 160-char `text` previews, so it ships comfortably.
+ */
+function buildChattyMetadata(): string {
+  return JSON.stringify({
+    messages: Array.from({ length: 2000 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      text: "y".repeat(400),
+      timestamp: "2026-06-07T12:00:00.000Z",
+    })),
+  });
+}
+
 test("SQLite sync source preflights locally oversized metadata payloads", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
@@ -1523,9 +1697,7 @@ test("SQLite sync source preflights locally oversized metadata payloads", async 
 
   try {
     await insertSqliteSession(db, "metadata-oversized", {
-      metadata: JSON.stringify({
-        messages: "x".repeat(SESSION_PAYLOAD_BYTE_CAP + 1024),
-      }),
+      metadata: buildUncompactableMetadata(),
     });
     await insertSqliteSession(db, "healthy-session");
 
@@ -1539,6 +1711,38 @@ test("SQLite sync source preflights locally oversized metadata payloads", async 
       ["metadata-oversized"]
     );
     assert.ok((oversized?.[0]?.payloadBytes ?? 0) > SESSION_PAYLOAD_BYTE_CAP);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite sync source preflight sizes the sanitized session, not the raw row", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    // Raw metadata is far over the cap, but compaction brings it well under it,
+    // so the real sync path ships this session. The preflight is a lower bound
+    // on that path and must not dead-letter it (regression: sizing the raw row
+    // silently dropped every metadata-heavy session).
+    const chattyMetadata = buildChattyMetadata();
+    assert.ok(Buffer.byteLength(chattyMetadata) > SESSION_PAYLOAD_BYTE_CAP);
+    await insertSqliteSession(db, "chatty-session", {
+      metadata: chattyMetadata,
+    });
+
+    const oversized = await db.syncSource.findLocallyOversizedSessions?.(
+      ["chatty-session"],
+      SESSION_PAYLOAD_BYTE_CAP
+    );
+
+    assert.deepEqual(oversized, []);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -1677,6 +1881,61 @@ test("SQLite sync source normalizes bounded explicit Session Trace sources only"
   }
 });
 
+test("SQLite sync source caps the wire markers array at the source limit", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => "2026-06-16T10:45:00.000Z",
+  });
+
+  try {
+    await db.processEvent(
+      "SessionStart",
+      {
+        session_id: "marker-cap-session",
+        cwd: "/workspace/project",
+      },
+      "claude"
+    );
+
+    // One prompt marker per UserMessage event; exceed the cloud Zod cap so an
+    // uncapped payload would fail `session_invalid` and lose the whole session.
+    for (
+      let index = 0;
+      index < SESSION_TRACE_SOURCE_LIMITS.markers + 1;
+      index += 1
+    ) {
+      const minute = String(Math.floor(index / 60)).padStart(2, "0");
+      const second = String(index % 60).padStart(2, "0");
+      const createdAt = `2026-06-16T10:${minute}:${second}.000Z`;
+      await db.run(
+        `INSERT INTO events
+           (id, session_id, event_type, tool_name, summary, data, created_at)
+         VALUES ($1, $2, 'UserMessage', NULL, 'Prompt', NULL, $3)`,
+        `marker-${index}`,
+        "marker-cap-session",
+        createdAt
+      );
+    }
+
+    const [synced] = await db.syncSource.loadSyncedSessions(
+      ["marker-cap-session"],
+      {
+        attributionByCwd: new Map(),
+        launchMetadataRootByCwd: new Map(),
+        repoFullNameByPath: new Map(),
+      }
+    );
+
+    assert.equal(synced?.markers?.length, SESSION_TRACE_SOURCE_LIMITS.markers);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SQLite sync source keeps same-number PRs from different repositories", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
@@ -1743,6 +2002,252 @@ test("SQLite sync source keeps same-number PRs from different repositories", asy
       Object.hasOwn(synced?.prs?.[0] ?? {}, "repositoryFullName"),
       false
     );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite importer exposes Claude transcript PR refs through synced prs and prRefs", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const sessionId = "claude-pr-import-session";
+  const transcript = path.join(dir, `${sessionId}.jsonl`);
+  const prUrl = "https://github.com/closedloop-ai/symphony-alpha/pull/3210";
+  await writeFile(
+    transcript,
+    `${[
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-16T10:01:00.000Z",
+        cwd: "/workspace/symphony-alpha",
+        gitBranch: "fea-2381-claude-pr",
+        message: {
+          model: "claude-sonnet-4-5",
+          usage: {
+            input_tokens: 12,
+            output_tokens: 6,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_claude_pr_create",
+              name: "Bash",
+              input: { command: "gh pr create --fill" },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-06-16T10:02:00.000Z",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_claude_pr_create",
+              content: `Created pull request ${prUrl}`,
+            },
+          ],
+        },
+      }),
+    ].join("\n")}\n`,
+    "utf8"
+  );
+  const parsed = await parseClaudeFile(transcript);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.artifacts.prs, [
+    {
+      number: "3210",
+      repo: "closedloop-ai/symphony-alpha",
+      url: prUrl,
+    },
+  ]);
+
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => "2026-06-16T10:45:00.000Z",
+  });
+
+  try {
+    assert.equal(
+      (await db.importer.importSession(parsed, "claude")).skipped,
+      false
+    );
+
+    const [synced] = await db.syncSource.loadSyncedSessions(
+      [parsed.sessionId],
+      {
+        attributionByCwd: new Map(),
+        launchMetadataRootByCwd: new Map(),
+        repoFullNameByPath: new Map(),
+      }
+    );
+
+    assert.deepEqual(
+      synced?.prs?.map((pr) => [pr.num, pr.status]),
+      [[3210, SessionPrLifecycleStatus.Unknown]]
+    );
+    assert.deepEqual(synced?.prRefs, [
+      {
+        repositoryFullName: "closedloop-ai/symphony-alpha",
+        prNumber: 3210,
+        prUrl,
+        relationType: SessionPrRelationType.Created,
+      },
+    ]);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite importer exposes Codex transcript PR refs through synced prs and prRefs", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const sessionsDir = path.join(dir, "sessions");
+  const rolloutDir = path.join(sessionsDir, "2026", "06", "16");
+  const sessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const prUrl = "https://github.com/closedloop-ai/symphony-alpha/pull/3211";
+  await mkdir(rolloutDir, { recursive: true });
+  const rolloutPath = path.join(
+    rolloutDir,
+    `rollout-2026-06-16T10-10-00-${sessionId}.jsonl`
+  );
+  await writeFile(
+    rolloutPath,
+    `${[
+      JSON.stringify({
+        timestamp: "2026-06-16T10:10:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: sessionId,
+          cwd: "/workspace/symphony-alpha",
+          cli_version: "0.40.0",
+          source: "exec",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-06-16T10:10:00.000Z",
+        type: "turn_context",
+        payload: {
+          model: "gpt-5-codex",
+          cwd: "/workspace/symphony-alpha",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-06-16T10:10:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "mcp_tool_call_begin",
+          server: "github",
+          method: "create_pull_request",
+          arguments: { title: "Codex PR" },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-06-16T10:10:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "mcp_tool_call_end",
+          output: { url: prUrl },
+        },
+      }),
+    ].join("\n")}\n`,
+    "utf8"
+  );
+  const collector = createCodexCollector({
+    sessionsDir,
+    archivedDir: path.join(dir, "archive"),
+    listSources: () => [rolloutPath],
+  });
+  const [parsed] = await collector.parse(rolloutPath);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.artifacts.prs, [
+    {
+      number: "3211",
+      repo: "closedloop-ai/symphony-alpha",
+      url: prUrl,
+    },
+  ]);
+
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => "2026-06-16T10:45:00.000Z",
+  });
+
+  try {
+    assert.equal(
+      (await db.importer.importSession(parsed, "codex")).skipped,
+      false
+    );
+
+    const [synced] = await db.syncSource.loadSyncedSessions([sessionId], {
+      attributionByCwd: new Map(),
+      launchMetadataRootByCwd: new Map(),
+      repoFullNameByPath: new Map(),
+    });
+
+    assert.deepEqual(
+      synced?.prs?.map((pr) => [pr.num, pr.status]),
+      [[3211, SessionPrLifecycleStatus.Unknown]]
+    );
+    assert.deepEqual(synced?.prRefs, [
+      {
+        repositoryFullName: "closedloop-ai/symphony-alpha",
+        prNumber: 3211,
+        prUrl,
+        relationType: SessionPrRelationType.Created,
+      },
+    ]);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite importer skips malformed normalized PR identities in synced prs and prRefs", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => "2026-06-16T10:45:00.000Z",
+  });
+
+  try {
+    const session: NormalizedSession = {
+      ...makeNormalizedSession(),
+      sessionId: "malformed-pr-import-session",
+      artifacts: {
+        prs: [
+          { number: "not-a-number", repo: "closedloop-ai/symphony-alpha" },
+          { number: "3212" },
+        ],
+        issues: [],
+        repo: null,
+      },
+    };
+    assert.equal(
+      (await db.importer.importSession(session, "claude")).skipped,
+      false
+    );
+
+    const [synced] = await db.syncSource.loadSyncedSessions(
+      [session.sessionId],
+      {
+        attributionByCwd: new Map(),
+        launchMetadataRootByCwd: new Map(),
+        repoFullNameByPath: new Map(),
+      }
+    );
+
+    assert.equal(synced?.prs?.length ?? 0, 0);
+    assert.equal(synced?.prRefs?.length ?? 0, 0);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -2088,6 +2593,583 @@ test("SQLite lifecycle processes status transitions, subagents, transcript token
   }
 });
 
+test("session-completion notice fires once per terminal transition (error via Stop, completed via SessionEnd; replays never re-notify)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const notices: { sessionId: string; status: string }[] = [];
+
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    emit: () => {
+      /* live-update push not under test */
+    },
+    now: () => "2026-06-07T12:00:00.000Z",
+    onSessionTerminal: (notice) => notices.push(notice),
+  });
+  try {
+    // Errored session: Stop(error) is the authoritative terminal transition;
+    // it lands before SessionEnd, so the error notice must come from Stop.
+    await db.processEvent(
+      "SessionStart",
+      { session_id: "notify-error", cwd: "/work" },
+      "claude"
+    );
+    await db.processEvent(
+      "Stop",
+      { session_id: "notify-error", stop_reason: "error" },
+      "claude"
+    );
+    // SessionEnd arrives once the session is already terminal -> no re-notify.
+    await db.processEvent(
+      "SessionEnd",
+      { session_id: "notify-error" },
+      "claude"
+    );
+
+    // Completed session: SessionEnd performs the terminal transition itself.
+    await db.processEvent(
+      "SessionStart",
+      { session_id: "notify-done", cwd: "/work" },
+      "claude"
+    );
+    await db.processEvent(
+      "SessionEnd",
+      { session_id: "notify-done" },
+      "claude"
+    );
+    // A replayed/backfilled SessionEnd on an already-terminal session is silent.
+    await db.processEvent(
+      "SessionEnd",
+      { session_id: "notify-done" },
+      "claude"
+    );
+
+    assert.deepEqual(notices, [
+      { sessionId: "notify-error", status: "error" },
+      { sessionId: "notify-done", status: "completed" },
+    ]);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite lifecycle scans native Claude SubagentStop transcripts through processEvent", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const previousClaudeHome = process.env.CLAUDE_HOME;
+  const claudeHome = path.join(dir, "claude-home");
+  process.env.CLAUDE_HOME = claudeHome;
+  const projectDir = path.join(claudeHome, "projects", "claude-project");
+  const workspaceDir = path.join(dir, "workspace-project");
+  const parentTranscript = path.join(projectDir, "life-native.jsonl");
+  const subagentsDir = path.join(projectDir, "life-native", "subagents");
+  const nativeSubagentId = "agent-native_1";
+  await mkdir(subagentsDir, { recursive: true });
+  await writeFile(parentTranscript, "{}\n", "utf8");
+  await writeFile(
+    path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
+    `${JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-07T12:01:00.000Z",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_native_read",
+            name: "Read",
+            input: { file_path: "src/native.ts" },
+          },
+          {
+            type: "tool_use",
+            id: "toolu_native_read_2",
+            name: "Read",
+            input: { file_path: "src/native-2.ts" },
+          },
+        ],
+      },
+    })}\n`,
+    "utf8"
+  );
+
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    emit: () => {},
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    assert.equal(
+      await db.processEvent(
+        "SessionStart",
+        { session_id: "life-native", cwd: workspaceDir },
+        "claude"
+      ),
+      true
+    );
+    assert.equal(
+      await db.processEvent(
+        "PreToolUse",
+        {
+          session_id: "life-native",
+          tool_name: "Task",
+          tool_input: {
+            subagent_type: "engineer",
+            description: "Implement native scan",
+            prompt: "patch it",
+            agent_id: nativeSubagentId,
+          },
+        },
+        "claude"
+      ),
+      true
+    );
+    assert.equal(
+      await db.processEvent(
+        "SubagentStop",
+        {
+          session_id: "life-native",
+          tool_name: "Task",
+          transcript_path: parentTranscript,
+        },
+        "claude"
+      ),
+      true
+    );
+
+    const agents = await db.agents.getBySession("life-native");
+    const subagent = agents.find((agent) => agent.subagentType === "engineer");
+    assert.ok(subagent);
+    const events = await db.events.getBySession("life-native");
+    const nativeReads = events.filter(
+      (event) => event.eventType === "PostToolUse" && event.toolName === "Read"
+    );
+    assert.equal(nativeReads.length, 2);
+    assert.equal(nativeReads[0]?.agentId, subagent.id);
+    assert.deepEqual(JSON.parse(nativeReads[0]?.data ?? "{}"), {
+      tool_name: "Read",
+      tool_use_id: "toolu_native_read",
+      input: { file_path: "src/native.ts" },
+    });
+    assert.deepEqual(JSON.parse(nativeReads[1]?.data ?? "{}"), {
+      tool_name: "Read",
+      tool_use_id: "toolu_native_read_2",
+      input: { file_path: "src/native-2.ts" },
+    });
+
+    const noPartialRows = async (
+      sessionId: string,
+      preToolPayload: Record<string, unknown>,
+      stopPayload: Record<string, unknown>,
+      sessionPayload: Record<string, unknown> = {}
+    ) => {
+      await db.processEvent(
+        "SessionStart",
+        { session_id: sessionId, ...sessionPayload },
+        "claude"
+      );
+      await db.processEvent(
+        "PreToolUse",
+        {
+          session_id: sessionId,
+          tool_name: "Task",
+          tool_input: {
+            subagent_type: "engineer",
+            description: sessionId,
+            prompt: sessionId,
+            ...preToolPayload,
+          },
+        },
+        "claude"
+      );
+      await db.processEvent(
+        "SubagentStop",
+        {
+          session_id: sessionId,
+          tool_name: "Task",
+          ...stopPayload,
+        },
+        "claude"
+      );
+      const sessionEvents = await db.events.getBySession(sessionId);
+      assert.equal(
+        sessionEvents.some((event) => event.toolName === "Read"),
+        false,
+        `${sessionId} must not insert scanner tool rows`
+      );
+    };
+
+    await noPartialRows(
+      "life-native-absent-id",
+      {},
+      { transcript_path: parentTranscript }
+    );
+    await noPartialRows(
+      "life-native-absent-file",
+      { agent_id: "agent-missing" },
+      { transcript_path: parentTranscript }
+    );
+    await noPartialRows(
+      "life-native-subagent-path",
+      { agent_id: nativeSubagentId },
+      {
+        transcript_path: path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
+      }
+    );
+    await noPartialRows(
+      "life-native-traversal",
+      { agent_id: "../agent-native_1" },
+      { transcript_path: parentTranscript }
+    );
+
+    const outRootSession = "life-native-out-root";
+    const outRootDir = path.join(dir, "untrusted-parent");
+    const outRootParent = path.join(outRootDir, `${outRootSession}.jsonl`);
+    const outRootSubDir = path.join(outRootDir, outRootSession, "subagents");
+    await mkdir(outRootSubDir, { recursive: true });
+    await writeFile(outRootParent, "{}\n", "utf8");
+    await writeFile(
+      path.join(outRootSubDir, `${nativeSubagentId}.jsonl`),
+      `${JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-07T12:02:00.000Z",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Read",
+              input: { file_path: "src/out-root.ts" },
+            },
+          ],
+        },
+      })}\n`,
+      "utf8"
+    );
+    await noPartialRows(
+      outRootSession,
+      { agent_id: nativeSubagentId },
+      { transcript_path: outRootParent },
+      { cwd: projectDir }
+    );
+
+    const cwdOnlySession = "life-native-cwd-only";
+    const cwdOnlyDir = path.join(dir, "cwd-only-parent");
+    const cwdOnlyParent = path.join(cwdOnlyDir, `${cwdOnlySession}.jsonl`);
+    const cwdOnlySubDir = path.join(cwdOnlyDir, cwdOnlySession, "subagents");
+    await mkdir(cwdOnlySubDir, { recursive: true });
+    await writeFile(cwdOnlyParent, "{}\n", "utf8");
+    await writeFile(
+      path.join(cwdOnlySubDir, `${nativeSubagentId}.jsonl`),
+      `${JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-07T12:02:30.000Z",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_cwd_only",
+              name: "Read",
+              input: { file_path: "src/cwd-only.ts" },
+            },
+          ],
+        },
+      })}\n`,
+      "utf8"
+    );
+    await noPartialRows(
+      cwdOnlySession,
+      { agent_id: nativeSubagentId },
+      { transcript_path: cwdOnlyParent },
+      { cwd: cwdOnlyDir }
+    );
+
+    const corruptSession = "life-native-corrupt";
+    const corruptParent = path.join(projectDir, `${corruptSession}.jsonl`);
+    const corruptSubDir = path.join(projectDir, corruptSession, "subagents");
+    await mkdir(corruptSubDir, { recursive: true });
+    await writeFile(corruptParent, "{}\n", "utf8");
+    await writeFile(
+      path.join(corruptSubDir, `${nativeSubagentId}.jsonl`),
+      [
+        "{not-json",
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-06-07T12:03:00.000Z",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                name: "Read",
+                input: { file_path: "src/corrupt.ts" },
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+      "utf8"
+    );
+    await noPartialRows(
+      corruptSession,
+      { agent_id: nativeSubagentId },
+      { transcript_path: corruptParent },
+      { cwd: projectDir }
+    );
+
+    const outside = path.join(dir, "outside.jsonl");
+    await writeFile(outside, "{}\n", "utf8");
+    const symlinkSession = "life-native-symlink";
+    const symlinkProject = path.join(dir, "claude-symlink");
+    const symlinkParent = path.join(symlinkProject, `${symlinkSession}.jsonl`);
+    const symlinkSubDir = path.join(
+      symlinkProject,
+      symlinkSession,
+      "subagents"
+    );
+    await mkdir(symlinkSubDir, { recursive: true });
+    await writeFile(symlinkParent, "{}\n", "utf8");
+    await symlink(outside, path.join(symlinkSubDir, "agent-link.jsonl"));
+    await noPartialRows(
+      symlinkSession,
+      { agent_id: "agent-link" },
+      { transcript_path: symlinkParent }
+    );
+  } finally {
+    await db.close();
+    if (previousClaudeHome === undefined) {
+      Reflect.deleteProperty(process.env, "CLAUDE_HOME");
+    } else {
+      process.env.CLAUDE_HOME = previousClaudeHome;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite importer persists parser-supplied nested subagents without session metadata projection", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    emit: () => {},
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  const session: NormalizedSession = {
+    sessionId: "parser-subagents",
+    name: "Parser Subagents",
+    cwd: "/workspace/project",
+    model: "claude-sonnet-4-5",
+    version: null,
+    slug: null,
+    gitBranch: null,
+    startedAt: "2026-06-07T12:00:00.000Z",
+    endedAt: "2026-06-07T12:05:00.000Z",
+    teams: [],
+    userMessages: 1,
+    assistantMessages: 1,
+    tokensByModel: {},
+    messageTimestamps: [],
+    toolUses: [],
+    subagents: [
+      {
+        id: "agent-parent",
+        parentId: null,
+        name: "Parent Agent",
+        type: "research",
+        task: "collect context",
+        startedAt: "2026-06-07T12:01:00.000Z",
+        endedAt: "2026-06-07T12:02:00.000Z",
+        status: "completed",
+        nativeSubagentId: "agent-parent-native",
+        toolUses: [
+          {
+            name: "Read",
+            timestamp: "2026-06-07T12:01:30.000Z",
+            input: { file_path: "src/parent.ts" },
+          },
+        ],
+      },
+      {
+        id: "agent-child",
+        parentId: "agent-parent",
+        name: "Child Agent",
+        type: "implementation",
+        task: "patch code",
+        startedAt: "2026-06-07T12:02:00.000Z",
+        endedAt: "2026-06-07T12:03:00.000Z",
+        status: "completed",
+        nativeSubagentId: "agent-child-native",
+        toolUses: [
+          {
+            name: "Bash",
+            timestamp: "2026-06-07T12:02:30.000Z",
+            input: { command: "pnpm test" },
+          },
+        ],
+      },
+    ],
+    plans: [],
+    compactions: [],
+    apiErrors: [],
+    fileModifiedAt: null,
+    turnDurations: [],
+    entrypoint: "claude",
+    permissionMode: null,
+    thinkingBlockCount: 0,
+    toolResultErrors: [],
+    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
+    messages: [],
+    tokenSeries: [],
+    diffStats: null,
+    slashCommands: [],
+    artifacts: { prs: [], issues: [], repo: null },
+  };
+
+  try {
+    await db.importer.importSession(session, "claude");
+    await db.importer.importSession(session, "claude");
+
+    const persisted = await db.sessions.getById(session.sessionId);
+    const sessionMetadata = JSON.parse(persisted?.metadata ?? "{}");
+    assert.equal("subagents" in sessionMetadata, false);
+
+    const agents = await db.agents.getBySession(session.sessionId);
+    const parserAgents = agents.filter((agent) => agent.type === "subagent");
+    assert.equal(parserAgents.length, 2);
+    const parent = parserAgents.find((agent) => agent.name === "Parent Agent");
+    const child = parserAgents.find((agent) => agent.name === "Child Agent");
+    assert.ok(parent);
+    assert.ok(child);
+    assert.equal(parent.parentAgentId, `${session.sessionId}-main`);
+    assert.equal(child.parentAgentId, parent.id);
+    assert.equal(
+      JSON.parse(parent.metadata ?? "{}").nativeSubagentId,
+      "agent-parent-native"
+    );
+    assert.equal(
+      JSON.parse(child.metadata ?? "{}").nativeSubagentId,
+      "agent-child-native"
+    );
+
+    const events = await db.events.getBySession(session.sessionId);
+    assert.equal(events.filter((event) => event.toolName === "Read").length, 1);
+    assert.equal(events.filter((event) => event.toolName === "Bash").length, 1);
+    assert.equal(
+      events.find((event) => event.toolName === "Read")?.agentId,
+      parent.id
+    );
+    assert.equal(
+      events.find((event) => event.toolName === "Bash")?.agentId,
+      child.id
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SQLite importer persists overlapping Claude inline and sidecar tool use once", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const sessionId = "claude-inline-sidecar-import";
+  const nativeSubagentId = "agent-dup";
+  const parentTranscript = path.join(dir, `${sessionId}.jsonl`);
+  const subagentsDir = path.join(dir, sessionId, "subagents");
+  await mkdir(subagentsDir, { recursive: true });
+  await writeFile(
+    parentTranscript,
+    `${JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-07T12:00:00.000Z",
+      uuid: nativeSubagentId,
+      isSidechain: true,
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_duplicate_import",
+            name: "Read",
+            input: { file_path: "inline.ts" },
+          },
+        ],
+      },
+    })}\n`,
+    "utf8"
+  );
+  await writeFile(
+    path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
+    `${JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-06-07T12:00:00.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_duplicate_import",
+            name: "Read",
+            input: { file_path: "sidecar.ts" },
+          },
+        ],
+      },
+    })}\n`,
+    "utf8"
+  );
+
+  const parsed = await parseClaudeFile(parentTranscript);
+  assert.ok(parsed);
+
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    emit: () => {},
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    await db.importer.importSession(parsed, "claude");
+    const firstTokenRows = await db.tokenUsage.getBySession(sessionId);
+    await db.importer.importSession(parsed, "claude");
+
+    const agents = await db.agents.getBySession(sessionId);
+    const subagent = agents.find((agent) => agent.type === "subagent");
+    assert.ok(subagent);
+    const events = await db.events.getBySession(sessionId);
+    const readEvents = events.filter(
+      (event) => event.eventType === "PostToolUse" && event.toolName === "Read"
+    );
+    assert.equal(readEvents.length, 1);
+    assert.equal(readEvents[0]?.agentId, subagent.id);
+    assert.deepEqual(JSON.parse(readEvents[0]?.data ?? "{}"), {
+      file_path: "inline.ts",
+    });
+    assert.deepEqual(
+      await db.tokenUsage.getBySession(sessionId),
+      firstTokenRows
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SQLite importer is idempotent and can append new historical events", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
@@ -2146,6 +3228,179 @@ test("SQLite importer is idempotent and can append new historical events", async
   }
 });
 
+test("SQLite importer stores folded Codex child tool uses only on subagent", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const sessionsDir = path.join(dir, "sessions");
+  const rolloutDir = path.join(sessionsDir, "2026", "06", "24");
+  const parentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const childId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  let db: Awaited<ReturnType<typeof openSqliteAgentDatabase>> | null = null;
+
+  const writeRollout = async (
+    id: string,
+    prefix: string,
+    lines: readonly unknown[]
+  ): Promise<string> => {
+    await mkdir(rolloutDir, { recursive: true });
+    const filePath = path.join(rolloutDir, `rollout-${prefix}-${id}.jsonl`);
+    await writeFile(
+      filePath,
+      `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+      "utf8"
+    );
+    return filePath;
+  };
+
+  const tokenCount = (
+    timestamp: string,
+    inputTokens: number,
+    outputTokens: number
+  ) => ({
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          input_tokens: inputTokens,
+          cached_input_tokens: 0,
+          output_tokens: outputTokens,
+        },
+      },
+      turn_context: { model: "gpt-5-codex" },
+    },
+  });
+
+  try {
+    const parentPath = await writeRollout(parentId, "2026-06-24T10-10-00", [
+      {
+        timestamp: "2026-06-24T10:10:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: parentId,
+          cwd: "/workspace/codex-import",
+          cli_version: "0.40.0",
+          source: "exec",
+        },
+      },
+      {
+        timestamp: "2026-06-24T10:10:00.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-5-codex", cwd: "/workspace/codex-import" },
+      },
+      {
+        timestamp: "2026-06-24T10:10:01.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "ship it" },
+      },
+      {
+        timestamp: "2026-06-24T10:10:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "working" }],
+        },
+      },
+      tokenCount("2026-06-24T10:10:03.000Z", 100, 10),
+    ]);
+    const childPath = await writeRollout(childId, "2026-06-24T10-11-00", [
+      {
+        timestamp: "2026-06-24T10:11:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: childId,
+          cwd: "/workspace/codex-import",
+          cli_version: "0.40.0",
+          source: {
+            subagent: {
+              agent_nickname: "child-worker",
+              agent_role: "worker",
+              thread_spawn: {
+                parent_thread_id: parentId,
+                depth: 1,
+              },
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-06-24T10:11:00.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-5-codex", cwd: "/workspace/codex-import" },
+      },
+      {
+        timestamp: "2026-06-24T10:11:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "mcp_tool_call_begin",
+          server: "github",
+          method: "create_pull_request",
+          arguments: { title: "child PR" },
+        },
+      },
+      {
+        timestamp: "2026-06-24T10:11:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "mcp_tool_call_end",
+          output: {
+            url: "https://github.com/closedloop-ai/symphony-alpha/pull/4242",
+          },
+        },
+      },
+      tokenCount("2026-06-24T10:11:03.000Z", 50, 5),
+    ]);
+    const sources = [parentPath, childPath];
+    const collector = createCodexCollector({
+      sessionsDir,
+      archivedDir: path.join(dir, "archive"),
+      listSources: () => sources,
+    });
+
+    assert.deepEqual(await collector.parse(childPath), []);
+    const [parsed] = await collector.parse(parentPath);
+    assert.ok(parsed);
+    assert.equal(parsed.subagents?.[0]?.id, childId);
+    assert.equal(parsed.subagents?.[0]?.toolUses?.length, 1);
+    assert.equal(parsed.toolUses.length, 1);
+    assert.equal(parsed.toolUses[0]?.subagentId, childId);
+
+    db = await openSqliteAgentDatabase({
+      dataDir,
+      detectBillingMode: () => "api",
+      now: () => "2026-06-24T12:00:00.000Z",
+    });
+
+    assert.equal(
+      (await db.importer.importSession(parsed, "codex")).skipped,
+      false
+    );
+    assert.equal(await db.sessions.getById(childId), undefined);
+
+    const parserSubagentId = `${parentId}-parser-sub-${childId}`;
+    const agents = await db.agents.getBySession(parentId);
+    assert.equal(agents.length, 2);
+    assert.ok(agents.some((agent) => agent.id === parserSubagentId));
+
+    const events = await db.events.getBySession(parentId);
+    const postToolEvents = events.filter(
+      (event) => event.eventType === "PostToolUse"
+    );
+    assert.equal(postToolEvents.length, 1);
+    assert.equal(postToolEvents[0]?.agentId, parserSubagentId);
+    assert.equal(postToolEvents[0]?.toolName, "github__create_pull_request");
+    assert.equal(
+      postToolEvents.some((event) => event.agentId === `${parentId}-main`),
+      false
+    );
+  } finally {
+    await db?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function insertSqliteSession(
   db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
   id: string,
@@ -2156,6 +3411,7 @@ async function insertSqliteSession(
     model?: string;
     startedAt?: string;
     updatedAt?: string;
+    endedAt?: string | null;
     awaitingInputSince?: string | null;
     metadata?: string | null;
   } = {}
@@ -2164,10 +3420,10 @@ async function insertSqliteSession(
   const updatedAt = overrides.updatedAt ?? startedAt;
   await db.run(
     `INSERT INTO sessions (
-       id, name, status, cwd, model, started_at, updated_at,
+       id, name, status, cwd, model, started_at, updated_at, ended_at,
        awaiting_input_since, metadata, harness, billing_mode
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'codex', 'api')`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'codex', 'api')`,
     id,
     overrides.name ?? `Session ${id}`,
     overrides.status ?? "completed",
@@ -2175,6 +3431,7 @@ async function insertSqliteSession(
     overrides.model ?? "gpt-5",
     startedAt,
     updatedAt,
+    overrides.endedAt ?? null,
     overrides.awaitingInputSince ?? null,
     overrides.metadata ?? null
   );
@@ -2267,6 +3524,243 @@ async function insertSqlitePrArtifact(
     observedAt
   );
 }
+
+test("FEA-2868: median PR size ignores un-enriched PRs while KLOC still counts them", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-20T12:00:00.000Z",
+  });
+
+  try {
+    await db.run(
+      `INSERT INTO sessions (id, status, started_at, updated_at)
+       VALUES ('fea2868-s', 'completed', $1, $1)`,
+      "2026-06-16T10:00:00.000Z"
+    );
+
+    // Three ENRICHED PRs with known sizes 100 / 300 / 500 (median 300)...
+    const enriched: [number, number][] = [
+      [1, 100],
+      [2, 300],
+      [3, 500],
+    ];
+    for (const [prNumber, loc] of enriched) {
+      await insertSqlitePrArtifact(db, "fea2868-s", {
+        repoFullName: "closedloop-ai/symphony-alpha",
+        prNumber,
+      });
+      await db.run(
+        "UPDATE artifacts SET lines_added = $1, lines_removed = 0 WHERE pr_number = $2",
+        loc,
+        prNumber
+      );
+    }
+    // ...and five UN-enriched PRs (lines_added/lines_removed left NULL). Before
+    // FEA-2868 these folded into the median as 0, dragging it to 0.
+    for (let prNumber = 10; prNumber < 15; prNumber++) {
+      await insertSqlitePrArtifact(db, "fea2868-s", {
+        repoFullName: "closedloop-ai/symphony-alpha",
+        prNumber,
+      });
+    }
+
+    const delivery = await db.dashboard.getInsights(
+      InsightsSection.Delivery,
+      "90",
+      new Date("2026-06-20T12:00:00.000Z")
+    );
+    const kpi = (key: string) =>
+      delivery.kpis.find((entry) => entry.key === key)?.value;
+
+    // Median reflects only the enriched PRs (300), NOT the zero-padded 0.
+    assert.equal(kpi("pr-size"), 300);
+    // KLOC still sums ALL captured PRs' LOC (900 → 0.9k); un-enriched add 0.
+    assert.equal(kpi("kloc"), 0.9);
+    // Captured PRs still counts every PR artifact in the window (3 + 5).
+    assert.equal(kpi("merged"), 8);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2866: import never persists an unvalidated bare-basename repo_full_name", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    // A git-validated repo (as captureRepoIdentity would upsert) so the write-path
+    // resolver can map the bare folder name `symphony-alpha` → its owner/repo slug.
+    await db.run(
+      `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
+       VALUES ('fea2866-repo', '/w/symphony-alpha/.git', 'git@github.com:closedloop-ai/symphony-alpha.git', 'closedloop-ai/symphony-alpha', 'main', $1, $1)`,
+      "2026-06-07T00:00:00.000Z"
+    );
+
+    // Session whose parser-derived repo is a bare worktree dir name (no owner) —
+    // the exact pollution FEA-2866 removes. Its start-branch artifact would have
+    // carried that bare name as repo_full_name.
+    const junk: NormalizedSession = {
+      ...makeNormalizedSession(),
+      sessionId: "fea2866-junk",
+      gitBranch: "agent-work",
+      artifacts: { prs: [], issues: [], repo: "agent-a423e10d3ca273c56" },
+    };
+    assert.equal(
+      (await db.importer.importSession(junk, "claude")).skipped,
+      false
+    );
+
+    // Session whose parser-derived repo is a bare but KNOWN folder name → resolves.
+    const known: NormalizedSession = {
+      ...makeNormalizedSession(),
+      sessionId: "fea2866-known",
+      gitBranch: "fea-known",
+      artifacts: { prs: [], issues: [], repo: "symphony-alpha" },
+    };
+    assert.equal(
+      (await db.importer.importSession(known, "claude")).skipped,
+      false
+    );
+
+    // Session whose parser-derived repo CONTAINS a slash but is NOT a valid
+    // owner/repo slug (an extra path segment). A loose `includes("/")` fallback
+    // would wrongly keep it; the `normalizeRepoFullName` validator rejects it so
+    // it is dropped to null (groups under "Unknown"), not surfaced as a repo.
+    const malformed: NormalizedSession = {
+      ...makeNormalizedSession(),
+      sessionId: "fea2866-malformed",
+      gitBranch: "fea-malformed",
+      artifacts: {
+        prs: [],
+        issues: [],
+        repo: "closedloop-ai/symphony-alpha/nested",
+      },
+    };
+    assert.equal(
+      (await db.importer.importSession(malformed, "claude")).skipped,
+      false
+    );
+
+    const names = (
+      await db.prisma.client.$queryRawUnsafe<
+        { repo_full_name: string | null }[]
+      >(
+        "SELECT DISTINCT repo_full_name FROM artifacts WHERE repo_full_name IS NOT NULL"
+      )
+    ).map((row) => row.repo_full_name);
+
+    // The bare worktree name is never surfaced as a repository...
+    assert.equal(names.includes("agent-a423e10d3ca273c56"), false);
+    // ...the bare known folder is upgraded to its validated owner/repo slug...
+    assert.equal(names.includes("closedloop-ai/symphony-alpha"), true);
+    // ...the slash-containing-but-invalid value is dropped by the validator...
+    assert.equal(names.includes("closedloop-ai/symphony-alpha/nested"), false);
+    // ...and every surviving value is a valid owner/repo slug.
+    assert.equal(
+      names.some(
+        (name) => name !== null && normalizeRepoFullName(name) === null
+      ),
+      false
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls junk, is idempotent", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    // The background boot-maintenance chain runs its own FEA-2866
+    // `repairPollutedRepoFullNames` sweep; await it to completion BEFORE seeding
+    // the polluted fixtures below, otherwise the sweep can fire late (once the
+    // `repos` row + bare artifacts exist) and resolve `symphony-alpha` →
+    // `closedloop-ai/symphony-alpha` out from under the assertion, leaving only
+    // one bare row for the explicit repair call to fix.
+    await db.whenBootMaintenanceSettled();
+    await db.run(
+      `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
+       VALUES ('fea2866-repo', '/w/symphony-alpha/.git', 'git@github.com:closedloop-ai/symphony-alpha.git', 'closedloop-ai/symphony-alpha', 'main', $1, $1)`,
+      "2026-06-07T00:00:00.000Z"
+    );
+    await db.run(
+      `INSERT INTO sessions (id, status, started_at, updated_at)
+       VALUES ('fea2866-s', 'completed', $1, $1)`,
+      "2026-06-07T10:00:00.000Z"
+    );
+
+    // Pre-fix pollution stamped onto existing artifact rows.
+    await insertSqlitePrArtifact(db, "fea2866-s", {
+      repoFullName: "symphony-alpha", // bare + KNOWN → resolves to owner/repo
+      prNumber: 1,
+    });
+    await insertSqlitePrArtifact(db, "fea2866-s", {
+      repoFullName: "agent-a423e10d3ca273c56", // bare junk (worktree) → nulled
+      prNumber: 2,
+    });
+    await insertSqlitePrArtifact(db, "fea2866-s", {
+      repoFullName: "closedloop-ai/symphony-alpha", // already valid → untouched
+      prNumber: 3,
+    });
+
+    const repaired = await repairPollutedRepoFullNames(
+      db.prisma,
+      () => undefined
+    );
+    assert.equal(repaired, 2);
+
+    const byNumber = new Map(
+      (
+        await db.prisma.client.$queryRawUnsafe<
+          {
+            pr_number: number;
+            repo_full_name: string | null;
+            git_dir: string | null;
+          }[]
+        >("SELECT pr_number, repo_full_name, git_dir FROM artifacts")
+      ).map((row) => [Number(row.pr_number), row])
+    );
+    assert.equal(
+      byNumber.get(1)?.repo_full_name,
+      "closedloop-ai/symphony-alpha"
+    );
+    assert.equal(byNumber.get(2)?.repo_full_name, null);
+    assert.equal(
+      byNumber.get(3)?.repo_full_name,
+      "closedloop-ai/symphony-alpha"
+    );
+
+    // Resolved rows also backfill git_dir so downstream enrichment can use local
+    // git; junk rows keep git_dir NULL.
+    assert.equal(byNumber.get(1)?.git_dir, "/w/symphony-alpha/.git");
+    assert.equal(byNumber.get(2)?.git_dir, null);
+
+    // Idempotent: nothing bare remains, so a second pass repairs zero rows.
+    assert.equal(
+      await repairPollutedRepoFullNames(db.prisma, () => undefined),
+      0
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 function makeNormalizedSession(): NormalizedSession {
   return {

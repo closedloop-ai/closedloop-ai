@@ -1,5 +1,5 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import { DocumentStatus } from "@repo/api/src/types/document";
+import { isTerminalStatusForSubtype } from "@repo/api/src/types/document";
 import {
   type CreateProjectInput,
   ProjectStatus,
@@ -291,14 +291,18 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: string }>): number {
+  calculateStatus(
+    artifacts: Array<{ status: string; subtype: string | null }>
+  ): number {
     if (artifacts.length === 0) {
       return 0;
     }
 
-    const completedCount = artifacts.filter(
-      (a) =>
-        a.status === DocumentStatus.Done || a.status === DocumentStatus.Obsolete
+    // Documents and Features have distinct terminal vocabularies (PRD-495);
+    // an artifact counts as complete when it has reached a terminal status for
+    // its own subtype.
+    const completedCount = artifacts.filter((a) =>
+      isTerminalStatusForSubtype(a.subtype, a.status)
     ).length;
 
     return Math.round((completedCount / artifacts.length) * 100);
@@ -366,7 +370,7 @@ const PROJECT_DETAIL_INCLUDE = {
   },
   artifacts: {
     where: { type: ArtifactType.DOCUMENT },
-    select: { status: true },
+    select: { status: true, subtype: true },
   },
   tagProjects: {
     include: TAG_RELATION_INCLUDE,

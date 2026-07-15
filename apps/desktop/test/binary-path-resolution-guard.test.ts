@@ -360,7 +360,7 @@ describe("binary path resolution source guards", () => {
     );
     assert.ok(
       relativePaths.includes(
-        "src/renderer/components/features/CatalogCard.tsx"
+        "src/renderer/components/features/CoreFeaturesView.tsx"
       ),
       "Desktop TSX source files must stay inside the direct binary-discovery scan"
     );

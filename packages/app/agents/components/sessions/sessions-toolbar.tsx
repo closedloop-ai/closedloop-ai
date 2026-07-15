@@ -1,11 +1,18 @@
 "use client";
 
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
+import type { ReadSource } from "@repo/api/src/types/read-source";
 import { FilterPopover } from "@repo/design-system/components/ui/filter-popover";
 import { TableViewMenu } from "@repo/design-system/components/ui/table-view-menu";
 import type { ReactNode } from "react";
 import { DateRangeFilter } from "../../../shared/components/date-range-filter";
+import { ReadSourceBadge } from "../../../shared/components/read-source-badge";
+import { useFeatureFlagEnabled } from "../../../shared/feature-flags/use-feature-flag-enabled";
 import { NOOP_TABLE_FILTERS_CONTROLLER } from "../../../shared/lib/facet-filter";
+import {
+  READ_SOURCE_INDICATOR_FEATURE_FLAG_KEY,
+  SESSIONS_CHANGE_PR_FILTERS_FEATURE_FLAG_KEY,
+} from "../../../shared/lib/feature-flags";
 import type { DateRange } from "../../../shared/lib/format-utils";
 import {
   SESSIONS_TOGGLEABLE_COLUMNS,
@@ -26,6 +33,12 @@ export type SessionsToolbarProps = {
   usage?: AgentSessionUsageSummary;
   visibleColumns: Set<string>;
   onToggleColumn: (id: SessionColumnId) => void;
+  /**
+   * FEA-3120: which store the current list rows were read from. Rendered as a
+   * small badge (behind the read-source-indicator flag) so QA can tell a data
+   * bug from a sync gap. Undefined ⇒ no badge (unknown source).
+   */
+  readSource?: ReadSource;
   /** Extra actions render after the built-in controls. */
   trailing?: ReactNode;
 };
@@ -46,8 +59,15 @@ export function SessionsToolbar({
   usage,
   visibleColumns,
   onToggleColumn,
+  readSource,
   trailing,
 }: SessionsToolbarProps) {
+  const changePrFiltersEnabled = useFeatureFlagEnabled(
+    SESSIONS_CHANGE_PR_FILTERS_FEATURE_FLAG_KEY
+  );
+  const readSourceIndicatorEnabled = useFeatureFlagEnabled(
+    READ_SOURCE_INDICATOR_FEATURE_FLAG_KEY
+  );
   return (
     <div className="flex flex-wrap items-center gap-2">
       <DateRangeFilter onChange={onDateRangeChange} value={dateRange} />
@@ -62,7 +82,10 @@ export function SessionsToolbar({
           facetGroups: sessionFilterFacetGroups(
             filters,
             onFiltersChange,
-            usage
+            usage,
+            {
+              includeChangePrFilters: changePrFiltersEnabled,
+            }
           ),
         }}
       />
@@ -76,6 +99,10 @@ export function SessionsToolbar({
         }))}
         onToggleColumn={(id) => onToggleColumn(id as SessionColumnId)}
       />
+
+      {readSourceIndicatorEnabled && (
+        <ReadSourceBadge readSource={readSource} surfaceLabel="sessions" />
+      )}
 
       {trailing}
     </div>

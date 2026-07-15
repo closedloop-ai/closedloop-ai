@@ -15,7 +15,7 @@
  * libSQL handle rather than the Postgres `information_schema`/`pg_*` catalogs
  * SQLite exposed.
  */
-import type { SqliteExecutor } from "../../src/main/database/libsql-executor.js";
+import type { SqliteExecutor } from "../../src/main/database/migration-executor.js";
 
 export type SchemaSnapshot = {
   tables: string[];

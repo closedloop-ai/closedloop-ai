@@ -49,6 +49,8 @@ function liveFakeSource(withSubscribe: boolean) {
       return Promise.resolve({ items: [], total: calls, viewerScope: "self" });
     },
     detail: () => Promise.reject(new Error("unused")),
+    comments: () => Promise.reject(new Error("unused")),
+    trace: () => Promise.reject(new Error("unused")),
     usage: () => Promise.reject(new Error("unused")),
     analytics: () => Promise.reject(new Error("unused")),
     ...(withSubscribe
@@ -202,7 +204,7 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     return keys;
   }
 
-  it("scopes a branchId change to list + usage + analytics + that one detail", async () => {
+  it("scopes a branchId change to list + usage + analytics + that one detail + trace + comments", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -216,10 +218,17 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     expect(keys).toContain(JSON.stringify(branchesKeys.usages()));
     expect(keys).toContain(JSON.stringify(branchesKeys.analyticsRoot()));
     expect(keys).toContain(JSON.stringify(branchesKeys.detail("local", "b1")));
+    // PLN-1148 Phase 2: the lazy trace is scoped to its own branch, not broad.
+    expect(keys).toContain(JSON.stringify(branchesKeys.trace("local", "b1")));
+    expect(keys).toContain(
+      JSON.stringify(branchesKeys.comments("local", "b1"))
+    );
     expect(keys).not.toContain(JSON.stringify(branchesKeys.details()));
+    expect(keys).not.toContain(JSON.stringify(branchesKeys.traces()));
+    expect(keys).not.toContain(JSON.stringify(branchesKeys.commentsRoot()));
   });
 
-  it("expands a {} change to list + usage + analytics + all details", async () => {
+  it("expands a {} change to list + usage + analytics + all details + all traces + all comments", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -233,5 +242,8 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     expect(keys).toContain(JSON.stringify(branchesKeys.usages()));
     expect(keys).toContain(JSON.stringify(branchesKeys.analyticsRoot()));
     expect(keys).toContain(JSON.stringify(branchesKeys.details()));
+    // PLN-1148 Phase 2: a broad change refreshes every open trace too.
+    expect(keys).toContain(JSON.stringify(branchesKeys.traces()));
+    expect(keys).toContain(JSON.stringify(branchesKeys.commentsRoot()));
   });
 });

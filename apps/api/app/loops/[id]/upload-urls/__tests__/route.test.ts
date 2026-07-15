@@ -104,6 +104,58 @@ describe("POST /api/loops/:id/upload-urls — jti_mismatch / CAS-pin", () => {
     );
   });
 
+  it("signs Content-Encoding: gzip only for keys listed in gzipKeys", async () => {
+    vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue({
+      loopId,
+      organizationId: orgId,
+      tokenId: "jti-new",
+    });
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: loopId,
+      parentLoopId: null,
+    } as any);
+    vi.mocked(validateKeyBelongsToLoop).mockReturnValue(true);
+    vi.mocked(generateUploadUrl).mockResolvedValue(
+      "https://s3.example.com/presigned-put-url"
+    );
+
+    const gzipKey = `${orgId}/loops/${loopId}/support/perf.jsonl`;
+    const plainKey = `${orgId}/loops/${loopId}/metadata.json`;
+    const request = new Request(
+      `http://localhost/api/loops/${loopId}/upload-urls`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runner-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          keys: [gzipKey, plainKey],
+          gzipKeys: [gzipKey],
+        }),
+      }
+    );
+
+    const response = await POST(request, {
+      params: Promise.resolve({ id: loopId }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(generateUploadUrl).toHaveBeenCalledWith(gzipKey, undefined, {
+      contentEncoding: "gzip",
+    });
+    expect(generateUploadUrl).toHaveBeenCalledWith(plainKey, undefined, {});
+
+    // The applied encoding is echoed per URL so a version-skewed client only
+    // compresses when the backend confirms it signed for gzip.
+    const body = await response.json();
+    const byKey = new Map(
+      body.data.urls.map((u: { key: string }) => [u.key, u])
+    );
+    expect(byKey.get(gzipKey)).toMatchObject({ contentEncoding: "gzip" });
+    expect(byKey.get(plainKey)).not.toHaveProperty("contentEncoding");
+  });
+
   it("passes loopId and route to authenticateLoopRunnerRequest", async () => {
     vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue({
       loopId,

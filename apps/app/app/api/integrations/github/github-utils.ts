@@ -11,6 +11,7 @@ const GITHUB_OAUTH_RETURN_TO_COOKIE_VERSION = 1;
 const GITHUB_OAUTH_RETURN_TO_COOKIE_MAX_AGE_MS = 10 * 60 * 1000;
 const GITHUB_OAUTH_RETURN_TO_STATE_HASH_PREFIX = "github_oauth_return_to:v1:";
 const ENCODED_SEPARATOR_OR_DOT_PATTERN = /%(?:2e|2f|5c)/i;
+const ENCODED_DOT_OR_BACKSLASH_PATTERN = /%(?:2e|5c)/i;
 const CR_LF_OR_BACKSLASH_PATTERN = /[\r\n\\]/;
 const returnToPayloadSchema = z
   .object({
@@ -37,36 +38,71 @@ export function timingSafeCompare(a: string, b: string): boolean {
   return timingSafeEqual(bufferA, bufferB);
 }
 
-/** Validate the only custom OAuth return target Branch View prompts support. */
+/** Validate the custom OAuth return targets GitHub-gated product surfaces support. */
 export function getCanonicalBranchViewReturnPath(
-  returnTo: string | null
+  returnTo: string | null,
+  options: { orgSlug?: string | null } = {}
 ): string | null {
   if (!returnTo || returnTo.length > 200) {
     return null;
   }
+  const canonicalReturnTo = qualifyOrglessGitHubReturnPath(
+    returnTo,
+    options.orgSlug
+  );
   if (
-    CR_LF_OR_BACKSLASH_PATTERN.test(returnTo) ||
-    ENCODED_SEPARATOR_OR_DOT_PATTERN.test(returnTo) ||
-    returnTo.startsWith("//") ||
-    returnTo.includes("?") ||
-    returnTo.includes("#") ||
-    returnTo.startsWith("/api/")
+    CR_LF_OR_BACKSLASH_PATTERN.test(canonicalReturnTo) ||
+    canonicalReturnTo.startsWith("//") ||
+    canonicalReturnTo.includes("?") ||
+    canonicalReturnTo.includes("#") ||
+    canonicalReturnTo.startsWith("/api/")
   ) {
     return null;
   }
-  const [, orgSlug, buildSegment, buildId, ...extra] = returnTo.split("/");
+  const [, orgSlug, firstSegment, secondSegment, ...extra] =
+    canonicalReturnTo.split("/");
+  if (!isSafeBranchViewPathSegment(orgSlug)) {
+    return null;
+  }
+  if (firstSegment === "branches") {
+    if (secondSegment === undefined && extra.length === 0) {
+      return `/${orgSlug}/branches`;
+    }
+    if (
+      secondSegment !== undefined &&
+      extra.length === 0 &&
+      isSafeBranchDetailPathSegment(secondSegment)
+    ) {
+      return `/${orgSlug}/branches/${secondSegment}`;
+    }
+    return null;
+  }
+  if (
+    firstSegment === "insights" &&
+    secondSegment === undefined &&
+    extra.length === 0
+  ) {
+    return `/${orgSlug}/insights`;
+  }
+  if (
+    firstSegment === "agents" &&
+    secondSegment === undefined &&
+    extra.length === 0
+  ) {
+    return `/${orgSlug}/agents`;
+  }
   if (
     extra.length > 0 ||
-    buildSegment !== "build" ||
-    !isSafeBranchViewPathSegment(orgSlug) ||
-    !isSafeBranchViewPathSegment(buildId)
+    firstSegment !== "build" ||
+    ENCODED_SEPARATOR_OR_DOT_PATTERN.test(canonicalReturnTo) ||
+    !isSafeBranchViewPathSegment(secondSegment)
   ) {
     return null;
   }
-  return `/${orgSlug}/build/${buildId}`;
+  return `/${orgSlug}/build/${secondSegment}`;
 }
 
-/** Serialize a state-bound Branch View return cookie for GitHub OAuth. */
+/** Serialize a state-bound return cookie for GitHub OAuth. */
 export function createGitHubOAuthReturnToCookie(input: {
   issuedAt: number;
   returnTo: string;
@@ -83,7 +119,7 @@ export function createGitHubOAuthReturnToCookie(input: {
   return `v1.${payloadB64}.${macB64}`;
 }
 
-/** Verify a GitHub OAuth Branch View return cookie after OAuth state passes. */
+/** Verify a GitHub OAuth return cookie after OAuth state passes. */
 export function verifyGitHubOAuthReturnToCookie(input: {
   cookieValue: string | undefined;
   now: number;
@@ -230,7 +266,9 @@ function base64UrlDecode(value: string): string {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
-function isSafeBranchViewPathSegment(value: string | undefined): boolean {
+function isSafeBranchViewPathSegment(
+  value: string | null | undefined
+): boolean {
   return Boolean(
     value &&
       value !== "." &&
@@ -239,4 +277,61 @@ function isSafeBranchViewPathSegment(value: string | undefined): boolean {
       !value.includes("\\") &&
       !value.includes("%")
   );
+}
+
+function isSafeBranchDetailPathSegment(value: string | undefined): boolean {
+  if (
+    !value ||
+    value === "." ||
+    value === ".." ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    ENCODED_DOT_OR_BACKSLASH_PATTERN.test(value)
+  ) {
+    return false;
+  }
+  try {
+    const decoded = decodeURIComponent(value);
+    return (
+      decoded.length > 0 &&
+      !CR_LF_OR_BACKSLASH_PATTERN.test(decoded) &&
+      !decoded.split("/").some((segment) => segment === "." || segment === "..")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function qualifyOrglessGitHubReturnPath(
+  returnTo: string,
+  orgSlug: string | null | undefined
+): string {
+  if (!isSafeBranchViewPathSegment(orgSlug)) {
+    return returnTo;
+  }
+  const [, firstSegment, secondSegment, ...extra] = returnTo.split("/");
+  if (
+    firstSegment === "insights" &&
+    secondSegment === undefined &&
+    extra.length === 0
+  ) {
+    return `/${orgSlug}/insights`;
+  }
+  if (
+    firstSegment === "agents" &&
+    secondSegment === undefined &&
+    extra.length === 0
+  ) {
+    return `/${orgSlug}/agents`;
+  }
+  if (firstSegment !== "branches" || extra.length > 0) {
+    return returnTo;
+  }
+  if (secondSegment === undefined) {
+    return `/${orgSlug}/branches`;
+  }
+  if (isSafeBranchDetailPathSegment(secondSegment)) {
+    return `/${orgSlug}/branches/${secondSegment}`;
+  }
+  return returnTo;
 }

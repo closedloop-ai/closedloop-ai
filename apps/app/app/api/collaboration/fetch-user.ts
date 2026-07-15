@@ -2,7 +2,7 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/user";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { env } from "@/env";
+import { resolveApiOrigin } from "@/lib/api-origin";
 
 /**
  * Fetches the authenticated user from the BFF API using the provided auth token.
@@ -11,11 +11,6 @@ import { env } from "@/env";
 export async function fetchUser(
   getToken: () => Promise<string | null>
 ): Promise<User | null> {
-  if (!env.NEXT_PUBLIC_API_URL) {
-    log.error("NEXT_PUBLIC_API_URL is not set");
-    return null;
-  }
-
   try {
     const token = await getToken();
     if (!token) {
@@ -23,7 +18,7 @@ export async function fetchUser(
       return null;
     }
 
-    const response = await fetch(`${env.NEXT_PUBLIC_API_URL}/me`, {
+    const response = await fetch(`${resolveApiOrigin()}/me`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",

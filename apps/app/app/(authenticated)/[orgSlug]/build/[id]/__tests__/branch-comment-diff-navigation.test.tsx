@@ -103,6 +103,9 @@ vi.mock("@repo/analytics/client", () => ({
 
 vi.mock("@repo/auth/client", () => ({
   useOrganization: () => ({ organization: { id: "org_test", slug: "org" } }),
+  // BranchViewContainer renders useOrgSlug, which reads isSignedIn to gate its
+  // dev-only throw; the org slug above means the throw is never reached.
+  useAuth: () => ({ isSignedIn: true }),
 }));
 
 vi.mock("@tanstack/react-query", async () => {

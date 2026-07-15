@@ -6,7 +6,7 @@ import {
 } from "../scripts/sample-export-constants";
 
 const PACKAGE_JSON_PATH = new URL("../package.json", import.meta.url);
-const EXPECTED_PACKAGE_VERSION = "0.5.0";
+const EXPECTED_PACKAGE_VERSION = "0.10.0";
 const EXPECTED_OTEL_SEMCONV_VERSION = "1.39.0";
 const IMPORT_TYPES_PATTERN = /^\.\/dist\/.*\.d\.ts$/;
 const REQUIRE_TYPES_PATTERN = /^\.\/dist\/.*\.d\.cts$/;
@@ -16,6 +16,8 @@ const CODE_EXPORT_PATHS = [
   "./attributes",
   "./app",
   "./app-exception-origin",
+  "./collector-tail-sampling-policy",
+  "./ipc",
   "./resource",
   "./span",
   "./gen-ai",
@@ -34,6 +36,7 @@ const SCHEMA_EXPORT_PATHS = [
   "./schemas/gen-ai.schema.json",
   "./schemas/sync.schema.json",
   "./schemas/permission.schema.json",
+  "./schemas/ipc.schema.json",
 ] as const;
 const HTTP_URL_PATTERN = /^https?:/;
 

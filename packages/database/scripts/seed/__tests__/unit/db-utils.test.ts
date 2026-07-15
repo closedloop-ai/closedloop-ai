@@ -11,11 +11,23 @@
  *   - Edge cases: empty string, bare pattern words, malformed host-like strings
  */
 
+import tls from "node:tls";
+import {
+  DbHealthAuthMode,
+  DbHealthCheckStatus,
+  DbHealthHostType,
+  DbHealthSource,
+  DbHealthSslMode,
+  DbHealthTransportError,
+} from "@repo/api/src/types/db-health";
 import { describe, expect, it } from "vitest";
 import {
+  classifyDatabaseTransport,
   matchesProductionHostPattern,
   PRODUCTION_HOST_PATTERNS,
+  resolveSslOption,
 } from "../../../db-utils";
+import { AWS_RDS_CA_BUNDLE } from "../../../rds-ca-bundle";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -231,5 +243,235 @@ describe("matchesProductionHostPattern — edge cases", () => {
   it("matches a very long production hostname that ends with .cl-ai-prod", () => {
     const hostname = "a.b.c.d.e.f.g.cl-ai-prod";
     expect(matchesProductionHostPattern(hostname)).toBe("cl-ai-prod");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. resolveSslOption — SSL verification policy
+//
+// This is the shared SSOT used by the seed scripts AND the runtime pool's
+// IAM/production path (packages/database/index.ts getPool). The production
+// path passes { isLocalhost: false, sslmode: null } and must default to
+// verified TLS so short-lived IAM tokens and queries can't be MITM'd; the
+// ALLOW_INSECURE_SSL escape hatch (allowInsecure: true) restores the legacy
+// unverified behavior for endpoints whose RDS CA chain isn't yet trusted.
+// ---------------------------------------------------------------------------
+
+describe("resolveSslOption — verification policy", () => {
+  it("disables TLS for localhost regardless of other options", () => {
+    expect(
+      resolveSslOption({
+        isLocalhost: true,
+        sslmode: null,
+        allowInsecure: true,
+      })
+    ).toBe(false);
+  });
+
+  it("disables TLS for sslmode=disable", () => {
+    expect(
+      resolveSslOption({
+        isLocalhost: false,
+        sslmode: "disable",
+        allowInsecure: false,
+      })
+    ).toBe(false);
+  });
+
+  it("verifies the server cert by default on the IAM/production path", () => {
+    // Mirrors getPool's IAM branch: non-localhost, no sslmode, not opted out.
+    const ssl = resolveSslOption({
+      isLocalhost: false,
+      sslmode: null,
+      allowInsecure: false,
+    });
+    expect(ssl).not.toBe(false);
+    if (ssl === false) {
+      throw new Error("expected verifying SSL option");
+    }
+    expect(ssl.rejectUnauthorized).toBe(true);
+    // Trust anchors must include the RDS CA bundle (absent from some runtimes'
+    // default store — the prod-down cause) AND the system roots (so publicly
+    // trusted hosts like Neon still verify). `ca` REPLACES the default store,
+    // so both must be present in the union.
+    expect(Array.isArray(ssl.ca)).toBe(true);
+    expect(ssl.ca).toContain(AWS_RDS_CA_BUNDLE);
+    for (const root of tls.rootCertificates) {
+      expect(ssl.ca).toContain(root);
+    }
+  });
+
+  it("opts into unverified TLS only when allowInsecure is set (ALLOW_INSECURE_SSL=1)", () => {
+    expect(
+      resolveSslOption({
+        isLocalhost: false,
+        sslmode: null,
+        allowInsecure: true,
+      })
+    ).toEqual({ rejectUnauthorized: false });
+  });
+});
+
+describe("classifyDatabaseTransport — runtime health posture", () => {
+  it("classifies DATABASE_URL RDS verified TLS as healthy", () => {
+    expect(
+      classifyDatabaseTransport({
+        databaseUrl:
+          "postgresql://user:pass@stage-db.abc123.us-east-1.rds.amazonaws.com:5432/app",
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Ok,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Verified,
+      authMode: DbHealthAuthMode.Password,
+      source: DbHealthSource.DatabaseUrl,
+      verifiedRdsTls: true,
+    });
+  });
+
+  it("classifies DATABASE_URL localhost as disabled TLS and not RDS", () => {
+    expect(
+      classifyDatabaseTransport({
+        databaseUrl: "postgresql://user:pass@localhost:5432/app",
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Localhost,
+      sslMode: DbHealthSslMode.Disabled,
+      error: DbHealthTransportError.TlsDisabled,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies DATABASE_URL sslmode=disable as disabled TLS", () => {
+    expect(
+      classifyDatabaseTransport({
+        databaseUrl:
+          "postgresql://user:pass@stage-db.abc123.us-east-1.rds.amazonaws.com:5432/app?sslmode=disable",
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Disabled,
+      error: DbHealthTransportError.TlsDisabled,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies DATABASE_URL ALLOW_INSECURE_SSL as insecure TLS", () => {
+    expect(
+      classifyDatabaseTransport({
+        databaseUrl:
+          "postgresql://user:pass@stage-db.abc123.us-east-1.rds.amazonaws.com:5432/app",
+        allowInsecureSsl: true,
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Insecure,
+      error: DbHealthTransportError.TlsInsecure,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies PGHOST/IAM RDS verified TLS as healthy", () => {
+    expect(
+      classifyDatabaseTransport({
+        pgHost: "stage-db.abc123.us-east-1.rds.amazonaws.com",
+        pgDatabase: "app",
+        pgUser: "app_user",
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Ok,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Verified,
+      authMode: DbHealthAuthMode.Iam,
+      source: DbHealthSource.PgHostIam,
+      verifiedRdsTls: true,
+    });
+  });
+
+  it("classifies PGHOST/IAM ALLOW_INSECURE_SSL as insecure TLS", () => {
+    expect(
+      classifyDatabaseTransport({
+        pgHost: "stage-db.abc123.us-east-1.rds.amazonaws.com",
+        pgDatabase: "app",
+        pgUser: "app_user",
+        allowInsecureSsl: true,
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Insecure,
+      error: DbHealthTransportError.TlsInsecure,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies PGHOST/IAM localhost as disabled TLS", () => {
+    expect(
+      classifyDatabaseTransport({
+        pgHost: "localhost",
+        pgDatabase: "app",
+        pgUser: "app_user",
+        allowInsecureSsl: true,
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Localhost,
+      sslMode: DbHealthSslMode.Disabled,
+      error: DbHealthTransportError.TlsDisabled,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies bracketed IPv6 PGHOST/IAM localhost as localhost", () => {
+    expect(
+      classifyDatabaseTransport({
+        pgHost: "[::1]",
+        pgDatabase: "app",
+        pgUser: "app_user",
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Localhost,
+      sslMode: DbHealthSslMode.Disabled,
+      error: DbHealthTransportError.TlsDisabled,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies PGHOST/IAM non-RDS as not RDS", () => {
+    expect(
+      classifyDatabaseTransport({
+        pgHost: "db.example.com",
+        pgDatabase: "app",
+        pgUser: "app_user",
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Other,
+      sslMode: DbHealthSslMode.Verified,
+      error: DbHealthTransportError.NotRds,
+      verifiedRdsTls: false,
+    });
+  });
+
+  it("classifies missing or invalid runtime DB inputs as unknown posture", () => {
+    for (const input of [
+      {},
+      { databaseUrl: "not a url" },
+      { pgHost: "stage-db.abc123.us-east-1.rds.amazonaws.com" },
+    ]) {
+      expect(classifyDatabaseTransport(input)).toMatchObject({
+        status: DbHealthCheckStatus.Error,
+        hostType: DbHealthHostType.Unknown,
+        sslMode: DbHealthSslMode.Unknown,
+        authMode: DbHealthAuthMode.Unknown,
+        source: DbHealthSource.Unknown,
+        error: DbHealthTransportError.UnknownPosture,
+        verifiedRdsTls: false,
+      });
+    }
   });
 });

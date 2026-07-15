@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { AppTelemetrySchema } from "../app";
+import { IpcTelemetrySchema } from "../ipc";
 import { PermissionTelemetrySchema } from "../permission";
 import { TelemetryAttribute } from "../src/attributes";
 import { GenAiTelemetrySchema } from "../src/gen-ai";
@@ -53,6 +54,11 @@ const schemas = [
     id: "https://closedloop.ai/schemas/telemetry-contract/permission/v0.4.schema.json",
     schema: PermissionTelemetrySchema,
   },
+  {
+    path: `${SCHEMA_DIRECTORY}/ipc.schema.json`,
+    id: "https://closedloop.ai/schemas/telemetry-contract/ipc/v0.1.schema.json",
+    schema: IpcTelemetrySchema,
+  },
 ] as const;
 
 mkdirSync(SCHEMA_DIRECTORY, { recursive: true });
@@ -97,6 +103,11 @@ function addContractPatterns(path: string, schema: JsonSchema): JsonSchema {
     );
     setBoundedTextProperty(
       schema,
+      TelemetryAttribute.AppOrganizationId,
+      TelemetryTextMaxLength.AppOrganizationId
+    );
+    setBoundedTextProperty(
+      schema,
       TelemetryAttribute.DeploymentEnvironmentName,
       TelemetryTextMaxLength.DeploymentEnvironmentName
     );
@@ -133,6 +144,13 @@ function addContractPatterns(path: string, schema: JsonSchema): JsonSchema {
       TelemetryAttribute.CodeFilePath,
       TelemetryTextMaxLength.CodeFilePath
     );
+    setBoundedTextProperty(
+      schema,
+      TelemetryAttribute.ErrorType,
+      TelemetryTextMaxLength.ErrorType
+    );
+  }
+  if (path.endsWith("ipc.schema.json")) {
     setBoundedTextProperty(
       schema,
       TelemetryAttribute.ErrorType,

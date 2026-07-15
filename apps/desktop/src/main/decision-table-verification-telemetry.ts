@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -86,6 +87,13 @@ export function scanDecisionTableVerificationTelemetry(
     getDecisionTableVerificationTelemetryFilePath(closedLoopWorkDir);
   const startOffset = normalizeStartOffset(options.startOffset);
 
+  // Emitted telemetry must not carry the absolute workdir path: it is rooted at
+  // the user's home directory and reveals the OS username + local project
+  // layout. Report the path relative to the Closedloop workdir instead. The
+  // top-level `filePath` stays absolute for local operator logging only.
+  // (FEA-2702)
+  const telemetryFilePath = path.relative(closedLoopWorkDir, filePath);
+
   if (!existsSync(filePath)) {
     return {
       filePath,
@@ -97,7 +105,7 @@ export function scanDecisionTableVerificationTelemetry(
       records: [],
       missing: {
         telemetryStatus: "missing",
-        telemetryFilePath: filePath,
+        telemetryFilePath,
         filePresent: false,
         linesRead: 0,
         invalidLines: 0,
@@ -120,12 +128,19 @@ export function scanDecisionTableVerificationTelemetry(
       records: [],
       missing: {
         telemetryStatus: "missing",
-        telemetryFilePath: filePath,
+        telemetryFilePath,
         filePresent: true,
         linesRead: 0,
         invalidLines: 0,
         missingReason: "read_error",
-        readError: err instanceof Error ? err.message : String(err),
+        // Raw fs error strings typically embed the same absolute path, so scrub
+        // the workdir out before it reaches the telemetry sink. (FEA-2702)
+        readError: redactWorkdirPaths(
+          err instanceof Error ? err.message : String(err),
+          closedLoopWorkDir,
+          filePath,
+          telemetryFilePath
+        ),
       },
     };
   }
@@ -163,7 +178,11 @@ export function scanDecisionTableVerificationTelemetry(
     }
 
     records.push(
-      toTelemetryRecord(parsed.data, filePath, lineNumberBase + index + 1)
+      toTelemetryRecord(
+        parsed.data,
+        { filePath, telemetryFilePath, closedLoopWorkDir },
+        lineNumberBase + index + 1
+      )
     );
   }
 
@@ -186,7 +205,7 @@ export function scanDecisionTableVerificationTelemetry(
       ? {
           missing: {
             telemetryStatus: "missing",
-            telemetryFilePath: filePath,
+            telemetryFilePath,
             filePresent: true,
             linesRead,
             invalidLines,
@@ -267,6 +286,42 @@ function emitMissingTelemetry(
   });
 }
 
+/**
+ * Strip the absolute Closedloop workdir out of a free-text string (e.g. a raw
+ * `fs` error message) before it reaches the telemetry sink. The workdir is
+ * rooted at the user's home directory, so leaving it in leaks the OS username
+ * and local project layout. The known absolute file path is rewritten to its
+ * relative form first, then any residual workdir occurrence is masked. Finally,
+ * any home-rooted absolute path that lies *outside* the workdir (e.g. a
+ * `decision_table_path` pointing elsewhere under $HOME) has its home-directory
+ * prefix collapsed to `~`, so the OS username never egresses. (FEA-2702)
+ */
+export function redactWorkdirPaths(
+  text: string,
+  closedLoopWorkDir: string,
+  filePath: string,
+  relativeFilePath: string
+): string {
+  // Guard against empty search strings: `String.prototype.replaceAll("", x)`
+  // inserts `x` between every character, which would corrupt the message.
+  let scrubbed = text;
+  if (filePath) {
+    scrubbed = scrubbed.replaceAll(filePath, relativeFilePath);
+  }
+  if (closedLoopWorkDir) {
+    scrubbed = scrubbed.replaceAll(closedLoopWorkDir, "<workdir>");
+  }
+  // Collapse any remaining occurrence of the OS home directory (a workdir
+  // outside $HOME leaves its own username-bearing prefix untouched above, but
+  // home-rooted paths pointing outside the workdir would still leak the
+  // username without this pass).
+  const home = homedir();
+  if (home) {
+    scrubbed = scrubbed.replaceAll(home, "~");
+  }
+  return scrubbed;
+}
+
 function getDecisionTableVerificationTelemetryFilePath(
   closedLoopWorkDir: string
 ): string {
@@ -289,16 +344,34 @@ function normalizeStartOffset(startOffset: number | undefined): number {
 
 function toTelemetryRecord(
   record: RawDecisionTableVerification,
-  filePath: string,
+  paths: {
+    filePath: string;
+    telemetryFilePath: string;
+    closedLoopWorkDir: string;
+  },
   lineNumber: number
 ): DecisionTableVerificationRecordDiagnostics {
+  // The reported record egresses to the telemetry sink, so strip the absolute
+  // workdir out of every path-bearing field. `telemetryFilePath` is our own
+  // constructed path; `workdir`/`decisionTablePath` come from the JSONL and may
+  // also be home-rooted absolute paths. (FEA-2702)
   return {
     telemetryStatus: "reported",
-    telemetryFilePath: filePath,
+    telemetryFilePath: paths.telemetryFilePath,
     lineNumber,
     timestamp: record.timestamp,
-    workdir: record.workdir,
-    decisionTablePath: record.decision_table_path,
+    workdir: redactWorkdirPaths(
+      record.workdir,
+      paths.closedLoopWorkDir,
+      paths.filePath,
+      paths.telemetryFilePath
+    ),
+    decisionTablePath: redactWorkdirPaths(
+      record.decision_table_path,
+      paths.closedLoopWorkDir,
+      paths.filePath,
+      paths.telemetryFilePath
+    ),
     finalStatus: record.final_status,
     iterations: record.iterations,
     driftKindCounts: {

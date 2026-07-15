@@ -477,11 +477,21 @@ describe("uploadArtifacts error responses", () => {
 // ---------------------------------------------------------------------------
 
 describe("postLoopEventBounded timeout", () => {
-  test("hang triggers timeout: returns {success:false, error:'timeout'} within budget", async () => {
-    installFetchStub({ hang: true });
+  test("hang triggers timeout and aborts fetch", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      capturedSignal = init?.signal ?? undefined;
+      await new Promise<never>((_, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        }
+      });
+    }) as typeof fetch;
 
     const timeoutMs = 100;
-    const start = Date.now();
     const result = await postLoopEventBounded(
       "https://api.example.com",
       "loop-bounded",
@@ -489,7 +499,6 @@ describe("postLoopEventBounded timeout", () => {
       { type: "started" },
       timeoutMs
     );
-    const elapsed = Date.now() - start;
 
     assert.equal(result.success, false);
     assert.equal(
@@ -498,8 +507,12 @@ describe("postLoopEventBounded timeout", () => {
       `Expected result.error to be 'timeout', got: ${JSON.stringify(result.error)}`
     );
     assert.ok(
-      elapsed < timeoutMs * 2,
-      `Expected postLoopEventBounded to resolve within ${timeoutMs * 2}ms, took ${elapsed}ms`
+      capturedSignal !== undefined,
+      "Expected AbortSignal to be passed to fetch"
+    );
+    assert.ok(
+      capturedSignal.aborted,
+      "Expected AbortSignal to be aborted after timeout"
     );
   });
 

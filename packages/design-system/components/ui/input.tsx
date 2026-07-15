@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { cn } from "@repo/design-system/lib/utils"
+import { cn } from "@closedloop-ai/design-system/lib/utils"
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   return (

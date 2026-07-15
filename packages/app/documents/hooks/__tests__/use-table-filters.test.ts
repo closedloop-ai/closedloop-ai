@@ -34,17 +34,21 @@ function makeItem(id: string, status: DocumentStatus): DocumentRowItem {
 }
 
 const ITEM_DRAFT = makeItem("1", DocumentStatus.Draft);
-const ITEM_IN_PROGRESS = makeItem("2", DocumentStatus.InProgress);
+const ITEM_IN_PROGRESS = makeItem("2", DocumentStatus.ChangesRequested);
 const ITEM_IN_REVIEW = makeItem("3", DocumentStatus.InReview);
-const ITEM_DONE = makeItem("4", DocumentStatus.Done);
+const ITEM_EXECUTED = makeItem("4", DocumentStatus.Executed);
 const ITEM_OBSOLETE = makeItem("5", DocumentStatus.Obsolete);
+// An APPROVED document is not yet "done" (it awaits execution), so
+// hide-completed keeps it visible — unlike EXECUTED / OBSOLETE.
+const ITEM_APPROVED = makeItem("6", DocumentStatus.Approved);
 
 const ALL_STATUS_ITEMS = [
   ITEM_DRAFT,
   ITEM_IN_PROGRESS,
   ITEM_IN_REVIEW,
-  ITEM_DONE,
+  ITEM_EXECUTED,
   ITEM_OBSOLETE,
+  ITEM_APPROVED,
 ];
 
 function makeBranchItem(id: string, status: GitHubPRState): DocumentRowItem {
@@ -153,7 +157,7 @@ describe("useTableFilters — hideCompletedItems", () => {
   });
 
   describe("applyFilters with hideCompletedItems", () => {
-    test("excludes Done and Obsolete items when hideCompletedItems is true", () => {
+    test("excludes Executed and Obsolete documents but keeps Approved when hideCompletedItems is true", () => {
       const { result } = renderHook(() =>
         useTableFilters({ items: ALL_STATUS_ITEMS })
       );
@@ -165,11 +169,13 @@ describe("useTableFilters — hideCompletedItems", () => {
       expect(filtered).toContain(ITEM_DRAFT);
       expect(filtered).toContain(ITEM_IN_PROGRESS);
       expect(filtered).toContain(ITEM_IN_REVIEW);
-      expect(filtered).not.toContain(ITEM_DONE);
+      // APPROVED documents are still in flight — they stay visible.
+      expect(filtered).toContain(ITEM_APPROVED);
+      expect(filtered).not.toContain(ITEM_EXECUTED);
       expect(filtered).not.toContain(ITEM_OBSOLETE);
     });
 
-    test("includes Done and Obsolete items when hideCompletedItems is false", () => {
+    test("includes Executed and Obsolete items when hideCompletedItems is false", () => {
       const { result } = renderHook(() =>
         useTableFilters({ items: ALL_STATUS_ITEMS })
       );
@@ -182,7 +188,7 @@ describe("useTableFilters — hideCompletedItems", () => {
 
       const filtered = result.current.applyFilters(ALL_STATUS_ITEMS);
 
-      expect(filtered).toContain(ITEM_DONE);
+      expect(filtered).toContain(ITEM_EXECUTED);
       expect(filtered).toContain(ITEM_OBSOLETE);
       expect(filtered).toHaveLength(ALL_STATUS_ITEMS.length);
     });
@@ -241,8 +247,9 @@ describe("useTableFilters — hideCompletedItems", () => {
 
       const filtered = result.current.applyFilters(ALL_STATUS_ITEMS);
 
-      expect(filtered).not.toContain(ITEM_DONE);
+      expect(filtered).not.toContain(ITEM_EXECUTED);
       expect(filtered).not.toContain(ITEM_OBSOLETE);
+      expect(filtered).toContain(ITEM_APPROVED);
     });
   });
 
@@ -557,7 +564,7 @@ describe("useTableFilters — document-only filters vs non-document rows", () =>
     );
 
     act(() => {
-      result.current.toggleStatus(DocumentStatus.InProgress);
+      result.current.toggleStatus(DocumentStatus.ChangesRequested);
     });
 
     const filtered = result.current.applyFilters(MIXED_ITEMS);
@@ -609,7 +616,7 @@ describe("useTableFilters — document-only filters vs non-document rows", () =>
     expect(result.current.filters.hideCompletedItems).toBe(true);
 
     act(() => {
-      result.current.toggleStatus(DocumentStatus.InProgress);
+      result.current.toggleStatus(DocumentStatus.ChangesRequested);
     });
 
     const filtered = result.current.applyFilters(items);

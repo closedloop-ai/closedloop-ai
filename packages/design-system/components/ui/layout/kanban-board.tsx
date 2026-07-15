@@ -1,6 +1,6 @@
 import { Children, type CSSProperties, type ReactNode } from "react";
-import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
-import { cn } from "@repo/design-system/lib/utils";
+import { ScrollArea } from "@closedloop-ai/design-system/components/ui/scroll-area";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 
 type KanbanBoardLayoutProps = {
   children: ReactNode;

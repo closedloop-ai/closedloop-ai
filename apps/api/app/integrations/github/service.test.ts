@@ -11,7 +11,7 @@
  *  - `addRepositories` — upserts repos, handles empty input
  *  - `findInstallationById` / `findInstallationByInstallationId` — found and null cases
  *  - `findInstallationForRepoFullName` — found and not-found cases
- *  - `removeRepositories` — removes specified repos, skips DB call when empty
+ *  - `removeRepositories` — tombstones specified repos, skips DB call when empty
  *  - `disconnectInstallation` — idempotent no-op, org-scoped GitHub uninstall
  *    success and failure, database update
  *  - `getRepositories` — active installation found and not found
@@ -20,6 +20,11 @@
  *    tracked PR URL resolution
  */
 
+import {
+  ChecksStatus,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-checks";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMockWithDb,
@@ -48,6 +53,7 @@ vi.mock("@repo/github", () => ({
   getRepositoryBranches: vi.fn(),
   getRepositoryContributors: vi.fn(),
   getRepositoryPullRequests: vi.fn(),
+  getRepositoryPullRequestsWithMetadata: vi.fn(),
 }));
 
 vi.mock("@repo/github/keys", () => ({
@@ -89,6 +95,10 @@ vi.mock("@/app/integrations/github/public-repositories/service", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+import {
+  GitHubDataConnectionSource,
+  GitHubOAuthRequiredReason,
+} from "@repo/api/src/types/github";
 import { GitHubInstallationStatus } from "@repo/database";
 // Import after mocks are set up
 import {
@@ -96,6 +106,7 @@ import {
   getRepositoryBranches,
   getRepositoryContributors,
   getRepositoryPullRequests,
+  getRepositoryPullRequestsWithMetadata,
 } from "@repo/github";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import { publicRepositoryService } from "@/app/integrations/github/public-repositories/service";
@@ -119,26 +130,66 @@ const mockGetRepositoryContributors = getRepositoryContributors as ReturnType<
 const mockGetRepositoryPullRequests = getRepositoryPullRequests as ReturnType<
   typeof vi.fn
 >;
+const mockGetRepositoryPullRequestsWithMetadata =
+  getRepositoryPullRequestsWithMetadata as ReturnType<typeof vi.fn>;
 const mockGetPublicRepositoryBranches =
   publicRepositoryService.getBranches as ReturnType<typeof vi.fn>;
 const mockEncryptTokenPair = encryptTokenPair as ReturnType<typeof vi.fn>;
 const mockEmitTelemetryMetric = emitTelemetryMetric as ReturnType<typeof vi.fn>;
 
 const ORG_ID = "org-1";
+const STATUS_USER_ID = "status-user-1";
 const INSTALLATION_ID = "install-1";
 const GITHUB_INSTALLATION_ID = "gh-install-100";
 
 function makeRepoWithInstallation(overrides?: {
   orgId?: string;
   fullName?: string;
+  removedAt?: Date | null;
+  status?: string;
 }) {
   return {
     id: "repo-1",
     fullName: overrides?.fullName ?? "org/repo",
+    removedAt: overrides?.removedAt ?? null,
     installation: {
       organizationId: overrides?.orgId ?? ORG_ID,
       installationId: GITHUB_INSTALLATION_ID,
+      status: overrides?.status ?? GitHubInstallationStatus.ACTIVE,
     },
+  };
+}
+
+function makeIntegrationStatusDb({
+  activeInstallation = null,
+  installation = null,
+  userGrant = null,
+}: {
+  activeInstallation?: { id: string } | null;
+  installation?: Record<string, unknown> | null;
+  userGrant?: ReturnType<typeof makeIntegrationStatusUserGrant> | null;
+} = {}) {
+  return {
+    gitHubInstallation: {
+      findFirst: vi.fn((args: { include?: unknown; select?: unknown }) =>
+        Promise.resolve(args.include ? installation : activeInstallation)
+      ),
+    },
+    gitHubUserConnection: {
+      findUnique: vi.fn().mockResolvedValue(userGrant),
+    },
+  };
+}
+
+function makeIntegrationStatusUserGrant(
+  overrides: Partial<{
+    revokedAt: Date | null;
+    tokenExpiresAt: Date | null;
+  }> = {}
+) {
+  return {
+    revokedAt: overrides.revokedAt ?? null,
+    tokenExpiresAt: overrides.tokenExpiresAt ?? null,
   };
 }
 
@@ -165,41 +216,57 @@ describe("githubService", () => {
 
   describe("getIntegrationStatus", () => {
     it("returns { connected: false } when no active installation exists", async () => {
-      const mockDb = {
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-      };
+      const mockDb = makeIntegrationStatusDb();
       mockWithDbCall(mockDb);
 
-      const result = await githubService.getIntegrationStatus(ORG_ID);
+      const result = await githubService.getIntegrationStatus(
+        ORG_ID,
+        STATUS_USER_ID
+      );
 
-      expect(result).toEqual({ connected: false });
+      expect(result).toEqual({
+        connected: false,
+        githubDataConnection: {
+          connected: false,
+          sources: [],
+          oauthRequiredReasons: [
+            GitHubOAuthRequiredReason.NoAppInstallation,
+            GitHubOAuthRequiredReason.NoUserGrant,
+          ],
+        },
+      });
     });
 
     it("returns { connected: true, installation: {...} } when active installation exists", async () => {
       const now = new Date();
-      const mockDb = {
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: INSTALLATION_ID,
-            installationId: GITHUB_INSTALLATION_ID,
-            accountLogin: "my-org",
-            accountType: "Organization",
-            status: GitHubInstallationStatus.ACTIVE,
-            repositorySelection: "all",
-            claimedAt: now,
-            createdAt: now,
-            repositories: [{ id: "repo-1" }, { id: "repo-2" }],
-          }),
+      const mockDb = makeIntegrationStatusDb({
+        activeInstallation: { id: INSTALLATION_ID },
+        installation: {
+          id: INSTALLATION_ID,
+          installationId: GITHUB_INSTALLATION_ID,
+          accountLogin: "my-org",
+          accountType: "Organization",
+          status: GitHubInstallationStatus.ACTIVE,
+          repositorySelection: "all",
+          claimedAt: now,
+          createdAt: now,
+          repositories: [{ id: "repo-1" }, { id: "repo-2" }],
         },
-      };
+      });
       mockWithDbCall(mockDb);
 
-      const result = await githubService.getIntegrationStatus(ORG_ID);
+      const result = await githubService.getIntegrationStatus(
+        ORG_ID,
+        STATUS_USER_ID
+      );
 
       expect(result).toEqual({
         connected: true,
+        githubDataConnection: {
+          connected: true,
+          sources: [GitHubDataConnectionSource.GitHubApp],
+          oauthRequiredReasons: [],
+        },
         installation: {
           id: INSTALLATION_ID,
           installationId: GITHUB_INSTALLATION_ID,
@@ -210,6 +277,28 @@ describe("githubService", () => {
           repositoryCount: 2,
           claimedAt: now.toISOString(),
           createdAt: now.toISOString(),
+        },
+      });
+      expect(mockDb.gitHubInstallation.findFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps legacy installation disconnected while user-token data is connected", async () => {
+      const mockDb = makeIntegrationStatusDb({
+        userGrant: makeIntegrationStatusUserGrant(),
+      });
+      mockWithDbCall(mockDb);
+
+      const result = await githubService.getIntegrationStatus(
+        ORG_ID,
+        STATUS_USER_ID
+      );
+
+      expect(result).toEqual({
+        connected: false,
+        githubDataConnection: {
+          connected: true,
+          sources: [GitHubDataConnectionSource.UserOAuth],
+          oauthRequiredReasons: [],
         },
       });
     });
@@ -325,7 +414,7 @@ describe("githubService", () => {
   });
 
   describe("syncRepositories", () => {
-    it("deletes stale repos and upserts incoming repos", async () => {
+    it("tombstones stale repos and upserts incoming repos", async () => {
       const repos = [
         {
           githubRepoId: "r-1",
@@ -343,7 +432,7 @@ describe("githubService", () => {
           }),
         },
         gitHubInstallationRepository: {
-          deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
           upsert: vi.fn().mockResolvedValue({ id: "repo-rec-1" }),
           findMany: vi
             .fn()
@@ -365,11 +454,15 @@ describe("githubService", () => {
       );
 
       expect(
-        mockTx.gitHubInstallationRepository.deleteMany
+        mockTx.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
           installationId: INSTALLATION_ID,
           githubRepoId: { notIn: ["r-1"] },
+          removedAt: null,
+        },
+        data: {
+          removedAt: expect.any(Date),
         },
       });
       expect(mockTx.gitHubInstallationRepository.upsert).toHaveBeenCalledWith(
@@ -393,6 +486,11 @@ describe("githubService", () => {
       expect(result).toEqual([
         { id: "repo-rec-1", githubRepoId: "r-1", fullName: "org/repo1" },
       ]);
+      expect(mockTx.gitHubInstallationRepository.findMany).toHaveBeenCalledWith(
+        {
+          where: { installationId: INSTALLATION_ID, removedAt: null },
+        }
+      );
       expect(mockTx.gitHubInstallation.findFirst).toHaveBeenCalledWith({
         where: {
           id: INSTALLATION_ID,
@@ -424,7 +522,7 @@ describe("githubService", () => {
     it("returns empty array and skips upsert when repository list is empty", async () => {
       const mockTx = {
         gitHubInstallationRepository: {
-          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
           upsert: vi.fn(),
           findMany: vi.fn(),
         },
@@ -433,7 +531,18 @@ describe("githubService", () => {
 
       const result = await githubService.syncRepositories(INSTALLATION_ID, []);
 
-      expect(mockTx.gitHubInstallationRepository.deleteMany).toHaveBeenCalled();
+      expect(
+        mockTx.gitHubInstallationRepository.updateMany
+      ).toHaveBeenCalledWith({
+        where: {
+          installationId: INSTALLATION_ID,
+          githubRepoId: { notIn: [] },
+          removedAt: null,
+        },
+        data: {
+          removedAt: expect.any(Date),
+        },
+      });
       expect(mockTx.gitHubInstallationRepository.upsert).not.toHaveBeenCalled();
       expect(result).toEqual([]);
     });
@@ -448,7 +557,7 @@ describe("githubService", () => {
       ];
       const syncTx = {
         gitHubInstallationRepository: {
-          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
           upsert: vi.fn().mockResolvedValue({ id: "repo-rec-1" }),
           findMany: vi.fn().mockResolvedValue(syncedRepositories),
         },
@@ -494,7 +603,7 @@ describe("githubService", () => {
           }),
         },
         gitHubInstallationRepository: {
-          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
           upsert: vi.fn().mockResolvedValue({ id: "repo-rec-1" }),
           findMany: vi
             .fn()
@@ -1091,10 +1200,10 @@ describe("githubService", () => {
   });
 
   describe("removeRepositories", () => {
-    it("calls deleteMany with the specified githubRepoIds", async () => {
+    it("tombstones active repositories with the specified githubRepoIds", async () => {
       const mockDb = {
         gitHubInstallationRepository: {
-          deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 2 }),
         },
       };
       mockWithDbCall(mockDb);
@@ -1102,11 +1211,15 @@ describe("githubService", () => {
       await githubService.removeRepositories(INSTALLATION_ID, ["r-1", "r-2"]);
 
       expect(
-        mockDb.gitHubInstallationRepository.deleteMany
+        mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
           installationId: INSTALLATION_ID,
           githubRepoId: { in: ["r-1", "r-2"] },
+          removedAt: null,
+        },
+        data: {
+          removedAt: expect.any(Date),
         },
       });
     });
@@ -1114,7 +1227,7 @@ describe("githubService", () => {
     it("skips DB call when githubRepoIds is empty", async () => {
       const mockDb = {
         gitHubInstallationRepository: {
-          deleteMany: vi.fn(),
+          updateMany: vi.fn(),
         },
       };
       mockWithDbCall(mockDb);
@@ -1122,7 +1235,7 @@ describe("githubService", () => {
       await githubService.removeRepositories(INSTALLATION_ID, []);
 
       expect(
-        mockDb.gitHubInstallationRepository.deleteMany
+        mockDb.gitHubInstallationRepository.updateMany
       ).not.toHaveBeenCalled();
     });
   });
@@ -1316,6 +1429,17 @@ describe("githubService", () => {
       expect(result).toEqual({ branches });
     });
 
+    it("does not fetch provider branches for tombstoned repositories", async () => {
+      mockRepoLookup(makeRepoWithInstallation({ removedAt: new Date() }));
+
+      await expect(githubService.getBranches("repo-1", ORG_ID)).rejects.toThrow(
+        "Repository not found"
+      );
+
+      expect(mockGetRepositoryBranches).not.toHaveBeenCalled();
+      expect(mockGetPublicRepositoryBranches).not.toHaveBeenCalled();
+    });
+
     it("falls back to public repositories when the repo is not installation-backed", async () => {
       const branches = [{ name: "main", isDefault: true }];
       mockRepoLookup(null);
@@ -1329,6 +1453,33 @@ describe("githubService", () => {
         20
       );
       expect(mockGetRepositoryBranches).not.toHaveBeenCalled();
+      expect(result).toEqual({ branches });
+    });
+
+    it("fails closed for non-installation repos when public fallback is disabled", async () => {
+      mockRepoLookup(null);
+
+      await expect(
+        githubService.getBranches("repo-1", ORG_ID, 20, false)
+      ).rejects.toThrow("Repository not found");
+
+      expect(mockGetPublicRepositoryBranches).not.toHaveBeenCalled();
+      expect(mockGetRepositoryBranches).not.toHaveBeenCalled();
+    });
+
+    it("still serves installation-backed repos when public fallback is disabled", async () => {
+      const branches = [{ name: "main" }];
+      mockRepoLookup(makeRepoWithInstallation());
+      mockGetRepositoryBranches.mockResolvedValue(branches);
+
+      const result = await githubService.getBranches(
+        "repo-1",
+        ORG_ID,
+        20,
+        false
+      );
+
+      expect(mockGetPublicRepositoryBranches).not.toHaveBeenCalled();
       expect(result).toEqual({ branches });
     });
 
@@ -1370,9 +1521,38 @@ describe("githubService", () => {
     });
 
     it("returns pull requests without tracked PR URLs when projectId is null", async () => {
-      const prs = [{ id: "pr-1", url: "https://github.com/org/repo/pull/1" }];
+      const prs = [
+        {
+          githubId: "pr-1",
+          number: 1,
+          title: "Ship cloud PR data",
+          htmlUrl: "https://github.com/org/repo/pull/1",
+          headBranch: "feature/cloud-pr-data",
+          baseBranch: "main",
+          headSha: "head-sha",
+          state: GitHubPRState.Open,
+          isDraft: false,
+          additions: 33,
+          deletions: 7,
+          changedFiles: 4,
+          closedAt: null,
+          mergedAt: null,
+          mergeCommitSha: null,
+          updatedAt: "2026-07-06T07:00:00Z",
+          author: "octocat",
+          checksStatus: ChecksStatus.Passing,
+          reviewDecision: ReviewDecision.Approved,
+        },
+      ];
       mockRepoLookup(makeRepoWithInstallation());
-      mockGetRepositoryPullRequests.mockResolvedValue(prs);
+      mockGetRepositoryPullRequestsWithMetadata.mockResolvedValue({
+        pullRequests: prs,
+        hasMore: true,
+        truncated: true,
+        pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+        stopReason: "page_limit",
+        missingTargetNumbers: [],
+      });
 
       const result = await githubService.getPullRequests(
         "repo-1",
@@ -1382,10 +1562,26 @@ describe("githubService", () => {
 
       expect(result).toEqual({
         pullRequests: prs,
+        hasMore: true,
+        truncated: true,
+        pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+        stopReason: "page_limit",
+        missingTargetNumbers: [],
         trackedPrUrls: [],
         trackedBranches: [],
         trackedBranchKeys: [],
       });
+    });
+
+    it("does not fetch provider pull requests for tombstoned repositories", async () => {
+      mockRepoLookup(makeRepoWithInstallation({ removedAt: new Date() }));
+
+      await expect(
+        githubService.getPullRequests("repo-1", ORG_ID, null)
+      ).rejects.toThrow("Repository not found");
+
+      expect(mockGetRepositoryPullRequests).not.toHaveBeenCalled();
+      expect(mockGetRepositoryPullRequestsWithMetadata).not.toHaveBeenCalled();
     });
 
     it("returns tracked branch state and PR URL compatibility from project artifacts when projectId is provided", async () => {
@@ -1417,7 +1613,14 @@ describe("githubService", () => {
         },
       };
       mockWithDbCall(mockDb);
-      mockGetRepositoryPullRequests.mockResolvedValue(prs);
+      mockGetRepositoryPullRequestsWithMetadata.mockResolvedValue({
+        pullRequests: prs,
+        hasMore: false,
+        truncated: false,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        stopReason: "complete",
+        missingTargetNumbers: [],
+      });
 
       const result = await githubService.getPullRequests(
         "repo-1",
@@ -1426,6 +1629,16 @@ describe("githubService", () => {
       );
 
       expect(result.pullRequests).toBe(prs);
+      expect(mockGetRepositoryPullRequestsWithMetadata).toHaveBeenCalledWith(
+        GITHUB_INSTALLATION_ID,
+        "org",
+        "repo",
+        expect.objectContaining({
+          maxItems: 500,
+          maxPages: 5,
+          targetNumbers: [42],
+        })
+      );
       expect(result.trackedPrUrls).toContain(prUrl);
       expect(result.trackedBranchKeys).toEqual([
         "org/repo:feature-42",
@@ -1441,7 +1654,7 @@ describe("githubService", () => {
 
     it("throws when getRepositoryPullRequests rejects", async () => {
       mockRepoLookup(makeRepoWithInstallation());
-      mockGetRepositoryPullRequests.mockRejectedValue(
+      mockGetRepositoryPullRequestsWithMetadata.mockRejectedValue(
         new Error("GitHub API error")
       );
 
@@ -1490,7 +1703,7 @@ describe("githubService", () => {
             refresh_token: "refresh-token",
             expires_in: 3600,
             refresh_token_expires_in: 7200,
-            scope: "read:user,repo",
+            scope: "",
           }),
       });
     }
@@ -1603,7 +1816,7 @@ describe("githubService", () => {
         ...base,
         gitHubInstallationRepository: {
           ...base.gitHubInstallationRepository,
-          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
           upsert: vi.fn().mockResolvedValue({}),
         },
       };
@@ -1761,7 +1974,7 @@ describe("githubService", () => {
           profileUrl: "https://github.example/user",
           accessTokenEncrypted: "encrypted-access-token",
           refreshTokenEncrypted: "encrypted-refresh-token",
-          scopes: ["read:user", "repo"],
+          scopes: [],
         }),
         update: expect.objectContaining({
           accessTokenEncrypted: "encrypted-access-token",
@@ -1873,7 +2086,7 @@ describe("githubService", () => {
         null
       );
       const repoSyncMock = mockDb.gitHubInstallationRepository as {
-        deleteMany: ReturnType<typeof vi.fn>;
+        updateMany: ReturnType<typeof vi.fn>;
         upsert: ReturnType<typeof vi.fn>;
       };
 
@@ -1887,10 +2100,14 @@ describe("githubService", () => {
         "https://api.github.com/user/installations/100/repositories?page=2&per_page=100"
       );
       expect(repoSyncMock.upsert).toHaveBeenCalledTimes(2);
-      expect(repoSyncMock.deleteMany).toHaveBeenCalledWith({
+      expect(repoSyncMock.updateMany).toHaveBeenCalledWith({
         where: {
           installationId: INSTALLATION_ID,
           githubRepoId: { notIn: ["1", "2"] },
+          removedAt: null,
+        },
+        data: {
+          removedAt: expect.any(Date),
         },
       });
     });
@@ -2001,14 +2218,14 @@ describe("githubService", () => {
       );
       mockFetch.mockResolvedValueOnce({ ok: false, status: 502 });
       const repoSyncMock = mockDb.gitHubInstallationRepository as {
-        deleteMany: ReturnType<typeof vi.fn>;
+        updateMany: ReturnType<typeof vi.fn>;
         upsert: ReturnType<typeof vi.fn>;
       };
 
       const result = await callOAuth();
 
       expect(result).toEqual({ status: "connected" });
-      expect(repoSyncMock.deleteMany).not.toHaveBeenCalled();
+      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
       expect(repoSyncMock.upsert).not.toHaveBeenCalled();
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,
@@ -2037,7 +2254,7 @@ describe("githubService", () => {
         '<https://attacker.example/steal>; rel="next"'
       );
       const repoSyncMock = mockDb.gitHubInstallationRepository as {
-        deleteMany: ReturnType<typeof vi.fn>;
+        updateMany: ReturnType<typeof vi.fn>;
         upsert: ReturnType<typeof vi.fn>;
       };
 
@@ -2051,7 +2268,7 @@ describe("githubService", () => {
       expect(fetchedUrls.some((url) => url.includes("attacker.example"))).toBe(
         false
       );
-      expect(repoSyncMock.deleteMany).not.toHaveBeenCalled();
+      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
       expect(repoSyncMock.upsert).not.toHaveBeenCalled();
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,
@@ -2080,7 +2297,7 @@ describe("githubService", () => {
         'https://attacker.example/steal; rel="next"'
       );
       const repoSyncMock = mockDb.gitHubInstallationRepository as {
-        deleteMany: ReturnType<typeof vi.fn>;
+        updateMany: ReturnType<typeof vi.fn>;
         upsert: ReturnType<typeof vi.fn>;
       };
 
@@ -2094,7 +2311,7 @@ describe("githubService", () => {
       expect(fetchedUrls.some((url) => url.includes("attacker.example"))).toBe(
         false
       );
-      expect(repoSyncMock.deleteMany).not.toHaveBeenCalled();
+      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
       expect(repoSyncMock.upsert).not.toHaveBeenCalled();
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,

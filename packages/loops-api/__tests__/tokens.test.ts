@@ -84,6 +84,20 @@ describe("getModelPricing", () => {
     expect(pricing.output).toBe(15);
   });
 
+  it("prefers the longest prefix for dated gpt-5-mini/nano ids", () => {
+    // "gpt-5" is defined before "gpt-5-mini"/"gpt-5-nano" in MODEL_PRICING, so a
+    // first-match prefix scan would misprice these dashed-date ids as gpt-5.
+    expect(getModelPricing("gpt-5-mini-2025-08-07")).toEqual(
+      MODEL_PRICING["gpt-5-mini"]
+    );
+    expect(getModelPricing("gpt-5-nano-2025-08-07")).toEqual(
+      MODEL_PRICING["gpt-5-nano"]
+    );
+    expect(getModelPricing("gpt-5-codex-2025-08-07")).toEqual(
+      MODEL_PRICING["gpt-5-codex"]
+    );
+  });
+
   it("returns big-pickle as free", () => {
     const pricing = getModelPricing("big-pickle");
     expect(pricing.input).toBe(0);

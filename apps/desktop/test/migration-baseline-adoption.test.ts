@@ -21,9 +21,9 @@ import {
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
 } from "../src/main/database/baseline-schema.js";
 import {
-  openLibsqlDatabase,
+  openMigrationDatabase,
   type SqliteClient,
-} from "../src/main/database/libsql-executor.js";
+} from "../src/main/database/migration-executor.js";
 import { runDesktopMigrations } from "../src/main/database/migration-runner.js";
 import { MIGRATIONS } from "../src/main/database/migrations-manifest.js";
 
@@ -38,7 +38,7 @@ test.after(async () => {
 async function openDb(): Promise<SqliteClient> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "baseline-adopt-"));
   tempDirs.push(dir);
-  const { db } = await openLibsqlDatabase(
+  const { db } = await openMigrationDatabase(
     path.join(dir, "agent-dashboard.sqlite")
   );
   return db;

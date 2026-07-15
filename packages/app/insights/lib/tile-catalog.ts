@@ -24,8 +24,12 @@ export type TileDescriptor = {
   dataKey: string;
   metricKey: string;
   metricLabel: string;
+  unitLabel?: string;
   groupBy?: TileGroupBy;
   horizontal?: boolean;
+  // Render each category's value directly on the bar (in addition to the hover
+  // tooltip) so it's readable at a glance. Opt-in per tile; category-bar only.
+  showValueLabels?: boolean;
   infoKey?: string;
   grid: { w: number; h: number };
 };
@@ -38,7 +42,8 @@ function kpiTile(
   section: InsightsSection,
   key: string,
   title: string,
-  metricLabel = title
+  metricLabel = title,
+  unitLabel?: string
 ): TileDescriptor {
   return {
     id: `kpi:${key}`,
@@ -48,6 +53,7 @@ function kpiTile(
     dataKey: key,
     metricKey: key,
     metricLabel,
+    ...(unitLabel ? { unitLabel } : {}),
     grid: KPI_GRID,
   };
 }
@@ -72,10 +78,22 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     "Median time to merge",
     "Time to merge"
   ),
-  kpiTile(InsightsSection.Delivery, "kloc", "KLOC merged"),
+  kpiTile(
+    InsightsSection.Delivery,
+    "kloc",
+    "KLOC merged",
+    "KLOC merged",
+    "KLOC"
+  ),
   kpiTile(InsightsSection.Delivery, "cost", "Cost"),
   kpiTile(InsightsSection.Delivery, "merge-rate", "Merge rate"),
-  kpiTile(InsightsSection.Delivery, "pr-size", "Median PR size"),
+  kpiTile(
+    InsightsSection.Delivery,
+    "pr-size",
+    "Median PR size",
+    "Median PR size",
+    "lines"
+  ),
   chartTile({
     id: "chart:klocTrend",
     section: InsightsSection.Delivery,
@@ -383,28 +401,6 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     infoKey: "chart:eventsByType",
   }),
   chartTile({
-    id: "chart:sessionsByStatus",
-    section: InsightsSection.Utilization,
-    title: "Sessions by status",
-    kind: TileKind.Donut,
-    dataKey: "sessionsByStatus",
-    metricKey: "sessions",
-    metricLabel: "Sessions",
-    groupBy: { key: "status", label: "Status" },
-    infoKey: "chart:sessionsByStatus",
-  }),
-  chartTile({
-    id: "chart:sessionsByStatus:bar",
-    section: InsightsSection.Utilization,
-    title: "Sessions by status",
-    kind: TileKind.CategoryBar,
-    dataKey: "sessionsByStatus",
-    metricKey: "sessions",
-    metricLabel: "Sessions",
-    groupBy: { key: "status", label: "Status" },
-    infoKey: "chart:sessionsByStatus",
-  }),
-  chartTile({
     id: "chart:userBreakdown",
     section: InsightsSection.Utilization,
     title: "Sessions by operator",
@@ -598,11 +594,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelUsageOverTime",
     section: InsightsSection.Agents,
-    title: "Model usage over time",
+    title: "Model spend over time",
     kind: TileKind.TimeSeries,
     dataKey: "modelUsageOverTime",
-    metricKey: "tokens",
-    metricLabel: "Tokens",
+    metricKey: "cost",
+    metricLabel: "Spend",
     groupBy: { key: "model", label: "Model" },
     infoKey: "chart:modelUsageOverTime",
     wide: true,
@@ -610,11 +606,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelUsageOverTime:bar",
     section: InsightsSection.Agents,
-    title: "Model usage by day",
+    title: "Model spend by day",
     kind: TileKind.TimeSeriesBar,
     dataKey: "modelUsageOverTime",
-    metricKey: "tokens",
-    metricLabel: "Tokens",
+    metricKey: "cost",
+    metricLabel: "Spend",
     groupBy: { key: "date", label: "Date" },
     infoKey: "chart:modelUsageOverTime",
     wide: true,
@@ -622,11 +618,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelUsageOverTime:heatmap",
     section: InsightsSection.Agents,
-    title: "Model usage heatmap",
+    title: "Model spend heatmap",
     kind: TileKind.Heatmap,
     dataKey: "modelUsageOverTime",
-    metricKey: "tokens",
-    metricLabel: "Tokens",
+    metricKey: "cost",
+    metricLabel: "Spend",
     groupBy: { key: "date", label: "Date" },
     infoKey: "chart:modelUsageOverTime",
     wide: true,
@@ -634,13 +630,14 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelBreakdown",
     section: InsightsSection.Agents,
-    title: "Token share by model",
+    title: "Spend by model",
     kind: TileKind.CategoryBar,
     dataKey: "modelBreakdown",
-    metricKey: "tokens",
-    metricLabel: "Tokens",
+    metricKey: "cost",
+    metricLabel: "Spend",
     groupBy: { key: "model", label: "Model" },
     horizontal: true,
+    showValueLabels: true,
     infoKey: "chart:modelBreakdown",
   }),
   chartTile({
@@ -658,11 +655,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelBreakdown:donut",
     section: InsightsSection.Agents,
-    title: "Token share by model",
+    title: "Spend share by model",
     kind: TileKind.Donut,
     dataKey: "modelBreakdown",
-    metricKey: "tokens",
-    metricLabel: "Tokens",
+    metricKey: "cost",
+    metricLabel: "Spend",
     groupBy: { key: "model", label: "Model" },
     infoKey: "chart:modelBreakdown",
   }),
@@ -687,6 +684,11 @@ export function getTile(id: string): TileDescriptor | undefined {
   return INSIGHTS_TILES.find((tile) => tile.id === id);
 }
 
+export const REMOVED_DASHBOARD_TILE_IDS = {
+  SessionsByStatus: "chart:sessionsByStatus",
+  SessionsByStatusBar: "chart:sessionsByStatus:bar",
+} as const;
+
 export const DEFAULT_DASHBOARD_TILE_IDS: string[] = [
   "kpi:tokens",
   "kpi:input-tokens",
@@ -697,7 +699,6 @@ export const DEFAULT_DASHBOARD_TILE_IDS: string[] = [
   "kpi:tool-runs",
   "kpi:merged",
   "chart:tokenDistribution",
-  "chart:sessionsByStatus",
   "chart:agentsByStatus",
   "chart:eventsByType",
   "chart:eventVolume:heatmap",

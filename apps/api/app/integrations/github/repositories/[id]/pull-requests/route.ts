@@ -1,6 +1,10 @@
 import type { GetPullRequestsResponse } from "@repo/api/src/types/github";
-import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse, successResponse } from "@/lib/route-utils";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  errorResponse,
+  parseRepositoryRouteLimit,
+  successResponse,
+} from "@/lib/route-utils";
 import { githubService } from "../../../service";
 
 /**
@@ -11,7 +15,7 @@ import { githubService } from "../../../service";
  * - `projectId` — used to check which PRs are already tracked as ExternalLinks
  * - `limit` — max PRs to return (default 30, max 100)
  */
-export const GET = withAuth<
+export const GET = withAnyAuth<
   GetPullRequestsResponse,
   "/integrations/github/repositories/[id]/pull-requests"
 >(async ({ user }, request, params) => {
@@ -21,10 +25,7 @@ export const GET = withAuth<
     const url = new URL(request.url);
     const projectId = url.searchParams.get("projectId");
     const limitParam = url.searchParams.get("limit");
-    const limit = Math.min(
-      limitParam ? Number.parseInt(limitParam, 10) : 30,
-      100
-    );
+    const limit = parseRepositoryRouteLimit(limitParam, 30);
 
     if (Number.isNaN(limit) || limit <= 0) {
       return errorResponse(

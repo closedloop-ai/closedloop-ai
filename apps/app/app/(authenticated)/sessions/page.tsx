@@ -1,6 +1,5 @@
 "use client";
 
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
 import { AgentSessionsListContent } from "@repo/app/agents/components/sessions/agent-sessions-list";
@@ -27,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
@@ -210,8 +210,8 @@ export default function SessionsPage() {
 
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between gap-4">
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="min-w-0">
                   <CardTitle className="flex items-center gap-2">
                     <HistoryIcon className="h-4 w-4" />
                     Session History
@@ -221,7 +221,7 @@ export default function SessionsPage() {
                     sessions.
                   </CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Button
                     disabled={effectivePageIndex === 0}
                     onClick={() =>

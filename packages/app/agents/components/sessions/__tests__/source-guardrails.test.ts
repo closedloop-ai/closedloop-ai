@@ -40,10 +40,20 @@ const OLD_APP_DETAIL_PATH = join(
 // markdown library imported directly into these shared components. The two
 // negative lookaheads allow that primitive and the slice-local `./trace-markdown`
 // module while still blocking `react-markdown`, `markdown-to-jsx`, etc.
+//
+// The `desktop` alternative blocks pulling the desktop APP into shared code, but
+// exempts `@repo/api/src/types/desktop-transcripts` — the shared FE+BE
+// transcript read-path contract (FEA-2716/2717), whose module name merely
+// contains "desktop". The lookahead is ANCHORED to that exact specifier prefix
+// (not an unanchored `[^"']*desktop-transcripts` substring) so a main-process
+// module like `apps/desktop/src/main/desktop-transcripts-client.ts` — whose path
+// also contains the substring — is still caught. The sibling hook/data-source
+// guardrail (`FORBIDDEN_SHARED_SOURCE_RE`) already permits the contract (it
+// targets `apps/desktop`), so this keeps the two rules consistent.
 const FORBIDDEN_IMPORT_RE =
-  /from\s+["'](?:next\/|@\/|apps\/app|@repo\/analytics|@repo\/auth|@repo\/collaboration|.*liveblocks|.*document-editor|.*document-table|(?!@repo\/design-system\/[^"']*markdown-content)(?!\.\/trace-markdown)[^"']*markdown|.*desktop)/;
+  /from\s+["'](?:next\/|@\/|apps\/app|@repo\/analytics|@repo\/auth|@repo\/collaboration|.*liveblocks|.*document-editor|.*document-table|(?!@repo\/design-system\/[^"']*markdown-content)(?!\.\/trace-markdown)[^"']*markdown|(?!@repo\/api\/src\/types\/desktop-transcripts)[^"']*desktop)/;
 const FORBIDDEN_SCOPE_RE =
-  /agent-sessions\/(?:activity|kanban)|useAgentSessionDetail|DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY|process\.env|from\s+["']@repo\/database|from\s+["']@repo\/observability|window\.desktopApi|globalThis\.desktopApi|shell\.openPath|openPlan|openFile|openPath|desktop:db|PlanRecord|PlanVersionRecord|WorkflowQueryData/;
+  /agent-sessions\/activity|useAgentSessionDetail|DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY|process\.env|from\s+["']@repo\/database|from\s+["']@repo\/observability|window\.desktopApi|globalThis\.desktopApi|shell\.openPath|openPlan|openFile|openPath|desktop:db|PlanRecord|PlanVersionRecord|WorkflowQueryData/;
 const FORBIDDEN_SHARED_SOURCE_RE =
   /window\.desktopApi|globalThis\.desktopApi|desktop:[A-Za-z]|from\s+["'][^"']*apps\/desktop|from\s+["']node:|from\s+["']electron["']|\bipcRenderer\b|\bipcMain\b|\bcontextBridge\b|process\.env|from\s+["']@repo\/database|from\s+["']@repo\/observability/;
 const FORBIDDEN_DETAIL_CONTRACT_RE =
@@ -89,10 +99,9 @@ describe("shared sessions list source guardrails", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps package activity and kanban route construction callback-owned", () => {
+  it("keeps package activity route construction callback-owned", () => {
     const routeSensitiveFiles = [
       join(AGENT_COMPONENTS_DIR, "activity"),
-      join(AGENT_COMPONENTS_DIR, "kanban"),
     ].flatMap(listProductionSourceFiles);
     const violations = routeSensitiveFiles
       .map((filePath) => ({

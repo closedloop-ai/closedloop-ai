@@ -1,15 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { makeQueryClient } from "@repo/app/shared/query/query-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { COMPUTE_TARGET_HEADER } from "@/lib/desktop-command-signing/constants";
 import {
   GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_RELAY_HEALTH_CHECK_PATH,
 } from "@/lib/engineer/constants";
+import { PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS } from "@/lib/system-check/health-check-timeouts";
 import {
   buildHealthCheckRequest,
   getRenderableHealthChecks,
   HEALTH_CHECK_QUERY_STALE_TIME_MS,
   healthCheckOptions,
 } from "../health-check";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("getRenderableHealthChecks", () => {
   it("appends Claude and Codex MCP rows from mcpServers", () => {
@@ -377,4 +384,169 @@ describe("healthCheckOptions", () => {
   it("staleTime returns 24h when there is no cached data", () => {
     expect(getStaleTime(undefined)).toBe(HEALTH_CHECK_QUERY_STALE_TIME_MS);
   });
+
+  it("fetches with a composed timeout signal while preserving relay headers", async () => {
+    const querySignal = new AbortController().signal;
+    const timeoutSignal = new AbortController().signal;
+    const composedSignal = new AbortController().signal;
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(timeoutSignal);
+    const anySpy = vi.spyOn(AbortSignal, "any").mockReturnValue(composedSignal);
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        checks: [],
+        allRequiredPassed: true,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const options = healthCheckOptions(
+      "cloud-relay:target-1",
+      "https://example.com/mcp",
+      {
+        latestVersion: "9.9.9",
+        pluginAutoUpdateEnabled: true,
+        relayTargetId: "target-1",
+      }
+    );
+
+    await runHealthCheckQuery(options, querySignal);
+
+    expect(timeoutSpy).toHaveBeenCalledWith(
+      PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS
+    );
+    expect(anySpy).toHaveBeenCalledWith([querySignal, timeoutSignal]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${GATEWAY_RELAY_HEALTH_CHECK_PATH}?expectedMcpUrl=https%3A%2F%2Fexample.com%2Fmcp&latestVersion=9.9.9&pluginAutoUpdate=1`,
+      {
+        headers: {
+          [COMPUTE_TARGET_HEADER]: "target-1",
+        },
+        signal: composedSignal,
+      }
+    );
+  });
+
+  it("does not inherit production query-client retries", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = makeQueryClient();
+    const options = healthCheckOptions("default", null);
+
+    await expect(queryClient.fetchQuery(options)).rejects.toThrow("offline");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    queryClient.clear();
+  });
+
+  it("rejects non-OK health-check responses with the gateway error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: "gateway unavailable",
+          },
+          { status: 503 }
+        )
+      )
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toThrow(
+      "Gateway health check failed: gateway unavailable"
+    );
+  });
+
+  it("rejects malformed successful health-check responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          allRequiredPassed: true,
+        })
+      )
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toThrow(
+      "Gateway health check returned an invalid response"
+    );
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "file:///tmp/plugin",
+    "http://example.com",
+  ])("rejects unsafe remediation link URL %s", async (url) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          checks: [
+            {
+              id: "plugin-code",
+              label: "Symphony Plugin",
+              required: true,
+              passed: false,
+              remediationLinks: [{ label: "Unsafe remediation", url }],
+            },
+          ],
+          allRequiredPassed: false,
+        })
+      )
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toThrow(
+      "Gateway health check returned an invalid response"
+    );
+  });
+
+  it("drops unknown plugin outcome values from forward-compatible rows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          checks: [
+            {
+              id: "plugin-code",
+              label: "Symphony Plugin",
+              required: true,
+              passed: false,
+              updateOutcome: "future-outcome",
+            },
+          ],
+          allRequiredPassed: false,
+        })
+      )
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).resolves.toEqual({
+      checks: [
+        {
+          id: "plugin-code",
+          label: "Symphony Plugin",
+          required: true,
+          passed: false,
+        },
+      ],
+      allRequiredPassed: false,
+    });
+  });
 });
+
+function runHealthCheckQuery(
+  options: ReturnType<typeof healthCheckOptions>,
+  signal = new AbortController().signal
+) {
+  if (typeof options.queryFn !== "function") {
+    throw new Error("Expected health-check query function");
+  }
+
+  return options.queryFn({
+    queryKey: options.queryKey,
+    signal,
+  } as never);
+}

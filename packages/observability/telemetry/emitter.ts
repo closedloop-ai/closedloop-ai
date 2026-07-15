@@ -1,4 +1,5 @@
 import { log } from "../log";
+import { redactTraceGatewaySessionId } from "../redact-correlation";
 import { truncateUtf8 } from "../truncate-utf8";
 import type {
   DesktopTelemetryEvent,
@@ -54,14 +55,52 @@ const CREDENTIAL_RE =
 const SAFE_ENV_KEYS = new Set(["NODE_ENV"]);
 const SAFE_ENV_PREFIXES = ["CLAUDE_CODE_USE_"];
 
+// Home-rooted absolute paths carry the OS username. Desktop clients relativize
+// these before emitting (FEA-2702), but Desktop/API deployments are version-
+// skewed: an older, already-installed Desktop build emits
+// diagnostics.decisionTableVerification with absolute telemetryFilePath /
+// workdir / decisionTablePath / readError values that never went through the
+// producer-side relativization. This server-side fallback collapses the
+// home-directory prefix to `~/` so the username never egresses regardless of
+// client version. Matches POSIX `/Users/<name>/…`, `/home/<name>/…`,
+// `/root/…`, and Windows `C:\Users\<name>\…` (both slash styles).
+const HOME_ROOTED_PATH_RE =
+  /(?:\/(?:Users|home)\/[^/\s"']+|\/root|[A-Za-z]:[\\/]Users[\\/][^\\/\s"']+)([\\/][^\s"']*)?/g;
+
+function redactHomeRootedPaths(value: string): string {
+  return value.replace(
+    HOME_ROOTED_PATH_RE,
+    (_match, tail: string | undefined) => (tail ? `~${tail}` : "~")
+  );
+}
+
 function sanitizeTextTail(value: string): string {
-  const stripped = value.replaceAll(ANSI_RE, "");
+  // Bound the regex input before running CREDENTIAL_RE. The schema accepts
+  // logTail/stderrTail as unbounded strings, and CREDENTIAL_RE contains nested
+  // quantifiers (e.g. `(?:[a-z0-9]+[_-])*token`) that can backtrack for seconds
+  // on a long, credential-free line built from repeated word/hyphen segments —
+  // a skewed/malformed desktop client could tie up the API telemetry handler.
+  // The output is truncated to LOG_TAIL_MAX_BYTES anyway, so pre-truncating the
+  // whole value (plus capping each line) leaves observable output unchanged for
+  // well-formed inputs while making the scan cost linear in ~4 KiB.
+  const bounded = truncateUtf8(value, LOG_TAIL_MAX_BYTES);
+  const stripped = bounded.replaceAll(ANSI_RE, "");
   const lines = stripped.split("\n");
   const filtered = lines.filter((line: string) => {
-    const lower = line.toLowerCase();
-    return !CREDENTIAL_PATTERNS.some((pattern) =>
+    // Cap the per-line window fed to the regex so a single pathological line
+    // (no newlines, all within the 4 KiB budget) still can't backtrack for long.
+    const scanned =
+      line.length > LOG_TAIL_MAX_BYTES
+        ? line.slice(0, LOG_TAIL_MAX_BYTES)
+        : line;
+    const lower = scanned.toLowerCase();
+    const matchesSubstring = CREDENTIAL_PATTERNS.some((pattern) =>
       lower.includes(pattern.toLowerCase())
     );
+    // Share the stronger regex used by sanitizeLoopPerfText so both scrubbers
+    // catch the same credentials (e.g. `password:`, `ghp_*`, `xox*-*`,
+    // space-separated `token abc`) instead of only the weak substring list.
+    return !(matchesSubstring || CREDENTIAL_RE.test(scanned));
   });
   const joined = filtered.join("\n");
   return truncateUtf8(joined, LOG_TAIL_MAX_BYTES);
@@ -98,12 +137,51 @@ function sanitizeLoopPerfDiagnostics(
 }
 
 /**
+ * Server-side fallback for the decisionTableVerification diagnostics union.
+ * The Desktop producer relativizes these path fields before emitting
+ * (FEA-2702), but a version-skewed older Desktop client can still send absolute
+ * home-rooted telemetryFilePath / workdir / decisionTablePath / readError
+ * values. Collapse any home-directory prefix so the OS username never egresses,
+ * independent of client version.
+ */
+function sanitizeDecisionTableVerificationDiagnostics(
+  verification: NonNullable<TelemetryDiagnostics["decisionTableVerification"]>
+): NonNullable<TelemetryDiagnostics["decisionTableVerification"]> {
+  const sanitized = { ...verification };
+
+  if (typeof sanitized.telemetryFilePath === "string") {
+    sanitized.telemetryFilePath = redactHomeRootedPaths(
+      sanitized.telemetryFilePath
+    );
+  }
+  if (
+    sanitized.telemetryStatus === "reported" &&
+    typeof sanitized.workdir === "string"
+  ) {
+    sanitized.workdir = redactHomeRootedPaths(sanitized.workdir);
+    sanitized.decisionTablePath = redactHomeRootedPaths(
+      sanitized.decisionTablePath
+    );
+  }
+  if (
+    sanitized.telemetryStatus === "missing" &&
+    typeof sanitized.readError === "string"
+  ) {
+    sanitized.readError = redactHomeRootedPaths(sanitized.readError);
+  }
+
+  return sanitized;
+}
+
+/**
  * Sanitize diagnostics from a desktop-originated event:
  * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
  * - Truncate diagnostics.pluginUpdate.stderrTail with the same credential scrubber
  * - Strip lines containing credential patterns
  * - Allowlist spawnMeta.envSnapshot to only safe env var keys
  * - Keep only descriptor fields for outbound-network diagnostics
+ * - Collapse home-rooted absolute paths in decisionTableVerification (server-
+ *   side fallback for version-skewed older Desktop clients — FEA-2702)
  */
 export function sanitizeDesktopTelemetryDiagnostics(
   diagnostics: TelemetryDiagnostics | undefined
@@ -166,6 +244,13 @@ export function sanitizeDesktopTelemetryDiagnostics(
 
   if (sanitized.loopPerf) {
     sanitized.loopPerf = sanitizeLoopPerfDiagnostics(sanitized.loopPerf);
+  }
+
+  if (sanitized.decisionTableVerification) {
+    sanitized.decisionTableVerification =
+      sanitizeDecisionTableVerificationDiagnostics(
+        sanitized.decisionTableVerification
+      );
   }
 
   return sanitized;
@@ -271,7 +356,12 @@ function emitValidatedServerEvent(
   defaultSeverity: string,
   options?: ServerEventOptions
 ): void {
-  const traceResult = telemetryTraceContextSchema.safeParse(trace);
+  // Redact gatewaySessionId before validating/emitting: the validated trace is
+  // logged as-is, so the raw session token must never reach the sink. The schema
+  // accepts the redaction hash (see gatewaySessionIdSchema).
+  const traceResult = telemetryTraceContextSchema.safeParse(
+    redactTraceGatewaySessionId(trace)
+  );
   if (!traceResult.success) {
     emitValidationFailed(category, traceResult.error.issues);
     return;
@@ -372,7 +462,8 @@ export function buildDesktopTelemetryPayload(
     category: event.category,
     severity: event.severity,
     timestamp: event.timestamp,
-    trace: event.trace,
+    // gatewaySessionId must never be logged raw; this payload is emitted directly.
+    trace: redactTraceGatewaySessionId(event.trace),
     ...(sanitizedDiagnostics !== undefined && {
       diagnostics: sanitizedDiagnostics,
     }),

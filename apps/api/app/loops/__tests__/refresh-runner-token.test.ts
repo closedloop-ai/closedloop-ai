@@ -1,5 +1,5 @@
-import { LoopEventType } from "@closedloop-ai/loops-api/events";
 import { LoopStatus, RefreshTokenErrorCode } from "@repo/api/src/types/loop";
+import { LoopEventType } from "@closedloop-ai/loops-api/events";
 import {
   afterEach,
   beforeEach,

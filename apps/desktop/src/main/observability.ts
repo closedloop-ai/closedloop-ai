@@ -1,3 +1,4 @@
+import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
 import type { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import type { TokenCostNotPricedReason } from "../shared/token-cost.js";
 import type { AgentSessionSyncTelemetryEvent } from "./agent-session-sync-service.js";
@@ -11,6 +12,7 @@ import type {
   ExecutePlanSourceDiagnostics,
   OutboundNetworkDiagnostics,
   PluginUpdateDiagnostics,
+  StoreIntegrityDiagnostics,
   SupportUploadDiagnostics,
   TelemetryCategory,
   TelemetryDiagnostics,
@@ -82,6 +84,19 @@ export class Observability {
     }
   >();
 
+  // FEA-1999 — cadence state for the SQLite store integrity probe. Memory-only
+  // (re-launch re-emits the first signal), mirroring `healthCheckState`. Bounds
+  // Datadog volume: a failure emits once on detection (or when the affected
+  // object set changes), re-emits only on the heartbeat while it persists, and a
+  // recovery / first-healthy probe emits one clean signal — repeated identical
+  // states are suppressed.
+  private static storeIntegrityState: {
+    lastState: "healthy" | "failing";
+    lastIssueKey: string;
+    lastEmittedAt: number;
+    emittedHealthy: boolean;
+  } | null = null;
+
   static init(options: ObservabilityOptions): void {
     Observability.telemetry = new TelemetryService({
       sendTelemetry: options.telemetrySend,
@@ -89,6 +104,7 @@ export class Observability {
     Observability.analytics = options.analytics ?? null;
     Observability.desktopClientVersion = options.desktopClientVersion ?? "";
     Observability.healthCheckState.clear();
+    Observability.storeIntegrityState = null;
   }
 
   static initNoOp(): void {
@@ -101,6 +117,7 @@ export class Observability {
     Observability.desktopClientVersion = "";
     Observability.healthCheckState.clear();
     Observability.pricingMissSeen.clear();
+    Observability.storeIntegrityState = null;
   }
 
   static async shutdown(): Promise<void> {
@@ -741,6 +758,116 @@ export class Observability {
     }
   }
 
+  // --- Store integrity health (FEA-1999) ---
+
+  /**
+   * Report one SQLite store integrity probe result (see
+   * {@link file:./database/store-integrity-probe.ts}). The probe runs off the
+   * hot path on a reader connection and hands the bounded, content-free
+   * {@link StoreIntegrityDiagnostics} here; this facade owns the emit cadence so
+   * the fleet signal stays low-volume:
+   *
+   * - first failure (or a change in the affected object set) → `failure_detected`
+   * - still failing after {@link HEARTBEAT_MS} → `failure_persistent`
+   * - failing → healthy → `recovered`
+   * - first healthy probe of a launch → `healthy` (the clean signal)
+   * - otherwise the result is recorded silently (no event).
+   *
+   * The diagnostics ride as a typed field so the failing check name and affected
+   * index/table name reach Datadog (the server schema strips unknown keys).
+   */
+  static storeIntegrityResult(diagnostics: StoreIntegrityDiagnostics): void {
+    const now = Date.now();
+    const state: "healthy" | "failing" = diagnostics.healthy
+      ? "healthy"
+      : "failing";
+    const issueKey = Observability.storeIntegrityIssueKey(diagnostics);
+    const prior = Observability.storeIntegrityState;
+
+    let category: TelemetryCategory | null = null;
+    if (state === "failing") {
+      if (prior?.lastState !== "failing" || prior.lastIssueKey !== issueKey) {
+        // A fresh failure, or the same probe surfacing a different set of
+        // affected objects — re-detect rather than wait for the heartbeat.
+        category = "store.integrity.failure_detected";
+      } else if (now - prior.lastEmittedAt >= Observability.HEARTBEAT_MS) {
+        category = "store.integrity.failure_persistent";
+      }
+    } else if (prior?.lastState === "failing") {
+      category = "store.integrity.recovered";
+    } else if (!prior?.emittedHealthy) {
+      category = "store.integrity.healthy";
+    }
+
+    const emittedHealthy =
+      (prior?.emittedHealthy ?? false) ||
+      category === "store.integrity.healthy" ||
+      category === "store.integrity.recovered";
+
+    Observability.storeIntegrityState = {
+      lastState: state,
+      lastIssueKey: issueKey,
+      lastEmittedAt: category ? now : (prior?.lastEmittedAt ?? now),
+      emittedHealthy,
+    };
+
+    if (!category) {
+      return;
+    }
+
+    const severity: TelemetrySeverity = state === "failing" ? "error" : "info";
+    // Content-free message: object names live in the structured diagnostics, not
+    // free text, so the message can never carry row content.
+    const message = Observability.storeIntegrityMessage(category, diagnostics);
+
+    const trace: TelemetryTraceContext = {};
+    if (Observability.desktopClientVersion) {
+      trace.desktopClientVersion = Observability.desktopClientVersion;
+    }
+
+    Observability.emitTelemetry(severity, category, message, trace, {
+      storeIntegrity: diagnostics,
+    });
+  }
+
+  /** Content-free message for a store-integrity event (object names live in the
+   *  structured diagnostics, never in free text). */
+  private static storeIntegrityMessage(
+    category: TelemetryCategory,
+    diagnostics: StoreIntegrityDiagnostics
+  ): string {
+    if (category === "store.integrity.recovered") {
+      return "SQLite store integrity recovered";
+    }
+    if (diagnostics.healthy) {
+      return "SQLite store integrity healthy";
+    }
+    const plural = diagnostics.issueCount === 1 ? "" : "s";
+    return `SQLite store integrity check failed (${diagnostics.issueCount} issue${plural})`;
+  }
+
+  /**
+   * Stable key over the affected object set (sorted), used to decide when a
+   * still-failing probe should re-emit `failure_detected` because the corruption
+   * shape changed. Only schema identifiers and bounded enums — never row content.
+   */
+  private static storeIntegrityIssueKey(
+    diagnostics: StoreIntegrityDiagnostics
+  ): string {
+    if (diagnostics.healthy) {
+      return "healthy";
+    }
+    // Prefix the full issue count so corruption GROWTH still re-detects even when
+    // the issue list is truncated (the array is capped at maxReportedIssues, so a
+    // store that grows from 20 → 25 issues keeps the same first-N objects; without
+    // the count the cadence would never leave heartbeat for the new corruption).
+    const objects = diagnostics.issues
+      .map((issue) => `${issue.check}:${issue.category}:${issue.object ?? ""}`)
+      .sort()
+      .join("|");
+    return `${diagnostics.issueCount}|${objects}`;
+  }
+
   // --- Queue stats (telemetry only) ---
 
   static queueStatsChanged(activeCommands: number, queueDepth: number): void {
@@ -853,9 +980,26 @@ function sanitizeAnalyticsProperties(
 ): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(properties)) {
-    if (value !== undefined) {
-      sanitized[key] = value;
+    if (value === undefined) {
+      continue;
     }
+    // The cloud caps each string property at DESKTOP_ANALYTICS_STRING_MAX_LENGTH
+    // and rejects the entire event on overflow, so clamp here to truncate the
+    // offending value instead of silently dropping the whole diagnostic.
+    if (typeof value === "string") {
+      sanitized[key] = value.slice(0, DESKTOP_ANALYTICS_STRING_MAX_LENGTH);
+      continue;
+    }
+    // The cloud validates every numeric property with z.number().finite() and
+    // likewise rejects the entire event on a NaN/Infinity value (e.g. a
+    // time_to_resolve_ms computed from a missing/malformed createdAt), so coerce
+    // non-finite numbers to null — an accepted value — instead of dropping the
+    // whole diagnostic.
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      sanitized[key] = null;
+      continue;
+    }
+    sanitized[key] = value;
   }
   return sanitized;
 }

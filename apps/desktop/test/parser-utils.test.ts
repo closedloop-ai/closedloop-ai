@@ -7,9 +7,13 @@
  * and collectArtifacts.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import {
   collectArtifacts,
+  collectJsonlFiles,
   computeLineDelta,
   computeUnifiedDiffDelta,
   countDiffFiles,
@@ -17,8 +21,10 @@ import {
   extractPrReferences,
   extractRepoFromCwd,
   isSyntheticModelKey,
+  shellCommandArgv,
   truncateText,
-} from "../src/main/collectors/parser-utils.js";
+} from "../src/main/collectors/parsing/parser-utils.js";
+import type { NormalizedToolUse } from "../src/main/collectors/types.js";
 
 // ---------------------------------------------------------------------------
 // truncateText
@@ -451,4 +457,85 @@ test("collectArtifacts handles empty tool uses", () => {
   assert.deepEqual(result.prs, []);
   assert.deepEqual(result.issues, []);
   assert.equal(result.repo, null);
+});
+
+// ---------------------------------------------------------------------------
+// shellCommandArgv (FEA-2791): exposes the argv array shellCommand would join,
+// or null for non-argv shapes, so callers can respect argument boundaries.
+// ---------------------------------------------------------------------------
+
+const toolWith = (input: unknown): NormalizedToolUse =>
+  ({ name: "Bash", input }) as unknown as NormalizedToolUse;
+
+test("shellCommandArgv returns null for a bare string command", () => {
+  assert.equal(shellCommandArgv(toolWith("git push origin feat/x")), null);
+  assert.equal(
+    shellCommandArgv(toolWith({ command: "git push origin feat/x" })),
+    null
+  );
+});
+
+test("shellCommandArgv returns the array for a bare-array input", () => {
+  assert.deepEqual(
+    shellCommandArgv(toolWith(["rg", "git push origin feat/x"])),
+    ["rg", "git push origin feat/x"]
+  );
+});
+
+test("shellCommandArgv unwraps command/cmd argv arrays and coerces elements", () => {
+  assert.deepEqual(
+    shellCommandArgv(toolWith({ command: ["git", "push", "-u", "origin"] })),
+    ["git", "push", "-u", "origin"]
+  );
+  assert.deepEqual(shellCommandArgv(toolWith({ cmd: ["git", 42] })), [
+    "git",
+    "42",
+  ]);
+});
+
+test("shellCommandArgv returns null for missing/empty input", () => {
+  assert.equal(shellCommandArgv(toolWith(undefined)), null);
+  assert.equal(shellCommandArgv(toolWith({})), null);
+});
+
+test("shellCommandArgv coerces null/undefined elements to '' like Array.join", () => {
+  // shellCommand flattens via `argv.join(" ")`, which renders null/undefined as
+  // "". shellCommandArgv must match so callers' offset math stays aligned.
+  assert.deepEqual(
+    shellCommandArgv(toolWith({ command: ["git", null, undefined, "push"] })),
+    ["git", "", "", "push"]
+  );
+});
+
+// ---------------------------------------------------------------------------
+// collectJsonlFiles (shared walker behind collectRolloutFiles/collectTranscriptFiles)
+// ---------------------------------------------------------------------------
+
+function touchFile(p: string): string {
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeFileSync(p, "");
+  return p;
+}
+
+test("collectJsonlFiles returns [] for a missing root", () => {
+  assert.deepEqual(collectJsonlFiles("/no/such/root"), []);
+});
+
+test("collectJsonlFiles returns [] for empty/falsy root", () => {
+  assert.deepEqual(collectJsonlFiles(""), []);
+});
+
+test("collectJsonlFiles collects only nested .jsonl files, is depth-bounded", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "collect-jsonl-"));
+  const nested = touchFile(path.join(root, "2026", "06", "24", "a.jsonl"));
+  touchFile(path.join(root, "b", "notes.txt")); // non-jsonl is ignored
+  const tooDeep = touchFile(path.join(root, "a", "b", "c", "d", "deep.jsonl"));
+
+  const found = collectJsonlFiles(root, { maxDepth: 3 });
+  assert.ok(found.includes(nested), "nested .jsonl within depth is collected");
+  assert.ok(!found.includes(tooDeep), "file beyond maxDepth is excluded");
+  assert.ok(
+    found.every((f) => f.endsWith(".jsonl")),
+    "only .jsonl files are returned"
+  );
 });

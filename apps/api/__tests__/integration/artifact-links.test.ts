@@ -107,6 +107,8 @@ function createBranchArtifact(
         externalUrl: overrides.url,
         branch: {
           create: {
+            organizationId: orgId,
+            repositoryFullName: `org/repo-${orgId.slice(0, 8)}`,
             repositoryId,
             branchName: "feat/test",
             baseBranch: "main",
@@ -114,6 +116,7 @@ function createBranchArtifact(
         },
         pullRequestDetails: {
           create: {
+            organizationId: orgId,
             repositoryId,
             githubId: overrides.githubId,
             number: overrides.number,

@@ -6,13 +6,12 @@ import test from "node:test";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 /**
- * FEA-1791 Phase 3 contract test for the session + agent store reads after their
- * conversion onto typed Prisma delegates. Seeds rows with raw SQL (independent of
- * the typed write path) and asserts the converted reads preserve ordering, the
- * `status NOT IN (terminal)` active filter, and the in-memory parent/child agent
- * hierarchy (which replaced the dropped, never-read `children_count` subquery).
- * The CTE-backed detail reads (getPage/getActiveWithDetails/...) are unchanged by
- * this PR and stay covered by sqlite-agent-dashboard-database.test.ts.
+ * Contract test for the session + agent store reads on typed Prisma delegates.
+ * Seeds rows with raw SQL (independent of the typed write path) and asserts the
+ * reads preserve ordering, the `status NOT IN (terminal)` active filter, and the
+ * in-memory parent/child agent hierarchy. The CTE-backed detail reads
+ * (getPage/getActiveWithDetails/...) stay covered by
+ * sqlite-agent-dashboard-database.test.ts.
  */
 
 async function openDb() {

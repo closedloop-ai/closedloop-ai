@@ -1,16 +1,3 @@
-import {
-  LoopCommandSchema,
-  LoopStatusSchema,
-} from "@closedloop-ai/loops-api/commands";
-import {
-  LoopEventCompletedSchema,
-  LoopEventErrorSchema,
-  LoopEventOutputSchema,
-  LoopEventSupportBundleUploadedSchema,
-  LoopEventType,
-  LoopEventTypeSchema,
-  RunnerLoopEventTypeSchema,
-} from "@closedloop-ai/loops-api/events";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { HarnessType } from "@repo/api/src/types/compute-target";
 import type { LoopEvent } from "@repo/api/src/types/loop";
@@ -20,6 +7,16 @@ import {
   MAX_ADDITIONAL_REPOS,
   ManualLoopEventType,
 } from "@repo/api/src/types/loop";
+import { LoopCommandSchema, LoopStatusSchema } from "@closedloop-ai/loops-api/commands";
+import {
+  LoopEventCompletedSchema,
+  LoopEventErrorSchema,
+  LoopEventOutputSchema,
+  LoopEventSupportBundleUploadedSchema,
+  LoopEventType,
+  LoopEventTypeSchema,
+  RunnerLoopEventTypeSchema,
+} from "@closedloop-ai/loops-api/events";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 import {
@@ -191,6 +188,18 @@ export const listLoopEventsQueryValidator = z.object({
   limit: z.coerce.number().min(1).max(500).default(100).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
   sort: z.enum(["asc", "desc"]).default("asc").optional(),
+});
+
+/**
+ * Query validator for the incremental (keyset) events poll. `since`/`sinceId`
+ * are the `storedAt` (ISO-8601) and row id of the newest event the client
+ * already holds — the composite `(createdAt, id)` cursor. The route returns only
+ * events strictly after that cursor, capped at `limit` per request.
+ */
+export const listLoopEventsSinceQueryValidator = z.object({
+  since: z.string().datetime(),
+  sinceId: z.string().uuid(),
+  limit: z.coerce.number().min(1).max(500).default(500),
 });
 
 /**

@@ -1,16 +1,23 @@
 import type { ZodIssue } from "zod";
 import { AppTelemetrySchema } from "../app";
+import { IpcTelemetrySchema } from "../ipc";
 import { PermissionTelemetrySchema } from "../permission";
 import { SyncTelemetrySchema } from "../sync";
+import { TelemetryAttribute } from "./attributes";
 import { GenAiTelemetrySchema } from "./gen-ai";
 import { ResourceTelemetrySchema } from "./resource";
 import { TelemetrySchemaName } from "./schema-name";
 import type { SchemaShape } from "./schema-shape";
-import { SpanTelemetrySchema } from "./span";
+import {
+  type SpanEnvelope,
+  SpanEnvelopeSchema,
+  SpanTelemetrySchema,
+} from "./span";
 
 const UNKNOWN_ATTRIBUTE_MESSAGE_KEY_MAX_LENGTH = 64;
 const CONTROL_CHARACTER_MAX_CODE_POINT = 0x1f;
 const DELETE_CHARACTER_CODE_POINT = 0x7f;
+const SPAN_ENVELOPE_SCHEMA_NAME = "span_envelope";
 
 /** Validation issue codes added by the telemetry contract wrapper. */
 export const TelemetryValidationIssueCode = {
@@ -53,6 +60,17 @@ export type TelemetryValidationResult<
   K extends TelemetrySchemaName = TelemetrySchemaName,
 > = TelemetryValidationSuccess<K> | TelemetryValidationFailure;
 
+/** Successful validation result with the parsed span envelope. */
+export type SpanEnvelopeValidationSuccess = {
+  ok: true;
+  value: SpanEnvelope;
+};
+
+/** Result envelope returned by validateSpanEnvelope(). */
+export type SpanEnvelopeValidationResult =
+  | SpanEnvelopeValidationSuccess
+  | TelemetryValidationFailure;
+
 const TelemetrySchemaByName = {
   [TelemetrySchemaName.App]: AppTelemetrySchema,
   [TelemetrySchemaName.Resource]: ResourceTelemetrySchema,
@@ -60,9 +78,11 @@ const TelemetrySchemaByName = {
   [TelemetrySchemaName.GenAi]: GenAiTelemetrySchema,
   [TelemetrySchemaName.Sync]: SyncTelemetrySchema,
   [TelemetrySchemaName.Permission]: PermissionTelemetrySchema,
+  [TelemetrySchemaName.Ipc]: IpcTelemetrySchema,
 } as const satisfies Record<
   TelemetrySchemaName,
   | typeof AppTelemetrySchema
+  | typeof IpcTelemetrySchema
   | typeof SyncTelemetrySchema
   | typeof PermissionTelemetrySchema
   | typeof ResourceTelemetrySchema
@@ -114,6 +134,54 @@ export function validate(
   };
 }
 
+/** Validates a strict span envelope and its schema-selected attributes. */
+export function validateSpanEnvelope(
+  payload: unknown
+): SpanEnvelopeValidationResult {
+  const envelopeResult = SpanEnvelopeSchema.safeParse(payload);
+  if (!envelopeResult.success) {
+    return {
+      ok: false,
+      errors: envelopeResult.error.issues.flatMap((issue) =>
+        validationErrorsFromIssue(SPAN_ENVELOPE_SCHEMA_NAME, issue)
+      ),
+    };
+  }
+
+  const envelope = envelopeResult.data;
+  const attributesResult = validate(envelope.attributes, envelope.schema_name);
+  if (!attributesResult.ok) {
+    return {
+      ok: false,
+      errors: attributesResult.errors.map(prefixAttributeErrorPath),
+    };
+  }
+
+  if (hasMismatchedSpanDuration(envelope)) {
+    return {
+      ok: false,
+      errors: [
+        {
+          schemaName: envelope.schema_name,
+          path: ["attributes", TelemetryAttribute.DurationMs],
+          attributePath: `attributes.${TelemetryAttribute.DurationMs}`,
+          code: "custom",
+          message:
+            "Span envelope attributes.duration_ms must equal envelope duration_ms",
+        },
+      ],
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...envelope,
+      attributes: attributesResult.value,
+    },
+  };
+}
+
 function isTelemetrySchemaName(
   schemaName: string
 ): schemaName is TelemetrySchemaName {
@@ -121,7 +189,7 @@ function isTelemetrySchemaName(
 }
 
 function validationErrorsFromIssue(
-  schemaName: TelemetrySchemaName,
+  schemaName: string,
   issue: ZodIssue
 ): TelemetryValidationError[] {
   if (isUnrecognizedKeysIssue(issue)) {
@@ -144,6 +212,30 @@ function validationErrorsFromIssue(
       message: issue.message,
     },
   ];
+}
+
+function prefixAttributeErrorPath(
+  error: TelemetryValidationError
+): TelemetryValidationError {
+  return {
+    ...error,
+    path: ["attributes", ...error.path],
+    attributePath: ["attributes", error.attributePath]
+      .filter(Boolean)
+      .join("."),
+  };
+}
+
+function hasMismatchedSpanDuration(envelope: SpanEnvelope): boolean {
+  if (envelope.schema_name !== TelemetrySchemaName.Span) {
+    return false;
+  }
+
+  const nestedDuration = envelope.attributes[TelemetryAttribute.DurationMs];
+  return (
+    typeof nestedDuration === "number" &&
+    nestedDuration !== envelope.duration_ms
+  );
 }
 
 function isUnrecognizedKeysIssue(

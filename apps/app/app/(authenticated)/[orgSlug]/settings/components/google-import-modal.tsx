@@ -2,6 +2,10 @@
 
 import { useImportGoogleDocs } from "@repo/app/google/hooks/use-google-integration";
 import { useProjects } from "@repo/app/projects/hooks/use-projects";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -181,12 +185,12 @@ export function GoogleImportModal({
               </Select>
             )}
             {!projectsLoading && (!projects || projects.length === 0) && (
-              <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/12 p-3">
-                <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-warning" />
-                <p className="text-sm text-warning-foreground">
+              <Alert variant="warning">
+                <AlertCircleIcon />
+                <AlertDescription>
                   No projects found. Create a project first to import documents.
-                </p>
-              </div>
+                </AlertDescription>
+              </Alert>
             )}
             <p className="text-muted-foreground text-sm">
               Imported documents will be created as PRD artifacts in this

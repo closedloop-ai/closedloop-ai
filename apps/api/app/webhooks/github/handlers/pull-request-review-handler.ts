@@ -5,6 +5,10 @@ import type {
 import { LinkType } from "@repo/api/src/types/artifact";
 import { ReviewDecision } from "@repo/api/src/types/document";
 import {
+  GitHubDirtyScopeKind,
+  GitHubDirtyTrigger,
+} from "@repo/api/src/types/github-dirty-scope";
+import {
   ArtifactType,
   GitHubInstallationStatus,
   type TransactionClient,
@@ -13,8 +17,16 @@ import {
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
-import { bumpBranchActivity } from "@/app/branches/branch-service";
+import { bumpBranchActivity } from "@/app/branches/branch-push-state";
+import {
+  gitHubFetchProvenanceData,
+  githubAppWebhookFetchProvenance,
+} from "@/lib/github-fetch-provenance";
 import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
+import {
+  type GitHubDirtyScopePublicationInput,
+  publishGitHubDirtyScopes,
+} from "./dirty-scope-publisher";
 
 /**
  * Union type for pull request review events we handle.
@@ -80,6 +92,9 @@ async function handleSubmittedReview(
   }
 
   // Upsert per-reviewer record (keyed by pullRequestId + authorLogin)
+  const fetchProvenance = gitHubFetchProvenanceData(
+    githubAppWebhookFetchProvenance()
+  );
   await tx.gitHubPRReview.upsert({
     where: {
       pullRequestId_authorLogin: {
@@ -98,6 +113,7 @@ async function handleSubmittedReview(
       submittedAt: review.submitted_at
         ? new Date(review.submitted_at)
         : new Date(),
+      ...fetchProvenance,
     },
     update: {
       githubReviewId: String(review.id),
@@ -108,6 +124,7 @@ async function handleSubmittedReview(
       submittedAt: review.submitted_at
         ? new Date(review.submitted_at)
         : new Date(),
+      ...fetchProvenance,
     },
   });
 
@@ -146,6 +163,9 @@ async function handleDismissedReview(
   const reviewerLogin = review.user?.login;
 
   if (reviewerLogin) {
+    const fetchProvenance = gitHubFetchProvenanceData(
+      githubAppWebhookFetchProvenance()
+    );
     await tx.gitHubPRReview.upsert({
       where: {
         pullRequestId_authorLogin: {
@@ -162,9 +182,11 @@ async function handleDismissedReview(
         body: review.body ?? null,
         htmlUrl: review.html_url,
         submittedAt: new Date(),
+        ...fetchProvenance,
       },
       update: {
         state: ReviewDecision.Dismissed,
+        ...fetchProvenance,
       },
     });
   }
@@ -226,7 +248,7 @@ export async function handlePullRequestReview(
   });
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
-  await withDb.tx(async (tx) => {
+  const publication = await withDb.tx(async (tx) => {
     // Installation-aware lookup (FEA-2022 / PLN-1034): the same githubRepoId can
     // exist under multiple installations/tenants, so scope by full name + the
     // active installation that delivered this webhook. Without this, a review
@@ -236,12 +258,17 @@ export async function handlePullRequestReview(
       where: {
         githubRepoId: String(repository.id),
         fullName: repository.full_name,
+        removedAt: null,
         installation: {
           installationId: String(installationId),
           status: GitHubInstallationStatus.ACTIVE,
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        fullName: true,
+        installation: { select: { organizationId: true } },
+      },
     });
 
     if (!repo) {
@@ -251,7 +278,7 @@ export async function handlePullRequestReview(
         action,
         prNumber: pull_request.number,
       });
-      return;
+      return null;
     }
 
     const prDetail = await tx.pullRequestDetail.findUnique({
@@ -307,7 +334,7 @@ export async function handlePullRequestReview(
         action,
         reason: "PR may have been created outside Symphony workflow",
       });
-      return;
+      return null;
     }
 
     const ownerArtifact = prDetail.branchArtifact ?? prDetail.artifact;
@@ -331,7 +358,21 @@ export async function handlePullRequestReview(
     } else if (action === "dismissed") {
       await handleDismissedReview(tx, review, pull_request, existingPr);
     }
+    const organizationId = repo.installation?.organizationId;
+    if (!organizationId) {
+      return null;
+    }
+    return buildPullRequestReviewDirtyScopePublication({
+      review,
+      pullRequest: pull_request,
+      organizationId,
+      repositoryId: repo.id,
+      repositoryFullName: repo.fullName ?? repository.full_name,
+    });
   });
+  if (publication) {
+    await publishGitHubDirtyScopes(publication);
+  }
 
   log.info(
     "[handlePullRequestReview] Successfully processed pull_request_review event",
@@ -347,4 +388,35 @@ export async function handlePullRequestReview(
     message: "Event processed successfully",
     ok: true,
   });
+}
+
+function buildPullRequestReviewDirtyScopePublication({
+  review,
+  pullRequest,
+  organizationId,
+  repositoryId,
+  repositoryFullName,
+}: {
+  review: HandledPullRequestReviewEvent["review"];
+  pullRequest: HandledPullRequestReviewEvent["pull_request"];
+  organizationId: string;
+  repositoryId: string;
+  repositoryFullName: string;
+}): GitHubDirtyScopePublicationInput {
+  return {
+    organizationId,
+    repositoryId,
+    repositoryFullName,
+    scopes: [
+      {
+        kind: GitHubDirtyScopeKind.Review,
+        repositoryId,
+        repositoryFullName,
+        branchName: pullRequest.head.ref,
+        pullRequestNumber: pullRequest.number,
+        reviewId: String(review.id),
+      },
+    ],
+    triggers: [GitHubDirtyTrigger.Review],
+  };
 }

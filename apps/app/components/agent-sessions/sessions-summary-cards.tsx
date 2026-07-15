@@ -11,13 +11,6 @@ import {
 import { formatCost, formatNumber } from "@repo/app/shared/lib/format-utils";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import {
-  CircleDollarSignIcon,
-  GitPullRequestArrowIcon,
-  LayersIcon,
-  RulerIcon,
-  ZapIcon,
-} from "lucide-react";
 
 const SKELETON_KEYS = ["sessions", "cost", "prs", "pr-size", "kloc"] as const;
 
@@ -45,13 +38,23 @@ export function SessionsSummaryCards({
   }
 
   const usage = usageQuery.data;
+  // FEA-3156: the sessions-usage endpoint now returns the three delivery metrics
+  // for the matched-session set. A metric is only "unavailable" (placeholder +
+  // SAMPLE badge) when the value is genuinely absent — no merged PRs in range
+  // (medianPrSize / mergedKlocPerDollar are null) or the surface doesn't compute
+  // them (undefined). When merged PRs exist, real numbers render with no badge.
+  const mergedPrCount = usage?.mergedPrCount;
+  const medianPrSize = usage?.medianPrSize;
+  const mergedKlocPerDollar = usage?.mergedKlocPerDollar;
+  const hasMergedPrCount = mergedPrCount != null;
+  const hasMedianPrSize = medianPrSize != null;
+  const hasKlocPerDollar = mergedKlocPerDollar != null;
 
   return (
     <SummaryCardRow>
       <MetricCard
         className={SUMMARY_CARD_CLASS}
         detail="matched by the current filters"
-        icon={LayersIcon}
         info={{
           what: "Agent sessions matching the current filters and time range.",
           how: "Count of session records in the active filter set.",
@@ -61,52 +64,52 @@ export function SessionsSummaryCards({
       />
       <MetricCard
         className={SUMMARY_CARD_CLASS}
-        detail="estimated spend"
-        icon={CircleDollarSignIcon}
+        // FEA-3156: the Cost card shows METERED API spend (apiEstimatedCost),
+        // the SAME basis the "KLOC (Merged) / $" card divides by — so the two
+        // cards never sit on different cost bases (the mixed-basis trap). The
+        // raw estimated total (subscription-covered "would-have-cost" included)
+        // is surfaced in the detail line, not the headline, so it can't be
+        // mistaken for real metered spend.
+        detail={`metered API spend · ${formatCost(usage?.totalEstimatedCost ?? 0)} incl. subscription`}
         info={{
-          what: "Estimated token spend for the matched sessions.",
-          how: "Sum of per-session cost (tokens × model rate).",
+          what: "Metered API token spend for the matched sessions — real billed dollars, excluding subscription-covered usage.",
+          how: "Sum of per-session API-billed cost (tokens × model rate); subscription/seat-covered sessions are excluded, matching the KLOC-per-dollar denominator.",
         }}
         label="Cost"
-        value={formatCost(usage?.totalEstimatedCost ?? 0)}
+        value={formatCost(usage?.apiEstimatedCost ?? 0)}
       />
-      {/* No backing endpoint yet — rendered blank and flagged as a placeholder
-          (dimmed + badge) rather than fabricating a value. */}
       <MetricCard
         className={SUMMARY_CARD_CLASS}
         detail="merged in range"
-        icon={GitPullRequestArrowIcon}
         info={{
           what: "Pull requests merged from the matched sessions.",
           how: "Count of merged PRs linked to sessions in range.",
         }}
         label="PRs Shipped"
-        placeholder
-        value="—"
+        placeholder={!hasMergedPrCount}
+        value={hasMergedPrCount ? formatNumber(mergedPrCount) : "—"}
       />
       <MetricCard
         className={SUMMARY_CARD_CLASS}
         detail="lines changed"
-        icon={RulerIcon}
         info={{
           what: "Median lines changed per merged PR.",
           how: "Median of additions + deletions across merged PRs.",
         }}
         label="Median PR size"
-        placeholder
-        value="—"
+        placeholder={!hasMedianPrSize}
+        value={hasMedianPrSize ? formatNumber(medianPrSize) : "—"}
       />
       <MetricCard
         className={SUMMARY_CARD_CLASS}
         detail="merged KLOC per dollar"
-        icon={ZapIcon}
         info={{
           what: "Merged thousand-lines-of-code per dollar — output efficiency.",
           how: "Merged KLOC divided by token cost across matched sessions.",
         }}
         label="KLOC (Merged) / $"
-        placeholder
-        value="—"
+        placeholder={!hasKlocPerDollar}
+        value={hasKlocPerDollar ? formatNumber(mergedKlocPerDollar, true) : "—"}
       />
     </SummaryCardRow>
   );

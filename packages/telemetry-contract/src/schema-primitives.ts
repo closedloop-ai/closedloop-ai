@@ -5,6 +5,7 @@ export const TelemetryTextMaxLength = {
   ServiceName: 128,
   ServiceVersion: 128,
   AppInstallationId: 128,
+  AppOrganizationId: 64,
   DeploymentEnvironmentName: 128,
   ExceptionType: 128,
   ExceptionMessage: 2048,

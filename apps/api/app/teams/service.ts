@@ -10,7 +10,7 @@ import type {
   UpdateTeamMemberInput,
   UpdateTeamRepositoryInput,
 } from "@repo/api/src/types/teams";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
 /**
@@ -377,7 +377,11 @@ export const teamsService = {
       const installationRepo = await tx.gitHubInstallationRepository.findFirst({
         where: {
           id: input.installationRepositoryId,
-          installation: { organizationId },
+          removedAt: null,
+          installation: {
+            organizationId,
+            status: GitHubInstallationStatus.ACTIVE,
+          },
         },
         select: { id: true },
       });

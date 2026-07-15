@@ -125,12 +125,17 @@ describe("handlePullRequestReview", () => {
         where: {
           githubRepoId: "789",
           fullName: repository.full_name,
+          removedAt: null,
           installation: {
             installationId: "99",
             status: "ACTIVE",
           },
         },
-        select: { id: true },
+        select: {
+          id: true,
+          fullName: true,
+          installation: { select: { organizationId: true } },
+        },
       });
 
       expect(mockTx.pullRequestDetail.findUnique).toHaveBeenCalledWith(
@@ -333,7 +338,7 @@ describe("handlePullRequestReview", () => {
               authorLogin: "reviewer",
             },
           },
-          update: { state: "DISMISSED" },
+          update: expect.objectContaining({ state: "DISMISSED" }),
         })
       );
 

@@ -46,6 +46,7 @@ const ORG_ID = "org-1";
 const PROJECT_ID = "project-1";
 const REPO_ID = "repo-1";
 const REPO_FULL_NAME = "closedloop-ai/symphony-alpha";
+const ZERO_GIT_SHA = "0000000000000000000000000000000000000000";
 const expectedBranchInclude = {
   branch: { include: { currentPullRequestDetail: true } },
   pullRequest: true,
@@ -117,6 +118,112 @@ describe("branchService helpers", () => {
     });
   });
 
+  it("accepts GitHub-created zero-before pushes as tombstoned branch recreates", () => {
+    const observedAt = new Date("2026-05-15T04:00:00Z");
+    const deletedAt = new Date("2026-05-15T03:00:00Z");
+    const result = applyHeadTransition(
+      {
+        headSha: "sha-recreated",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        beforeSha: ZERO_GIT_SHA,
+        observedAt,
+        isCreate: true,
+      },
+      {
+        headSha: "sha-before-delete",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        headShaObservedAt: new Date("2026-05-15T02:00:00Z"),
+        lastPushBeforeSha: "sha-before-delete-parent",
+        deletedAt,
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      reason: "recreated_after_delete",
+      headSha: "sha-recreated",
+      headShaObservedAt: observedAt,
+      lastPushBeforeSha: ZERO_GIT_SHA,
+    });
+  });
+
+  it("accepts delete-first tombstone recreates even when no head is stored", () => {
+    const observedAt = new Date("2026-05-15T04:00:00Z");
+    const deletedAt = new Date("2026-05-15T03:00:00Z");
+    const result = applyHeadTransition(
+      {
+        headSha: "sha-recreated",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        beforeSha: ZERO_GIT_SHA,
+        observedAt,
+        isCreate: true,
+      },
+      {
+        headSha: null,
+        headShaSource: null,
+        headShaObservedAt: null,
+        lastPushBeforeSha: null,
+        deletedAt,
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      reason: "recreated_after_delete",
+      headSha: "sha-recreated",
+      lastPushBeforeSha: ZERO_GIT_SHA,
+    });
+  });
+
+  it("rejects original create redeliveries after delete as stale pushes", () => {
+    const result = applyHeadTransition(
+      {
+        headSha: "sha-before-delete",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        beforeSha: ZERO_GIT_SHA,
+        observedAt: new Date("2026-05-15T01:00:00Z"),
+        isCreate: true,
+      },
+      {
+        headSha: "sha-before-delete",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        headShaObservedAt: new Date("2026-05-15T01:00:00Z"),
+        lastPushBeforeSha: ZERO_GIT_SHA,
+        deletedAt: new Date("2026-05-15T03:00:00Z"),
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      reason: "stale_push",
+      headSha: "sha-before-delete",
+      lastPushBeforeSha: ZERO_GIT_SHA,
+    });
+  });
+
+  it("does not treat zero-before create pushes as recreates for active branches", () => {
+    const result = applyHeadTransition(
+      {
+        headSha: "sha-recreated",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        beforeSha: ZERO_GIT_SHA,
+        isCreate: true,
+      },
+      {
+        headSha: "sha-current",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        headShaObservedAt: new Date("2026-05-15T02:00:00Z"),
+        lastPushBeforeSha: "sha-parent",
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      reason: "stale_push",
+      headSha: "sha-current",
+    });
+  });
+
   it("treats duplicate harness head callbacks as idempotent replays", () => {
     const observedAt = new Date("2026-05-15T00:00:00Z");
     const result = applyHeadTransition(
@@ -140,6 +247,67 @@ describe("branchService helpers", () => {
       headShaObservedAt: observedAt,
       lastPushBeforeSha: "sha-previous",
     });
+  });
+
+  it("accepts same-head push webhooks as remote confirmation for non-push branches", () => {
+    const observedAt = new Date("2026-05-15T03:00:00Z");
+    const result = applyHeadTransition(
+      {
+        headSha: "sha-current",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        beforeSha: "sha-previous",
+        observedAt,
+      },
+      {
+        headSha: "sha-current",
+        headShaSource: BranchHeadShaSource.HarnessInput,
+        headShaObservedAt: new Date("2026-05-15T00:00:00Z"),
+        lastPushBeforeSha: null,
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      reason: "push_confirmed",
+      headSha: "sha-current",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: observedAt,
+      lastPushBeforeSha: "sha-previous",
+    });
+  });
+
+  it("keeps same-head push confirmation observed time monotonic", () => {
+    const existingObservedAt = new Date("2026-05-15T03:00:00Z");
+    const result = applyHeadTransition(
+      {
+        headSha: "sha-current",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        beforeSha: "sha-previous",
+        observedAt: new Date("2026-05-15T01:00:00Z"),
+      },
+      {
+        headSha: "sha-current",
+        headShaSource: BranchHeadShaSource.HarnessInput,
+        headShaObservedAt: existingObservedAt,
+        lastPushBeforeSha: null,
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      reason: "push_confirmed",
+      headShaObservedAt: existingObservedAt,
+    });
+    expect(
+      applyDeleteTransition({
+        isDelete: true,
+        deletedAt: new Date("2026-05-15T02:00:00Z"),
+        currentStatus: GitHubPRState.Open,
+        beforeSha: "sha-current",
+        currentHeadSha: result.headSha,
+        currentHeadShaObservedAt: result.headShaObservedAt,
+      })
+    ).toBeNull();
   });
 
   it("accepts newer harness callbacks for an existing materialized branch", () => {
@@ -252,7 +420,40 @@ describe("branchService helpers", () => {
         currentStatus: GitHubPRState.Open,
       })
     ).toEqual({ deletedAt, status: GitHubPRState.Closed });
+    expect(
+      applyDeleteTransition({
+        isDelete: true,
+        deletedAt,
+        currentStatus: GitHubPRState.Open,
+        beforeSha: "sha-current",
+        currentHeadSha: "sha-current",
+        currentHeadShaObservedAt: new Date("2026-05-15T02:00:00Z"),
+      })
+    ).toEqual({ deletedAt, status: GitHubPRState.Closed });
     expect(applyDeleteTransition({ isDelete: false })).toBeNull();
+  });
+
+  it("rejects stale delete redeliveries after a newer head observation", () => {
+    expect(
+      applyDeleteTransition({
+        isDelete: true,
+        deletedAt: new Date("2026-05-15T03:00:00Z"),
+        currentStatus: GitHubPRState.Open,
+        beforeSha: "sha-recreated",
+        currentHeadSha: "sha-recreated",
+        currentHeadShaObservedAt: new Date("2026-05-15T04:00:00Z"),
+      })
+    ).toBeNull();
+    expect(
+      applyDeleteTransition({
+        isDelete: true,
+        deletedAt: new Date("2026-05-15T05:00:00Z"),
+        currentStatus: GitHubPRState.Open,
+        beforeSha: "sha-before-delete",
+        currentHeadSha: "sha-recreated",
+        currentHeadShaObservedAt: new Date("2026-05-15T04:00:00Z"),
+      })
+    ).toBeNull();
   });
 });
 
@@ -377,6 +578,374 @@ describe("branchService.upsertBranchArtifact", () => {
     });
   });
 
+  it("clears deletedAt when GitHub reports a deleted branch was recreated", async () => {
+    const deletedAt = new Date("2026-05-15T02:00:00Z");
+    const existingBranch = {
+      artifactId: "branch-artifact-1",
+      repositoryId: REPO_ID,
+      branchName: "feature/branch-artifact",
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
+      headSha: "sha-before-delete",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: new Date("2026-05-15T01:00:00Z"),
+      lastPushBeforeSha: "sha-before-delete-parent",
+      deletedAt,
+      currentPullRequestDetailId: null,
+      artifact: {
+        createdById: null as string | null,
+        status: GitHubPRState.Closed,
+      },
+    };
+    const reread = {
+      id: "branch-artifact-1",
+      branch: {
+        ...existingBranch,
+        headSha: "sha-recreated",
+        lastPushBeforeSha: ZERO_GIT_SHA,
+        deletedAt: null,
+        currentPullRequestDetail: null,
+      },
+      pullRequest: null,
+    };
+    const mockDb = {
+      artifact: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+        findUnique: vi.fn().mockResolvedValue(reread),
+      },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(existingBranch),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      artifactLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    mockWithDbTx(mockDb);
+
+    const result = await branchService.upsertBranchArtifact(
+      branchInput({
+        headSha: "sha-recreated",
+        beforeSha: ZERO_GIT_SHA,
+        headShaObservedAt: new Date("2026-05-15T03:00:01Z"),
+        isCreate: true,
+      })
+    );
+
+    expect(result).toEqual({ ok: true, value: reread });
+    expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
+      where: { artifactId: "branch-artifact-1" },
+      data: expect.objectContaining({
+        headSha: "sha-recreated",
+        lastPushBeforeSha: ZERO_GIT_SHA,
+        deletedAt: null,
+      }),
+    });
+    expect(mockDb.artifact.update).toHaveBeenCalledWith({
+      where: { id: "branch-artifact-1" },
+      data: expect.objectContaining({
+        status: GitHubPRState.Open,
+      }),
+    });
+  });
+
+  it("clears deletedAt when a delete-first branch is later recreated", async () => {
+    const deletedAt = new Date("2026-05-15T02:00:00Z");
+    const existingBranch = {
+      artifactId: "branch-artifact-1",
+      repositoryId: REPO_ID,
+      branchName: "feature/branch-artifact",
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
+      headSha: null,
+      headShaSource: null,
+      headShaObservedAt: null,
+      lastPushBeforeSha: null,
+      deletedAt,
+      currentPullRequestDetailId: null,
+      artifact: {
+        createdById: null as string | null,
+        status: GitHubPRState.Closed,
+      },
+    };
+    const reread = {
+      id: "branch-artifact-1",
+      branch: {
+        ...existingBranch,
+        headSha: "sha-recreated",
+        headShaSource: BranchHeadShaSource.PushWebhook,
+        headShaObservedAt: new Date("2026-05-15T03:00:00Z"),
+        lastPushBeforeSha: ZERO_GIT_SHA,
+        deletedAt: null,
+        currentPullRequestDetail: null,
+      },
+      pullRequest: null,
+    };
+    const mockDb = {
+      artifact: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+        findUnique: vi.fn().mockResolvedValue(reread),
+      },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(existingBranch),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      artifactLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    mockWithDbTx(mockDb);
+
+    const result = await branchService.upsertBranchArtifact(
+      branchInput({
+        headSha: "sha-recreated",
+        beforeSha: ZERO_GIT_SHA,
+        headShaObservedAt: new Date("2026-05-15T03:00:00Z"),
+        isCreate: true,
+      })
+    );
+
+    expect(result).toEqual({ ok: true, value: reread });
+    expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
+      where: { artifactId: "branch-artifact-1" },
+      data: expect.objectContaining({
+        headSha: "sha-recreated",
+        lastPushBeforeSha: ZERO_GIT_SHA,
+        deletedAt: null,
+      }),
+    });
+  });
+
+  it("rejects redelivered delete pushes after the branch is recreated", async () => {
+    const existingBranch = {
+      artifactId: "branch-artifact-1",
+      repositoryId: REPO_ID,
+      branchName: "feature/branch-artifact",
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
+      headSha: "sha-recreated",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: new Date("2026-05-15T04:00:00Z"),
+      lastPushBeforeSha: ZERO_GIT_SHA,
+      deletedAt: null,
+      currentPullRequestDetailId: null,
+      artifact: {
+        createdById: null as string | null,
+        status: GitHubPRState.Open,
+      },
+    };
+    const mockDb = {
+      artifact: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+        findUnique: vi.fn(),
+      },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(existingBranch),
+        update: vi.fn(),
+      },
+      artifactLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    mockWithDbTx(mockDb);
+
+    const result = await branchService.upsertBranchArtifact(
+      branchInput({
+        headSha: null,
+        headShaSource: null,
+        beforeSha: "sha-before-delete",
+        isDelete: true,
+        deletedAt: new Date("2026-05-15T03:00:00Z"),
+      })
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.Conflict });
+    expect(mockDb.artifact.update).not.toHaveBeenCalled();
+    expect(mockDb.branchDetail.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects redelivered original branch-create pushes after delete", async () => {
+    const deletedAt = new Date("2026-05-15T03:00:00Z");
+    const existingBranch = {
+      artifactId: "branch-artifact-1",
+      repositoryId: REPO_ID,
+      branchName: "feature/branch-artifact",
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
+      headSha: "sha-before-delete",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: new Date("2026-05-15T01:00:00Z"),
+      lastPushBeforeSha: ZERO_GIT_SHA,
+      deletedAt,
+      currentPullRequestDetailId: null,
+      artifact: {
+        createdById: null as string | null,
+        status: GitHubPRState.Closed,
+      },
+    };
+    const mockDb = {
+      artifact: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+        findUnique: vi.fn(),
+      },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(existingBranch),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      artifactLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    mockWithDbTx(mockDb);
+
+    const result = await branchService.upsertBranchArtifact(
+      branchInput({
+        headSha: "sha-before-delete",
+        beforeSha: ZERO_GIT_SHA,
+        headShaObservedAt: new Date("2026-05-15T01:00:00Z"),
+        isCreate: true,
+      })
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.Conflict });
+    expect(mockDb.artifact.update).not.toHaveBeenCalled();
+    expect(mockDb.branchDetail.update).not.toHaveBeenCalled();
+  });
+
+  it("does not clear deletedAt for duplicate pre-delete push redelivery", async () => {
+    const deletedAt = new Date("2026-05-15T02:00:00Z");
+    const existingBranch = {
+      artifactId: "branch-artifact-1",
+      repositoryId: REPO_ID,
+      branchName: "feature/branch-artifact",
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
+      headSha: "sha-before-delete",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: new Date("2026-05-15T01:00:00Z"),
+      lastPushBeforeSha: "sha-before-delete-parent",
+      deletedAt,
+      currentPullRequestDetailId: null,
+      artifact: {
+        createdById: null as string | null,
+        status: GitHubPRState.Closed,
+      },
+    };
+    const reread = {
+      id: "branch-artifact-1",
+      branch: {
+        ...existingBranch,
+        currentPullRequestDetail: null,
+      },
+      pullRequest: null,
+    };
+    const mockDb = {
+      artifact: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+        findUnique: vi.fn().mockResolvedValue(reread),
+      },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(existingBranch),
+        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      artifactLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    mockWithDbTx(mockDb);
+
+    const result = await branchService.upsertBranchArtifact(
+      branchInput({
+        headSha: "sha-before-delete",
+        beforeSha: "sha-before-delete-parent",
+      })
+    );
+
+    expect(result).toEqual({ ok: true, value: reread });
+    expect(mockDb.branchDetail.update).toHaveBeenCalled();
+    const updateData = mockDb.branchDetail.update.mock.calls[0][0].data;
+    expect(updateData.deletedAt).toBeUndefined();
+    expect(mockDb.artifact.update).toHaveBeenCalledWith({
+      where: { id: "branch-artifact-1" },
+      data: expect.objectContaining({
+        status: GitHubPRState.Closed,
+      }),
+    });
+  });
+
+  it("keeps tombstoned branches closed when unrelated stale push replay arrives", async () => {
+    const existingBranch = {
+      artifactId: "branch-artifact-1",
+      repositoryId: REPO_ID,
+      branchName: "feature/branch-artifact",
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
+      headSha: "sha-before-delete",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: new Date("2026-05-15T01:00:00Z"),
+      lastPushBeforeSha: "sha-before-delete-parent",
+      deletedAt: new Date("2026-05-15T02:00:00Z"),
+      currentPullRequestDetailId: null,
+      artifact: {
+        createdById: null as string | null,
+        status: GitHubPRState.Closed,
+      },
+    };
+    const mockDb = {
+      artifact: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+        findUnique: vi.fn(),
+      },
+      branchDetail: {
+        findUnique: vi.fn().mockResolvedValue(existingBranch),
+        update: vi.fn(),
+      },
+      artifactLink: {
+        findFirst: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    mockWithDbTx(mockDb);
+
+    const result = await branchService.upsertBranchArtifact(
+      branchInput({
+        headSha: "sha-unrelated",
+        beforeSha: "unrelated-parent",
+      })
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.Conflict });
+    expect(mockDb.artifact.update).not.toHaveBeenCalled();
+    expect(mockDb.branchDetail.update).not.toHaveBeenCalled();
+  });
+
   it("rejects same-project non-document source artifacts before linking", async () => {
     const mockDb = {
       artifact: {
@@ -449,6 +1018,7 @@ describe("branchService.upsertBranchArtifact", () => {
         update: vi.fn(),
       },
       pullRequestDetail: {
+        findFirst: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockResolvedValue({ id: "pr-detail-1" }),
         updateMany: vi.fn(),
       },
@@ -822,6 +1392,17 @@ describe("branchService.upsertBranchArtifact", () => {
         }),
       },
       pullRequestDetail: {
+        // FEA-3212: adopt selects the single repo-less (githubId=null) row for
+        // this branch+number, then updates it by id.
+        findFirst: vi.fn().mockImplementation(({ where }) => {
+          const match = pullRequestDetails.find(
+            (detail) =>
+              detail.branchArtifactId === where.branchArtifactId &&
+              detail.number === where.number &&
+              (detail.githubId === null || detail.githubId === undefined)
+          );
+          return match ? { id: match.id } : null;
+        }),
         upsert: vi.fn().mockImplementation(({ where, create, update }) => {
           const existing = pullRequestDetails.find(
             (detail) => detail.githubId === where.githubId

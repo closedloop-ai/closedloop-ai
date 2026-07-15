@@ -6,6 +6,7 @@ import {
   formatTokenCount,
 } from "@repo/app/shared/lib/format-utils";
 import { useUser, useUserStats } from "@repo/app/users/hooks/use-users";
+import { Alert, AlertTitle } from "@repo/design-system/components/ui/alert";
 import { Card } from "@repo/design-system/components/ui/card";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import dynamic from "next/dynamic";
@@ -78,9 +79,9 @@ function ProfileHeaderSection({
     return <UserProfileHeader user={user} />;
   }
   return (
-    <div className="rounded-lg border border-destructive bg-destructive/10 p-4">
-      <p className="font-medium text-destructive">User not found</p>
-    </div>
+    <Alert variant="error">
+      <AlertTitle>User not found</AlertTitle>
+    </Alert>
   );
 }
 

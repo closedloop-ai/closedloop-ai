@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  mockHandlePush,
   mockHandlePullRequestReviewThread,
   mockIsGitHubConfigured,
   mockScheduleLogFlush,
   mockValidateRequest,
   mockVerifyWebhookSignature,
 } = vi.hoisted(() => ({
+  mockHandlePush: vi.fn(),
   mockHandlePullRequestReviewThread: vi.fn(),
   mockIsGitHubConfigured: vi.fn(),
   mockScheduleLogFlush: vi.fn(),
@@ -61,7 +63,7 @@ vi.mock("@/app/webhooks/github/handlers/pull-request-review-handler", () => ({
   handlePullRequestReview: vi.fn(),
 }));
 vi.mock("@/app/webhooks/github/handlers/push-handler", () => ({
-  handlePush: vi.fn(),
+  handlePush: mockHandlePush,
 }));
 vi.mock("@/app/webhooks/github/preview-schema-drop", () => ({
   maybeDropPreviewSchemaOnClose: vi.fn(),
@@ -82,6 +84,7 @@ describe("POST /webhooks/github pull_request_review_thread dispatch", () => {
     mockHandlePullRequestReviewThread.mockResolvedValue(
       Response.json({ ok: true })
     );
+    mockHandlePush.mockResolvedValue(Response.json({ ok: true }));
   });
 
   it("dispatches signed pull_request_review_thread deliveries through the production route", async () => {
@@ -99,6 +102,31 @@ describe("POST /webhooks/github pull_request_review_thread dispatch", () => {
     expect(mockScheduleLogFlush).toHaveBeenCalledTimes(1);
   });
 
+  it("dispatches signed push deliveries through the production route", async () => {
+    const payload = {
+      ref: "refs/heads/FEA-2528-webhook-branch",
+      before: "before-sha",
+      after: "after-sha",
+      created: false,
+      deleted: false,
+    };
+    mockValidateRequest.mockResolvedValueOnce({
+      body: JSON.stringify(payload),
+      signature: "sha256=valid",
+      eventType: "push",
+    });
+
+    const response = await POST(new Request("http://localhost/webhook"));
+
+    expect(response.status).toBe(200);
+    expect(mockVerifyWebhookSignature).toHaveBeenCalledWith(
+      JSON.stringify(payload),
+      "sha256=valid"
+    );
+    expect(mockHandlePush).toHaveBeenCalledWith(payload);
+    expect(mockScheduleLogFlush).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves invalid signature rejection before handler dispatch", async () => {
     mockVerifyWebhookSignature.mockReturnValueOnce(false);
 
@@ -106,6 +134,7 @@ describe("POST /webhooks/github pull_request_review_thread dispatch", () => {
 
     expect(response.status).toBe(401);
     expect(mockHandlePullRequestReviewThread).not.toHaveBeenCalled();
+    expect(mockHandlePush).not.toHaveBeenCalled();
     expect(mockScheduleLogFlush).toHaveBeenCalledTimes(1);
   });
 
@@ -121,5 +150,6 @@ describe("POST /webhooks/github pull_request_review_thread dispatch", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true });
     expect(mockHandlePullRequestReviewThread).not.toHaveBeenCalled();
+    expect(mockHandlePush).not.toHaveBeenCalled();
   });
 });

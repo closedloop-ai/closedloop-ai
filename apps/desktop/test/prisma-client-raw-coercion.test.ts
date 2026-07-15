@@ -1,20 +1,19 @@
 /**
  * @file prisma-client-raw-coercion.test.ts
- * @description FEA-1791 / PLN-886 Phase 3 — direct coverage for the raw-SQL
- * compatibility shim that `createDesktopPrisma` wraps around the Prisma libSQL
- * client (`wrapRawCoercion`). The converted write paths rely on this shim for
- * two transforms the legacy `libsql-executor.ts` applied to every raw call but
- * the Prisma adapter drops: `$N`→`?N` placeholder translation and per-arg bind
- * coercion. These tests exercise the real factory over a real on-disk libSQL
- * database (no mocks) so a regression in either transform fails here instead of
- * silently corrupting an import/backfill transaction.
+ * @description Direct coverage for the raw-SQL compatibility shim that
+ * `createDesktopPrisma` wraps around the Prisma libSQL client
+ * (`wrapRawCoercion`). The raw write paths rely on this shim for two transforms
+ * the Prisma adapter drops but raw SQL needs: `$N`→`?N` placeholder translation
+ * and per-arg bind coercion. These tests exercise the real factory over a real
+ * on-disk libSQL database (no mocks) so a regression in either transform fails
+ * here instead of silently corrupting an import/backfill transaction.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openLibsqlDatabase } from "../src/main/database/libsql-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
 import {
   createDesktopPrisma,
   type DesktopPrisma,
@@ -26,10 +25,10 @@ async function openProbe(): Promise<{
   close: () => Promise<void>;
 }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "prisma-raw-coercion-"));
-  const { db, config } = await openLibsqlDatabase(
+  const { db, config } = await openMigrationDatabase(
     path.join(dir, "probe.sqlite")
   );
-  const prisma = createDesktopPrisma(config, createWriteQueue());
+  const prisma = await createDesktopPrisma(config, createWriteQueue());
   await prisma.write((client) =>
     client.$executeRawUnsafe(
       `CREATE TABLE probe (

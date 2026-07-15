@@ -7,52 +7,50 @@ import {
   type SessionPR,
   type SessionSpan,
   type SessionThrottle,
+  type SessionTimelineEvent,
+  type SessionTraceThrottleSource,
+  type SyncedAgentSessionEvent,
   type TurnItem,
 } from "@repo/api/src/types/agent-session";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useLocalStorageState } from "@repo/app/shared/hooks/use-local-storage-state";
+import { computeActiveTraceRow } from "@repo/app/shared/lib/active-trace-row";
 import { formatTime } from "@repo/app/shared/lib/date-utils";
+import { SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { getDurationScaleMinutes } from "@repo/app/shared/lib/format-utils";
-import {
-  Avatar,
-  AvatarFallback,
-} from "@repo/design-system/components/ui/avatar";
 import { Card, CardContent } from "@repo/design-system/components/ui/card";
-import { CommentComposer } from "@repo/design-system/components/ui/comment-composer";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
+import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
 import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
 import {
   ActivityIcon,
   AlertCircleIcon,
   ArrowLeftIcon,
-  ArrowUpDownIcon,
-  AtSignIcon,
   BotIcon,
   CheckCircle2Icon,
   ChevronRightIcon,
   CircleDollarSignIcon,
   ClockIcon,
-  CornerUpLeftIcon,
-  CrosshairIcon,
+  FingerprintIcon,
   FolderGit2Icon,
   GaugeIcon,
   GitBranchIcon,
   GitPullRequestIcon,
-  GripVerticalIcon,
   HashIcon,
   type LucideIcon,
-  MessageCircleIcon,
-  PaperclipIcon,
-  SmileIcon,
-  SquareCheckIcon,
+  MessageSquareIcon,
   TerminalIcon,
 } from "lucide-react";
-import type {
-  CSSProperties,
-  MouseEvent as ReactMouseEvent,
-  ReactNode,
-  PointerEvent as ReactPointerEvent,
-} from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   useCallback,
   useEffect,
@@ -68,7 +66,10 @@ import {
   buildSessionDetailContent,
   safeFormatDateTime,
 } from "./detail-content";
-import { SessionTrace } from "./session-trace";
+import { SessionTranscriptPanel } from "./session-transcript-panel";
+import type { TraceCommentItem, TraceTextAnchor } from "./trace-comments";
+import { TraceCommentsRail } from "./trace-comments-rail";
+import { useTraceComments } from "./use-trace-comments";
 
 /** Shared web and desktop session detail body for transcript-first review. */
 export type AgentSessionDetailViewProps = {
@@ -77,6 +78,17 @@ export type AgentSessionDetailViewProps = {
   backHref: string;
   /** Caller-controlled comments rail visibility for surfaces without durable comments. */
   commentsRailOpen?: boolean;
+  /**
+   * FEA-2717 Task 5: which transcript file the conversation region renders —
+   * `main` (default) or a `subagent:{id}` sidechain from the `?file=` deep link.
+   */
+  transcriptFileKey?: string;
+  /**
+   * Builds a deep link to a given transcript file on this session, enabling the
+   * file switcher. Supplied by the route shell (it owns URL construction);
+   * omitted on surfaces without routing.
+   */
+  buildTranscriptFileHref?: (fileKey: string) => string;
 };
 
 /**
@@ -89,6 +101,8 @@ export function AgentSessionDetailView({
   isLoading,
   backHref,
   commentsRailOpen = true,
+  transcriptFileKey,
+  buildTranscriptFileHref,
 }: AgentSessionDetailViewProps) {
   const content = useMemo(
     () => (session ? buildSessionDetailContent(session) : null),
@@ -97,6 +111,15 @@ export function AgentSessionDetailView({
   const [activeRow, setActiveRow] = useState<number | null>(null);
   const [commentsWidth, setCommentsWidth] = useState(
     DEFAULT_COMMENTS_RAIL_WIDTH
+  );
+  // Persist the collapse preference alongside the app's other UI prefs so it is
+  // remembered across navigation and app restart (FEA-2479).
+  const [commentsCollapsed, setCommentsCollapsed] = useLocalStorageState(
+    COMMENTS_RAIL_COLLAPSED_KEY,
+    false
+  );
+  const commentsCollapseEnabled = useFeatureFlagEnabled(
+    SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY
   );
 
   if (isLoading) {
@@ -133,57 +156,74 @@ export function AgentSessionDetailView({
   return (
     <SessionDetailWorkspace
       activeRow={activeRow}
+      buildTranscriptFileHref={buildTranscriptFileHref}
+      commentsCollapsed={commentsCollapsed}
+      commentsCollapseEnabled={commentsCollapseEnabled}
       commentsRailOpen={commentsRailOpen}
       commentsWidth={commentsWidth}
       content={content}
+      key={session.id}
       onActiveRowChange={setActiveRow}
+      onCommentsCollapsedChange={setCommentsCollapsed}
       onCommentsWidthChange={setCommentsWidth}
       session={session}
+      transcriptFileKey={transcriptFileKey}
     />
   );
 }
 
 function SessionDetailWorkspace({
   activeRow,
+  buildTranscriptFileHref,
+  commentsCollapseEnabled,
+  commentsCollapsed,
   commentsWidth,
   commentsRailOpen,
   content,
   onActiveRowChange,
+  onCommentsCollapsedChange,
   onCommentsWidthChange,
   session,
+  transcriptFileKey,
 }: Readonly<{
   activeRow: number | null;
+  buildTranscriptFileHref?: (fileKey: string) => string;
+  commentsCollapseEnabled: boolean;
+  commentsCollapsed: boolean;
   commentsWidth: number;
   commentsRailOpen: boolean;
   content: AgentSessionDetailContent;
   onActiveRowChange: (row: number | null) => void;
+  onCommentsCollapsedChange: (collapsed: boolean) => void;
   onCommentsWidthChange: (width: number) => void;
   session: AgentSessionDetail;
+  transcriptFileKey?: string;
 }>) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
+  const ignoreNextTraceScrollRef = useRef(false);
   const markers = useMemo(() => buildActivityMarkers(session), [session]);
-  const markersByRow = useMemo(() => {
-    const byRow = new Map<number, ActivityMarker>();
-    for (const marker of markers) {
-      if (!byRow.has(marker.tl)) {
-        byRow.set(marker.tl, marker);
-      }
-    }
-    return byRow;
-  }, [markers]);
+  const limitDotEvents = useMemo(() => buildLimitDotEvents(session), [session]);
   const buckets = useMemo(
     () => buildActivityBuckets(session, markers),
     [markers, session]
   );
-  const activeMarker = getActiveMarker(markers, activeRow);
   const span = getSessionSpan(session, markers);
   const scaleMinutes = getDurationScaleMinutes(
     session.startedAt,
     session.endedAt ?? session.updatedAt
   );
   const traceCountLabel = getTraceCountLabel(session);
-  const [traceComments, setTraceComments] = useState<TraceComment[]>([]);
+
+  const cancelPendingTraceScroll = useCallback(() => {
+    if (rafRef.current === null) {
+      return;
+    }
+    globalThis.cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+  }, []);
+
+  useEffect(() => cancelPendingTraceScroll, [cancelPendingTraceScroll]);
 
   const scrollToTraceRow = useCallback((row: number, flash: boolean) => {
     const scroller = scrollRef.current;
@@ -212,7 +252,16 @@ function SessionDetailWorkspace({
     const offset = (sticky?.offsetHeight ?? 0) + 14;
     const scrollRect = scroller.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
-    scroller.scrollTop += targetRect.top - scrollRect.top - offset;
+    const previousScrollTop = scroller.scrollTop;
+    const nextScrollTop =
+      previousScrollTop + targetRect.top - scrollRect.top - offset;
+    if (Math.abs(nextScrollTop - previousScrollTop) > 0.5) {
+      ignoreNextTraceScrollRef.current = true;
+      scroller.scrollTop = nextScrollTop;
+      if (Math.abs(scroller.scrollTop - previousScrollTop) <= 0.5) {
+        ignoreNextTraceScrollRef.current = false;
+      }
+    }
     if (flash) {
       target.classList.remove("st-flash");
       target.getBoundingClientRect();
@@ -222,67 +271,109 @@ function SessionDetailWorkspace({
 
   const jumpToRow = useCallback(
     (row: number, flash = true) => {
+      cancelPendingTraceScroll();
       onActiveRowChange(row);
       scrollToTraceRow(row, flash);
     },
-    [onActiveRowChange, scrollToTraceRow]
+    [cancelPendingTraceScroll, onActiveRowChange, scrollToTraceRow]
   );
 
-  const submitTraceComment = useCallback(
-    (body: string) => {
-      setTraceComments((current) => [
-        ...current,
-        {
-          id: `trace-comment-${current.length + 1}`,
-          body,
-          markerLabel: activeMarker?.label ?? "Session",
-          row: activeMarker?.tl ?? null,
-        },
-      ]);
-    },
-    [activeMarker]
-  );
+  const {
+    activeAnchor: activeTraceCommentAnchor,
+    comments: traceComments,
+    deleteTraceComment,
+    jumpToTraceComment,
+    replyToTraceComment,
+    submitTraceComment,
+    updateTraceComment,
+  } = useTraceComments({
+    target: { type: "session", id: session.id },
+    onJumpToRow: jumpToRow,
+  });
 
-  const scrubToPercent = useCallback(
-    (percent: number) => {
-      const bucket =
-        buckets[getBucketIndexFromPercent(percent, buckets.length)];
-      const row = bucket?.tl0 ?? markers[0]?.tl ?? 0;
-      jumpToRow(row, false);
+  // View-scoped override that re-opens a collapsed rail without touching the
+  // saved preference. Resets per session (this component is keyed by session.id).
+  const [commentsRevealed, setCommentsRevealed] = useState(false);
+
+  const collapseCommentsRail = useCallback(() => {
+    setCommentsRevealed(false);
+    onCommentsCollapsedChange(true);
+  }, [onCommentsCollapsedChange]);
+
+  const expandCommentsRail = useCallback(() => {
+    onCommentsCollapsedChange(false);
+  }, [onCommentsCollapsedChange]);
+
+  // FEA-2479: the page header's "Show comments rail" toggle is authoritative.
+  // When the caller flips commentsRailOpen false→true, drop any stale persisted
+  // collapse preference so the header toggle always yields the full panel rather
+  // than being silently overridden by a rail the reader collapsed on a previous
+  // visit. Keyed on the prop and guarded by a ref so we only react to the
+  // false→true edge — not to the inline collapse control toggling the pref while
+  // the rail stays open.
+  const previousRailOpenRef = useRef(commentsRailOpen);
+  useEffect(() => {
+    const wasOpen = previousRailOpenRef.current;
+    previousRailOpenRef.current = commentsRailOpen;
+    if (commentsRailOpen && !wasOpen) {
+      setCommentsRevealed(false);
+      onCommentsCollapsedChange(false);
+    }
+  }, [commentsRailOpen, onCommentsCollapsedChange]);
+
+  // FEA-2479/FEA-2480: anchoring a new comment must re-open a collapsed rail so
+  // the reader sees where their note lands. Wrap submit rather than the inline
+  // composer so an in-progress draft is never lost to the collapse. Reveal only
+  // once the comment actually persists (mutation onSuccess) — a failed submit
+  // must not pop open a rail the reader chose to collapse. The reveal is
+  // transient; it never overwrites the reader's saved collapse preference.
+  const submitTraceCommentAndReveal = useCallback(
+    (draft: Parameters<typeof submitTraceComment>[0]) => {
+      submitTraceComment(draft, {
+        onSuccess: () => setCommentsRevealed(true),
+      });
     },
-    [buckets, jumpToRow, markers]
+    [submitTraceComment]
   );
 
   const handleTraceScroll = useCallback(() => {
+    if (ignoreNextTraceScrollRef.current) {
+      ignoreNextTraceScrollRef.current = false;
+      return;
+    }
     if (rafRef.current !== null) {
       return;
     }
     rafRef.current = globalThis.requestAnimationFrame(() => {
       rafRef.current = null;
-      const scroller = scrollRef.current;
-      if (!scroller) {
-        return;
+      // Shared with the Branch detail page so both timelines agree on the active
+      // row (and share the scroll-to-top reset).
+      const row = computeActiveTraceRow({
+        rowSelector: ".st [data-row]",
+        scroller: scrollRef.current,
+        stickySelectors: [".sd3-stickyhead.is-sticky"],
+      });
+      if (row != null) {
+        onActiveRowChange(row);
       }
-      const sticky = scroller.querySelector<HTMLElement>(
-        ".sd3-stickyhead.is-sticky"
-      );
-      const top =
-        scroller.getBoundingClientRect().top + (sticky?.offsetHeight ?? 0) + 6;
-      let row = 0;
-      for (const node of scroller.querySelectorAll<HTMLElement>(
-        ".st [data-row]"
-      )) {
-        const nextRow = Number(node.dataset.row);
-        if (
-          Number.isFinite(nextRow) &&
-          node.getBoundingClientRect().top <= top
-        ) {
-          row = nextRow;
-        }
-      }
-      onActiveRowChange(row);
     });
   }, [onActiveRowChange]);
+
+  const commentsRail = renderCommentsRail({
+    activeRow,
+    collapseEnabled: commentsCollapseEnabled,
+    collapsed: commentsCollapsed && !commentsRevealed,
+    comments: traceComments,
+    onCollapse: collapseCommentsRail,
+    onDelete: deleteTraceComment,
+    onExpand: expandCommentsRail,
+    onJump: jumpToTraceComment,
+    onReply: replyToTraceComment,
+    onUpdate: updateTraceComment,
+    onWidthChange: onCommentsWidthChange,
+    open: commentsRailOpen,
+    width: commentsWidth,
+  });
 
   return (
     <div
@@ -310,12 +401,11 @@ function SessionDetailWorkspace({
               <SessionActivityTimeline
                 activeRow={activeRow}
                 buckets={buckets}
+                limitDotEvents={limitDotEvents}
                 markers={markers}
                 onJump={jumpToRow}
-                onScrubTo={scrubToPercent}
                 scaleMinutes={scaleMinutes}
                 span={span}
-                throttles={session.throttles ?? []}
               />
             </div>
 
@@ -325,37 +415,111 @@ function SessionDetailWorkspace({
             </div>
 
             <div className="sd3-trace sd3-trace-chat">
-              {session.turnItems && session.turnItems.length > 0 ? (
-                <SessionTrace
-                  activeRow={activeRow}
-                  items={session.turnItems}
-                  onJump={jumpToRow}
-                />
-              ) : (
-                <EmptyState
-                  className="py-12"
-                  description="No trace turns were captured for this session."
-                  icon={MessageCircleIcon}
-                  title="No trace events"
-                />
-              )}
+              {/*
+               * FEA-2717: cloud-preferred, two-phase conversation. The metadata
+               * panels above render immediately from the detail response; this
+               * panel hydrates the conversation from the archived cloud
+               * transcript and surfaces the FR8 availability states, falling back
+               * to the DB-backed `turnItems` until FEA-2718 removes that path.
+               */}
+              <SessionTranscriptPanel
+                activeRow={activeRow}
+                buildTranscriptFileHref={buildTranscriptFileHref}
+                fallbackItems={session.turnItems}
+                fileKey={transcriptFileKey}
+                highlightAnchor={activeTraceCommentAnchor}
+                onJump={jumpToRow}
+                onSubmitTraceComment={submitTraceCommentAndReveal}
+                session={session}
+              />
             </div>
           </article>
         </div>
       </div>
 
-      {commentsRailOpen ? (
-        <TraceCommentsRail
-          activeMarker={activeMarker}
-          comments={traceComments}
-          markersByRow={markersByRow}
-          onJump={jumpToRow}
-          onSubmitComment={submitTraceComment}
-          onWidthChange={onCommentsWidthChange}
-          width={commentsWidth}
-        />
-      ) : null}
+      {commentsRail}
     </div>
+  );
+}
+
+/** Renders the right-side comments surface: full rail, collapsed handle, or nothing. */
+function renderCommentsRail({
+  activeRow,
+  collapseEnabled,
+  collapsed,
+  comments,
+  onCollapse,
+  onDelete,
+  onExpand,
+  onJump,
+  onReply,
+  onUpdate,
+  onWidthChange,
+  open,
+  width,
+}: Readonly<{
+  activeRow: number | null;
+  collapseEnabled: boolean;
+  collapsed: boolean;
+  comments: readonly TraceCommentItem[];
+  onCollapse: () => void;
+  onDelete: (commentId: string) => void;
+  onExpand: () => void;
+  onJump: (row: number, flash?: boolean, anchor?: TraceTextAnchor) => void;
+  onReply: (commentId: string, draft: { body: string }) => void;
+  onUpdate: (commentId: string, update: { body: string }) => void;
+  onWidthChange: (width: number) => void;
+  open: boolean;
+  width: number;
+}>): ReactNode {
+  if (!open) {
+    return null;
+  }
+  // Flag off (FEA-2479): keep the rail permanently open with no collapse control.
+  if (collapseEnabled && collapsed) {
+    return (
+      <CollapsedCommentsHandle count={comments.length} onExpand={onExpand} />
+    );
+  }
+  return (
+    <TraceCommentsRail
+      activeRow={activeRow}
+      comments={comments}
+      onCollapse={collapseEnabled ? onCollapse : undefined}
+      onDelete={onDelete}
+      onJump={onJump}
+      onReply={onReply}
+      onUpdate={onUpdate}
+      onWidthChange={onWidthChange}
+      width={width}
+    />
+  );
+}
+
+/**
+ * Slim re-open affordance shown when the comments rail is collapsed (FEA-2479).
+ * Stays pinned to the right edge so the toggle is reachable on small desktop
+ * windows.
+ */
+function CollapsedCommentsHandle({
+  count,
+  onExpand,
+}: Readonly<{ count: number; onExpand: () => void }>) {
+  return (
+    <aside className="sd3-cmts-collapsed">
+      <button
+        aria-label="Show comments panel"
+        className="sd3-cmts-reopen"
+        onClick={onExpand}
+        title="Show comments"
+        type="button"
+      >
+        <MessageSquareIcon aria-hidden className="size-4" />
+        {count > 0 ? (
+          <span className="sd3-cmts-reopen-count">{count}</span>
+        ) : null}
+      </button>
+    </aside>
   );
 }
 
@@ -375,12 +539,7 @@ function SessionPropertiesPanel({
       <div
         className="prd-props-header"
         onClick={() => setOpen((value) => !value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setOpen((value) => !value);
-          }
-        }}
+        onKeyDown={activateOnEnterOrSpace(() => setOpen((value) => !value))}
         role="button"
         tabIndex={0}
       >
@@ -407,73 +566,31 @@ function SessionPropertiesPanel({
 function SessionActivityTimeline({
   activeRow,
   buckets,
+  limitDotEvents,
   markers,
   onJump,
-  onScrubTo,
   scaleMinutes,
   span,
-  throttles,
 }: Readonly<{
   activeRow: number | null;
   buckets: ActivityBucket[];
+  limitDotEvents: ActivityMarker[];
   markers: ActivityMarker[];
   onJump: (row: number, flash?: boolean) => void;
-  onScrubTo: (percent: number) => void;
   scaleMinutes: number;
   span: SessionSpan;
-  throttles: SessionThrottle[];
 }>) {
   const [hoverBucket, setHoverBucket] = useState<HoverBucket | null>(null);
   const [hoverDot, setHoverDot] = useState<HoverDot | null>(null);
-  const [dragX, setDragX] = useState<number | null>(null);
-  const barsWrapRef = useRef<HTMLDivElement | null>(null);
-  const scrubCleanupRef = useRef<(() => void) | null>(null);
   const maxCost = Math.max(0.01, ...buckets.map(getBucketCost));
-  const cells = buildDotCells(markers, throttles, buckets.length);
+  const cells = buildDotCells(markers, limitDotEvents, buckets.length);
   const hoverIndex = hoverBucket?.index ?? null;
   const hoveredBucket = hoverBucket == null ? null : buckets[hoverBucket.index];
   const hoveredEvents =
     hoverDot == null ? null : cells[hoverDot.bucketIndex]?.[hoverDot.color];
-  const lineX = dragX ?? getRowPercent(activeRow, buckets);
-
-  const startScrub = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      const wrap = barsWrapRef.current;
-      if (!wrap) {
-        return;
-      }
-      const rect = wrap.getBoundingClientRect();
-
-      function move(moveEvent: globalThis.PointerEvent) {
-        const nextPercent = clamp(
-          ((moveEvent.clientX - rect.left) / rect.width) * 100,
-          0,
-          100
-        );
-        setDragX(nextPercent);
-        onScrubTo(nextPercent);
-      }
-
-      function up() {
-        globalThis.document.removeEventListener("pointermove", move);
-        globalThis.document.removeEventListener("pointerup", up);
-        setDragX(null);
-        globalThis.document.body.style.userSelect = "";
-        scrubCleanupRef.current = null;
-      }
-
-      globalThis.document.addEventListener("pointermove", move);
-      globalThis.document.addEventListener("pointerup", up);
-      globalThis.document.body.style.userSelect = "none";
-      scrubCleanupRef.current = up;
-      move(event.nativeEvent);
-    },
-    [onScrubTo]
-  );
-
-  // Detach any still-attached scrub listeners if the bar unmounts mid-drag.
-  useEffect(() => () => scrubCleanupRef.current?.(), []);
+  // Read-only "you are here" position; null until the reader scrolls or jumps.
+  const herePercent =
+    activeRow == null ? null : getRowPercent(activeRow, buckets);
 
   if (buckets.length === 0) {
     return (
@@ -493,18 +610,14 @@ function SessionActivityTimeline({
       <div className="sd3-act-head">
         <span className="sd3-act-title">Session Timeline</span>
       </div>
-      <div className="sd3-bars2-wrap" ref={barsWrapRef}>
-        <div
-          className={cn("sd3-playhead", dragX != null && "dragging")}
-          onPointerDown={startScrub}
-          style={{ left: `${lineX}%` }}
-          title="Drag to scrub the trace"
-        >
-          <span className="sd3-playhead-grip">
-            <GripVerticalIcon aria-hidden className="size-2.5" />
-          </span>
-        </div>
-
+      <div className="sd3-bars2-wrap">
+        {herePercent == null ? null : (
+          <div
+            aria-hidden
+            className="tl-here"
+            style={{ left: `${herePercent}%` }}
+          />
+        )}
         <div className="sd3-bars2">
           {buckets.map((bucket, index) => {
             const cost = getBucketCost(bucket);
@@ -625,263 +738,90 @@ function SessionActivityTimeline({
   );
 }
 
-function TraceCommentsRail({
-  activeMarker,
-  comments,
-  markersByRow,
-  onJump,
-  onSubmitComment,
-  onWidthChange,
-  width,
-}: Readonly<{
-  activeMarker: ActivityMarker | null;
-  comments: TraceComment[];
-  markersByRow: Map<number, ActivityMarker>;
-  onJump: (row: number, flash?: boolean) => void;
-  onSubmitComment: (body: string) => void;
-  onWidthChange: (width: number) => void;
-  width: number;
-}>) {
-  const resizeCleanupRef = useRef<(() => void) | null>(null);
-  const startResize = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      const handle = event.currentTarget;
-      const shell = handle.closest<HTMLElement>(".sd3");
-      if (!shell) {
-        return;
-      }
-      const resizeShell = shell;
-      const rail = handle.closest<HTMLElement>(".sd3-cmts");
-      const startX = event.clientX;
-      const railWidth = rail?.getBoundingClientRect().width;
-      const startWidth = railWidth && railWidth > 0 ? railWidth : width;
-
-      function onMove(moveEvent: globalThis.MouseEvent) {
-        const max = Math.max(320, resizeShell.clientWidth * 0.5);
-        const nextWidth = clamp(
-          startWidth - (moveEvent.clientX - startX),
-          300,
-          max
-        );
-        resizeShell.style.setProperty("--sd3-cmts-w", `${nextWidth}px`);
-        onWidthChange(nextWidth);
-      }
-
-      function onUp() {
-        globalThis.document.removeEventListener("mousemove", onMove);
-        globalThis.document.removeEventListener("mouseup", onUp);
-        handle.classList.remove("dragging");
-        globalThis.document.body.style.cursor = "";
-        globalThis.document.body.style.userSelect = "";
-        resizeCleanupRef.current = null;
-      }
-
-      handle.classList.add("dragging");
-      globalThis.document.body.style.cursor = "col-resize";
-      globalThis.document.body.style.userSelect = "none";
-      globalThis.document.addEventListener("mousemove", onMove);
-      globalThis.document.addEventListener("mouseup", onUp);
-      resizeCleanupRef.current = onUp;
-    },
-    [onWidthChange, width]
-  );
-
-  // Detach any still-attached resize listeners if the panel unmounts mid-drag.
-  useEffect(() => () => resizeCleanupRef.current?.(), []);
-
-  return (
-    <aside className="sd3-cmts fp">
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: FEA-1770 source keeps the resize handle mouse-only and non-focusable. */}
-      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: FEA-1770 source keeps the resize handle mouse-only and non-focusable. */}
-      <div
-        className="fp-resize"
-        onMouseDown={startResize}
-        title="Drag to resize"
-      />
-      <div className="fp-head">
-        <div className="fp-head-row">
-          <span className="fp-title">
-            Comments <span className="fp-count">{comments.length}</span>
-          </span>
-          <div className="fp-head-actions">
-            <button
-              className="fp-icon-btn fp-sort-btn"
-              title="Sort"
-              type="button"
-            >
-              <ArrowUpDownIcon aria-hidden className="size-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="fp-stream">
-        <div className="fp-daysep">
-          <span>Today</span>
-        </div>
-        {comments.length === 0 ? (
-          <div className="px-4 py-8 text-center">
-            <p className="font-medium text-sm">No trace comments yet</p>
-            <p className="mt-1 text-muted-foreground text-xs">
-              Select a timeline point to anchor the next comment.
-            </p>
-          </div>
-        ) : (
-          comments.map((comment) => (
-            <TraceCommentCard
-              active={comment.row === activeMarker?.tl}
-              comment={comment}
-              key={comment.id}
-              markersByRow={markersByRow}
-              onJump={onJump}
-            />
-          ))
-        )}
-      </div>
-
-      <div className="fp-composer">
-        <div className="fp-composer-hint">
-          <CrosshairIcon aria-hidden className="size-3" />
-          {activeMarker ? (
-            <span>
-              Commenting on <b>{formatStepLabel(activeMarker)}</b>
-            </span>
-          ) : (
-            <span>Select a step to anchor your comment</span>
-          )}
-        </div>
-        <CommentComposer
-          containerClassName="fp-composer-box"
-          footerClassName="fp-composer-actions"
-          leadingActions={
-            <div className="fp-composer-tools">
-              <button
-                aria-label="Attach file"
-                className="fp-icon-btn"
-                type="button"
-              >
-                <PaperclipIcon aria-hidden className="size-3.5" />
-              </button>
-              <button
-                aria-label="Mention user"
-                className="fp-icon-btn"
-                type="button"
-              >
-                <AtSignIcon aria-hidden className="size-3.5" />
-              </button>
-            </div>
-          }
-          minHeightClassName="min-h-[64px]"
-          onSubmit={onSubmitComment}
-          placeholder="Comment, or @ai to ask about this moment..."
-          submitLabel="Comment"
-        />
-      </div>
-    </aside>
-  );
-}
-
-function TraceCommentCard({
-  active,
-  comment,
-  markersByRow,
-  onJump,
-}: Readonly<{
-  active: boolean;
-  comment: TraceComment;
-  markersByRow: Map<number, ActivityMarker>;
-  onJump: (row: number, flash?: boolean) => void;
-}>) {
-  const marker =
-    comment.row == null ? null : (markersByRow.get(comment.row) ?? null);
-  const label = marker ? formatStepLabel(marker) : comment.markerLabel;
-  const jumpToComment = () => {
-    if (comment.row != null) {
-      onJump(comment.row);
-    }
-  };
-
-  const commentCard = (
-    // biome-ignore lint/a11y/noStaticElementInteractions: FEA-1770 source makes the comment card itself mouse-clickable without keyboard handlers.
-    // biome-ignore lint/a11y/useKeyWithClickEvents: FEA-1770 source has no comment-card keyboard handler.
-    // biome-ignore lint/a11y/noNoninteractiveElementInteractions: FEA-1770 source keeps the comment card as a non-interactive element with click-to-jump behavior.
-    <div
-      className={cn("fp-comment", active && "is-active")}
-      onClick={jumpToComment}
-    >
-      <span className="fp-rail">
-        <Avatar className="size-[26px]">
-          <AvatarFallback className="bg-primary/10 text-[10px] text-primary">
-            AI
-          </AvatarFallback>
-        </Avatar>
-      </span>
-      <div className="fp-comment-body">
-        <div className="fp-comment-head">
-          <b>Draft</b>
-          <span className="sd3-cmt-role">Local</span>
-          <span className="fp-when">now</span>
-          <span className="fp-comment-actions">
-            <button
-              className="fp-icon-btn"
-              onClick={(event) => event.stopPropagation()}
-              title="React"
-              type="button"
-            >
-              <SmileIcon aria-hidden className="size-3" />
-            </button>
-            <button
-              className="fp-icon-btn"
-              onClick={(event) => event.stopPropagation()}
-              title="Reply"
-              type="button"
-            >
-              <CornerUpLeftIcon aria-hidden className="size-3" />
-            </button>
-          </span>
-        </div>
-        <button
-          className={cn("fp-quote", active && "is-active")}
-          onClick={(event) => {
-            event.stopPropagation();
-            jumpToComment();
-          }}
-          title="Jump to this step in the trace"
-          type="button"
-        >
-          <span className="fp-quote-bar" />
-          <span className="fp-quote-text">{label}</span>
-        </button>
-        <div className="fp-comment-text">{comment.body}</div>
-      </div>
-    </div>
-  );
-
-  return commentCard;
-}
-
 function PropertyValue({
   children,
+  copyValue,
   icon: Icon,
   label,
   leading,
   mono,
 }: Readonly<{
   children: ReactNode;
+  copyValue?: string;
   icon: LucideIcon | null;
   label: string;
   leading?: ReactNode;
   mono?: boolean;
 }>) {
+  const title = typeof children === "string" ? children : undefined;
+  const valueContent = (
+    <>
+      {leading ?? (Icon ? <Icon aria-hidden className="size-3.5" /> : null)}
+      <span className={mono ? "mono" : undefined} title={title}>
+        {children}
+      </span>
+    </>
+  );
+
   return (
     <div className="prd-prop">
       <span className="prd-prop-label">{label}</span>
-      <span className="prd-prop-value">
-        {leading ?? (Icon ? <Icon aria-hidden className="size-3.5" /> : null)}
-        <span className={mono ? "mono" : undefined}>{children}</span>
-      </span>
+      {copyValue ? (
+        <CopyablePropertyValue
+          ariaLabel={`Copy ${label.toLowerCase()}`}
+          copiedToastMessage={`${label} copied`}
+          value={copyValue}
+        >
+          {valueContent}
+        </CopyablePropertyValue>
+      ) : (
+        <span className="prd-prop-value">{valueContent}</span>
+      )}
     </div>
+  );
+}
+
+function CopyablePropertyValue({
+  ariaLabel,
+  children,
+  copiedToastMessage,
+  value,
+}: Readonly<{
+  ariaLabel: string;
+  children: ReactNode;
+  copiedToastMessage: string;
+  value: string;
+}>) {
+  const [copied, copyValue] = useCopyToClipboard();
+  const copy = useCallback(() => {
+    copyValue(value)
+      .then((success) => {
+        if (success) {
+          toast.success(copiedToastMessage);
+        }
+      })
+      .catch(() => undefined);
+  }, [copiedToastMessage, copyValue, value]);
+  const copiedAriaLabel = ariaLabel.startsWith("Copy ")
+    ? `Copied ${ariaLabel.slice(5)}`
+    : `${ariaLabel} copied`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={copied ? copiedAriaLabel : ariaLabel}
+          className="prd-prop-value"
+          onClick={copy}
+          type="button"
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm break-all text-left font-mono">
+        {value}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -1024,7 +964,9 @@ function EventDotTooltip({
   );
 }
 
-function buildActivityMarkers(session: AgentSessionDetail): ActivityMarker[] {
+export function buildActivityMarkers(
+  session: AgentSessionDetail
+): ActivityMarker[] {
   if (session.markers && session.markers.length > 0) {
     return session.markers.map((marker) => ({
       ...marker,
@@ -1037,6 +979,132 @@ function buildActivityMarkers(session: AgentSessionDetail): ActivityMarker[] {
   return items
     .map((item, index) => buildTurnMarker(item, index, items.length))
     .filter((marker): marker is ActivityMarker => marker !== null);
+}
+
+function buildLimitDotEvents(session: AgentSessionDetail): ActivityMarker[] {
+  const explicitThrottles = buildExplicitThrottleLimitDots(session);
+  if (explicitThrottles.length > 0) {
+    return dedupeLimitDotEvents(explicitThrottles);
+  }
+
+  return dedupeLimitDotEvents([
+    ...buildThrottleSourceLimitDots(session),
+    ...buildTimelineLimitDots(session),
+    ...buildSessionEventLimitDots(session),
+    ...buildTurnItemLimitDots(session),
+  ]);
+}
+
+function buildExplicitThrottleLimitDots(
+  session: AgentSessionDetail
+): ActivityMarker[] {
+  return (session.throttles ?? []).map((throttle) => {
+    const x = clampPercent(throttle.x0);
+    return {
+      kind: "limit",
+      label: formatThrottleLimitLabel(throttle),
+      t: formatMarkerTime(throttle.t0),
+      tl: resolveLimitTraceRow(session, throttle.t0, throttle.tl, x),
+      x,
+    };
+  });
+}
+
+function buildThrottleSourceLimitDots(
+  session: AgentSessionDetail
+): ActivityMarker[] {
+  return (session.throttleSources ?? []).map((source, index) => {
+    const x = getLimitDotPercent(session, source.observedAt, index);
+    return {
+      kind: "limit",
+      label: formatThrottleSourceLimitLabel(source),
+      t: formatMarkerTime(source.observedAt),
+      tl: resolveLimitTraceRow(session, source.observedAt, index, x),
+      x,
+    };
+  });
+}
+
+function buildTimelineLimitDots(session: AgentSessionDetail): ActivityMarker[] {
+  return (session.timeline ?? []).flatMap((event, index) => {
+    const label = getTimelineLimitLabel(event);
+    if (!label) {
+      return [];
+    }
+    const fallbackRow = event.tl ?? index;
+    const x = getLimitDotPercent(session, event.t, fallbackRow);
+    return [
+      {
+        kind: "limit",
+        label,
+        t: formatMarkerTime(event.t),
+        tl: resolveExplicitTraceRow(event.tl, session, event.t, fallbackRow, x),
+        x,
+      },
+    ];
+  });
+}
+
+function buildSessionEventLimitDots(
+  session: AgentSessionDetail
+): ActivityMarker[] {
+  return session.events.flatMap((event, index) => {
+    const label = getSessionEventLimitLabel(event);
+    if (!label) {
+      return [];
+    }
+    const x = getLimitDotPercent(session, event.createdAt, index);
+    return [
+      {
+        kind: "limit",
+        label,
+        t: formatMarkerTime(event.createdAt),
+        tl: resolveLimitTraceRow(session, event.createdAt, index, x),
+        x,
+      },
+    ];
+  });
+}
+
+function buildTurnItemLimitDots(session: AgentSessionDetail): ActivityMarker[] {
+  return (session.turnItems ?? []).flatMap((item, index) => {
+    const label = getTurnEventLimitLabel(item);
+    const timestamp = getTurnItemTimestamp(item);
+    if (!(label && timestamp)) {
+      return [];
+    }
+    const fallbackRow = hasTraceRow(item) ? item._row : index;
+    const x = getLimitDotPercent(session, timestamp, fallbackRow);
+    return [
+      {
+        kind: "limit",
+        label,
+        t: formatMarkerTime(timestamp),
+        tl: resolveExplicitTraceRow(
+          hasTraceRow(item) ? item._row : null,
+          session,
+          timestamp,
+          fallbackRow,
+          x
+        ),
+        x,
+      },
+    ];
+  });
+}
+
+function dedupeLimitDotEvents(events: ActivityMarker[]): ActivityMarker[] {
+  const seen = new Set<string>();
+  const deduped: ActivityMarker[] = [];
+  for (const event of events) {
+    const key = `${event.tl}:${event.t}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped;
 }
 
 function buildTurnMarker(
@@ -1055,14 +1123,23 @@ function buildTurnMarker(
         tl: item._row,
       };
     case "tools":
-      return {
-        kind: item.hasFail ? "fail" : "prompt",
-        x,
-        t: formatMarkerTime(item.t),
-        label: item.summary,
-        tl: item._row,
-      };
+      // FEA-2192: a successful tool turn is routine agent activity, not human
+      // steering; only surface a marker when the turn failed. Mirrors the
+      // server-side buildTraceMarkers/traceMarkerKind path, which emits no
+      // marker for successful tool events.
+      return item.hasFail
+        ? {
+            kind: "fail",
+            x,
+            t: formatMarkerTime(item.t),
+            label: item.summary,
+            tl: item._row,
+          }
+        : null;
     case "event":
+      if (getTurnEventLimitLabel(item)) {
+        return null;
+      }
       return {
         kind: getEventMarkerKind(item.dot),
         x,
@@ -1070,14 +1147,23 @@ function buildTurnMarker(
         label: item.tag ?? item.text,
         tl: item._row,
       };
-    case "subagent":
-      return {
-        kind: item.status.toLowerCase().includes("fail") ? "fail" : "prompt",
-        x,
-        t: formatMarkerTime(item.t),
-        label: item.sub,
-        tl: item._row,
-      };
+    case "subagent": {
+      // FEA-2192: a completed subagent run is routine agent activity, not human
+      // steering; only mark failures (see the "tools" case). Cloud-sourced
+      // subagents report "error" (not just "fail") as their failure status, so
+      // match the package-wide vocabulary (agent-tree-utils) and the server-side
+      // traceMarkerKind, which both treat "error" and "fail" as failures.
+      const statusLower = item.status.toLowerCase();
+      return statusLower.includes("fail") || statusLower.includes("error")
+        ? {
+            kind: "fail",
+            x,
+            t: formatMarkerTime(item.t),
+            label: item.sub,
+            tl: item._row,
+          }
+        : null;
+    }
     case "say":
       return null;
     case "idle":
@@ -1166,9 +1252,12 @@ function buildActivityBuckets(
 
 function buildDotCells(
   markers: ActivityMarker[],
-  throttles: SessionThrottle[],
+  limitDotEvents: ActivityMarker[],
   bucketCount: number
 ): DotCell[] {
+  if (bucketCount === 0) {
+    return [];
+  }
   const cells = Array.from({ length: bucketCount }, createDotCell);
   for (const marker of markers) {
     const color = getMarkerDotColor(marker.kind);
@@ -1181,15 +1270,295 @@ function buildDotCells(
       });
     }
   }
-  for (const throttle of throttles) {
-    cells[getBucketIndexFromPercent(throttle.x0, bucketCount)].r.push({
-      kind: "limit",
-      label: `throttled ${throttle.durMin}m, resumed ${throttle.t1}`,
-      t: throttle.t0,
-      tl: throttle.tl,
+  for (const event of limitDotEvents) {
+    cells[getBucketIndexFromPercent(event.x, bucketCount)].r.push({
+      kind: event.kind,
+      label: event.label,
+      t: event.t,
+      tl: event.tl,
     });
   }
   return cells;
+}
+
+function formatThrottleLimitLabel(throttle: SessionThrottle): string {
+  const duration = formatThrottleDuration(throttle.durMin);
+  if (duration) {
+    return `Throttled for ${duration}; resumed ${formatMarkerTime(throttle.t1)}`;
+  }
+  return `Throttled; resumed ${formatMarkerTime(throttle.t1)}`;
+}
+
+function formatThrottleSourceLimitLabel(
+  source: SessionTraceThrottleSource
+): string {
+  const title =
+    formatLimitLabelText(source.limitKind) ??
+    formatLimitLabelText(source.errorCode) ??
+    formatLimitLabelText(source.sourceType) ??
+    "Session limit";
+  const details = [
+    source.provider,
+    formatStatusCodeLabel(source.statusCode),
+  ].filter(isNonEmptyString);
+  if (details.length > 0) {
+    return `${title} (${details.join(", ")})`;
+  }
+  return title;
+}
+
+function getTimelineLimitLabel(event: SessionTimelineEvent): string | null {
+  const matched = firstLimitText([
+    event.title,
+    event.detail,
+    typeof event.err === "string" ? event.err : null,
+  ]);
+  if (!matched) {
+    return null;
+  }
+  return preferLimitLabel(event.title ?? event.detail, matched);
+}
+
+function getSessionEventLimitLabel(
+  event: SyncedAgentSessionEvent
+): string | null {
+  const matched = firstLimitText([
+    event.eventType,
+    event.toolName,
+    event.summary,
+    getLimitDataText(event.data),
+  ]);
+  if (!matched) {
+    return null;
+  }
+  return preferLimitLabel(event.summary ?? event.eventType, matched);
+}
+
+function getTurnEventLimitLabel(item: TurnItem): string | null {
+  if (item.type !== "event") {
+    return null;
+  }
+  const matched =
+    item.dot === "r" ? firstLimitText([item.tag, item.text]) : null;
+  if (!matched) {
+    return null;
+  }
+  return preferLimitLabel(item.tag ?? item.text, matched);
+}
+
+function firstLimitText(values: readonly (string | null | undefined)[]) {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed && LIMIT_EVENT_TEXT_REGEX.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function getLimitDataText(value: unknown): string | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const values: string[] = [];
+  for (const key of LIMIT_DATA_TEXT_KEYS) {
+    const field = value[key];
+    if (key === "statusCode" && typeof field === "number") {
+      values.push(`HTTP ${field}`);
+      continue;
+    }
+    if (typeof field === "string") {
+      values.push(field);
+      continue;
+    }
+    if (typeof field === "number") {
+      values.push(String(field));
+    }
+  }
+  if (values.length === 0) {
+    return null;
+  }
+  return values.join(" ");
+}
+
+function preferLimitLabel(
+  preferred: string | null | undefined,
+  matched: string
+): string {
+  const trimmed = preferred?.trim();
+  if (trimmed && LIMIT_EVENT_TEXT_REGEX.test(trimmed)) {
+    return trimmed;
+  }
+  return matched;
+}
+
+function getTurnItemTimestamp(item: TurnItem): string | null {
+  if ("t" in item && typeof item.t === "string") {
+    return item.t;
+  }
+  return null;
+}
+
+function resolveExplicitTraceRow(
+  explicitRow: number | null | undefined,
+  session: AgentSessionDetail,
+  timestamp: unknown,
+  fallbackRow: number,
+  fallbackPercent: number
+): number {
+  if (typeof explicitRow === "number" && Number.isFinite(explicitRow)) {
+    return normalizeTraceRow(explicitRow);
+  }
+  return resolveLimitTraceRow(session, timestamp, fallbackRow, fallbackPercent);
+}
+
+function resolveLimitTraceRow(
+  session: AgentSessionDetail,
+  timestamp: unknown,
+  fallbackRow: number,
+  fallbackPercent: number
+): number {
+  const rows = session.turnItems?.filter(hasTimedTraceRow) ?? [];
+  const timestampMs = getDateMs(timestamp);
+  if (Number.isFinite(timestampMs) && rows.length > 0) {
+    return getNearestTraceRow(rows, timestampMs);
+  }
+  return getTraceRowFromPercent(session, fallbackPercent, fallbackRow);
+}
+
+function getNearestTraceRow(
+  rows: (TurnItem & { _row: number; t: string })[],
+  timestampMs: number
+): number {
+  let nearestRow = rows[0]?._row ?? 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    const distance = Math.abs(getTurnItemMs(row) - timestampMs);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestRow = row._row;
+    }
+  }
+  return normalizeTraceRow(nearestRow);
+}
+
+function getTraceRowFromPercent(
+  session: AgentSessionDetail,
+  percent: number,
+  fallbackRow: number
+): number {
+  const rows = session.turnItems?.filter(hasTraceRow) ?? [];
+  if (rows.length === 0) {
+    return normalizeTraceRow(fallbackRow);
+  }
+  const index = clamp(
+    Math.round((clampPercent(percent) / 100) * (rows.length - 1)),
+    0,
+    rows.length - 1
+  );
+  return normalizeTraceRow(rows[index]?._row ?? fallbackRow);
+}
+
+function getLimitDotPercent(
+  session: AgentSessionDetail,
+  timestamp: unknown,
+  fallbackRow: number
+): number {
+  const timestampMs = getDateMs(timestamp);
+  const startedMs = getDateMs(session.startedAt);
+  const endedMs = getDateMs(session.endedAt ?? session.updatedAt);
+  if (
+    Number.isFinite(timestampMs) &&
+    Number.isFinite(startedMs) &&
+    Number.isFinite(endedMs) &&
+    endedMs > startedMs
+  ) {
+    return clampPercent(
+      ((timestampMs - startedMs) / (endedMs - startedMs)) * 100
+    );
+  }
+  return getTraceRowPercent(session, fallbackRow);
+}
+
+function getTraceRowPercent(
+  session: AgentSessionDetail,
+  fallbackRow: number
+): number {
+  const rows = session.turnItems?.filter(hasTraceRow) ?? [];
+  if (rows.length <= 1) {
+    return 0;
+  }
+  const index = rows.findIndex((row) => row._row >= fallbackRow);
+  if (index >= 0) {
+    return (index / (rows.length - 1)) * 100;
+  }
+  return 100;
+}
+
+function getDateMs(value: unknown): number {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value !== "string") {
+    return Number.NaN;
+  }
+  return Date.parse(value);
+}
+
+function normalizeTraceRow(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return clamp(value, 0, 100);
+}
+
+function formatThrottleDuration(value: number): string | null {
+  if (!(Number.isFinite(value) && value > 0)) {
+    return null;
+  }
+  if (value < 1) {
+    return "<1m";
+  }
+  return `${Math.round(value)}m`;
+}
+
+function formatLimitLabelText(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed
+    .split(LIMIT_LABEL_SPLIT_REGEX)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function formatStatusCodeLabel(
+  value: number | null | undefined
+): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return `HTTP ${value}`;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getSessionSpan(
@@ -1208,29 +1577,6 @@ function getSessionSpan(
       markers.at(-1)?.t ??
       safeFormatDateTime(session.endedAt ?? session.updatedAt),
   };
-}
-
-function getActiveMarker(
-  markers: ActivityMarker[],
-  activeRow: number | null
-): ActivityMarker | null {
-  if (markers.length === 0) {
-    return null;
-  }
-  if (activeRow == null) {
-    return markers[0] ?? null;
-  }
-  const exactMarker = markers.find((marker) => marker.tl === activeRow);
-  if (exactMarker) {
-    return exactMarker;
-  }
-  for (let index = markers.length - 1; index >= 0; index -= 1) {
-    const marker = markers[index];
-    if (marker && marker.tl <= activeRow) {
-      return marker;
-    }
-  }
-  return markers[0] ?? null;
 }
 
 function getRowPercent(
@@ -1304,10 +1650,6 @@ function hasTraceRow(
   item: TurnItem
 ): item is TurnItem & { _row: number; t: string } {
   return "_row" in item && "t" in item;
-}
-
-function formatStepLabel(marker: ActivityMarker): string {
-  return `${marker.t} | ${marker.label}`;
 }
 
 function formatMarkerTime(value: unknown): string {
@@ -1514,13 +1856,6 @@ type HoverDot = {
 
 type DotCell = Record<DotColor, TimelineDotEvent[]>;
 
-type TraceComment = {
-  id: string;
-  body: string;
-  markerLabel: string;
-  row: number | null;
-};
-
 type SessionPropertySummary = {
   model: string;
   prs: SessionPR[];
@@ -1543,11 +1878,16 @@ function SessionPropertiesExpanded({
       <PropertyValue icon={TerminalIcon} label="Harness">
         {session.harness}
       </PropertyValue>
+      <PropertyValue
+        copyValue={session.externalSessionId}
+        icon={FingerprintIcon}
+        label="Session ID"
+        mono
+      >
+        {session.externalSessionId}
+      </PropertyValue>
       <PropertyValue icon={FolderGit2Icon} label="Repository" mono>
         {summary.repo}
-      </PropertyValue>
-      <PropertyValue icon={SquareCheckIcon} label="Artifacts" mono>
-        {session.issues?.join(", ") || session.issueId || "None"}
       </PropertyValue>
       <PropertyValue icon={ClockIcon} label="Duration">
         {session.wallClock ?? "Unknown"} wall |{" "}
@@ -1567,7 +1907,7 @@ function SessionPropertiesExpanded({
         {summary.model}
       </PropertyValue>
       <PropertyValue icon={GitBranchIcon} label="Branch" mono>
-        {session.branch ?? "Unknown"}
+        {session.branch ?? "None"}
       </PropertyValue>
       <div className="prd-prop">
         <span className="prd-prop-label">Pull requests</span>
@@ -1625,13 +1965,13 @@ function SessionPropertiesPreview({
         />
         {summary.statusLabel}
       </span>
-      <span className="sd3-pp mono">
+      <span className="sd3-pp mono" title={summary.model}>
         <BotIcon aria-hidden className="size-3" />
-        {summary.model}
+        <span className="min-w-0 truncate">{summary.model}</span>
       </span>
-      <span className="sd3-pp mono">
+      <span className="sd3-pp mono" title={summary.repo}>
         <FolderGit2Icon aria-hidden className="size-3" />
-        {summary.repo}
+        <span className="min-w-0 truncate">{summary.repo}</span>
       </span>
       <span className="sd3-pp mono">
         <CircleDollarSignIcon aria-hidden className="size-3" />
@@ -1842,6 +2182,7 @@ function applyBucketCost(
 }
 
 const DEFAULT_COMMENTS_RAIL_WIDTH = 360;
+const COMMENTS_RAIL_COLLAPSED_KEY = "sessions:comments-rail:collapsed";
 const DOT_ORDER: DotColor[] = ["b", "g", "r"];
 const TOOLTIP_VIEWPORT_PADDING = 12;
 const TOOLTIP_ANCHOR_GAP = 8;
@@ -1853,3 +2194,16 @@ const ACTIVITY_COST_OUTPUT_RATIO = 0.23;
 const ACTIVITY_COST_CACHE_RATIO = 0.69;
 const PULL_REQUEST_NUMBER_REGEX = /^[1-9]\d*$/;
 const REPOSITORY_FULL_NAME_REGEX = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const LIMIT_EVENT_TEXT_REGEX =
+  /(?:session[-_.\s]?limit|usage[-_.\s]?limit|rate[-_.\s]?limit|rate limited|throttl|\b429\b)/i;
+const LIMIT_LABEL_SPLIT_REGEX = /[-_.\s]+/;
+const LIMIT_DATA_TEXT_KEYS = [
+  "type",
+  "limitKind",
+  "code",
+  "error",
+  "message",
+  "reason",
+  "status",
+  "statusCode",
+] as const;

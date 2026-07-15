@@ -15,6 +15,9 @@ import { DesktopAppCoreProvider } from "../../../shared-agent-sessions/desktop-a
 import { SessionDetailView } from "../SessionDetailView";
 
 const MERGED_PR_LINK_NAME = "1686merged";
+const JUMP_TO_FAILURES_NAME = /jump to failures & limits/i;
+const JUMP_TO_ACTIVITY_BUCKET_NAME = /jump to activity bucket/i;
+const PERCENT_STYLE_VALUE_REGEX = /\d+(?:\.\d+)?%/;
 
 describe("Desktop SessionDetailView wrapper", () => {
   beforeEach(() => {
@@ -55,7 +58,6 @@ describe("Desktop SessionDetailView wrapper", () => {
     expect(
       screen.getByText("feat/fea-1943-session-details-local-data")
     ).toBeDefined();
-    expect(screen.getAllByText("FEA-1943").length).toBeGreaterThan(0);
     expect(screen.queryByText("Compute target")).toBeNull();
     expect(screen.queryByText("Project")).toBeNull();
     expect(screen.queryByText("Worktree")).toBeNull();
@@ -76,8 +78,11 @@ describe("Desktop SessionDetailView wrapper", () => {
     ).toBeDefined();
     expect(screen.getByText("3 turns | 7 tool calls | 1 steers")).toBeDefined();
     expect(screen.getByText("High autonomy | 82/100")).toBeDefined();
-    expect(document.querySelector(".sd3-cmts")).toBeNull();
-    expect(screen.queryByText("Comments")).toBeNull();
+    expect(document.querySelector(".sd3-cmts")).not.toBeNull();
+    expect(screen.getByText("Comments")).toBeDefined();
+    expect(
+      screen.getByText("Select trace text to anchor the next comment.")
+    ).toBeDefined();
 
     rerender(
       withProviders(
@@ -86,8 +91,8 @@ describe("Desktop SessionDetailView wrapper", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Blocked Session" }));
-    expect(document.querySelector(".sd3-cmts")).toBeNull();
-    expect(screen.queryByText("Comments")).toBeNull();
+    expect(document.querySelector(".sd3-cmts")).not.toBeNull();
+    expect(screen.getByText("Comments")).toBeDefined();
 
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
       "pending-session"
@@ -95,6 +100,42 @@ describe("Desktop SessionDetailView wrapper", () => {
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
       "blocked-session"
     );
+  });
+
+  it("renders a red failures and limits marker from desktop-visible throttles", async () => {
+    renderSessionDetail("throttled-session");
+
+    expect(await screen.findByRole("heading", { name: "Throttled Session" }));
+    expect(screen.getByText("Session Timeline")).toBeDefined();
+    expect(screen.getByText("Session Trace")).toBeDefined();
+
+    const limitMarkers = screen.getAllByRole("button", {
+      name: JUMP_TO_FAILURES_NAME,
+    });
+    expect(
+      limitMarkers.some((marker) => marker.className.includes("d-r"))
+    ).toBe(true);
+    expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
+      "throttled-session"
+    );
+  });
+
+  it("moves the shared session timeline tracker on the first clicked bucket", async () => {
+    renderSessionDetail("throttled-session");
+
+    expect(await screen.findByRole("heading", { name: "Throttled Session" }));
+
+    const bucketButtons = screen.getAllByRole("button", {
+      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
+    });
+    expect(bucketButtons.length).toBeGreaterThan(1);
+
+    fireEvent.click(bucketButtons[1]!);
+
+    expect(
+      document.querySelector<HTMLElement>(".sd3-bars2-wrap .tl-here")?.style
+        .left
+    ).toMatch(PERCENT_STYLE_VALUE_REGEX);
   });
 });
 
@@ -124,6 +165,24 @@ function installDesktopApi() {
       state: AgentSessionState.PendingApproval,
       status: "active",
     }),
+    "throttled-session": sessionDetail({
+      id: "throttled-session",
+      name: "Throttled Session",
+      overrides: {
+        throttles: [
+          {
+            durMin: 5,
+            t0: "12:08:00",
+            t1: "12:13:00",
+            tl: 1,
+            x0: 50,
+          },
+        ],
+        turnItems: throttledTurnItems("throttled-session"),
+      },
+      state: AgentSessionState.Blocked,
+      status: "failed",
+    }),
   };
 
   Object.defineProperty(window, "desktopApi", {
@@ -148,11 +207,13 @@ function installDesktopApi() {
 function sessionDetail({
   id,
   name,
+  overrides = {},
   state,
   status,
 }: {
   id: string;
   name: string;
+  overrides?: Partial<AgentSessionDetail>;
   state: AgentSessionState;
   status: string;
 }): AgentSessionDetail {
@@ -163,7 +224,6 @@ function sessionDetail({
     agents: [],
     attribution: {
       baseBranch: "main",
-      issueId: "1943",
       repositoryFullName: "closedloop-ai/symphony-alpha",
       sourceArtifactId: "FEA-1943",
       sourceLoopId: null,
@@ -195,8 +255,6 @@ function sessionDetail({
     harness: "codex",
     id,
     inputTokens: 10,
-    issueId: "1943",
-    issues: ["FEA-1943"],
     lastActivityAt: timestamp,
     linesAdded: 12,
     linesRemoved: 2,
@@ -233,7 +291,52 @@ function sessionDetail({
     wallClock: "10m",
     waitingUser: state === AgentSessionState.PendingApproval ? "2m" : null,
     worktreePath: "/tmp/symphony-alpha",
+    ...overrides,
   };
+}
+
+function throttledTurnItems(
+  sessionId: string
+): NonNullable<AgentSessionDetail["turnItems"]> {
+  const agentActor = {
+    color: "var(--primary)",
+    harness: "codex",
+    human: null,
+    name: "gpt-test",
+    sessionId,
+  };
+  const humanActor = {
+    color: "hsl(210 65% 45%)",
+    human: "Ada Lovelace",
+    name: null,
+    sessionId,
+  };
+
+  return [
+    {
+      _row: 0,
+      actor: humanActor,
+      cum: 0,
+      t: "2026-01-01T00:01:00.000Z",
+      tMs: Date.parse("2026-01-01T00:01:00.000Z"),
+      text: "Investigate the desktop-visible throttle marker.",
+      type: "prompt",
+    },
+    {
+      _row: 1,
+      actor: agentActor,
+      cum: 0.01,
+      model: "gpt-test",
+      t: "2026-01-01T00:08:00.000Z",
+      tMs: Date.parse("2026-01-01T00:08:00.000Z"),
+      text: "The provider reported a temporary limit and the session resumed.",
+      type: "say",
+    },
+    {
+      text: "Session stopped after the limit evidence was captured.",
+      type: "end",
+    },
+  ];
 }
 
 function agentSessionList(): AgentSessionListResponse {

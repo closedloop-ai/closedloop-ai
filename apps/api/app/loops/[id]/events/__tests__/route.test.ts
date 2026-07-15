@@ -17,6 +17,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Hoisted mocks ---
 
+const { logError } = vi.hoisted(() => ({ logError: vi.fn() }));
+
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    error: logError,
+    flush: vi.fn().mockResolvedValue(undefined),
+    info: vi.fn(),
+  },
+}));
+
 vi.mock("../../../service", () => ({
   loopsService: {
     findById: vi.fn(),
@@ -219,5 +229,33 @@ describe("POST /api/loops/:id/events — heartbeat bump delegation", () => {
     await POST(makeRequest(), { params: Promise.resolve({ id: LOOP_ID }) });
 
     expect(scheduleRunnerHeartbeatBump).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — correlated failure logging (FEA-2919)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/loops/:id/events — ingest failure logging", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("logs loop.event_ingest_failed with loopId and organizationId when the ingest path throws", async () => {
+    setupHappyPath();
+
+    const boom = new Error("kaboom");
+    vi.mocked(handleLoopEvent).mockRejectedValue(boom);
+
+    const response = await POST(makeRequest(), {
+      params: Promise.resolve({ id: LOOP_ID }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(logError).toHaveBeenCalledWith("loop.event_ingest_failed", {
+      error: boom,
+      loopId: LOOP_ID,
+      organizationId: ORG_ID,
+    });
   });
 });

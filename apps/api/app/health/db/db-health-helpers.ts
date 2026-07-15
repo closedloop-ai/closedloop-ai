@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { DbHealthCheckStatus } from "@repo/api/src/types/db-health";
 
 export type CheckResult = {
-  status: "ok" | "error";
+  status: DbHealthCheckStatus;
   latencyMs?: number;
   total?: number;
   pending?: number;

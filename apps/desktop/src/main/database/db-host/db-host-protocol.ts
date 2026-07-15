@@ -26,6 +26,7 @@ export const DbHostResponseKind = {
   Ready: "ready",
   Result: "result",
   Emit: "emit",
+  SessionTerminal: "session-terminal",
   Log: "log",
 } as const;
 export type DbHostResponseKind =
@@ -106,6 +107,16 @@ export type DbHostEmitResponse = {
   sessionId: string;
 };
 
+/**
+ * Child → main: a live SessionEnd hook drove a session to a terminal status.
+ * Main fires the desktop completion Notification (gated on the flag).
+ */
+export type DbHostSessionTerminalResponse = {
+  kind: typeof DbHostResponseKind.SessionTerminal;
+  sessionId: string;
+  status: string;
+};
+
 /** Child → main: forward a log line to the main-process logger. */
 export type DbHostLogResponse = {
   kind: typeof DbHostResponseKind.Log;
@@ -116,6 +127,7 @@ export type DbHostResponse =
   | DbHostReadyResponse
   | DbHostResultResponse
   | DbHostEmitResponse
+  | DbHostSessionTerminalResponse
   | DbHostLogResponse;
 
 export function serializeDbHostError(error: unknown): DbHostError {
@@ -134,6 +146,7 @@ export function isDbHostResponse(value: unknown): value is DbHostResponse {
     kind === DbHostResponseKind.Ready ||
     kind === DbHostResponseKind.Result ||
     kind === DbHostResponseKind.Emit ||
+    kind === DbHostResponseKind.SessionTerminal ||
     kind === DbHostResponseKind.Log
   );
 }

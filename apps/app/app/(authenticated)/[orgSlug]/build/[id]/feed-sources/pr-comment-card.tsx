@@ -22,7 +22,10 @@ import {
   useBranchViewContext,
 } from "../branch-view-context";
 import { getBranchViewCommentUiId } from "../comment-context";
-import { getReviewThreadActionId } from "../comment-resolution";
+import {
+  getReplyTargetGithubCommentId,
+  getReviewThreadActionId,
+} from "../comment-resolution";
 import { handleBranchViewCommentActionResult } from "../components/branch-comment-action-result";
 import { BranchCommentWriteIdentityPrompt } from "../components/branch-comment-write-identity-prompt";
 import {
@@ -201,8 +204,12 @@ export function PrCommentCard({ item }: Readonly<{ item: PrCommentItem }>) {
     if (!(root.canReply === true)) {
       return;
     }
+    const commentGithubId = getReplyTargetGithubCommentId(root);
+    if (commentGithubId === null) {
+      return;
+    }
     ctx.mutations.reply.mutate(
-      { commentGithubId: Number(root.githubCommentId), body },
+      { commentGithubId, body },
       {
         onError: (error) =>
           recordBranchViewCommentIdentityBlocker({

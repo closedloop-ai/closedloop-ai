@@ -16,10 +16,10 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Merge events are linked to their authoring agent session.",
   },
   "kpi:ttm": {
-    what: "Median time from a PR opening to merge.",
-    how: "Merge time minus the PR artifact's creation time, median across merged PRs.",
+    what: "How long delivery takes. The two surfaces measure different intervals: the cloud dashboard measures time to merge, the desktop dashboard measures time to open a PR.",
+    how: "On the cloud dashboard, median of merge time minus the branch's creation time, across merged PRs only. On desktop, median of a PR's first-observed time minus its linked session's start — the session that created the PR when available, otherwise the earliest linked session — across all captured PRs (merged or not).",
     sessions:
-      "Open and merge timestamps come from the PR and its authoring session.",
+      "Cloud reads branch-creation and merge timestamps from PR state. Desktop reads the PR's first-observed time and the start of its linked session (the creating session when available, otherwise the earliest linked one) from local session logs.",
   },
   "kpi:kloc": {
     what: "Thousands of lines landed via merged PRs.",
@@ -92,10 +92,10 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Summed from each session's recorded tool invocations.",
   },
   "chart:prTrend": {
-    what: "Merged-PR throughput over time.",
-    how: "Each merged PR is bucketed by its merge day across the period.",
+    what: "Pull-request delivery volume over time.",
+    how: "On desktop, each PR captured from local sessions is bucketed by the local day it was first observed and split into Agent-raised vs Manual/untracked. On the cloud dashboard, merged PRs are bucketed by merge day.",
     sessions:
-      "Merge events are linked to the authoring session, so every point is attributable to the work that produced it.",
+      "Agent-raised means a captured session created the PR (PR-creation evidence on the artifact link). PRs without that evidence — raised by hand, on another machine, or by a bot — fall in Manual/untracked.",
   },
   "chart:klocTrend": {
     what: "Thousands of changed lines landed over time.",
@@ -109,10 +109,10 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Repo comes from the session that opened each PR.",
   },
   "chart:meanTimeToMerge": {
-    what: "Distribution of time-to-merge.",
-    how: "Merged PRs bucketed by how long they took to merge.",
+    what: "Distribution of delivery latency, using the same interval as the Time-to-merge/PR KPI.",
+    how: "On the cloud dashboard, merged PRs are bucketed by branch-creation → merge duration. On desktop, captured PRs are bucketed by authoring-session-start → PR-opened duration.",
     sessions:
-      "First-commit and merge timestamps are read from the authoring session's event log.",
+      "Cloud timestamps come from PR state (branch creation, merge); desktop timestamps come from the authoring session's start and the PR's first-observed time in local session logs.",
   },
   "chart:prByState": {
     what: "PRs grouped by lifecycle state.",
@@ -151,11 +151,6 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     how: "Counts events by normalized event type.",
     sessions: "Event type is recorded on each session event.",
   },
-  "chart:sessionsByStatus": {
-    what: "Sessions grouped by lifecycle status.",
-    how: "Counts sessions by their current status.",
-    sessions: "Status comes from the latest synced session record.",
-  },
   "chart:userBreakdown": {
     what: "Sessions grouped by operator.",
     how: "Agent sessions counted per initiating user.",
@@ -173,15 +168,16 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Queue state is derived from PR review status on each proposal.",
   },
   "chart:modelUsageOverTime": {
-    what: "Token consumption per model over time.",
-    how: "Token usage bucketed by day and stacked by model.",
-    sessions: "Model and token counts are recorded on every session turn.",
+    what: "Estimated model spend (USD) over time.",
+    how: "Estimated cost bucketed by day and stacked by model.",
+    sessions:
+      "Per-session token usage is priced per model; cost is cache-neutral, unlike a raw token count.",
   },
   "chart:modelBreakdown": {
-    what: "Token share by model.",
-    how: "Total tokens grouped by model.",
+    what: "Estimated spend (USD) share by model.",
+    how: "Estimated cost summed per model. Cost — not input+output tokens — so cache-heavy harnesses (e.g. Claude Code) aren't understated.",
     sessions:
-      "Model attribution and token spend come straight from session logs.",
+      "Model attribution and estimated cost come straight from session token usage.",
   },
   "chart:tokenDistribution": {
     what: "Token usage split by token class.",

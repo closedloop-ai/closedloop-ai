@@ -45,7 +45,7 @@ vi.mock("@/lib/loops/loop-state", () => ({
 
 import { LinkType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import { DocumentType, FeatureStatus } from "@repo/api/src/types/document";
 import type { DecomposeResult } from "@repo/api/src/types/loop";
 import { LoopCommand } from "@repo/database/generated/client";
 import { artifactLinksService } from "@/app/artifact-links/service";
@@ -159,7 +159,7 @@ describe("decomposeHandler ingestion", () => {
         content:
           "Users can register with email and password.\n\n## User Stories\n\n### US-001: As a user, I want to register with my email so that I can access the platform\n\n- **AC-001.1:** User can register with valid email",
         priority: Priority.High,
-        status: DocumentStatus.Draft,
+        status: FeatureStatus.Triage,
       }
     );
 
@@ -255,7 +255,7 @@ describe("decomposeHandler uploadAndIngest", () => {
         type: DocumentType.Feature,
         content: "desc A",
         priority: Priority.High,
-        status: DocumentStatus.Draft,
+        status: FeatureStatus.Triage,
       }
     );
     expect(mockEntityLinksService.createLink).toHaveBeenCalledWith("org-1", {

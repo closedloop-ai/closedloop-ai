@@ -125,7 +125,6 @@ vi.mock("../desktop-gateway-wire", () => ({
   toEnvelope: vi.fn((payload: Record<string, unknown>) => payload),
   toWireCommandFromRelayOperation: vi.fn(),
   toWireCommandFromStore: vi.fn(),
-  isDesktopCommandEventType: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({

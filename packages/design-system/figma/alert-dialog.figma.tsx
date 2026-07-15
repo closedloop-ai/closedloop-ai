@@ -9,8 +9,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from "@repo/design-system/components/ui/alert-dialog";
-import { Button } from "@repo/design-system/components/ui/button";
+} from "@closedloop-ai/design-system/components/ui/alert-dialog";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2759-16912";

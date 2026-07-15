@@ -44,9 +44,18 @@ export type ListDeploymentsInput = {
   organizationId: string;
   projectId?: string;
   state?: string;
+  limit?: number;
+  cursor?: string;
 };
 
 const deploymentInclude = { deployment: true } as const;
+
+/**
+ * Hard cap on the number of rows a single `list()` page returns. Without it,
+ * an org with a long deployment history would pull every DEPLOYMENT artifact
+ * into memory in one query. Callers page past the cap with `cursor`.
+ */
+const DEPLOYMENT_LIST_MAX_LIMIT = 100;
 
 function buildDeploymentDetailCreate(
   input: RecordDeploymentInput
@@ -184,11 +193,21 @@ async function findById(
 /**
  * List deployment artifacts within an organization, optionally scoped by
  * project or state.
+ *
+ * Results are capped at `DEPLOYMENT_LIST_MAX_LIMIT` rows per page (bounded
+ * further by an optional `limit`) to keep the query from loading an org's
+ * entire deployment history at once. Pass the last row's `id` as `cursor` to
+ * fetch the next page. The `id` tiebreaker on `orderBy` keeps keyset paging
+ * deterministic when multiple deployments share a `createdAt`.
  */
 async function list(
   options: ListDeploymentsInput
 ): Promise<ArtifactWithDeploymentDetail[]> {
-  const { organizationId, projectId, state } = options;
+  const { organizationId, projectId, state, limit, cursor } = options;
+  const take = Math.min(
+    limit ?? DEPLOYMENT_LIST_MAX_LIMIT,
+    DEPLOYMENT_LIST_MAX_LIMIT
+  );
   const artifacts = await withDb((db) =>
     db.artifact.findMany({
       where: {
@@ -198,7 +217,9 @@ async function list(
         ...(state ? { status: state } : {}),
       },
       include: deploymentInclude,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     })
   );
   return artifacts;

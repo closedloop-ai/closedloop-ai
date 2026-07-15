@@ -9,6 +9,26 @@ const meta = {
   parameters: {
     layout: "centered",
   },
+  argTypes: {
+    variant: {
+      options: [
+        "default",
+        "secondary",
+        "destructive",
+        "success",
+        "warning",
+        "info",
+        "accent",
+        "muted",
+        "outline",
+      ],
+      control: { type: "radio" },
+    },
+    size: {
+      options: ["sm", "default", "lg"],
+      control: { type: "radio" },
+    },
+  },
   args: {
     children: "Shared chip",
   },
@@ -18,6 +38,22 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+export const AllVariants: Story = {
+  render: () => (
+    <div className="flex flex-wrap gap-2">
+      <Chip variant="default">Default</Chip>
+      <Chip variant="secondary">Secondary</Chip>
+      <Chip variant="destructive">Destructive</Chip>
+      <Chip variant="success">Success</Chip>
+      <Chip variant="warning">Warning</Chip>
+      <Chip variant="info">Info</Chip>
+      <Chip variant="accent">Accent</Chip>
+      <Chip variant="muted">Muted</Chip>
+      <Chip variant="outline">Outline</Chip>
+    </div>
+  ),
+};
 
 export const Variants: Story = {
   render: () => (

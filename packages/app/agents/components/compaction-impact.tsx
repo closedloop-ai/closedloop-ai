@@ -3,7 +3,6 @@ import { Section } from "@repo/design-system/components/ui/layout/section";
 import { RankedBar } from "@repo/design-system/components/ui/primitives/ranked-bar";
 import { WorkflowStatTile } from "@repo/design-system/components/ui/primitives/workflow-stat-tile";
 import { formatCompactNumber } from "@repo/design-system/components/ui/utils";
-import { RefreshCcw } from "lucide-react";
 
 export function CompactionImpact({
   data,
@@ -24,13 +23,11 @@ export function CompactionImpact({
       <div className="grid gap-4 md:grid-cols-2">
         <WorkflowStatTile
           description="Observed across decomposed workflow traces"
-          icon={RefreshCcw}
           label="Total compactions"
           value={formatCompactNumber(data.totalCompactions)}
         />
         <WorkflowStatTile
           description={`${data.sessionsWithCompactions} of ${data.totalSessions} sessions compacted`}
-          icon={RefreshCcw}
           label="Recovered tokens"
           value={formatCompactNumber(data.tokensRecovered)}
         />

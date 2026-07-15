@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+import { gunzipSync } from "node:zlib";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import { gatewayLog } from "../src/main/gateway-logger.js";
@@ -612,6 +613,64 @@ test("finalizeLoopFromRuntime finalizes COMPLETED job as successful completion, 
   );
 });
 
+test("finalizeLoopFromRuntime fires onLoopCompleted on the live-exit success edge", async () => {
+  const claudeWorkDir = path.join(tempRoot, "repo", "workdir");
+  await fs.mkdir(claudeWorkDir, { recursive: true });
+  await fs.writeFile(
+    path.join(claudeWorkDir, "plan.json"),
+    JSON.stringify({ tasks: [] })
+  );
+
+  const jobStore = createStore("finalizer-loop-completed-hook");
+  const job = createBaseJob({
+    claudeWorkDir,
+    status: "COMPLETED",
+    artifactSlug: "fix-login",
+  });
+  jobStore.upsert(job);
+
+  const completed: Array<{ loopId: string; artifactSlug?: string }> = [];
+  await finalizeLoopFromRuntime(job, "live-exit", {
+    jobStore,
+    telemetry: { emit: (event) => telemetryEvents.push(event) },
+    getToken: () => "token",
+    apiBaseUrl: "http://127.0.0.1:12345",
+    isProcessRunning: () => false,
+    onLoopCompleted: (notice) => completed.push(notice),
+  });
+
+  assert.deepEqual(completed, [
+    { loopId: "loop-1", command: "PLAN", artifactSlug: "fix-login" },
+  ]);
+});
+
+test("finalizeLoopFromRuntime does not fire onLoopCompleted on boot-recovery", async () => {
+  const claudeWorkDir = path.join(tempRoot, "repo", "workdir");
+  await fs.mkdir(claudeWorkDir, { recursive: true });
+  await fs.writeFile(
+    path.join(claudeWorkDir, "plan.json"),
+    JSON.stringify({ tasks: [] })
+  );
+
+  const jobStore = createStore("finalizer-loop-completed-hook-recovery");
+  const job = createBaseJob({ claudeWorkDir, status: "COMPLETED" });
+  jobStore.upsert(job);
+
+  let fired = false;
+  await finalizeLoopFromRuntime(job, "boot-recovery", {
+    jobStore,
+    telemetry: { emit: (event) => telemetryEvents.push(event) },
+    getToken: () => "token",
+    apiBaseUrl: "http://127.0.0.1:12345",
+    isProcessRunning: () => false,
+    onLoopCompleted: () => {
+      fired = true;
+    },
+  });
+
+  assert.equal(fired, false);
+});
+
 test("finalizeLoopFromRuntime boot-recovery error event includes diagnostics payload", async () => {
   const claudeWorkDir = path.join(tempRoot, "repo", "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
@@ -963,6 +1022,12 @@ test("tryUploadSupportBundle uploads renamed claude output and perf, posts event
       "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
       "org-1/loops/loop-1/run-1/support/perf.jsonl",
     ],
+    // Support files are uploaded gzip-compressed, so every key is declared as a
+    // gzipKey to have its presigned PUT URL signed with Content-Encoding: gzip.
+    gzipKeys: [
+      "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
+      "org-1/loops/loop-1/run-1/support/perf.jsonl",
+    ],
   });
   assert.equal(
     fetchCalls.filter((call) =>
@@ -987,6 +1052,130 @@ test("tryUploadSupportBundle uploads renamed claude output and perf, posts event
     ["claude-output.jsonl", "perf.jsonl"]
   );
   assert.ok(jobStore.getByLoopId("loop-1")?.supportBundleUploadedAt);
+});
+
+test("tryUploadSupportBundle gzip-compresses PUT bodies and sends Content-Encoding: gzip", async () => {
+  const claudeWorkDir = path.join(tempRoot, "repo", "workdir-gzip");
+  await fs.mkdir(claudeWorkDir, { recursive: true });
+  const perfContent = `${'{"phase":"init","ms":12}\n'.repeat(200)}`;
+  await fs.writeFile(path.join(claudeWorkDir, "claude-output.jsonl"), "{}\n");
+  await fs.writeFile(path.join(claudeWorkDir, "perf.jsonl"), perfContent);
+
+  const jobStore = createStore("support-upload-gzip");
+  const job = createBaseJob({
+    claudeWorkDir,
+    status: "FAILED",
+    s3StateKey: "org-1/loops/loop-1/run-1",
+  });
+  jobStore.upsert(job);
+
+  const puts: Array<{ contentEncoding: string | null; decoded: string }> = [];
+  globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const target = String(input);
+    if (target.includes("/upload-urls")) {
+      return Response.json({
+        success: true,
+        data: {
+          urls: [
+            {
+              key: "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
+              url: "https://closedloop-files.s3.us-east-1.amazonaws.com/claude",
+              contentEncoding: "gzip",
+            },
+            {
+              key: "org-1/loops/loop-1/run-1/support/perf.jsonl",
+              url: "https://closedloop-files.s3.us-east-1.amazonaws.com/perf",
+              contentEncoding: "gzip",
+            },
+          ],
+        },
+      });
+    }
+    if (target.startsWith("https://closedloop-files.s3.")) {
+      const headers = new Headers(init?.headers);
+      const raw = init?.body as Uint8Array;
+      puts.push({
+        contentEncoding: headers.get("Content-Encoding"),
+        decoded: gunzipSync(Buffer.from(raw)).toString("utf-8"),
+      });
+      return new Response(null, { status: 200 });
+    }
+    return Response.json({ success: true });
+  }) as typeof fetch;
+
+  const result = await tryUploadSupportBundle({
+    job,
+    claudeWorkDir,
+    apiBaseUrl: "http://127.0.0.1:12345",
+    getToken: () => "token",
+    jobStore,
+  });
+
+  assert.equal(result.failed, false);
+  assert.equal(puts.length, 2);
+  // Every PUT must advertise gzip (the presigned URL signs this header) and the
+  // body must be valid gzip that decodes back to the original file contents.
+  assert.ok(puts.every((put) => put.contentEncoding === "gzip"));
+  assert.equal(puts[0]?.decoded, "{}\n");
+  assert.equal(puts[1]?.decoded, perfContent);
+});
+
+test("tryUploadSupportBundle uploads raw bytes when the backend does not confirm gzip", async () => {
+  const claudeWorkDir = path.join(tempRoot, "repo", "workdir-nogzip");
+  await fs.mkdir(claudeWorkDir, { recursive: true });
+  const perfContent = '{"phase":"init"}\n';
+  await fs.writeFile(path.join(claudeWorkDir, "perf.jsonl"), perfContent);
+
+  const jobStore = createStore("support-upload-nogzip");
+  const job = createBaseJob({
+    claudeWorkDir,
+    status: "FAILED",
+    s3StateKey: "org-1/loops/loop-1/run-1",
+  });
+  jobStore.upsert(job);
+
+  const puts: Array<{ contentEncoding: string | null; body: string }> = [];
+  globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
+    const target = String(input);
+    if (target.includes("/upload-urls")) {
+      // Older backend: echoes no contentEncoding for the requested gzipKeys.
+      return Response.json({
+        success: true,
+        data: {
+          urls: [
+            {
+              key: "org-1/loops/loop-1/run-1/support/perf.jsonl",
+              url: "https://closedloop-files.s3.us-east-1.amazonaws.com/perf",
+            },
+          ],
+        },
+      });
+    }
+    if (target.startsWith("https://closedloop-files.s3.")) {
+      const headers = new Headers(init?.headers);
+      puts.push({
+        contentEncoding: headers.get("Content-Encoding"),
+        body: Buffer.from(init?.body as Uint8Array).toString("utf-8"),
+      });
+      return new Response(null, { status: 200 });
+    }
+    return Response.json({ success: true });
+  }) as typeof fetch;
+
+  const result = await tryUploadSupportBundle({
+    job,
+    claudeWorkDir,
+    apiBaseUrl: "http://127.0.0.1:12345",
+    getToken: () => "token",
+    jobStore,
+  });
+
+  assert.equal(result.failed, false);
+  assert.equal(puts.length, 1);
+  // No gzip confirmation → upload the raw bytes with no Content-Encoding header,
+  // so a version-skewed backend never stores gzip bytes without the metadata.
+  assert.equal(puts[0]?.contentEncoding, null);
+  assert.equal(puts[0]?.body, perfContent);
 });
 
 test("tryUploadSupportBundle URL-encodes loopId in upload-urls request", async () => {
@@ -1070,6 +1259,7 @@ test("tryUploadSupportBundle uploads legacy pre-rename claude output with stable
   assert.equal(result.failed, false);
   assert.deepEqual(JSON.parse(fetchCalls[0]?.body ?? "{}"), {
     keys: ["org-1/loops/loop-1/run-1/support/claude-output.jsonl"],
+    gzipKeys: ["org-1/loops/loop-1/run-1/support/claude-output.jsonl"],
   });
   assert.equal(
     fetchCalls[1]?.url,

@@ -1,6 +1,9 @@
 "use client";
 
-import { ALLOWED_EXTENSIONS } from "@repo/api/src/types/attachment";
+import {
+  ALLOWED_EXTENSIONS,
+  MAX_ATTACHMENT_FILE_SIZE_BYTES,
+} from "@repo/api/src/types/attachment";
 import {
   useDeleteAttachment,
   useRequestAttachmentUpload,
@@ -39,6 +42,16 @@ export function AttachFilesButton({
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
+      return;
+    }
+
+    // Reject oversized files before requesting a presigned URL, mirroring the
+    // inline-image path in rich-text-editor-host.tsx. Without this the client
+    // would round-trip a presign request plus a full single-PUT upload only to
+    // fail (or silently exceed limits), with no early feedback to the user.
+    if (file.size > MAX_ATTACHMENT_FILE_SIZE_BYTES) {
+      toast.error("Files must be 10 MiB or smaller");
+      resetFileInput();
       return;
     }
 

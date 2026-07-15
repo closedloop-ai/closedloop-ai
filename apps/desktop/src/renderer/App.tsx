@@ -1,3 +1,5 @@
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   SidebarInset,
   SidebarProvider,
@@ -14,18 +16,34 @@ import {
   useDeferredValue,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { BranchesLoading } from "./components/branches/branches-loading";
+import { DashboardFallback } from "./components/dashboard/dashboard-fallback";
+import { DesktopSessionExpiredBanner } from "./components/desktop-session-expired-banner";
+import { FirstLaunchImportBanner } from "./components/first-launch-import-banner";
 import { MacWindowControlsUnderlay } from "./components/layout/mac-window-controls-underlay";
 import { Sidebar } from "./components/layout/Sidebar";
-import { Topbar } from "./components/layout/Topbar";
+import { Topbar, type TopbarBreadcrumb } from "./components/layout/Topbar";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { DesktopFeatureFlagProvider } from "./feature-flags/desktop-feature-flag-provider";
 import {
   createDesktopNavigation,
   type DesktopNavigation,
 } from "./navigation/desktop-adapter";
+import {
+  DetailTitleProvider,
+  detailTitleKey,
+  resolveDetailTitle,
+  useDetailTitle,
+} from "./navigation/detail-title-context";
+import {
+  NAV_SECTION_LABELS,
+  navEntryFor,
+  navSectionFor,
+} from "./navigation/nav-config";
 import {
   DEFAULT_NAV_ID,
   hrefForNavId,
@@ -49,54 +67,14 @@ const BranchesView = lazy(() =>
     default: m.BranchesView,
   }))
 );
-const KanbanView = lazy(() =>
-  import("./components/kanban/KanbanView").then((m) => ({
-    default: m.KanbanView,
-  }))
-);
-const ActivityFeedView = lazy(() =>
-  import("./components/feed/ActivityFeedView").then((m) => ({
-    default: m.ActivityFeedView,
-  }))
-);
 const InsightsView = lazy(() =>
   import("./components/insights/insights-view").then((m) => ({
     default: m.InsightsView,
   }))
 );
-const WorkflowsView = lazy(() =>
-  import("./components/derived/desktop-derived-telemetry-view").then((m) => ({
-    default: m.WorkflowsView,
-  }))
-);
-const PacksView = lazy(() =>
-  import("./components/features/CoreFeaturesView").then((m) => ({
-    default: m.PacksView,
-  }))
-);
-const SkillsView = lazy(() =>
-  import("./components/features/CoreFeaturesView").then((m) => ({
-    default: m.SkillsView,
-  }))
-);
-const ToolsView = lazy(() =>
-  import("./components/derived/desktop-derived-telemetry-view").then((m) => ({
-    default: m.ToolsView,
-  }))
-);
-const SubAgentsView = lazy(() =>
-  import("./components/derived/desktop-derived-telemetry-view").then((m) => ({
-    default: m.SubAgentsView,
-  }))
-);
 const PlansView = lazy(() =>
   import("./components/features/CoreFeaturesView").then((m) => ({
     default: m.PlansView,
-  }))
-);
-const PullRequestsView = lazy(() =>
-  import("./components/features/CoreFeaturesView").then((m) => ({
-    default: m.PullRequestsView,
   }))
 );
 const ApprovalsPanel = lazy(() =>
@@ -129,6 +107,16 @@ const BranchDetailView = lazy(() =>
     default: m.BranchDetailView,
   }))
 );
+const AgentsView = lazy(() =>
+  import("./components/agents/agents-view").then((m) => ({
+    default: m.AgentsView,
+  }))
+);
+const AgentDetailView = lazy(() =>
+  import("./components/agents/agent-detail-view").then((m) => ({
+    default: m.AgentDetailView,
+  }))
+);
 
 let defaultDesktopNavigation: DesktopNavigation | null = null;
 
@@ -148,12 +136,10 @@ function PageFallback() {
   );
 }
 
-const KeepAliveExcludedNavIds = new Set<NavId>([
-  NavId.Insights,
-  NavId.Workflows,
-  NavId.Tools,
-  NavId.Subagents,
-]);
+// Agents workspace does its own data fetching (local IPC source + live bridge),
+// so it is intentionally NOT excluded from keep-alive (the workspace stays
+// mounted across tab switches at zero extra refetch cost).
+const KeepAliveExcludedNavIds = new Set<NavId>([NavId.Insights]);
 const DESKTOP_SIDEBAR_OPEN_STORAGE_KEY = "closedloop.desktop.sidebar.open";
 const MAX_CONTENT_SCROLL_RESTORE_ATTEMPTS = 30;
 const desktopContentScrollPositions = new Map<string, number>();
@@ -173,7 +159,9 @@ export function DesktopNavigationApp({
   return (
     <NavigationProvider adapter={navigation.adapter}>
       <DesktopFeatureFlagProvider>
-        <AppShell navigation={navigation} />
+        <DetailTitleProvider>
+          <AppShell navigation={navigation} />
+        </DetailTitleProvider>
       </DesktopFeatureFlagProvider>
     </NavigationProvider>
   );
@@ -192,6 +180,8 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
     route?.kind === "session-detail" ? route.sessionId : null;
   const detailBranchId =
     route?.kind === "branch-detail" ? route.branchId : null;
+  const detailAgentSlug =
+    route?.kind === "agent-detail" ? route.agentSlug : null;
 
   // The session detail keeps the originating tab highlighted (and labeled in
   // the Topbar), so remember the last nav route across detail visits. When
@@ -242,6 +232,19 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   const deferredNavId = useDeferredValue(navId);
   const deferredSessionId = useDeferredValue(detailSessionId);
   const deferredBranchId = useDeferredValue(detailBranchId);
+  const deferredAgentSlug = useDeferredValue(detailAgentSlug);
+
+  // The open detail page (if any) publishes its name through this context; the
+  // Topbar breadcrumb shows it as the trailing "> [name]" segment. The published
+  // title is keyed to its detail and only used when that key matches the detail
+  // currently shown — the deferred ids can flip to a different detail a commit
+  // before the publishing effect settles, so an unmatched title would otherwise
+  // flash the previous detail's name under the new list for one frame.
+  const publishedDetail = useDetailTitle();
+  const detailTitle = resolveDetailTitle(
+    publishedDetail,
+    activeDetailTitleKey(deferredSessionId, deferredBranchId, deferredAgentSlug)
+  );
 
   // Keep-alive: views stay mounted (hidden) once visited so tab switches
   // do not refetch. Same render-phase guarded-update pattern as above.
@@ -250,23 +253,17 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
     setVisitedNavIds([...visitedNavIds, deferredNavId]);
   }
 
-  const [runtimeStatus, setRuntimeStatus] = useState<Record<
-    string,
-    unknown
-  > | null>(null);
-
-  useEffect(() => {
-    window.desktopApi
-      .getRuntimeStatus()
-      .then((s) => setRuntimeStatus(s as Record<string, unknown>))
-      .catch(() => {});
-  }, []);
-
   // IPC bridge: the main process (menu items, tray, deep links) sends
   // desktop:navigate-tab via preload; translate it into port navigation.
   useEffect(() => {
     const handler = (e: CustomEvent<string>) => {
-      navigate(hrefForNavId(normalizeNavId(e.detail)));
+      // A leading "/" marks a full org-relative href (e.g. a session-detail
+      // deep link from a completion notification); a bare id is a nav tab
+      // resolved through normalizeNavId.
+      const detail = e.detail;
+      navigate(
+        detail.startsWith("/") ? detail : hrefForNavId(normalizeNavId(detail))
+      );
     };
     window.addEventListener("desktop:navigate-tab", handler as EventListener);
     return () =>
@@ -276,11 +273,19 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       );
   }, [navigate]);
 
-  const healthy = runtimeStatus?.gatewayHealthy === true;
   const handleSidebarOpenChange = useCallback((open: boolean) => {
     setSidebarOpen(open);
     writeDesktopSidebarOpen(open);
   }, []);
+
+  // The shared "agents" PostHog flag can't resolve in the packaged desktop
+  // renderer (no PostHog wiring yet). It is registered in the desktop flag
+  // registry so users can opt in via the Labs settings panel (FEA-2923).
+  const agentsFlagOn = useFeatureFlagEnabled(AGENTS_FEATURE_FLAG_KEY);
+  const hiddenNavIds = useMemo<NavId[]>(
+    () => (agentsFlagOn ? [] : [NavId.Agents]),
+    [agentsFlagOn]
+  );
 
   const renderPage = useCallback((pageId: NavId, active: boolean) => {
     switch (pageId) {
@@ -289,27 +294,20 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       case NavId.Dashboard:
         return <DashboardPage />;
       case NavId.Branches:
-        return <BranchesView />;
-      case NavId.Kanban:
-        return <KanbanView />;
-      case NavId.Activity:
-        return <ActivityFeedView />;
+        // Dedicated Suspense boundary so the first-navigation chunk load shows
+        // the branches skeleton (cards + table scaffold) instead of the shared
+        // blank "Loading…" PageFallback flashing across the whole body (FEA-2932).
+        return (
+          <Suspense fallback={<BranchesLoading />}>
+            <BranchesView />
+          </Suspense>
+        );
+      case NavId.Agents:
+        return <AgentsView />;
       case NavId.Insights:
         return <InsightsView />;
-      case NavId.Workflows:
-        return <WorkflowsView />;
-      case NavId.Packs:
-        return <PacksView />;
-      case NavId.Skills:
-        return <SkillsView />;
-      case NavId.Tools:
-        return <ToolsView />;
-      case NavId.Subagents:
-        return <SubAgentsView />;
       case NavId.Plans:
         return <PlansView />;
-      case NavId.PullRequests:
-        return <PullRequestsView />;
       case NavId.Approvals:
         return <ApprovalsPanel />;
       case NavId.Requests:
@@ -329,8 +327,44 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
     detailSessionId === null
       ? lastNavHref
       : lastNavHrefFromHistory(navigation.getHistory(), navId);
+
+  // The breadcrumb's "Sessions" parent returns to the originating sessions list
+  // (preserving its page/filter and restored scroll) when the detail was opened
+  // from there, else the canonical list — so the segment's label always matches
+  // where it goes. This is the back affordance now that the in-page "Back to
+  // Sessions" control is gone.
+  const sessionsListHref = sessionsBreadcrumbHref(sessionBackHref);
+
+  // Breadcrumb model (mirrors the web app's per-page `breadcrumbs` prop): detail
+  // pages render "<List> / <name>" with the list segment linking back to its
+  // list, and list pages render their nav section + label. Keyed off the
+  // deferred detail ids so the breadcrumb switches in lockstep with the visible
+  // content.
+  const breadcrumbs = buildBreadcrumbs({
+    deferredSessionId,
+    deferredBranchId,
+    deferredAgentSlug,
+    detailTitle,
+    navId,
+    sessionsListHref,
+  });
+
   let content = (
-    <Suspense fallback={<PageFallback />}>
+    // FEA-2933: the dashboard renders its own PageShell + skeleton loading
+    // treatment, so falling back to the generic centered "Loading…" while its
+    // lazy chunk resolves produced a blank → skeleton → values two-stage
+    // flicker. Show the dashboard-shaped fallback (same title + skeleton) when
+    // the dashboard is the resolving route so the first frame already matches
+    // the in-page loading state instead of a blank.
+    <Suspense
+      fallback={
+        deferredNavId === NavId.Dashboard ? (
+          <DashboardFallback />
+        ) : (
+          <PageFallback />
+        )
+      }
+    >
       {visitedNavIds.map((pageId) => {
         const active = pageId === deferredNavId;
         if (!(active || shouldKeepNavMounted(pageId))) {
@@ -370,11 +404,30 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
         />
       </Suspense>
     );
+  } else if (deferredAgentSlug) {
+    content = (
+      <Suspense fallback={<PageFallback />}>
+        {/* Agent detail always belongs under the Agents list, so Back targets
+            it explicitly — not the contextual `navId`, which on a direct
+            #/agents/:id load (or arrival from another section) would point
+            "Back to Agents" at Sessions. */}
+        <AgentDetailView
+          agentSlug={deferredAgentSlug}
+          backHref={hrefForNavId(NavId.Agents)}
+        />
+      </Suspense>
+    );
   }
 
-  const contentViewportClassName = deferredSessionId
-    ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-    : "flex-1 overflow-auto";
+  // Session AND branch detail own their own internal scroll container (the
+  // single `.sd3-scroll` / `.bq-page-scroll`), so the outer viewport must clip
+  // and hand height down rather than scroll itself — otherwise the inner
+  // `position: sticky` header never pins and the trace can't virtualize against
+  // the page scroller. Every other route lets this viewport be the scroller.
+  const contentViewportClassName =
+    deferredSessionId || deferredBranchId || deferredAgentSlug
+      ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+      : "flex-1 overflow-auto";
 
   return (
     <SidebarProvider
@@ -383,10 +436,12 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       open={sidebarOpen}
     >
       <MacWindowControlsUnderlay />
-      <Sidebar activeNav={navId} runtimeHealthy={healthy} />
+      <Sidebar activeNav={navId} hiddenNavIds={hiddenNavIds} />
       <SidebarInset className="min-w-0 overflow-hidden">
-        <Topbar navId={navId} />
+        <Topbar breadcrumbs={breadcrumbs} />
         <UpdateBanner />
+        <DesktopSessionExpiredBanner />
+        <FirstLaunchImportBanner />
         <div
           className={contentViewportClassName}
           data-testid="desktop-content-viewport"
@@ -398,6 +453,103 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       </SidebarInset>
     </SidebarProvider>
   );
+}
+
+/**
+ * The `detailTitleKey()` of the detail currently shown (session takes
+ * precedence, matching the content render order), or null on a list page. Used
+ * to confirm a published breadcrumb title belongs to the shown detail.
+ */
+function activeDetailTitleKey(
+  deferredSessionId: string | null,
+  deferredBranchId: string | null,
+  deferredAgentSlug: string | null
+): string | null {
+  if (deferredSessionId) {
+    return detailTitleKey("session", deferredSessionId);
+  }
+  if (deferredBranchId) {
+    return detailTitleKey("branch", deferredBranchId);
+  }
+  if (deferredAgentSlug) {
+    // Use a raw string key to avoid extending the DetailKind type in
+    // detail-title-context. The format mirrors detailTitleKey() convention.
+    return `agent:${deferredAgentSlug}`;
+  }
+  return null;
+}
+
+/**
+ * The href the breadcrumb's "Sessions" parent links to: the originating sessions
+ * list (with its page/filter query) when the detail was opened from a sessions
+ * route, else the canonical list. Guarding on the route kind keeps the "Sessions"
+ * label from pointing at another section when the detail was reached from there.
+ */
+function sessionsBreadcrumbHref(sessionBackHref: string): string {
+  const match = matchRoute(parsePath(sessionBackHref));
+  return match?.kind === "nav" && match.navId === NavId.Sessions
+    ? sessionBackHref
+    : hrefForNavId(NavId.Sessions);
+}
+
+/**
+ * Builds the Topbar breadcrumb segments. Detail pages get a two-segment
+ * "<List> / <name>" trail whose list segment links back to its list, with a
+ * generic fallback name until the detail data resolves. List pages get their
+ * nav section (when one is shown) plus the page label, preserving the prior
+ * Topbar behavior.
+ */
+function buildBreadcrumbs({
+  deferredSessionId,
+  deferredBranchId,
+  deferredAgentSlug,
+  detailTitle,
+  navId,
+  sessionsListHref,
+}: {
+  deferredSessionId: string | null;
+  deferredBranchId: string | null;
+  deferredAgentSlug: string | null;
+  detailTitle: string | null;
+  navId: NavId;
+  sessionsListHref: string;
+}): TopbarBreadcrumb[] {
+  if (deferredSessionId) {
+    return [
+      {
+        label: navEntryFor(NavId.Sessions)?.label ?? "Sessions",
+        href: sessionsListHref,
+      },
+      { label: detailTitle ?? "Session" },
+    ];
+  }
+  if (deferredBranchId) {
+    return [
+      {
+        label: navEntryFor(NavId.Branches)?.label ?? "Branches",
+        href: hrefForNavId(NavId.Branches),
+      },
+      { label: detailTitle ?? "Branch" },
+    ];
+  }
+  if (deferredAgentSlug) {
+    return [
+      {
+        label: navEntryFor(NavId.Agents)?.label ?? "Agents",
+        href: hrefForNavId(NavId.Agents),
+      },
+      { label: detailTitle ?? "Component" },
+    ];
+  }
+  const entry = navEntryFor(navId);
+  const section = navSectionFor(navId);
+  const sectionLabel = section ? NAV_SECTION_LABELS[section] : null;
+  const crumbs: TopbarBreadcrumb[] = [];
+  if (sectionLabel) {
+    crumbs.push({ label: sectionLabel });
+  }
+  crumbs.push({ label: entry?.label ?? navId });
+  return crumbs;
 }
 
 function lastNavIdFromHistory(history: readonly string[]): NavId {

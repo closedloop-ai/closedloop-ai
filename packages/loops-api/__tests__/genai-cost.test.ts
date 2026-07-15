@@ -140,6 +140,41 @@ describe("computeTokenCost", () => {
     expect(gptFresh.costUsd).toBe(0.002);
   });
 
+  it("splits cache cost into cacheReadCostUsd and cacheWriteCostUsd (FEA-2344)", () => {
+    const result = computeTokenCost({
+      model: "claude-opus-4-5",
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadTokens: 500,
+      cacheWriteTokens: 300,
+    });
+    expect(result.priced).toBe(true);
+    expect(result.costUsd).toBe(0.012_125);
+    expect(result.inputCostUsd).toBe(0.005);
+    expect(result.outputCostUsd).toBe(0.005);
+    expect(result.cacheWriteCostUsd).toBe(0.001_875);
+    expect(result.cacheReadCostUsd).toBeCloseTo(0.000_25, 12);
+    const componentSum =
+      (result.inputCostUsd ?? 0) +
+      (result.outputCostUsd ?? 0) +
+      (result.cacheReadCostUsd ?? 0) +
+      (result.cacheWriteCostUsd ?? 0);
+    expect(Math.abs(componentSum - (result.costUsd ?? 0))).toBeLessThan(1e-12);
+  });
+
+  it("returns zero cache costs when no cache tokens (FEA-2344 short-circuit)", () => {
+    const result = computeTokenCost({
+      model: "claude-opus-4-5",
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(result.priced).toBe(true);
+    expect(result.cacheReadCostUsd).toBe(0);
+    expect(result.cacheWriteCostUsd).toBe(0);
+  });
+
   it("surfaces a typed reason for unpriced models, never a wrong number", () => {
     expect(
       computeTokenCost({
@@ -155,6 +190,8 @@ describe("computeTokenCost", () => {
       costUsd: null,
       inputCostUsd: null,
       outputCostUsd: null,
+      cacheReadCostUsd: null,
+      cacheWriteCostUsd: null,
       reason: TokenCostNotPricedReason.NoMatch,
     });
 

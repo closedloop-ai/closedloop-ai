@@ -2,11 +2,13 @@ import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import {
   type BranchViewPrLifecycleRepair,
   BranchViewPrLifecycleRepairStatus,
 } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { GitHubFetchTrigger } from "@repo/api/src/types/github-read-model";
 import {
   ArtifactType,
   GitHubInstallationStatus,
@@ -17,6 +19,11 @@ import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import pLimit from "p-limit";
+import { getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  gitHubFetchProvenanceData,
+  githubAppRestFetchProvenance,
+} from "@/lib/github-fetch-provenance";
 import {
   buildBranchTreeUrl,
   type GitHubPullRequestLifecycle,
@@ -86,7 +93,8 @@ export function schedulePrReadRepair(
   waitUntil(
     runPrReadRepair(eligible, organizationId).catch((error) => {
       log.warn("[pr-read-repair] Background repair failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error,
+        organizationId,
       });
     })
   );
@@ -176,12 +184,14 @@ const PR_URL_REGEX = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
  *
  * Primary: look up via the PullRequestDetail's repository.
  * Fallback: use the org's single active installation.
- * Returns null if neither path resolves.
+ * Returns a blocked result when a stored repository exists but is no longer an
+ * active GitHub source. Legacy rows with no stored repository context can still
+ * fall back to the org's single active installation.
  */
 async function resolveInstallationId(
   branchArtifactId: string,
   organizationId: string
-): Promise<string | null> {
+): Promise<InstallationResolution> {
   const prRow = await withDb((db) =>
     db.pullRequestDetail.findFirst({
       where: {
@@ -193,20 +203,31 @@ async function resolveInstallationId(
     })
   );
 
-  if (prRow?.repositoryId) {
+  // FEA-2732: hoist to a local const so the non-null narrowing survives into
+  // the withDb closure (repositoryId is nullable for repo-less PRs).
+  const resolvedRepositoryId = prRow?.repositoryId;
+  if (resolvedRepositoryId) {
     const repoRow = await withDb((db) =>
       db.gitHubInstallationRepository.findFirst({
         where: {
-          id: prRow.repositoryId,
-          installation: { organizationId },
+          id: resolvedRepositoryId,
+          removedAt: null,
+          installation: {
+            organizationId,
+            status: GitHubInstallationStatus.ACTIVE,
+          },
         },
         select: { installation: { select: { installationId: true } } },
       })
     );
 
     if (repoRow?.installation?.installationId) {
-      return repoRow.installation.installationId;
+      return {
+        blockedByInactiveRepository: false,
+        installationId: repoRow.installation.installationId,
+      };
     }
+    return { blockedByInactiveRepository: true, installationId: null };
   }
 
   // Fallback: org's single active installation
@@ -226,13 +247,24 @@ async function resolveInstallationId(
         count: installations.length,
       }
     );
-    return null;
+    return { blockedByInactiveRepository: false, installationId: null };
   }
 
-  return installations[0].installationId;
+  return {
+    blockedByInactiveRepository: false,
+    installationId: installations[0].installationId,
+  };
 }
 
 type RepoResolution = { repositoryId: string; installationId: string };
+type InstallationResolution = {
+  installationId: string | null;
+  blockedByInactiveRepository: boolean;
+};
+type RepositoryResolutionResult = {
+  resolution: RepoResolution | null;
+  blockedByInactiveRepository: boolean;
+};
 
 /**
  * Resolve both repositoryId and installationId for a given owner/repo pair
@@ -248,8 +280,8 @@ function resolveRepositoryId(
   owner: string,
   repo: string,
   organizationId: string,
-  cache: Map<string, Promise<RepoResolution | null>>
-): Promise<RepoResolution | null> {
+  cache: Map<string, Promise<RepositoryResolutionResult>>
+): Promise<RepositoryResolutionResult> {
   const cacheKey = `${owner}/${repo}`;
 
   const cached = cache.get(cacheKey);
@@ -257,30 +289,47 @@ function resolveRepositoryId(
     return cached;
   }
 
-  const lookup = withDb((db) =>
-    db.gitHubInstallationRepository.findFirst({
+  const lookup = withDb(async (db) => {
+    const activeRow = await db.gitHubInstallationRepository.findFirst({
       where: {
         fullName: cacheKey,
-        installation: { organizationId },
+        removedAt: null,
+        installation: {
+          organizationId,
+          status: GitHubInstallationStatus.ACTIVE,
+        },
       },
       select: {
         id: true,
         installation: { select: { installationId: true } },
       },
-    })
-  )
-    .then((row) =>
-      row?.installation?.installationId
-        ? {
-            repositoryId: row.id,
-            installationId: row.installation.installationId,
-          }
-        : null
-    )
-    .catch((error) => {
-      cache.delete(cacheKey);
-      throw error;
     });
+    if (activeRow?.installation.installationId) {
+      return {
+        blockedByInactiveRepository: false,
+        resolution: {
+          repositoryId: activeRow.id,
+          installationId: activeRow.installation.installationId,
+        },
+      };
+    }
+
+    const inactiveRow = await db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: cacheKey,
+        installation: { organizationId },
+      },
+      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    return {
+      blockedByInactiveRepository: Boolean(inactiveRow),
+      resolution: null,
+    };
+  }).catch((error) => {
+    cache.delete(cacheKey);
+    throw error;
+  });
 
   cache.set(cacheKey, lookup);
   return lookup;
@@ -321,6 +370,11 @@ async function backfillBranchArtifact({
   }
 
   try {
+    const fetchProvenance = gitHubFetchProvenanceData(
+      githubAppRestFetchProvenance({
+        trigger: GitHubFetchTrigger.Backfill,
+      })
+    );
     const created = await tx.artifact.create({
       data: {
         type: ArtifactType.BRANCH,
@@ -331,16 +385,23 @@ async function backfillBranchArtifact({
         externalUrl: buildBranchTreeUrl(owner, repo, freshPr.headBranch),
         branch: {
           create: {
+            // FR13: write-once org copy from the parent Artifact; D2 identity
+            // via the normalized `owner/repo` full name.
+            organizationId,
             repositoryId,
+            repositoryFullName: normalizeRepoFullName(`${owner}/${repo}`),
             branchName: freshPr.headBranch,
             baseBranch: freshPr.baseBranch,
             baseBranchSource: BranchBaseBranchSource.PullRequestBase,
             headSha: freshPr.headSha,
             headShaSource: BranchHeadShaSource.PullRequestWebhook,
+            ...fetchProvenance,
           },
         },
         pullRequestDetails: {
           create: {
+            // FEA-2732: write-once org SSOT copy from the parent Artifact.
+            organizationId,
             repositoryId,
             githubId: freshPr.githubId,
             number: freshPr.number,
@@ -350,6 +411,7 @@ async function backfillBranchArtifact({
             mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
             closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
             isCurrent: true,
+            ...fetchProvenance,
           },
         },
       },
@@ -363,7 +425,7 @@ async function backfillBranchArtifact({
       });
     }
   } catch (createError) {
-    if ((createError as { code?: string }).code === "P2002") {
+    if (getPrismaErrorCode(createError) === "P2002") {
       // Concurrent insert — no-op dedup
       return;
     }
@@ -374,7 +436,7 @@ async function backfillBranchArtifact({
 async function repairSinglePrLink(
   input: PrReadRepairInput,
   organizationId: string,
-  repoCache: Map<string, Promise<RepoResolution | null>>
+  repoCache: Map<string, Promise<RepositoryResolutionResult>>
 ): Promise<void> {
   const match = PR_URL_REGEX.exec(input.externalUrl);
   if (!match) {
@@ -388,22 +450,32 @@ async function repairSinglePrLink(
   const [, owner, repo, pullNumberStr] = match;
   const pullNumber = Number(pullNumberStr);
   // Try the fast path: resolve both repositoryId and installationId in one lookup
-  const repoResolution = await resolveRepositoryId(
+  const repoLookup = await resolveRepositoryId(
     owner,
     repo,
     organizationId,
     repoCache
   );
+  if (repoLookup.blockedByInactiveRepository) {
+    return;
+  }
 
-  const installationId =
-    repoResolution?.installationId ??
-    (await resolveInstallationId(input.id, organizationId));
+  const installationResolution = repoLookup.resolution?.installationId
+    ? {
+        blockedByInactiveRepository: false,
+        installationId: repoLookup.resolution.installationId,
+      }
+    : await resolveInstallationId(input.id, organizationId);
+  if (installationResolution.blockedByInactiveRepository) {
+    return;
+  }
+  const installationId = installationResolution.installationId;
 
   if (!installationId) {
     return;
   }
 
-  const repositoryId = repoResolution?.repositoryId ?? null;
+  const repositoryId = repoLookup.resolution?.repositoryId ?? null;
   const existingDetail = await withDb((db) =>
     db.pullRequestDetail.findFirst({
       where: {
@@ -412,13 +484,31 @@ async function repairSinglePrLink(
           { branchArtifactId: input.id, isCurrent: true },
         ],
         branchArtifact: { organizationId },
-        repository: { installation: { organizationId } },
       },
       select: { id: true, repositoryId: true },
     })
   );
 
   if (existingDetail) {
+    // FEA-2732: repo-less PRs carry a null repositoryId. Only relink when GitHub
+    // resolved a concrete App-installation repo that differs from the stored id;
+    // an unresolved lookup leaves the (possibly null) stored id untouched. When
+    // relink fires the next id is always a concrete repository id.
+    const resolvedRepositoryId = repoLookup.resolution?.repositoryId ?? null;
+    if (
+      resolvedRepositoryId &&
+      existingDetail.repositoryId !== resolvedRepositoryId
+    ) {
+      await relinkReadRepairRepository({
+        organizationId,
+        branchArtifactId: input.id,
+        pullRequestDetailId: existingDetail.id,
+        previousRepositoryId: existingDetail.repositoryId,
+        nextRepositoryId: resolvedRepositoryId,
+      });
+    }
+    const activeRepositoryId =
+      resolvedRepositoryId ?? existingDetail.repositoryId;
     await refreshPullRequestLifecycle({
       organizationId,
       installationId,
@@ -427,8 +517,9 @@ async function repairSinglePrLink(
       pullNumber,
       branchArtifactId: input.id,
       pullRequestDetailId: existingDetail.id,
-      repositoryId: existingDetail.repositoryId,
+      repositoryId: activeRepositoryId,
       requireCurrentRelation: false,
+      fetchTrigger: GitHubFetchTrigger.Backfill,
       artifactPatch: {
         updateBranchIdentity: true,
       },
@@ -466,6 +557,42 @@ async function repairSinglePrLink(
   });
 }
 
+async function relinkReadRepairRepository({
+  organizationId,
+  branchArtifactId,
+  pullRequestDetailId,
+  previousRepositoryId,
+  nextRepositoryId,
+}: {
+  organizationId: string;
+  branchArtifactId: string;
+  pullRequestDetailId: string;
+  // FEA-2732: repo-less PRs start with a null repositoryId before adoption; the
+  // where-filter matches the null rows so they can be relinked to a real repo.
+  previousRepositoryId: string | null;
+  nextRepositoryId: string;
+}): Promise<void> {
+  await withDb.tx(async (tx) => {
+    await tx.branchDetail.updateMany({
+      where: {
+        artifactId: branchArtifactId,
+        repositoryId: previousRepositoryId,
+        artifact: { organizationId },
+      },
+      data: { repositoryId: nextRepositoryId },
+    });
+    await tx.pullRequestDetail.updateMany({
+      where: {
+        id: pullRequestDetailId,
+        repositoryId: previousRepositoryId,
+        branchArtifactId,
+        branchArtifact: { organizationId },
+      },
+      data: { repositoryId: nextRepositoryId },
+    });
+  });
+}
+
 async function runPrReadRepair(
   eligibleInputs: PrReadRepairInput[],
   organizationId: string
@@ -477,7 +604,7 @@ async function runPrReadRepair(
   // memoizes per-repo lookups across the concurrent passes (see
   // resolveRepositoryId), and each pass keeps its own warn-and-continue guard so
   // one failure never aborts the others.
-  const repoCache = new Map<string, Promise<RepoResolution | null>>();
+  const repoCache = new Map<string, Promise<RepositoryResolutionResult>>();
   const limit = pLimit(PR_READ_REPAIR_CONCURRENCY);
 
   await Promise.all(
@@ -488,7 +615,7 @@ async function runPrReadRepair(
         } catch (err) {
           log.warn("[pr-read-repair] Failed to repair link, continuing", {
             branchArtifactId: input.id,
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           });
         }
       })

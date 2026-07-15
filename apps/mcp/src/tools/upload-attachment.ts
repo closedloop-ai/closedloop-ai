@@ -24,7 +24,7 @@ export function registerUploadAttachment(
     "upload-attachment",
     {
       description:
-        "Create a presigned upload URL for a document attachment. Use the returned uploadUrl immediately with the exact declared MIME type and sizeBytes, then rediscover the attachment with list-attachments. For inline images, render through POST /documents/[id]/attachments/resolve after upload. Pass the user's document slug verbatim for entityId.",
+        "Create a presigned upload URL for a document attachment. Use the returned uploadUrl immediately with the exact declared MIME type and sizeBytes, then rediscover the attachment with list-attachments. For inline images, view them with get-document using includeContent=true (which resolves attachment:// refs server-side; add includeImages=true to also return the image content blocks). Pass the user's document slug verbatim for entityId.",
       inputSchema: {
         entityId: z
           .string()

@@ -7,9 +7,13 @@ import { usersService } from "@/app/users/service";
 import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { scheduleLogFlush } from "@/lib/route-utils";
 import { loopsService } from "../../service";
+import { TERMINAL_LOOP_STATUSES } from "../../validators";
 
 const KEEPALIVE_INTERVAL_MS = 15_000;
 const MAX_STREAM_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+// Keyset batch size for terminal-loop history replay. Bounds peak memory to
+// O(batch) rather than O(total events) while draining across successive pulls.
+const REPLAY_BATCH_SIZE = 500;
 
 /**
  * GET /api/loops/:id/stream - Server-Sent Events endpoint for real-time loop events.
@@ -84,35 +88,95 @@ export async function GET(
 
   // If the loop is already in a terminal state, send stored events and close
   // immediately rather than holding the connection open for 30 minutes.
-  const TERMINAL_STATUSES = new Set([
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-    "TIMED_OUT",
-  ]);
-  if (TERMINAL_STATUSES.has(loop.status)) {
-    try {
-      const { data: events } = await loopsService.getEventsPaginated(
-        loopId,
-        organizationId,
-        { limit: 500, offset: 0 }
-      );
-      const encoder = new TextEncoder();
-      const lines = events
-        .map((e: LoopEvent) => `data: ${JSON.stringify(e)}\n\n`)
-        .join("");
-      return new Response(encoder.encode(lines), {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-        },
-      });
-    } catch {
-      return new Response("data: {}\n\n", {
-        headers: { "Content-Type": "text/event-stream" },
-      });
-    }
+  if (TERMINAL_LOOP_STATUSES.has(loop.status)) {
+    // Replay the loop's COMPLETE event history in chronological order, not a
+    // capped first page: the terminal event is chronologically last, so a
+    // capped fetch would drop it for loops with more events than the cap and
+    // the client would never see stream completion — it would loop
+    // reconnecting (re-appending duplicates) until it errors out (FEA-2903).
+    //
+    // To keep memory genuinely bounded (O(batch), not O(total events)), stream
+    // the history in keyset batches instead of materializing the whole array.
+    // Each pull() fetches the next REPLAY_BATCH_SIZE events strictly after the
+    // (createdAt, id) cursor, enqueues them frame-by-frame, and advances the
+    // cursor to the last row. When a batch comes back short, the history is
+    // fully drained (its last row is the terminal event) and the stream closes.
+    // getEventsSince orders by (createdAt asc, id asc) with a unique
+    // (createdAt, id) keyset cursor, so no row is ever skipped or re-sent.
+    const encoder = new TextEncoder();
+    let cursorDate = new Date(0);
+    let cursorId = "";
+    let drained = false;
+    const replayStream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          if (drained) {
+            controller.close();
+            return;
+          }
+          const batch = await loopsService.getEventsSince(
+            loopId,
+            organizationId,
+            cursorDate,
+            cursorId,
+            REPLAY_BATCH_SIZE
+          );
+          for (const e of batch) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify(e as unknown as LoopEvent)}\n\n`
+              )
+            );
+          }
+          if (batch.length < REPLAY_BATCH_SIZE) {
+            // Short (or empty) batch — history is fully drained. Close on the
+            // next pull() so the final enqueued frames flush first.
+            drained = true;
+            if (batch.length === 0) {
+              controller.close();
+            }
+            return;
+          }
+          // batch is non-empty here: a short (or empty) batch returned above,
+          // so a full-size batch reaching this point always has a last row.
+          const last = batch.at(-1) as (typeof batch)[number];
+          cursorDate = new Date(last.storedAt);
+          cursorId = last.id;
+        } catch (error) {
+          // A mid-replay DB error would otherwise close the stream with no
+          // terminal event, so the client can't recognize completion and keeps
+          // reconnecting (FEA-2903). Synthesize a terminal error LoopEvent so
+          // the client's terminal-event handler fires and it stops reconnecting.
+          log.error("Failed to replay loop history for SSE stream", {
+            loopId,
+            error,
+          });
+          scheduleLogFlush();
+          const terminalEvent: LoopEvent = {
+            type: LoopEventType.Error,
+            code: "replay_failed",
+            message: "Failed to replay loop event history.",
+            timestamp: new Date().toISOString(),
+            loopId,
+          };
+          try {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(terminalEvent)}\n\n`)
+            );
+          } catch {
+            // Controller already errored/closed — nothing more to do.
+          }
+          controller.close();
+        }
+      },
+    });
+    return new Response(replayStream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
   }
 
   log.info("SSE stream opened", { loopId, clerkUserId, organizationId });

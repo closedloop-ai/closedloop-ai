@@ -20,15 +20,17 @@ import {
   addStorageTokenCounts,
   readStorageTokenCountAlias,
 } from "../../token-counts.js";
+import { coldReadGate } from "../parsing/cold-read-gate.js";
 import {
   collectArtifacts,
   extractErrorMessage,
   isSyntheticModelKey,
+  noteTimestamp,
   pushTurnDuration,
   safeJson,
   toIso,
   truncateText,
-} from "../parser-utils.js";
+} from "../parsing/parser-utils.js";
 import type {
   NormalizedApiError,
   NormalizedMessage,
@@ -37,6 +39,7 @@ import type {
   NormalizedToolUse,
   NormalizedTurnDuration,
 } from "../types.js";
+import { createNormalizedSession } from "../types.js";
 
 /** Read a property off an unknown value without throwing. */
 function get(value: unknown, key: string): unknown {
@@ -703,6 +706,13 @@ function accumulateRequestTokenSeries(
   }
 }
 
+// FEA-3132 (B5): cap the chat file size we buffer. `parseChatSessionFile` does
+// JSON.parse(readFileSync(file)) — the whole file into the db-host heap at once,
+// with no size check. VS Code chat files are small; a runaway file would OOM the
+// worker on the cold parse. Skip oversized files (64 MiB is far above any real
+// chat session) rather than buffer them.
+const MAX_CHAT_FILE_BYTES = 64 * 1024 * 1024;
+
 /**
  * Parse a Copilot Chat JSON session file (VS Code extension).
  * Recent VS Code builds persist these as top-level metadata plus `requests[]`,
@@ -714,6 +724,9 @@ export function parseChatSessionFile(
 ): NormalizedSession | null {
   let data: unknown;
   try {
+    if (fs.statSync(filePath).size > MAX_CHAT_FILE_BYTES) {
+      return null;
+    }
     data = JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch {
     return null;
@@ -756,19 +769,7 @@ export function parseChatSessionFile(
     sessionModel: model,
   };
 
-  const noteTs = (raw: unknown): string | null => {
-    const iso = toIso(raw);
-    if (!iso) {
-      return null;
-    }
-    if (!acc.firstTimestamp || iso < acc.firstTimestamp) {
-      acc.firstTimestamp = iso;
-    }
-    if (!acc.lastTimestamp || iso > acc.lastTimestamp) {
-      acc.lastTimestamp = iso;
-    }
-    return iso;
-  };
+  const noteTs = (raw: unknown): string | null => noteTimestamp(acc, raw);
 
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") {
@@ -861,42 +862,49 @@ export function parseChatSessionFile(
     };
   }
 
-  return {
+  // Unset fields are filled by createNormalizedSession's defaults.
+  return createNormalizedSession({
     sessionId: `copilot-chat-${sessionId}`,
     name: projectName,
     cwd,
     model,
-    version: null,
-    slug: null,
-    gitBranch: null,
     startedAt: acc.firstTimestamp,
     endedAt: acc.lastTimestamp,
-    teams: [],
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
     tokensByModel,
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
-    compactions: [],
     apiErrors: acc.apiErrors,
     fileModifiedAt,
     turnDurations: acc.turnDurations,
     entrypoint: "copilot",
-    permissionMode: null,
     thinkingBlockCount: acc.thinkingBlockCount,
     toolResultErrors: acc.toolResultErrors,
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
     // CR-1: Ordered messages with text content
     messages: acc.normalizedMessages,
     // CR-2: Per-turn token records
     tokenSeries: acc.tokenSeries,
-    // CR-4: Diff stats absent at source for Copilot
-    diffStats: null,
-    // CR-7: Slash commands not applicable to Copilot
-    slashCommands: [],
     // CR-13: Artifact references extracted from tool calls
     artifacts: collectArtifacts(acc.toolUses, cwd),
-  };
+  });
+}
+
+/**
+ * FEA-3132 (B5): concurrency-capped wrapper around `parseChatSessionFile`.
+ *
+ * `parseChatSessionFile` buffers and `JSON.parse`s a whole chat file (its cold
+ * full-file read). The `statSync` gate inside it bounds any single file, but N
+ * concurrent parses of near-cap files still co-peak in the one db-host heap.
+ * Routing the parse through the shared `coldReadGate` bounds that fan-out to
+ * `COLD_READ_MAX_CONCURRENCY` (default 2) — so concurrent cold reads can't
+ * stack — while leaving the synchronous parse itself unchanged.
+ */
+export function parseChatSessionFileGated(
+  filePath: string,
+  workspacePath: string | null
+): Promise<NormalizedSession | null> {
+  return coldReadGate.run(() => parseChatSessionFile(filePath, workspacePath));
 }
 
 /**
@@ -1168,19 +1176,7 @@ export async function parseCliEventFile(
     tokenSeries: [],
   };
 
-  const noteTs = (raw: unknown): string | null => {
-    const iso = toIso(raw);
-    if (!iso) {
-      return null;
-    }
-    if (!acc.firstTimestamp || iso < acc.firstTimestamp) {
-      acc.firstTimestamp = iso;
-    }
-    if (!acc.lastTimestamp || iso > acc.lastTimestamp) {
-      acc.lastTimestamp = iso;
-    }
-    return iso;
-  };
+  const noteTs = (raw: unknown): string | null => noteTimestamp(acc, raw);
 
   for await (const line of rl) {
     if (!line.trim()) {
@@ -1246,40 +1242,31 @@ export async function parseCliEventFile(
     ? path.basename(acc.cwd)
     : `Copilot CLI ${sessionId.slice(0, 8)}`;
 
-  return {
+  // Unset fields are filled by createNormalizedSession's defaults.
+  return createNormalizedSession({
     sessionId: `copilot-cli-${sessionId}`,
     name: projectName,
     cwd: acc.cwd,
     model: acc.model,
     version: acc.version,
-    slug: null,
-    gitBranch: null,
     startedAt: acc.firstTimestamp,
     endedAt: acc.lastTimestamp,
-    teams: [],
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
     tokensByModel,
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
-    compactions: [],
     apiErrors: acc.apiErrors,
     fileModifiedAt,
     turnDurations: acc.turnDurations,
     entrypoint: "copilot",
-    permissionMode: null,
     thinkingBlockCount: acc.thinkingBlockCount,
     toolResultErrors: acc.toolResultErrors,
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
     // CR-1: Ordered messages with text content
     messages: acc.normalizedMessages,
     // CR-2: Per-turn token records
     tokenSeries: acc.tokenSeries,
-    // CR-4: Diff stats absent at source for Copilot
-    diffStats: null,
-    // CR-7: Slash commands not applicable to Copilot
-    slashCommands: [],
     // CR-13: Artifact references extracted from tool calls
     artifacts: collectArtifacts(acc.toolUses, acc.cwd),
-  };
+  });
 }

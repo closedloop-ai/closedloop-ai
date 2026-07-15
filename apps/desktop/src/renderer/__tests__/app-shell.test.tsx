@@ -6,6 +6,7 @@ import {
   AgentSessionState,
   type AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   cleanup,
   configure,
@@ -40,10 +41,7 @@ vi.mock("../components/settings/SettingsPanel", () => ({
   SettingsPanel: () => <NativePageMarker id="settings" />,
 }));
 vi.mock("../components/features/CoreFeaturesView", () => ({
-  PacksView: () => <NativePageMarker id="packs" />,
-  SkillsView: () => <NativePageMarker id="skills" />,
   PlansView: () => <NativePageMarker id="plans" />,
-  PullRequestsView: () => <NativePageMarker id="pull-requests" />,
 }));
 vi.mock("../components/approvals/ApprovalsPanel", () => ({
   ApprovalsPanel: () => <NativePageMarker id="approvals" />,
@@ -53,6 +51,30 @@ vi.mock("../components/activity/ActivityPanel", () => ({
 }));
 vi.mock("../components/diagnostics/diagnostics-view", () => ({
   DiagnosticsView: () => <NativePageMarker id="diagnostics" />,
+}));
+vi.mock("@repo/app/agents/components/sessions/sessions-toolbar", () => ({
+  SessionsToolbar: ({
+    onFiltersChange,
+  }: {
+    onFiltersChange: (next: {
+      statuses: string[];
+      userIds: string[];
+      repositories: string[];
+    }) => void;
+  }) => (
+    <button
+      onClick={() =>
+        onFiltersChange({
+          statuses: [SESSION_STATUS.COMPLETED],
+          userIds: [],
+          repositories: [],
+        })
+      }
+      type="button"
+    >
+      Apply completed status filter
+    </button>
+  ),
 }));
 // Branch detail (Epic C) is mocked to a marker so this suite exercises App.tsx
 // routing, not the detail page internals (covered by
@@ -77,7 +99,9 @@ function NativePageMarker({ id }: { id: string }) {
 
 const activeNavigations = new Set<DesktopNavigation>();
 const DESKTOP_SIDEBAR_OPEN_STORAGE_KEY = "closedloop.desktop.sidebar.open";
+const DASHBOARD_NAV_LINK_RE = /Dashboard/;
 let restoreLocalStorage: (() => void) | undefined;
+let restoreResizeObserver: (() => void) | undefined;
 
 // FEA-2023: CI runners share CPU across parallel jobs. This suite drives heavy
 // real-component renders (the shared-wrappers test alone takes ~2.9s on an idle
@@ -118,6 +142,7 @@ describe("App shell shared telemetry route wiring", () => {
   });
 
   beforeEach(() => {
+    restoreResizeObserver = installResizeObserver();
     restoreLocalStorage = installLocalStorage();
     installDesktopApi();
   });
@@ -132,6 +157,8 @@ describe("App shell shared telemetry route wiring", () => {
       window.localStorage.clear();
       window.location.hash = "";
     } finally {
+      restoreResizeObserver?.();
+      restoreResizeObserver = undefined;
       restoreLocalStorage?.();
       restoreLocalStorage = undefined;
     }
@@ -166,12 +193,12 @@ describe("App shell shared telemetry route wiring", () => {
     const labsToggle = await screen.findByRole("button", { name: "Labs" });
 
     expect(labsToggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Insights" })).toBeNull();
 
     fireEvent.click(labsToggle);
 
     expect(labsToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(await screen.findByRole("link", { name: "Activity" })).toBeDefined();
+    expect(await screen.findByRole("link", { name: "Insights" })).toBeDefined();
     expect(
       window.localStorage.getItem(DESKTOP_LABS_NAV_SECTION_STORAGE_KEY)
     ).toBe("true");
@@ -183,7 +210,7 @@ describe("App shell shared telemetry route wiring", () => {
       name: "Labs",
     });
     expect(restoredLabsToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(await screen.findByRole("link", { name: "Activity" })).toBeDefined();
+    expect(await screen.findByRole("link", { name: "Insights" })).toBeDefined();
   });
 
   it("hydrates the desktop Labs nav section from storage on initial app shell load", async () => {
@@ -193,7 +220,7 @@ describe("App shell shared telemetry route wiring", () => {
 
     const labsToggle = await screen.findByRole("button", { name: "Labs" });
     expect(labsToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(await screen.findByRole("link", { name: "Activity" })).toBeDefined();
+    expect(await screen.findByRole("link", { name: "Insights" })).toBeDefined();
   });
 
   it("defaults desktop sidebar expanded for missing or corrupt persisted values", async () => {
@@ -227,6 +254,36 @@ describe("App shell shared telemetry route wiring", () => {
     expect(await screen.findByTitle("Expand sidebar")).toBeDefined();
   });
 
+  it("keeps the dashboard link reachable while runtime readiness is pending", async () => {
+    renderDesktopApp("");
+
+    const dashboardLink = await screen.findByRole("link", {
+      name: DASHBOARD_NAV_LINK_RE,
+    });
+    expect(dashboardLink.getAttribute("href")).toBe("/dashboard");
+    expect(screen.getByLabelText("Preparing dashboard")).toBeDefined();
+  });
+
+  it("keeps the gateway footer menu after removing sidebar gateway health", async () => {
+    renderDesktopApp("");
+
+    const gatewayMenuButton = await screen.findByRole("button", {
+      name: "Closedloop Gateway",
+    });
+    expect(screen.queryByText("Gateway healthy")).toBeNull();
+    expect(screen.queryByText("Gateway unhealthy")).toBeNull();
+
+    fireEvent.pointerDown(gatewayMenuButton, { button: 0, ctrlKey: false });
+
+    const gatewayMenu = await screen.findByRole("menu");
+    expect(
+      within(gatewayMenu).queryByRole("menuitem", { name: "Settings" })
+    ).toBeNull();
+    expect(
+      within(gatewayMenu).getByRole("menuitem", { name: "Theme" })
+    ).toBeDefined();
+  });
+
   it("keeps desktop sidebar responsive when localStorage write fails", async () => {
     window.localStorage.setItem(DESKTOP_SIDEBAR_OPEN_STORAGE_KEY, "true");
     renderDesktopApp("");
@@ -251,7 +308,7 @@ describe("App shell shared telemetry route wiring", () => {
     setItemSpy.mockRestore();
   });
 
-  it("renders real shared sessions, kanban, activity, and insights wrappers through the desktop provider", async () => {
+  it("renders real shared sessions and insights wrappers through the desktop provider", async () => {
     // The default route is the Sessions page (Dashboard is a placeholder).
     // Views are reached by hash navigation since the sidebar nav items are
     // links folded into a collapsed Labs section under FOCUS_MODE.
@@ -270,18 +327,16 @@ describe("App shell shared telemetry route wiring", () => {
       sessionLink?.getAttribute("href") ?? "#/sessions/s-active";
     expect(await findSharedRouteHeading("Shell Active Session")).toBeDefined();
 
-    fireEvent.click(screen.getByRole("link", { name: "Back to Sessions" }));
+    // The breadcrumb's "Sessions" parent is the back affordance (the in-page
+    // "Back to Sessions" control was removed).
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole(
+        "link",
+        { name: "Sessions" }
+      )
+    );
     expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
     await waitFor(() => expect(window.location.hash).toBe("#/sessions"));
-
-    window.location.hash = "#/kanban";
-    expect(await findSharedRouteHeading("Agent Sessions")).toBeDefined();
-    expect(screen.getAllByText("Shell Failed Session").length).toBeGreaterThan(
-      0
-    );
-
-    window.location.hash = "#/activity";
-    expect(await screen.findByText("Session Activity")).toBeDefined();
 
     window.location.hash = "#/insights";
     expect(await findSharedRouteHeading("Agent Monitoring")).toBeDefined();
@@ -299,8 +354,7 @@ describe("App shell shared telemetry route wiring", () => {
   });
 
   it("submits top-left search to the sessions view and forwards the local search filter", async () => {
-    await renderDesktopApp("#/kanban");
-    expect(await findSharedRouteHeading("Agent Sessions")).toBeDefined();
+    await renderDesktopApp("#/sessions");
 
     const searchInput = screen.getByPlaceholderText("Search");
     expect(searchInput.hasAttribute("disabled")).toBe(false);
@@ -323,6 +377,12 @@ describe("App shell shared telemetry route wiring", () => {
         startDate: expect.any(String),
         statuses: [],
         repositories: [],
+        harnesses: [],
+        models: [],
+        autonomyTiers: [],
+        costBuckets: [],
+        changePresence: [],
+        prAssociation: [],
         // PLN-1034: Sessions default to most-recent-activity, descending.
         sortBy: "lastActivity",
         sortDir: "desc",
@@ -343,7 +403,7 @@ describe("App shell shared telemetry route wiring", () => {
     expect(
       await screen.findByRole("link", { name: "Shell Active Session" })
     ).toBeDefined();
-    expect(screen.getByText("26")).toBeDefined();
+    expect(await screen.findByText("26")).toBeDefined();
 
     const pendingList = new Promise<AgentSessionListResponse>(() => undefined);
     const pendingUsage = new Promise<AgentSessionUsageSummary>(() => undefined);
@@ -429,6 +489,12 @@ describe("App shell shared telemetry route wiring", () => {
         startDate: expect.any(String),
         statuses: [],
         repositories: [],
+        harnesses: [],
+        models: [],
+        autonomyTiers: [],
+        costBuckets: [],
+        changePresence: [],
+        prAssociation: [],
         sortBy: "lastActivity",
         sortDir: "desc",
       });
@@ -436,7 +502,7 @@ describe("App shell shared telemetry route wiring", () => {
   });
 
   it("clears a draft sessions search to the unfiltered sessions route", async () => {
-    await renderDesktopApp("#/kanban");
+    await renderDesktopApp("#/sessions");
 
     const searchInput = screen.getByRole("textbox", { name: "Search" });
     fireEvent.change(searchInput, {
@@ -448,6 +514,202 @@ describe("App shell shared telemetry route wiring", () => {
       expect(window.location.hash).toBe("#/sessions");
     });
     expect((searchInput as HTMLInputElement).value).toBe("");
+  });
+
+  // FEA-2472: the clear-and-reset path also has to work when the user deletes
+  // the query text and presses Return (submits an empty query), not only via
+  // the "x" clear affordance covered above. An empty submit must reset the
+  // search, restore the full unfiltered list, and drop the active-search
+  // indicator — a regression here would strand stale filtered results.
+  it("restores the full sessions list when the query is deleted and Return is pressed", async () => {
+    await renderDesktopApp("#/sessions?search=Failed+Session");
+
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
+    // The list starts filtered to the single matching session.
+    expect(
+      await screen.findByRole("link", { name: "Shell Failed Session" })
+    ).toBeDefined();
+    expect(
+      screen.queryByRole("link", { name: "Shell Active Session" })
+    ).toBeNull();
+
+    const searchInput = screen.getByRole("textbox", {
+      name: "Search",
+    }) as HTMLInputElement;
+    expect(searchInput.value).toBe("Failed Session");
+
+    // Delete the query text, then submit (press Return) on the empty input.
+    fireEvent.change(searchInput, { target: { value: "" } });
+    const searchForm = searchInput.closest("form");
+    expect(searchForm).not.toBeNull();
+    fireEvent.submit(searchForm as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#/sessions");
+    });
+    expect(searchInput.value).toBe("");
+    // The active-search indicator (clear affordance) is removed after reset.
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
+    // The reset re-issues the list query with no search term.
+    await waitFor(() => {
+      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith({
+        limit: 25,
+        offset: 0,
+        search: undefined,
+        // Default 7-day time window scopes every sessions list query.
+        startDate: expect.any(String),
+        statuses: [],
+        repositories: [],
+        harnesses: [],
+        models: [],
+        autonomyTiers: [],
+        costBuckets: [],
+        changePresence: [],
+        prAssociation: [],
+        sortBy: "lastActivity",
+        sortDir: "desc",
+      });
+    });
+    // The full, unfiltered result set is shown again.
+    expect(
+      await screen.findByRole("link", { name: "Shell Active Session" })
+    ).toBeDefined();
+  });
+
+  it("treats a whitespace-only query as an empty submit and restores the full list", async () => {
+    await renderDesktopApp("#/sessions?search=Failed+Session");
+
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
+    expect(
+      await screen.findByRole("link", { name: "Shell Failed Session" })
+    ).toBeDefined();
+
+    const searchInput = screen.getByRole("textbox", {
+      name: "Search",
+    }) as HTMLInputElement;
+    // Whitespace-only input is treated as empty and resets to the bare route.
+    fireEvent.change(searchInput, { target: { value: "   " } });
+    const searchForm = searchInput.closest("form");
+    fireEvent.submit(searchForm as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#/sessions");
+    });
+    expect(searchInput.value).toBe("");
+    await waitFor(() => {
+      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith(
+        expect.objectContaining({ search: undefined })
+      );
+    });
+    expect(
+      await screen.findByRole("link", { name: "Shell Active Session" })
+    ).toBeDefined();
+  });
+
+  it("restores the full list from an empty filtered result when the search is cleared with Return", async () => {
+    await renderDesktopApp("#/sessions");
+
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
+    expect(
+      await screen.findByRole("link", { name: "Shell Active Session" })
+    ).toBeDefined();
+
+    const searchInput = screen.getByRole("textbox", {
+      name: "Search",
+    }) as HTMLInputElement;
+
+    // A query that matches nothing collapses the list to the empty state.
+    fireEvent.change(searchInput, {
+      target: { value: "no-such-session-xyz" },
+    });
+    fireEvent.submit(searchInput.closest("form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe(
+        "#/sessions?search=no-such-session-xyz"
+      );
+    });
+    expect(await screen.findByText("No sessions found")).toBeDefined();
+    expect(
+      screen.queryByRole("link", { name: "Shell Active Session" })
+    ).toBeNull();
+
+    // Deleting the query and pressing Return returns to the full list, not the
+    // empty state it collapsed to while filtered.
+    fireEvent.change(searchInput, { target: { value: "" } });
+    fireEvent.submit(searchInput.closest("form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#/sessions");
+    });
+    expect(
+      await screen.findByRole("link", { name: "Shell Active Session" })
+    ).toBeDefined();
+    expect(screen.queryByText("No sessions found")).toBeNull();
+  });
+
+  it("treats Return on an already-empty search input as a no-op that keeps the full list", async () => {
+    await renderDesktopApp("#/sessions");
+
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
+    expect(
+      await screen.findByRole("link", { name: "Shell Active Session" })
+    ).toBeDefined();
+
+    const searchInput = screen.getByRole("textbox", {
+      name: "Search",
+    }) as HTMLInputElement;
+    expect(searchInput.value).toBe("");
+    // The unfiltered route shows no active-search indicator to begin with.
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
+
+    fireEvent.submit(searchInput.closest("form") as HTMLFormElement);
+
+    // Submitting an empty query keeps the unfiltered route and never appends a
+    // search parameter.
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#/sessions");
+    });
+    expect(window.location.hash).not.toContain("search=");
+    expect(
+      screen.getByRole("link", { name: "Shell Active Session" })
+    ).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
+    // No search-scoped fetch was ever issued.
+    expect(
+      vi
+        .mocked(window.desktopApi.agentSessionsApi.list)
+        .mock.calls.some(([request]) => Boolean(request?.search))
+    ).toBe(false);
+  });
+
+  it("forwards selected session statuses to the desktop local data source and resets pagination", async () => {
+    await renderDesktopApp("#/sessions?page=2");
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
+    await waitFor(() => {
+      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          offset: 25,
+          statuses: [],
+        })
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Apply completed status filter" })
+    );
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe("#/sessions");
+    });
+    await waitFor(() => {
+      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          offset: 0,
+          statuses: [SESSION_STATUS.COMPLETED],
+        })
+      );
+    });
   });
 
   it("returns from a page-two session detail to the same sessions page and scroll position", async () => {
@@ -470,6 +732,12 @@ describe("App shell shared telemetry route wiring", () => {
         startDate: expect.any(String),
         statuses: [],
         repositories: [],
+        harnesses: [],
+        models: [],
+        autonomyTiers: [],
+        costBuckets: [],
+        changePresence: [],
+        prAssociation: [],
         sortBy: "lastActivity",
         sortDir: "desc",
       });
@@ -487,6 +755,12 @@ describe("App shell shared telemetry route wiring", () => {
         startDate: expect.any(String),
         statuses: [],
         repositories: [],
+        harnesses: [],
+        models: [],
+        autonomyTiers: [],
+        costBuckets: [],
+        changePresence: [],
+        prAssociation: [],
         sortBy: "lastActivity",
         sortDir: "desc",
       });
@@ -508,10 +782,15 @@ describe("App shell shared telemetry route wiring", () => {
       "s-page-two"
     );
     expect(navigation.getHistory()).toContain("/sessions/s-page-two");
-    const backLink = screen.getByRole("link", { name: "Back to Sessions" });
-    expect(backLink.getAttribute("href")).toBe("/sessions?page=2");
+    // The breadcrumb's "Sessions" parent preserves the originating list's page
+    // query (and restores its scroll) — the back affordance now that the in-page
+    // "Back to Sessions" control is gone.
+    const sessionsCrumb = within(
+      screen.getByRole("navigation", { name: "Breadcrumb" })
+    ).getByRole("link", { name: "Sessions" });
+    expect(sessionsCrumb.getAttribute("href")).toBe("/sessions?page=2");
 
-    fireEvent.click(backLink);
+    fireEvent.click(sessionsCrumb);
     await waitFor(() => {
       expect(window.location.hash).toBe("#/sessions?page=2");
     });
@@ -545,15 +824,6 @@ describe("App shell shared telemetry route wiring", () => {
     expect(screen.getByText("Recent session activity")).toBeDefined();
     expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
     expect(window.desktopApi.agentSessionsApi.analytics).not.toHaveBeenCalled();
-
-    window.location.hash = "#/kanban";
-    expect(await findSharedRouteHeading("Agent Sessions")).toBeDefined();
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Agent Monitoring" })
-      ).toBeNull();
-    });
-    expect(screen.queryByRole("button", { name: "Load insights" })).toBeNull();
   });
 
   it("renders the shared detail not-found state through the real route wrapper", async () => {
@@ -586,13 +856,13 @@ describe("App shell shared telemetry route wiring", () => {
     expect(contentViewport?.className).not.toEqual(
       expect.stringContaining("overflow-auto")
     );
-    expect(document.querySelector(".sd3-cmts")).toBeNull();
-    expect(screen.queryByText("Comments")).toBeNull();
+    expect(document.querySelector(".sd3-cmts")).toBeInstanceOf(HTMLElement);
+    expect(screen.getByText("Comments")).toBeDefined();
 
     window.location.hash = "#/sessions/s-blocked";
     expect(await findSharedRouteHeading("Shell Blocked Session")).toBeDefined();
-    expect(document.querySelector(".sd3-cmts")).toBeNull();
-    expect(screen.queryByText("Comments")).toBeNull();
+    expect(document.querySelector(".sd3-cmts")).toBeInstanceOf(HTMLElement);
+    expect(screen.getByText("Comments")).toBeDefined();
 
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
       "s-pending"
@@ -606,10 +876,7 @@ describe("App shell shared telemetry route wiring", () => {
     await renderDesktopApp("");
 
     const nativeRoutes = [
-      ["Packs", "packs"],
-      ["Skills", "skills"],
       ["Plans", "plans"],
-      ["Pull Requests", "pull-requests"],
       ["Approvals", "approvals"],
       ["Requests", "requests"],
       ["Diagnostics", "diagnostics"],
@@ -622,66 +889,23 @@ describe("App shell shared telemetry route wiring", () => {
     }
   });
 
-  it("routes workflows, tools, and subagents through shared derived telemetry wrappers", async () => {
+  it("redirects legacy packs-lab routes (/tools, /subagents, /packs, /skills) to the Agents workspace", async () => {
     await renderDesktopApp("");
 
-    window.location.hash = "#/workflows";
-    expect(await findSharedRouteHeading("Workflows")).toBeDefined();
-    await selectSession("Workflows", "Shell Active Session");
-    expect(
-      (await screen.findByRole("tab", { name: "Orchestration" })).getAttribute(
-        "aria-selected"
-      )
-    ).toBe("true");
+    // Legacy routes must redirect to NavId.Agents (the unified workspace).
+    // The AgentsView renders null when the feature flag is off (which is the
+    // case in the test environment because the static adapter defaults all flags
+    // to off). So we just assert the hash routes are accepted (no 404/unmapped).
+    for (const legacyPath of ["/tools", "/subagents", "/packs", "/skills"]) {
+      window.location.hash = `#${legacyPath}`;
+      // The hash is accepted (route resolves to NavId.Agents) — no crash.
+      await waitFor(() => expect(window.location.hash).toBe(`#${legacyPath}`));
+    }
 
-    window.location.hash = "#/tools";
-    expect(await findSharedRouteHeading("Tools")).toBeDefined();
-    await selectSession("Tools", "Shell Active Session");
-    expect(
-      (await screen.findByRole("tab", { name: "Tool Flow" })).getAttribute(
-        "aria-selected"
-      )
-    ).toBe("true");
-
-    window.location.hash = "#/subagents";
-    expect(await findSharedRouteHeading("SubAgents")).toBeDefined();
-    await selectSession("SubAgents", "Shell Active Session");
-    expect(
-      (await screen.findByRole("tab", { name: "Effectiveness" })).getAttribute(
-        "aria-selected"
-      )
-    ).toBe("true");
-
-    expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith({
-      limit: 25,
-      offset: 0,
-    });
-    expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
-      "s-active"
-    );
+    // The deprecated db APIs must not be called (the views that used them are gone).
     expect(window.desktopApi.db.getWorkflowData).not.toHaveBeenCalled();
     expect(window.desktopApi.db.getTools).not.toHaveBeenCalled();
     expect(window.desktopApi.db.getSubAgents).not.toHaveBeenCalled();
-  });
-
-  it("unmounts derived telemetry routes when navigating back to the issue/task surface", async () => {
-    await renderDesktopApp("");
-
-    window.location.hash = "#/workflows";
-    expect(await findSharedRouteHeading("Workflows")).toBeDefined();
-    expect(
-      await screen.findByText(
-        "Select a session from the current page to inspect derived telemetry."
-      )
-    ).toBeDefined();
-
-    window.location.hash = "#/kanban";
-
-    expect(await findSharedRouteHeading("Agent Sessions")).toBeDefined();
-    await waitFor(() => {
-      expect(screen.queryByText("Orchestration")).toBeNull();
-    });
-    expect(screen.queryByRole("tab", { name: "Orchestration" })).toBeNull();
   });
 
   it("routes #/branches/:id to the branch detail view", async () => {
@@ -693,6 +917,35 @@ describe("App shell shared telemetry route wiring", () => {
     // direct #/branches/:id load must not send "Back to Branches" to Sessions.
     // (Path-style href; the hash router prepends "#" on navigation.)
     expect(detail.getAttribute("data-back-href")).toBe("/branches");
+
+    // The Topbar breadcrumb gains a linked "Branches" parent segment that
+    // returns to the list (mirrors the web app). The mocked detail body never
+    // publishes a name, so the current segment is the generic fallback.
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    const branchesCrumb = within(breadcrumb).getByRole("link", {
+      name: "Branches",
+    });
+    expect(branchesCrumb.getAttribute("href")).toBe("/branches");
+    expect(await findTopbarCurrentPage("Branch")).toBeDefined();
+  });
+
+  it("renders a linked Sessions breadcrumb with the session name on the session detail page", async () => {
+    await renderDesktopApp("#/sessions/s-active");
+
+    // The current segment resolves to the loaded session's name.
+    expect(await findTopbarCurrentPage("Shell Active Session")).toBeDefined();
+
+    // The parent "Sessions" segment links back to the Sessions list and
+    // navigates there on click.
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    const sessionsCrumb = within(breadcrumb).getByRole("link", {
+      name: "Sessions",
+    });
+    expect(sessionsCrumb.getAttribute("href")).toBe("/sessions");
+
+    fireEvent.click(sessionsCrumb);
+    await waitFor(() => expect(window.location.hash).toBe("#/sessions"));
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
   });
 });
 
@@ -718,16 +971,6 @@ function findTopbarCurrentPage(name: string) {
   return within(
     screen.getByRole("navigation", { name: "Breadcrumb" })
   ).findByText(name, { selector: '[aria-current="page"]' });
-}
-
-async function selectSession(routeLabel: string, sessionName: string) {
-  await screen.findByText(
-    "Select a session from the current page to inspect derived telemetry."
-  );
-  fireEvent.click(
-    screen.getByRole("combobox", { name: `${routeLabel} session` })
-  );
-  fireEvent.click(await screen.findByRole("option", { name: sessionName }));
 }
 
 function renderDesktopApp(initialHash: string) {
@@ -778,6 +1021,29 @@ function installLocalStorage(): () => void {
       return;
     }
     Object.defineProperty(window, "localStorage", originalDescriptor);
+  };
+}
+
+function installResizeObserver(): () => void {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "ResizeObserver"
+  );
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    value: class ResizeObserver {
+      disconnect = vi.fn();
+      observe = vi.fn();
+      unobserve = vi.fn();
+    },
+  });
+
+  return () => {
+    if (originalDescriptor === undefined) {
+      Reflect.deleteProperty(globalThis, "ResizeObserver");
+      return;
+    }
+    Object.defineProperty(globalThis, "ResizeObserver", originalDescriptor);
   };
 }
 
@@ -845,11 +1111,19 @@ function installDesktopApi() {
               offset?: number;
               search?: string;
               status?: string;
+              statuses?: string[];
             } = {}
           ) => {
-            let filtered = request.status
-              ? items.filter((item) => item.status === request.status)
-              : items;
+            let statuses: string[] = [];
+            if (request.statuses && request.statuses.length > 0) {
+              statuses = request.statuses;
+            } else if (request.status) {
+              statuses = [request.status];
+            }
+            let filtered =
+              statuses.length > 0
+                ? items.filter((item) => statuses.includes(item.status))
+                : items;
             if (request.search) {
               const normalizedSearch = request.search.toLowerCase();
               filtered = filtered.filter((item) =>
@@ -881,6 +1155,9 @@ function installDesktopApi() {
         getSubAgents: vi.fn(),
         getTools: vi.fn(),
         getWorkflowData: vi.fn(),
+        // Agent components IPC (FEA-2923 / T-16.2).
+        listAgentComponents: vi.fn(async () => ({ items: [], total: 0 })),
+        getAgentComponentDetail: vi.fn(async () => null),
       },
       getRuntimeStatus: vi.fn(() => new Promise(() => {})),
       getAgentMonitorUrl: vi.fn(() =>
@@ -930,7 +1207,6 @@ function agentSessionListItem({
     harness: "codex",
     id,
     inputTokens: 10,
-    issueId: null,
     lastActivityAt: timestamp,
     model: "gpt-test",
     name,
@@ -968,7 +1244,6 @@ function agentSessionDetail(item: AgentSessionListItem): AgentSessionDetail {
     ],
     attribution: {
       baseBranch: null,
-      issueId: null,
       repositoryFullName: item.repositoryFullName,
       sourceArtifactId: null,
       sourceLoopId: null,

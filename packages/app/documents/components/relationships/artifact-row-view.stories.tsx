@@ -1,3 +1,5 @@
+import { FeatureStatus } from "@repo/api/src/types/document";
+import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
 import {
   Avatar,
   AvatarFallback,
@@ -21,7 +23,7 @@ const meta = {
     onDetach: () => undefined,
     priority: "HIGH",
     slug: "feature-shell",
-    status: "in-review",
+    statusIcon: <FeatureStatusIcon status={FeatureStatus.InReview} />,
     statusLabel: "In review",
     title: "Platform shell convergence",
     typeIcon: (

@@ -30,6 +30,7 @@ import {
   Undo,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { sanitizeLinkUrl } from "./sanitize-link-url";
 import type { TiptapEditor } from "./types";
 
 export type TiptapToolbarProps = {
@@ -93,12 +94,26 @@ export function TiptapToolbar({
       return;
     }
 
-    if (url === "") {
+    // Trim before the empty check so a whitespace-only entry ("   ") clears the
+    // link, matching sanitizeLinkUrl()'s own trim-then-validate behavior.
+    if (url.trim() === "") {
       editor?.chain().extendMarkRange("link").unsetLink().run();
       return;
     }
 
-    editor?.chain().extendMarkRange("link").setLink({ href: url }).run();
+    const safeUrl = sanitizeLinkUrl(url);
+    if (safeUrl === null) {
+      // sanitizeLinkUrl rejected the input (empty after trimming, or a blocked
+      // scheme like javascript:/data:/vbscript:). Tell the user the link was
+      // not applied so a rejected entry isn't mistaken for a successful one.
+      // biome-ignore lint/suspicious/noAlert: matches the prompt() used above.
+      globalThis.alert(
+        "That link could not be added. Enter a valid URL — javascript:, data: and vbscript: links are not allowed."
+      );
+      return;
+    }
+
+    editor?.chain().extendMarkRange("link").setLink({ href: safeUrl }).run();
   }
 
   const uploadHandler = readOnly

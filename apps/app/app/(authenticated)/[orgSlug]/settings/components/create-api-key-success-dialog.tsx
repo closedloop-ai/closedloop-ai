@@ -54,7 +54,7 @@ export function CreateApiKeySuccessDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          <Alert variant="destructive">
+          <Alert variant="error">
             <TriangleAlertIcon className="h-4 w-4" />
             <AlertDescription>
               This key will not be shown again. Copy it now and store it

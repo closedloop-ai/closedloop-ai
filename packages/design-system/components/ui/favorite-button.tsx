@@ -1,12 +1,12 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@repo/design-system/components/ui/tooltip";
-import { cn } from "@repo/design-system/lib/utils";
+} from "@closedloop-ai/design-system/components/ui/tooltip";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { StarIcon } from "lucide-react";
 
 type FavoriteButtonProps = {

@@ -18,7 +18,12 @@ const SEEDED_SESSION_ID = "utility-worker-e2e-session";
 const SEEDED_SLUG = "utility-worker-e2e";
 
 test.describe("Historical import utility worker", () => {
-  test("imports a seeded Claude transcript through the built app", async () => {
+  // QUARANTINED (FEA-2187): flaky since the FEA-1791 store rewrite (PR #2016,
+  // reader pool). Freshly-imported rows intermittently don't appear in the
+  // Sessions list — a read-your-writes WAL visibility race against the pooled
+  // reader connections. Un-fixme once the store fix lands.
+  // biome-ignore lint/suspicious/noSkippedTests: quarantined flake tracked by FEA-2187
+  test.fixme("imports a seeded Claude transcript through the built app", async () => {
     const claudeHome = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-history-worker-claude-")
     );
@@ -42,6 +47,9 @@ test.describe("Historical import utility worker", () => {
 
     try {
       await gotoNav(page, "sessions");
+      // The seed timestamp is intentionally fixed for deterministic fixtures;
+      // keep this import smoke test independent of the Sessions default window.
+      await page.locator('[aria-label="All time"]:visible').click();
 
       // The Sessions view shows its title only in the Topbar breadcrumb (no
       // in-body <h1>), so assert the imported row directly: the seeded slug

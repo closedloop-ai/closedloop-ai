@@ -11,11 +11,15 @@ import { describe, expect, it, type Mock, vi } from "vitest";
 
 vi.mock("@repo/database", () => {
   const withDbFn = vi.fn();
-  return { withDb: withDbFn };
+  return { Prisma: { JsonNull: null }, withDb: withDbFn };
 });
 
 import { GitHubCommentThreadKind } from "@repo/api/src/types/branch-view";
-import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
+import {
+  ThreadSource,
+  ThreadStatus,
+  TRACE_COMMENT_METADATA_KIND,
+} from "@repo/api/src/types/comment";
 import { withDb } from "@repo/database";
 import { commentsService } from "../service";
 
@@ -32,8 +36,10 @@ const mockWithDb = withDb as unknown as Mock;
  */
 function makeCommentThreadFixture(
   overrides: Partial<{
+    id: string;
     organizationId: string;
     artifactId: string | null;
+    metadata: unknown;
     status: ThreadStatus;
     comments: unknown[];
   }> = {}
@@ -149,6 +155,32 @@ describe("commentsService.findThreadsByDocument", () => {
       select: { comments: { where: { deletedAt: unknown } } };
     };
     expect(callArgs.select.comments.where.deletedAt).toBeNull();
+  });
+
+  it("excludes trace comment threads from generic document thread responses", async () => {
+    const documentThread = makeCommentThreadFixture({ id: "thread-document" });
+    const traceThread = makeCommentThreadFixture({
+      id: "thread-trace",
+      metadata: {
+        kind: TRACE_COMMENT_METADATA_KIND,
+        schemaVersion: 1,
+      },
+    });
+    const mockFindMany = vi
+      .fn()
+      .mockResolvedValue([documentThread, traceThread]);
+
+    mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
+      fn({ commentThread: { findMany: mockFindMany } })
+    );
+
+    const result = await commentsService.findThreadsByDocument(
+      "org-1",
+      "art-1"
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("thread-document");
   });
 
   it("does not return threads from a different organization", async () => {

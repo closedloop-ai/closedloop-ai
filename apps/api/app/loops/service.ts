@@ -1,9 +1,4 @@
 import { createHash } from "node:crypto";
-import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
-import type {
-  HeartbeatResult,
-  RunnerTokenIssue,
-} from "@closedloop-ai/loops-api/token-refresh";
 import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { HarnessType } from "@repo/api/src/types/compute-target";
@@ -20,7 +15,6 @@ import {
   LoopCommand,
   type LoopDetail,
   LoopErrorCode,
-  type LoopEvent,
   type LoopEventsFilters,
   type LoopEventsPaginatedResponse,
   LoopEventType,
@@ -35,6 +29,7 @@ import {
   type RefreshResult,
   RefreshTokenErrorCode,
   type ResumeLoopRequest,
+  type StoredLoopEvent,
   type TokensByModel,
 } from "@repo/api/src/types/loop";
 import {
@@ -49,6 +44,11 @@ import {
   withDb,
 } from "@repo/database";
 import { verifyInstallationBranchExists } from "@repo/github";
+import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
+import type {
+  HeartbeatResult,
+  RunnerTokenIssue,
+} from "@closedloop-ai/loops-api/token-refresh";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
@@ -206,7 +206,6 @@ const supportBundleEventDataSchema = z.object({
  */
 const STALE_PENDING_THRESHOLD_MS = 30_000;
 
-const PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE = "P2002";
 /** Camel-case field names emitted by Prisma's `error.meta.target` array. */
 const LOOP_ACTIVE_INDEX_TARGET_FIELDS = new Set([
   "artifactId",
@@ -257,11 +256,6 @@ function fieldsMatch(values: string[], expected: Set<string>): boolean {
   );
 }
 
-/** Checks for Prisma's `P2002` (unique constraint) error code. */
-function isPrismaUniqueConstraintError(error: unknown): boolean {
-  return getPrismaErrorCode(error) === PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE;
-}
-
 const VALID_HARNESS_VALUES = new Set<string>(Object.values(HarnessType));
 
 /**
@@ -285,7 +279,7 @@ function parseHarness(value: string | null | undefined): HarnessType {
  *   - `meta.driverAdapterError.cause.constraint.{index|fields}` (pg adapter)
  */
 function isLoopActiveIndexViolation(error: unknown): boolean {
-  if (!isPrismaUniqueConstraintError(error)) {
+  if (getPrismaErrorCode(error) !== "P2002") {
     return false;
   }
   const parsed = prismaErrorMetaSchema.safeParse(
@@ -313,7 +307,7 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
   log.warn(
     "P2002 unique constraint error with unrecognized meta shape; treating as non-active-index violation",
     {
-      code: PRISMA_UNIQUE_CONSTRAINT_ERROR_CODE,
+      code: "P2002",
       meta: {
         targetType: target == null ? "null/undefined" : typeof target,
         hasDriverAdapterError: driverAdapterError != null,
@@ -333,7 +327,7 @@ function isLoopActiveIndexViolation(error: unknown): boolean {
  * {@link isLoopActiveIndexViolation}.
  */
 function isLoopBlockedIndexViolation(error: unknown): boolean {
-  if (!isPrismaUniqueConstraintError(error)) {
+  if (getPrismaErrorCode(error) !== "P2002") {
     return false;
   }
   const parsed = prismaErrorMetaSchema.safeParse(
@@ -867,6 +861,31 @@ const runnerCapabilitiesSchema = z.object({
 const loopStatusSchema = z.enum(
   Object.values(LoopStatus) as [LoopStatus, ...LoopStatus[]]
 );
+
+/**
+ * Transform a stored `loopEvent` DB row into the API {@link StoredLoopEvent}
+ * shape returned by the read endpoints.
+ *
+ * IMPORTANT: `type` is set AFTER the `data` spread so a `type` field persisted
+ * inside `e.data` cannot overwrite the canonical DB-stored event type. `id` and
+ * `storedAt` (the DB `createdAt`) are server-authoritative and let the client
+ * dedup and keyset-paginate events, independent of the producer-set `timestamp`.
+ */
+function toStoredLoopEvent(e: {
+  id: string;
+  type: string;
+  data: unknown;
+  createdAt: Date;
+}): StoredLoopEvent {
+  const data = (e.data as JsonObject) ?? {};
+  return {
+    ...data,
+    type: e.type,
+    timestamp: data.timestamp ?? e.createdAt.toISOString(),
+    id: e.id,
+    storedAt: e.createdAt.toISOString(),
+  } as StoredLoopEvent;
+}
 
 /**
  * Loops service - handles database operations for loop management.
@@ -1826,7 +1845,7 @@ export const loopsService = {
         })
       );
     } catch (error) {
-      if (isPrismaUniqueConstraintError(error)) {
+      if (getPrismaErrorCode(error) === "P2002") {
         if (runner) {
           throw new ReplayDetectedError();
         }
@@ -1843,7 +1862,7 @@ export const loopsService = {
   async getEvents(
     loopId: string,
     organizationId: string
-  ): Promise<LoopEvent[]> {
+  ): Promise<StoredLoopEvent[]> {
     // Verify loop belongs to org
     const loop = await withDb((db) =>
       db.loop.findUnique({
@@ -1859,21 +1878,66 @@ export const loopsService = {
     const events = await withDb((db) =>
       db.loopEvent.findMany({
         where: { loopId },
-        orderBy: { createdAt: "asc" },
+        // Tiebreak same-`createdAt` rows by id so the ordering matches
+        // `getEventsSince` and the newest row is an unambiguous keyset cursor.
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       })
     );
 
-    // Transform DB events to API LoopEvent type.
-    // IMPORTANT: `type` must come AFTER the spread so that e.data's `type` field
-    // (if present) does not overwrite the canonical DB-stored event type.
-    return events.map((e) => {
-      const data = (e.data as JsonObject) ?? {};
-      return {
-        ...data,
-        type: e.type,
-        timestamp: data.timestamp ?? e.createdAt.toISOString(),
-      } as LoopEvent;
-    });
+    return events.map(toStoredLoopEvent);
+  },
+
+  /**
+   * Get events for a Loop strictly after a keyset cursor (org-scoped).
+   *
+   * Powers the active-loop poll (`use-loop-polling`): instead of re-fetching a
+   * loop's full, ever-growing event history every few seconds, callers pass the
+   * `storedAt`/`id` of the newest event they hold and receive only the delta.
+   *
+   * The cursor is the composite `(createdAt, id)` — `createdAt` alone is not
+   * unique, so a same-millisecond cluster larger than `take` would stall a
+   * `createdAt`-only cursor forever. Comparing the unique `(createdAt, id)`
+   * tuple guarantees the cursor always advances and never re-returns a held
+   * row, so the client can append the delta without deduping. `take` bounds the
+   * batch — a large backlog drains over successive polls.
+   *
+   * The `createdAt` range is served by the `loop_events(loop_id, created_at)`
+   * index; the `id` tiebreak only discriminates within one `createdAt` value.
+   */
+  async getEventsSince(
+    loopId: string,
+    organizationId: string,
+    since: Date,
+    sinceId: string,
+    take: number
+  ): Promise<StoredLoopEvent[]> {
+    // Verify loop belongs to org
+    const loop = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId, organizationId },
+        select: { id: true },
+      })
+    );
+
+    if (!loop) {
+      throw new Error(`Loop not found: ${loopId}`);
+    }
+
+    const events = await withDb((db) =>
+      db.loopEvent.findMany({
+        where: {
+          loopId,
+          OR: [
+            { createdAt: { gt: since } },
+            { createdAt: since, id: { gt: sinceId } },
+          ],
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take,
+      })
+    );
+
+    return events.map(toStoredLoopEvent);
   },
 
   /**
@@ -1916,19 +1980,7 @@ export const loopsService = {
       withDb((db) => db.loopEvent.count({ where })),
     ]);
 
-    // Transform DB events to API LoopEvent type.
-    // IMPORTANT: `type` must come AFTER the spread so that e.data's `type` field
-    // (if present) does not overwrite the canonical DB-stored event type.
-    const data = events.map((e) => {
-      const eventData = (e.data as JsonObject) ?? {};
-      return {
-        ...eventData,
-        type: e.type,
-        timestamp: eventData.timestamp ?? e.createdAt.toISOString(),
-      } as LoopEvent;
-    });
-
-    return { data, total };
+    return { data: events.map(toStoredLoopEvent), total };
   },
 
   /**

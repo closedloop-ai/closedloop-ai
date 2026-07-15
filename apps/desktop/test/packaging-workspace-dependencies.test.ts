@@ -49,15 +49,17 @@ describe("packaging workspace dependencies", () => {
   test("does not stage @repo/api — it is bundled into the main process", () => {
     // electron-vite inlines @repo/api from source (PLN-999), so it is not a
     // packed runtime closure member, and main imports its helpers from source
-    // with no `dist`/`.js` reach-in.
-    const databaseSource = fs.readFileSync(
-      "src/main/database/sqlite.ts",
+    // with no `dist`/`.js` reach-in. The session-trace builders that own this
+    // import were extracted out of sqlite.ts into session-trace.ts (sqlite.ts
+    // decomposition), so the source import now lives there.
+    const sessionTraceSource = fs.readFileSync(
+      "src/main/database/session-trace.ts",
       "utf8"
     );
 
     assert.equal(closureDirFor("@repo/api"), undefined);
-    assert.match(databaseSource, SQLITE_DERIVATION_SOURCE_IMPORT);
-    assert.doesNotMatch(databaseSource, API_DIST_REACH_IN);
+    assert.match(sessionTraceSource, SQLITE_DERIVATION_SOURCE_IMPORT);
+    assert.doesNotMatch(sessionTraceSource, API_DIST_REACH_IN);
   });
 
   test("resolveStagedPackageRuntimeFile resolves a runtime file path relative to a staged package root", () => {
@@ -121,7 +123,15 @@ describe("packaging workspace dependencies", () => {
   test("does not stage @repo/api's transitive shared-platform — also bundled", () => {
     // shared-platform is inlined transitively via @repo/api (FEA-1513), so it
     // too leaves the staged runtime closure (PLN-999).
-    assert.equal(closureDirFor("@closedloop-ai/shared-platform"), undefined);
+    assert.equal(closureDirFor("@repo/shared-platform"), undefined);
+  });
+
+  test("does not stage @closedloop-ai/loops-api — now source-inlined into the main bundle", () => {
+    // loops-api is no longer published/pre-built; its `exports` resolve to `.ts`
+    // source, so the main process inlines it (WORKSPACE_INLINE) rather than
+    // shipping a dist through the runtime closure. Its only runtime dep
+    // (@pydantic/genai-prices) is bundled with it, so it needs no closure entry.
+    assert.equal(closureDirFor("@closedloop-ai/loops-api"), undefined);
   });
 
   test("stages telemetry-contract for the external desktop OTel runtime import", () => {
@@ -141,10 +151,7 @@ describe("packaging workspace dependencies", () => {
 describe("resolveWorkspaceDependencyTarget", () => {
   test("plain workspace ranges install under the dependency key", () => {
     assert.equal(
-      resolveWorkspaceDependencyTarget(
-        "@closedloop-ai/loops-api",
-        "workspace:*"
-      ),
+      resolveWorkspaceDependencyTarget("@closedloop-ai/loops-api", "workspace:*"),
       "@closedloop-ai/loops-api"
     );
     assert.equal(
@@ -167,14 +174,14 @@ describe("resolveWorkspaceDependencyTarget", () => {
         "@repo/shared-platform",
         "workspace:@closedloop-ai/shared-platform@*"
       ),
-      "@closedloop-ai/shared-platform"
+      "@repo/shared-platform"
     );
     assert.equal(
       resolveWorkspaceDependencyTarget(
         "@repo/shared-platform",
         "workspace:@closedloop-ai/shared-platform@^0.1.0"
       ),
-      "@closedloop-ai/shared-platform"
+      "@repo/shared-platform"
     );
   });
 

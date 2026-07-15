@@ -3,6 +3,7 @@
 // catching drift before it reaches production.
 import type { PrismaClient } from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
+import { seedCuratedCatalog } from "../../prisma/seeds/catalog-seed";
 import { seedCoreEntities } from "./core";
 import { seedCustomizationEntities } from "./customization";
 import { seedEvaluationEntities } from "./evaluation";
@@ -276,6 +277,11 @@ async function runSeedModules(
   context: SeedContext,
   plan: SeedRunPlan
 ): Promise<void> {
+  // Global, org-independent curated catalog (RTK / GStack / Web Command pack).
+  // Idempotent upserts on deterministic IDs; no prerequisite rows, so it runs
+  // first. Must land on every seed path — this is the single call site.
+  await seedCuratedCatalog(prisma);
+
   const coreResult = await seedCoreEntities(prisma, context, plan);
 
   await seedExecutionEntities(prisma, context, coreResult, plan);
@@ -297,6 +303,9 @@ async function runSeedModulesInBatches(
   seedLog(
     `Starting perf seed modules with bounded entity batches (batchSize=${plan.transaction.batchSize}).`
   );
+  // Global curated catalog — see runSeedModules for rationale.
+  await seedCuratedCatalog(prisma);
+
   const core = await seedCoreEntities(prisma, context, plan);
 
   await seedExecutionEntities(prisma, context, core, plan);

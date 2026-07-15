@@ -77,6 +77,7 @@ export type TableFilterCurrentUser = {
 export type TableFilterOption<TValue extends string = string> = {
   id: TValue;
   label: string;
+  sectionLabel?: string;
   count?: number;
   icon?: ReactNode;
   avatarUrl?: string;

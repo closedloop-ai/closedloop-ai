@@ -46,7 +46,7 @@ type CacheEntry = {
   computedAtMs: number;
 };
 
-export type InsightsCacheOptions = {
+type InsightsCacheOptions = {
   staleServeCooldownMs?: number;
   maxConcurrency?: number;
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -90,8 +90,18 @@ export class InsightsResultCache {
    * Resolve an insights request, applying cache → debounce → single-flight →
    * concurrency-bound, in that order. `compute` is the native, golden-identical
    * computation; it runs only on a real miss/recompute.
+   *
+   * `compute` receives a `markReadStart` callback. By default the entry's
+   * freshness epoch is snapshotted when `compute` is INVOKED, but a caller that
+   * defers the actual data read behind an unrelated wait (e.g. the shared
+   * heavy-op gate) should call `markReadStart()` at the true read moment so the
+   * recorded epoch reflects when the data was read — not time spent waiting on
+   * the gate. Not calling it keeps the invoke-time snapshot.
    */
-  get(key: string, compute: () => Promise<unknown>): Promise<unknown> {
+  get(
+    key: string,
+    compute: (markReadStart: () => void) => Promise<unknown>
+  ): Promise<unknown> {
     const entry = this.entries.get(key);
     if (entry) {
       // Fresh: computed at the current epoch — nothing changed since.
@@ -122,18 +132,25 @@ export class InsightsResultCache {
   /** Acquire a concurrency slot, compute, store, release. */
   private async computeAndStore(
     key: string,
-    compute: () => Promise<unknown>
+    compute: (markReadStart: () => void) => Promise<unknown>
   ): Promise<unknown> {
     await this.acquire();
-    // Snapshot the epoch BEFORE computing: any write that lands during the
-    // computation advances the epoch, so the entry is correctly marked stale
-    // and the next request (after cooldown) recomputes against fresh data.
-    const epochAtStart = this.dataEpoch;
+    // Snapshot the epoch at the read boundary: any write that lands during the
+    // read advances the epoch, so the entry is correctly marked stale and the
+    // next request (after cooldown) recomputes against fresh data. Default the
+    // snapshot to compute-invocation time, but let the caller move it to the
+    // true read moment via `markReadStart` — so a long wait on the heavy-op gate
+    // (behind a backfill) doesn't back-date the entry and force needless
+    // recomputes.
+    let epochAtRead = this.dataEpoch;
+    const markReadStart = () => {
+      epochAtRead = this.dataEpoch;
+    };
     try {
-      const value = await compute();
+      const value = await compute(markReadStart);
       this.entries.set(key, {
         value,
-        computedAtEpoch: epochAtStart,
+        computedAtEpoch: epochAtRead,
         computedAtMs: this.now(),
       });
       return value;

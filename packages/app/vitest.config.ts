@@ -14,9 +14,16 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      // Resolve workspace packages from source (same alias as apps/app's
-      // vitest config): @repo/design-system's exports map points at dist/,
-      // which is not built in CI test runs. FEA-1512 supersedes this.
+      // Resolve workspace packages from source. `@closedloop-ai/loops-api` and
+      // `@repo/shared-platform` are source-consumed under a `/src` root, so
+      // their specific aliases MUST precede the catch-all `@repo` (Vite matches
+      // aliases in declaration order). `@repo/api`'s type modules re-export from
+      // both, so these are reachable transitively even without a direct import.
+      "@closedloop-ai/loops-api": path.resolve(import.meta.dirname, "../loops-api/src"),
+      "@repo/shared-platform": path.resolve(
+        import.meta.dirname,
+        "../shared-platform/src"
+      ),
       "@repo": path.resolve(import.meta.dirname, ".."),
     },
   },

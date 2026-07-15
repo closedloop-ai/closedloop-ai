@@ -9,6 +9,9 @@ export const AppTelemetrySchema = z
     [TelemetryAttribute.AppInstallationId]: boundedText(
       TelemetryTextMaxLength.AppInstallationId
     ).optional(),
+    [TelemetryAttribute.AppOrganizationId]: boundedText(
+      TelemetryTextMaxLength.AppOrganizationId
+    ).optional(),
     [TelemetryAttribute.DeploymentEnvironmentName]: boundedText(
       TelemetryTextMaxLength.DeploymentEnvironmentName
     ).optional(),

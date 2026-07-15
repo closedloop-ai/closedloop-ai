@@ -26,8 +26,12 @@ import { useBranchesDataSource } from "./provider";
  *   it stale until remount). Analytics reads the same bounded grouped queries
  *   the list/usage refetch already issues, so the extra invalidation is
  *   proportionate — not a new hot path.
- * - **Details** — a `{ branchId }` change refreshes that one `detail` (keyed by
- *   the active source's scope); a broad `{}` change refreshes all open details.
+ * - **Details + traces** — a `{ branchId }` change refreshes that one `detail`
+ *   AND its lazily-fetched merged `trace` (PLN-1148 Phase 2), both keyed by the
+ *   active source's scope; a broad `{}` change refreshes all open details and
+ *   traces. The trace is a first-class cache entry (`useBranchTrace`), so a DB
+ *   change must invalidate it too or the open Sessions & timeline tab keeps
+ *   showing a stale trace until remount.
  *
  * NOTE (openQuestion #1): the desktop local source maps `onDbChanged`'s
  * `{ sessionId? }` to a BROAD `{}` change (no stable per-branch identity yet), so
@@ -52,15 +56,26 @@ export function BranchesLiveBridge() {
       queryClient.invalidateQueries({ queryKey: branchesKeys.analyticsRoot() });
 
       if (broad) {
-        // A `{}` event can touch any branch, so refresh every open detail.
+        // A `{}` event can touch any branch, so refresh every open detail and
+        // its lazily-fetched trace (PLN-1148 Phase 2).
         queryClient.invalidateQueries({ queryKey: branchesKeys.details() });
+        queryClient.invalidateQueries({ queryKey: branchesKeys.traces() });
+        queryClient.invalidateQueries({
+          queryKey: branchesKeys.commentsRoot(),
+        });
         return;
       }
-      // A scoped event only moves its own detail, keyed by the active source's
-      // scope (detail keys are scope-qualified).
+      // A scoped event only moves its own detail + trace + comments, keyed by the active
+      // source's scope (detail/trace keys are scope-qualified).
       for (const branchId of ids) {
         queryClient.invalidateQueries({
           queryKey: branchesKeys.detail(dataSource.scope, branchId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: branchesKeys.trace(dataSource.scope, branchId),
+        });
+        queryClient.invalidateQueries({
+          queryKey: branchesKeys.comments(dataSource.scope, branchId),
         });
       }
     },

@@ -17,12 +17,14 @@ const UNAVAILABLE_KPI: BranchKpi = {
 };
 
 describe("shared branches IPC contract", () => {
-  test("channel list contains exactly the four branch channels", () => {
+  test("channel list contains exactly the five branch channels", () => {
     assert.deepEqual(
       [...SHARED_BRANCHES_IPC_CHANNEL_LIST],
       [
         "desktop:shared-branches:list",
         "desktop:shared-branches:detail",
+        // PLN-1148 Phase 2: lazy merged-trace channel, split out of `detail`.
+        "desktop:shared-branches:trace",
         "desktop:shared-branches:usage",
         "desktop:shared-branches:analytics",
       ]
@@ -30,6 +32,10 @@ describe("shared branches IPC contract", () => {
     assert.equal(
       SHARED_BRANCHES_IPC_CHANNELS.list,
       "desktop:shared-branches:list"
+    );
+    assert.equal(
+      SHARED_BRANCHES_IPC_CHANNELS.trace,
+      "desktop:shared-branches:trace"
     );
     assert.equal(
       SHARED_BRANCHES_IPC_CHANNELS.analytics,

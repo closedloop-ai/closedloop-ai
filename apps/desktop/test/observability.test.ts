@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, mock, test } from "node:test";
+import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import type { DesktopAnalyticsEvent } from "../src/main/cloud-protocol.js";
 import { Observability } from "../src/main/observability.js";
@@ -292,6 +293,54 @@ describe("Observability", () => {
       desktop_client_version: "0.15.3",
       platform: process.platform,
     });
+  });
+
+  test("over-long analytics string properties are truncated to the cloud cap instead of dropping the event", () => {
+    const analyticsEvents: AnalyticsEvent[] = [];
+    Observability.init({
+      telemetrySend: () => {},
+      analytics: {
+        send: (event) => analyticsEvents.push(event),
+        flush: async () => {},
+      },
+      desktopClientVersion: "0.15.3",
+    });
+
+    const overLongError = "x".repeat(DESKTOP_ANALYTICS_STRING_MAX_LENGTH + 500);
+    Observability.connectionDegraded(overLongError);
+
+    assert.equal(analyticsEvents.length, 1);
+    const errorProperty = analyticsEvents[0].properties?.error;
+    assert.equal(typeof errorProperty, "string");
+    assert.equal(
+      (errorProperty as string).length,
+      DESKTOP_ANALYTICS_STRING_MAX_LENGTH
+    );
+    assert.equal(
+      errorProperty,
+      overLongError.slice(0, DESKTOP_ANALYTICS_STRING_MAX_LENGTH)
+    );
+  });
+
+  test("non-finite analytics number properties are coerced to null instead of dropping the event", () => {
+    const analyticsEvents: AnalyticsEvent[] = [];
+    Observability.init({
+      telemetrySend: () => {},
+      analytics: {
+        send: (event) => analyticsEvents.push(event),
+        flush: async () => {},
+      },
+      desktopClientVersion: "0.15.3",
+    });
+
+    // NaN arises when time_to_resolve_ms is computed from a missing/malformed
+    // createdAt (approval-store.ts); the cloud's z.number().finite() would
+    // otherwise reject the whole event.
+    Observability.approvalResolved("GENERATE_PRD", "granted", Number.NaN);
+
+    assert.equal(analyticsEvents.length, 1);
+    assert.equal(analyticsEvents[0].properties?.time_to_resolve_ms, null);
+    assert.equal(analyticsEvents[0].properties?.outcome, "granted");
   });
 
   test("approval, plugin, sandbox, and health check events use product analytics only where expected", () => {

@@ -5,7 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
-  return { withDb: mockWithDb };
+  return {
+    GitHubInstallationStatus: {
+      ACTIVE: "ACTIVE",
+    },
+    withDb: mockWithDb,
+  };
 });
 
 vi.mock("@repo/observability/log", () => ({
@@ -22,7 +27,7 @@ vi.mock("@/app/deployments/deployment-service", () => ({
   },
 }));
 
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { deploymentService } from "@/app/deployments/deployment-service";
 import { handleDeploymentStatus } from "@/app/webhooks/github/handlers/deployment-status-handler";
 
@@ -87,6 +92,28 @@ describe("handleDeploymentStatus", () => {
 
     const response = await handleDeploymentStatus(buildDeploymentStatusEvent());
 
+    expect(mockRecordDeployment).not.toHaveBeenCalled();
+    expect(mockWithDb.tx).not.toHaveBeenCalled();
+    expect(await response.json()).toMatchObject({ ok: true });
+  });
+
+  it("rejects tombstoned repositories before deployment writes", async () => {
+    mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
+
+    const response = await handleDeploymentStatus(buildDeploymentStatusEvent());
+
+    expect(mockDb.gitHubInstallationRepository.findFirst).toHaveBeenCalledWith({
+      where: {
+        githubRepoId: "123",
+        fullName: "org/repo",
+        removedAt: null,
+        installation: {
+          status: GitHubInstallationStatus.ACTIVE,
+        },
+      },
+      select: { id: true },
+    });
+    expect(mockDb.branchDetail.findFirst).not.toHaveBeenCalled();
     expect(mockRecordDeployment).not.toHaveBeenCalled();
     expect(mockWithDb.tx).not.toHaveBeenCalled();
     expect(await response.json()).toMatchObject({ ok: true });

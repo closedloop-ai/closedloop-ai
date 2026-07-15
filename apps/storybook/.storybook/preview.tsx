@@ -7,6 +7,7 @@ import { withThemeByClassName } from "@storybook/addon-themes";
 import type { Preview } from "@storybook/react";
 
 import "@repo/design-system/styles/globals.css";
+import "../../../packages/app/styles.css";
 
 // Single in-memory navigation port for all stories: design-system and
 // app-core components render the port `Link` / `usePath`, so the preview

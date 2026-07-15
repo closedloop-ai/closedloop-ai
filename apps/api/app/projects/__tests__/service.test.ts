@@ -3,7 +3,11 @@
  *
  * Tests the limit parameter functionality and multi-tenant security checks.
  */
-import { DocumentStatus } from "@repo/api/src/types/document";
+import {
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import {
   afterEach,
@@ -218,68 +222,67 @@ describe("projectsService.calculateStatus", () => {
     expect(projectsService.calculateStatus([])).toBe(0);
   });
 
-  it("returns 0 when all artifacts have non-terminal statuses", () => {
+  it("returns 0 when all document artifacts have non-terminal statuses", () => {
     const artifacts = [
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.InReview },
-      { status: DocumentStatus.Approved },
-      { status: DocumentStatus.Executed },
+      { status: DocumentStatus.Draft, subtype: DocumentType.Prd },
+      { status: DocumentStatus.InReview, subtype: DocumentType.Prd },
+      { status: DocumentStatus.ChangesRequested, subtype: DocumentType.Prd },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(0);
   });
 
-  it("returns 100 when all artifacts are Done", () => {
+  it("returns 100 when all documents are in a terminal status (Approved/Executed/Obsolete)", () => {
     const artifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Done },
+      { status: DocumentStatus.Approved, subtype: DocumentType.Prd },
+      {
+        status: DocumentStatus.Executed,
+        subtype: DocumentType.ImplementationPlan,
+      },
+      { status: DocumentStatus.Obsolete, subtype: DocumentType.Prd },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
-  it("returns 100 when all artifacts are Obsolete", () => {
+  it("returns 100 when all features are terminal (Done/Canceled)", () => {
     const artifacts = [
-      { status: DocumentStatus.Obsolete },
-      { status: DocumentStatus.Obsolete },
-      { status: DocumentStatus.Obsolete },
+      { status: FeatureStatus.Done, subtype: DocumentType.Feature },
+      { status: FeatureStatus.Canceled, subtype: DocumentType.Feature },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(100);
   });
 
-  it("returns 50 for mixed Done+Obsolete+Draft with 2-of-4 completed", () => {
+  it("returns 50 for a mix of 2-of-4 terminal across documents and features", () => {
     const artifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Obsolete },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
+      { status: DocumentStatus.Approved, subtype: DocumentType.Prd },
+      { status: FeatureStatus.Done, subtype: DocumentType.Feature },
+      { status: DocumentStatus.Draft, subtype: DocumentType.Prd },
+      { status: FeatureStatus.Backlog, subtype: DocumentType.Feature },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(50);
   });
 
-  it("returns 25 for 1-of-4 Done artifacts", () => {
+  it("treats per-subtype terminal sets independently: a feature Approved-string is not terminal", () => {
+    // APPROVED is terminal for documents but not part of the feature vocabulary,
+    // so a feature carrying it counts as non-terminal.
     const artifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.InReview },
-      { status: DocumentStatus.Approved },
+      { status: DocumentStatus.Approved, subtype: DocumentType.Feature },
+      { status: FeatureStatus.Done, subtype: DocumentType.Feature },
+      { status: FeatureStatus.Triage, subtype: DocumentType.Feature },
+      { status: FeatureStatus.InProgress, subtype: DocumentType.Feature },
     ];
     expect(projectsService.calculateStatus(artifacts)).toBe(25);
   });
 
-  it("regression: 1-Executed-of-4 returns 0 while 1-Done-of-4 returns 25, confirming Executed is not terminal", () => {
-    const executedArtifacts = [
-      { status: DocumentStatus.Executed },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
+  it("regression: document EXECUTED and APPROVED are both terminal post-PRD-495", () => {
+    const artifacts = [
+      {
+        status: DocumentStatus.Executed,
+        subtype: DocumentType.ImplementationPlan,
+      },
+      { status: DocumentStatus.Approved, subtype: DocumentType.Prd },
+      { status: DocumentStatus.Draft, subtype: DocumentType.Prd },
+      { status: DocumentStatus.InReview, subtype: DocumentType.Prd },
     ];
-    const doneArtifacts = [
-      { status: DocumentStatus.Done },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
-      { status: DocumentStatus.Draft },
-    ];
-    expect(projectsService.calculateStatus(executedArtifacts)).toBe(0);
-    expect(projectsService.calculateStatus(doneArtifacts)).toBe(25);
+    expect(projectsService.calculateStatus(artifacts)).toBe(50);
   });
 });

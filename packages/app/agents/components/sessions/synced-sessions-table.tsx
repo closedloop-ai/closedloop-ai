@@ -12,6 +12,7 @@ import {
   agentSessionToSessionTableRow,
   resolveSessionRepoLabel,
 } from "../../lib/session-table-row";
+import { SessionRowActionsMenu } from "./session-row-actions-menu";
 
 /**
  * Props for the shared synced agent-session table. Route-owned wrappers keep
@@ -29,6 +30,13 @@ export type SyncedSessionsTableProps = {
   sortBy?: string | null;
   sortDir?: SortDirection;
   onSort?: (column: string, direction: SortDirection) => void;
+  /**
+   * When true, each row gets an overflow (kebab) menu of session actions
+   * (FEA-2507). Opt-in so glanceable dashboard/telemetry/insights mini-tables
+   * that embed this table stay action-free; the primary Sessions list surfaces
+   * enable it. Off by default.
+   */
+  showRowActions?: boolean;
   /**
    * When true the table renders bare — without its own card-surfaced
    * horizontal-scroll wrapper — so a host that owns a bounded scroll container
@@ -58,6 +66,7 @@ export function SyncedSessionsTable({
   sortBy,
   sortDir,
   onSort,
+  showRowActions,
   hostScroll,
 }: SyncedSessionsTableProps) {
   const itemById = useMemo(
@@ -104,6 +113,14 @@ export function SyncedSessionsTable({
           </span>
         );
       }}
+      renderRowActions={
+        showRowActions
+          ? (row) => {
+              const item = itemById.get(row.id);
+              return item ? <SessionRowActionsMenu item={item} /> : null;
+            }
+          : undefined
+      }
       sortBy={sortBy}
       sortDir={sortDir}
       visibleColumns={visibleColumns}

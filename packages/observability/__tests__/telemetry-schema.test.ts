@@ -1,5 +1,6 @@
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { redactGatewaySessionId } from "../redact-correlation";
 import {
   buildDesktopTelemetryPayload,
   buildValidationFailedPayload,
@@ -288,6 +289,21 @@ describe("telemetryDiagnosticsSchema", () => {
       expect(result.data.desktopShutdown?.trigger).toBe(
         DesktopShutdownTrigger.Unknown
       );
+    }
+  });
+
+  it("accepts install-blocked-read-only-volume and gateway-apply-update triggers as known values", () => {
+    for (const trigger of [
+      "install-blocked-read-only-volume",
+      "gateway-apply-update",
+    ]) {
+      const result = telemetryDiagnosticsSchema.safeParse({
+        desktopUpdate: { trigger, status: "error" },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.desktopUpdate?.trigger).toBe(trigger);
+      }
     }
   });
 
@@ -936,7 +952,11 @@ describe("buildDesktopTelemetryPayload", () => {
     expect(result.schemaVersion).toBe("1");
     const trace = result.trace as Record<string, unknown>;
     expect(trace.loopSessionId).toBe(VALID_UUID_B);
-    expect(trace.gatewaySessionId).toBe(VALID_UUID_A);
+    // gatewaySessionId is redacted to a stable hash before this payload reaches
+    // the log sink; the raw token must never appear in the emitted trace.
+    expect(trace.gatewaySessionId).toBe(redactGatewaySessionId(VALID_UUID_A));
+    expect(trace.gatewaySessionId).not.toBe(VALID_UUID_A);
+    expect(JSON.stringify(result)).not.toContain(VALID_UUID_A);
   });
 
   it("preserves desktop EXECUTE plan source diagnostics", () => {
@@ -1189,9 +1209,56 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     expect(result?.logTail).toContain("Done");
   });
 
+  it("strips lines with colon-space credential forms missed by the substring list", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      logTail:
+        "Starting\npassword: hunter2\nsecret: s3cr3t\napi_key: ak_live_1\nX-Api-Key: xyz789\nDone",
+    });
+    expect(result?.logTail).not.toContain("hunter2");
+    expect(result?.logTail).not.toContain("s3cr3t");
+    expect(result?.logTail).not.toContain("ak_live_1");
+    expect(result?.logTail).not.toContain("xyz789");
+    expect(result?.logTail).toContain("Starting");
+    expect(result?.logTail).toContain("Done");
+  });
+
+  it("strips lines with provider tokens missed by the substring list", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      logTail: "Starting\nghp_abc123def456\nxoxb-1-2-token\nDone",
+    });
+    expect(result?.logTail).not.toContain("ghp_abc123def456");
+    expect(result?.logTail).not.toContain("xoxb-1-2-token");
+    expect(result?.logTail).toContain("Starting");
+    expect(result?.logTail).toContain("Done");
+  });
+
+  it("strips lines with space-separated token credential forms", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      logTail: "Starting\ntoken abc123def\nDone",
+    });
+    expect(result?.logTail).not.toContain("abc123def");
+    expect(result?.logTail).toContain("Starting");
+    expect(result?.logTail).toContain("Done");
+  });
+
   it("truncates logTail exceeding 4096 bytes", () => {
     const longLine = "a".repeat(5000);
     const result = sanitizeDesktopTelemetryDiagnostics({ logTail: longLine });
+    const encoded = new TextEncoder().encode(result?.logTail ?? "");
+    expect(encoded.byteLength).toBeLessThanOrEqual(4096);
+  });
+
+  it("bounds credential-scan cost for a long credential-free line", () => {
+    // A long single line of repeated word/hyphen segments with no credential
+    // suffix is the ReDoS shape for CREDENTIAL_RE's nested quantifiers. The
+    // pre-truncation + per-line cap must keep this fast and still redact-free.
+    const pathological = `${"a-".repeat(200_000)}b`;
+    const start = Date.now();
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      logTail: pathological,
+    });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
     const encoded = new TextEncoder().encode(result?.logTail ?? "");
     expect(encoded.byteLength).toBeLessThanOrEqual(4096);
   });
@@ -1382,6 +1449,67 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     };
 
     expect(isLoopPerfTelemetryRateLimitBypass(payload, "target-1")).toBe(false);
+  });
+
+  it("server-side fallback: collapses home-rooted paths in reported decisionTableVerification (version-skewed older client)", () => {
+    // An older Desktop build sends absolute, home-rooted paths that never went
+    // through the FEA-2702 producer relativization. The server must still strip
+    // the OS username before these egress to the sink.
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      decisionTableVerification: {
+        telemetryStatus: "reported",
+        telemetryFilePath:
+          "/Users/alice/Code/proj/.closedloop-ai/work/decision-table-verifications.jsonl",
+        lineNumber: 3,
+        timestamp: "2026-05-01T13:20:06.234Z",
+        workdir: "/Users/alice/Code/proj/.closedloop-ai/work",
+        decisionTablePath: "/home/alice/other-project/decision-table.md",
+        finalStatus: "aligned",
+        iterations: 3,
+        driftKindCounts: { codeDrift: 2, testDrift: 1, planAmbiguity: 0 },
+        fixesAttempted: 3,
+        parseFailures: 0,
+        verifierInvocations: 3,
+        phaseDurationMs: 58_921,
+      },
+    });
+
+    const verification = result?.decisionTableVerification;
+    expect(verification?.telemetryStatus).toBe("reported");
+    if (verification?.telemetryStatus === "reported") {
+      expect(verification.telemetryFilePath).not.toContain("alice");
+      expect(verification.workdir).not.toContain("alice");
+      expect(verification.decisionTablePath).not.toContain("alice");
+      expect(verification.workdir).toBe("~/Code/proj/.closedloop-ai/work");
+      expect(verification.decisionTablePath).toBe(
+        "~/other-project/decision-table.md"
+      );
+    }
+    expect(JSON.stringify(result)).not.toContain("alice");
+  });
+
+  it("server-side fallback: collapses home-rooted path in missing decisionTableVerification readError", () => {
+    const result = sanitizeDesktopTelemetryDiagnostics({
+      decisionTableVerification: {
+        telemetryStatus: "missing",
+        telemetryFilePath:
+          "/Users/bob/proj/.closedloop-ai/work/decision-table-verifications.jsonl",
+        filePresent: true,
+        linesRead: 0,
+        invalidLines: 0,
+        missingReason: "read_error",
+        readError:
+          "EACCES: permission denied, open '/Users/bob/proj/.closedloop-ai/work/decision-table-verifications.jsonl'",
+      },
+    });
+
+    const verification = result?.decisionTableVerification;
+    expect(verification?.telemetryStatus).toBe("missing");
+    if (verification?.telemetryStatus === "missing") {
+      expect(verification.telemetryFilePath).not.toContain("bob");
+      expect(verification.readError).not.toContain("bob");
+    }
+    expect(JSON.stringify(result)).not.toContain("bob");
   });
 });
 

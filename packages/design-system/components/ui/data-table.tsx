@@ -26,7 +26,7 @@ import {
   ChevronRightIcon,
   SearchIcon,
 } from "lucide-react";
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 
 export type Column<T> = {
   key: keyof T | string;

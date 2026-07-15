@@ -572,8 +572,8 @@ describe("ComputeTargetPopover", () => {
   });
 
   describe("SSE stream-failed: degraded indicator", () => {
-    it("shows amber degraded indicator (not green Online) when streamReconnectAttempts >= 3", () => {
-      render(<ComputeTargetPopover streamReconnectAttempts={3} />);
+    it("shows amber degraded indicator (not green Online) when streamReconnectAttempts >= 10", () => {
+      render(<ComputeTargetPopover streamReconnectAttempts={10} />);
 
       // Degraded banner with SSE exhausted message is visible
       expect(screen.getByText(RE_LIVE_UNAVAILABLE)).toBeInTheDocument();
@@ -586,24 +586,24 @@ describe("ComputeTargetPopover", () => {
       expect(screen.queryByText("Online")).toBeNull();
     });
 
-    it("does not show degraded banner when attempts < 3", () => {
-      render(<ComputeTargetPopover streamReconnectAttempts={2} />);
+    it("does not show degraded banner when attempts < 10", () => {
+      render(<ComputeTargetPopover streamReconnectAttempts={9} />);
 
       expect(screen.queryByText(RE_LIVE_UNAVAILABLE)).toBeNull();
     });
 
     it("onExhausted mock: degraded indicator visible after prop update to exhausted count", () => {
       // Simulate parent tracking reconnect attempts and passing the count down.
-      // The component becomes degraded at >= SSE_MAX_RECONNECT_ATTEMPTS (3).
+      // The component becomes degraded at >= SSE_MAX_RECONNECT_ATTEMPTS (10).
       const { rerender } = render(
-        <ComputeTargetPopover streamReconnectAttempts={2} />
+        <ComputeTargetPopover streamReconnectAttempts={9} />
       );
 
       // Not yet degraded
       expect(screen.queryByText(RE_LIVE_UNAVAILABLE)).toBeNull();
 
-      // Parent increments to 3 (exhausted)
-      rerender(<ComputeTargetPopover streamReconnectAttempts={3} />);
+      // Parent increments to 10 (exhausted)
+      rerender(<ComputeTargetPopover streamReconnectAttempts={10} />);
 
       // Now shows degraded grey indicator — NOT green Online
       expect(screen.getByText(RE_LIVE_UNAVAILABLE)).toBeInTheDocument();

@@ -1,22 +1,52 @@
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import {
-  Card,
-  CardContent,
-} from "@closedloop-ai/design-system/components/ui/card";
+import { Card, CardContent } from "@closedloop-ai/design-system/components/ui/card";
 import { useCallback, useEffect, useState } from "react";
 
 type Approval = {
   id: string;
   reason: string;
   request?: { path?: string; args?: Record<string, unknown> };
-  tier?: string;
+  riskTier?: string;
   createdAt?: string;
 };
 
+type AlwaysAllowRule = {
+  id: string;
+  method?: string;
+  path?: string;
+  scopePath?: string;
+  expiresAt?: string;
+};
+
+function formatExpiry(expiresAt?: string): string | null {
+  if (!expiresAt) {
+    return null;
+  }
+  const ts = Date.parse(expiresAt);
+  if (Number.isNaN(ts)) {
+    return null;
+  }
+  return new Date(ts).toLocaleString();
+}
+
 export function ApprovalsPanel() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [alwaysAllowRules, setAlwaysAllowRules] = useState<AlwaysAllowRule[]>(
+    []
+  );
   const [loading, setLoading] = useState(true);
+
+  const loadRules = useCallback(async () => {
+    try {
+      const settings = (await window.desktopApi.getSettings()) as {
+        alwaysAllowRules?: AlwaysAllowRule[];
+      } | null;
+      setAlwaysAllowRules(settings?.alwaysAllowRules ?? []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -26,8 +56,9 @@ export function ApprovalsPanel() {
     } catch {
       /* ignore */
     }
+    await loadRules();
     setLoading(false);
-  }, []);
+  }, [loadRules]);
 
   useEffect(() => {
     load().catch(() => {});
@@ -68,6 +99,14 @@ export function ApprovalsPanel() {
       /* reload will pick up current state */
     }
     await load();
+  };
+  const handleRevokeRule = async (ruleId: string) => {
+    try {
+      await window.desktopApi.removeAlwaysAllowRule(ruleId);
+    } catch {
+      /* reload will pick up current state */
+    }
+    await loadRules();
   };
 
   return (
@@ -118,7 +157,7 @@ export function ApprovalsPanel() {
                         </p>
                       )}
                     </div>
-                    <Badge variant="outline">{a.tier ?? "unknown"}</Badge>
+                    <Badge variant="outline">{a.riskTier ?? "unknown"}</Badge>
                   </div>
                   <div className="flex gap-2 pt-1">
                     <Button onClick={() => handleApprove(a.id)} size="sm">
@@ -145,6 +184,59 @@ export function ApprovalsPanel() {
           ))}
         </div>
       )}
+
+      <div className="space-y-3 pt-2">
+        <div>
+          <h2 className="font-semibold text-[var(--foreground)] text-lg">
+            Always Allow Rules
+          </h2>
+          <p className="text-[var(--muted-foreground)] text-sm">
+            Granted "Always Allow" rules that skip interactive approval until
+            they expire. Revoke a rule to require approval again.
+          </p>
+        </div>
+
+        {alwaysAllowRules.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center text-[var(--muted-foreground)] text-sm">
+              No always-allow rules
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-2">
+            {alwaysAllowRules.map((rule) => {
+              const expiry = formatExpiry(rule.expiresAt);
+              const label = [rule.method, rule.scopePath ?? rule.path]
+                .filter(Boolean)
+                .join(" ");
+              return (
+                <Card key={rule.id}>
+                  <CardContent className="flex items-center justify-between gap-4 py-3">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <p className="truncate font-mono text-sm">
+                        {label || "Rule"}
+                      </p>
+                      {expiry && (
+                        <p className="text-[var(--muted-foreground)] text-xs">
+                          Expires {expiry}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      className="shrink-0 text-[var(--destructive)]"
+                      onClick={() => handleRevokeRule(rule.id)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Revoke
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

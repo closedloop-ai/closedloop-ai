@@ -29,8 +29,8 @@ export type BranchPlayheadController = {
   activeHourStart: string | null;
   /** Timeline/scrubber-driven: set active time, derive nearest trace row. */
   scrubToTimestamp(t: string): void;
-  /** Trace-driven: set active row, derive its timestamp (no scroll feedback). */
-  scrubToRow(row: number): void;
+  /** Trace-driven: set active row, derive its timestamp, and optionally scroll the bounded trace. */
+  scrubToRow(row: number, flash?: boolean): void;
   /** Subscribe to timeline-driven scrubs so the trace can scroll to the row. */
   registerTraceScroll(onActive: (row: number) => void): () => void;
 };
@@ -110,6 +110,28 @@ export function nearestTimestampForRow(
   return index.find((entry) => entry.row === row)?.t ?? null;
 }
 
+/**
+ * Timestamp of the indexed row CLOSEST to `row` (by row distance) — the fallback
+ * when `row` itself carries no timestamp (e.g. an `end` item, excluded from the
+ * time index). Keeps `activeTimestamp` (and the derived "you are here" line) in
+ * sync with a timestamp-less active row instead of leaving it stale.
+ */
+function nearestIndexedTimestampByRow(
+  index: readonly BranchTraceTimeIndexEntry[],
+  row: number
+): string | null {
+  let best: BranchTraceTimeIndexEntry | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const entry of index) {
+    const distance = Math.abs(entry.row - row);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = entry;
+    }
+  }
+  return best?.t ?? null;
+}
+
 /** Truncate an ISO timestamp to the hour (matching E1's `hourStart`). */
 export function truncateToHourIso(t: string | null): string | null {
   if (t == null) {
@@ -170,11 +192,20 @@ export function BranchTracePlayheadProvider({
   );
 
   const scrubToRow = useCallback(
-    (row: number) => {
-      const t = nearestTimestampForRow(index, row);
+    (row: number, flash = false) => {
+      // Fall back to the nearest indexed row's timestamp when this row has none
+      // (e.g. an `end` item) so the line stays in sync with the highlighted row.
+      const t =
+        nearestTimestampForRow(index, row) ??
+        nearestIndexedTimestampByRow(index, row);
       setActiveRow(row);
       if (t != null) {
         setActiveTimestamp(t);
+      }
+      if (flash) {
+        for (const listener of scrollListeners.current) {
+          listener(row);
+        }
       }
     },
     [index]

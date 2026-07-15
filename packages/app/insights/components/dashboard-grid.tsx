@@ -7,6 +7,7 @@ import { LayoutDashboardIcon } from "lucide-react";
 import { useMemo } from "react";
 import { type Layout, Responsive, WidthProvider } from "react-grid-layout";
 import type { DashboardPins, GridPosition } from "../hooks/use-dashboard-pins";
+import type { InsightsTileAvailability } from "../lib/tile-availability";
 import { getTile, type TileDescriptor } from "../lib/tile-catalog";
 import { InsightsTile } from "./insights-tile";
 import type { InsightsSectionData } from "./tile-content";
@@ -25,6 +26,9 @@ export function DashboardGrid({
   onAddTiles,
   onEditTile,
   availableSections,
+  getTileAvailability,
+  githubConnectHref,
+  onConnectGitHub,
 }: {
   pins: DashboardPins;
   sections: InsightsSectionData;
@@ -33,6 +37,9 @@ export function DashboardGrid({
   onAddTiles: () => void;
   onEditTile: (tileId: string) => void;
   availableSections: readonly InsightsSection[];
+  getTileAvailability?: (tile: TileDescriptor) => InsightsTileAvailability;
+  githubConnectHref?: string;
+  onConnectGitHub?: () => void | Promise<void>;
 }) {
   // Only render pinned tiles whose section this shell can populate — a tile
   // pinned on a surface that supports more sections is silently skipped here.
@@ -112,12 +119,15 @@ export function DashboardGrid({
       {tiles.map((tile) => (
         <div className="group relative h-full" key={tile.id}>
           <InsightsTile
+            availability={getTileAvailability?.(tile)}
             comparisonLabel={comparisonLabel}
             comparisonSections={
               pins.getTileSettings(tile.id).comparisonOverlay
                 ? comparisonSections
                 : undefined
             }
+            githubConnectHref={githubConnectHref}
+            onConnectGitHub={onConnectGitHub}
             onEditTile={onEditTile}
             onResizeWidth={(tileId, width) =>
               pins.setLayout(

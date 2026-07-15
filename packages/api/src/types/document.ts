@@ -1,15 +1,22 @@
 import {
   DOCUMENT_STATUS_OPTIONS as SHARED_DOCUMENT_STATUS_OPTIONS,
   DOCUMENT_TYPE_OPTIONS as SHARED_DOCUMENT_TYPE_OPTIONS,
+  FEATURE_STATUS_OPTIONS as SHARED_FEATURE_STATUS_OPTIONS,
+  TERMINAL_DOCUMENT_STATUSES as SHARED_TERMINAL_DOCUMENT_STATUSES,
+  TERMINAL_FEATURE_STATUSES as SHARED_TERMINAL_FEATURE_STATUSES,
   ChecksStatus as SharedChecksStatus,
   DocumentStatus as SharedDocumentStatus,
   DocumentType as SharedDocumentType,
+  FeatureStatus as SharedFeatureStatus,
   PullRequestState as SharedPullRequestState,
   RepositoryRole as SharedRepositoryRole,
   ReviewDecision as SharedReviewDecision,
   SnapshotSource as SharedSnapshotSource,
   artifactRepositoryEntrySchema as sharedArtifactRepositoryEntrySchema,
   artifactRepositorySnapshotSchema as sharedArtifactRepositorySnapshotSchema,
+  fallbackStatusForSubtype as sharedFallbackStatusForSubtype,
+  isTerminalStatusForSubtype as sharedIsTerminalStatusForSubtype,
+  statusOptionsForSubtype as sharedStatusOptionsForSubtype,
 } from "@closedloop-ai/loops-api/document";
 import type { z } from "zod";
 import type { Priority } from "./common.js";
@@ -25,8 +32,13 @@ export const artifactRepositorySnapshotSchema =
 export const ChecksStatus = SharedChecksStatus;
 export const DocumentStatus = SharedDocumentStatus;
 export const DOCUMENT_STATUS_OPTIONS = SHARED_DOCUMENT_STATUS_OPTIONS;
+export const FeatureStatus = SharedFeatureStatus;
+export const FEATURE_STATUS_OPTIONS = SHARED_FEATURE_STATUS_OPTIONS;
 export const DocumentType = SharedDocumentType;
 export const DOCUMENT_TYPE_OPTIONS = SHARED_DOCUMENT_TYPE_OPTIONS;
+export const statusOptionsForSubtype = sharedStatusOptionsForSubtype;
+export const fallbackStatusForSubtype = sharedFallbackStatusForSubtype;
+export const isTerminalStatusForSubtype = sharedIsTerminalStatusForSubtype;
 export const PullRequestState = SharedPullRequestState;
 export const RepositoryRole = SharedRepositoryRole;
 export const ReviewDecision = SharedReviewDecision;
@@ -41,21 +53,31 @@ export type ArtifactRepositorySnapshot = z.infer<
 export type ChecksStatus = (typeof ChecksStatus)[keyof typeof ChecksStatus];
 export type DocumentStatus =
   (typeof DocumentStatus)[keyof typeof DocumentStatus];
+export type FeatureStatus = (typeof FeatureStatus)[keyof typeof FeatureStatus];
 
 /**
- * Terminal document lifecycle statuses: the document is finished and will not
- * progress further. Canonical definition for "is this artifact resolved?"
- * checks (e.g. dependency/blocker gating).
+ * Any per-subtype lifecycle status that can persist on `Artifact.status`.
+ * Documents use {@link DocumentStatus}; Features use {@link FeatureStatus}
+ * (PRD-495). The two sets overlap on `IN_REVIEW`. Surfaces that handle both
+ * artifact kinds (the create/update inputs, the `Document` projection) type
+ * `status` as this union and narrow by `subtype` where the distinction matters.
  */
-export const TERMINAL_DOCUMENT_STATUSES: ReadonlySet<string> = new Set<string>([
-  DocumentStatus.Done,
-  DocumentStatus.Obsolete,
-]);
+export type ArtifactStatus = DocumentStatus | FeatureStatus;
 
-/** Whether a document/artifact status string is a terminal lifecycle state. */
-export function isTerminalDocumentStatus(status: string): boolean {
-  return TERMINAL_DOCUMENT_STATUSES.has(status);
-}
+/**
+ * Terminal Document lifecycle statuses: the document is signed off, executed,
+ * or deprecated and will not progress further. Canonical definition for "is
+ * this document resolved?" checks (e.g. dependency/blocker gating). Re-exported
+ * from the loops-api SSOT. Post-PRD-495 `APPROVED` is terminal (absorbs `DONE`).
+ */
+export const TERMINAL_DOCUMENT_STATUSES = SHARED_TERMINAL_DOCUMENT_STATUSES;
+
+/** Terminal Feature lifecycle statuses: shipped (`DONE`) or won't-do (`CANCELED`). */
+export const TERMINAL_FEATURE_STATUSES = SHARED_TERMINAL_FEATURE_STATUSES;
+
+// Per-vocabulary terminal predicates were intentionally dropped (PRD-495): the
+// single combined entry point is `isTerminalStatusForSubtype(subtype, status)`,
+// which callers use everywhere a status's terminality is checked.
 export type DocumentType = (typeof DocumentType)[keyof typeof DocumentType];
 export type PullRequestState =
   (typeof PullRequestState)[keyof typeof PullRequestState];
@@ -130,7 +152,7 @@ export type Document = {
   title: string;
   slug: string;
   fileName: string | null;
-  status: DocumentStatus;
+  status: ArtifactStatus;
   priority: Priority;
   latestVersion: number;
   createdById: string;
@@ -204,7 +226,7 @@ export type CreateDocumentInput = {
   title: string;
   fileName?: string;
   approverId?: string | null;
-  status?: DocumentStatus;
+  status?: ArtifactStatus;
   priority?: Priority;
   content: string;
   assigneeId?: string | null;
@@ -223,7 +245,7 @@ export type UpdateDocumentInput = {
   fileName?: string;
   projectId?: string;
   approverId?: string | null;
-  status?: DocumentStatus;
+  status?: ArtifactStatus;
   priority?: Priority;
   assigneeId?: string | null;
   sortOrder?: number | null;

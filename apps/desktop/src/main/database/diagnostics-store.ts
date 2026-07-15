@@ -32,8 +32,8 @@ function sanitizeRemoteUrl(remoteUrl: string | null): string | null {
   }
 }
 
-// FEA-1791: these diagnostics reads have no clean typed-delegate form (GROUP BY
-// rollups, COUNT(*)/COUNT(DISTINCT) aggregates, LEFT JOIN counts, plain-column
+// These diagnostics reads have no clean typed-delegate form (GROUP BY rollups,
+// COUNT(*)/COUNT(DISTINCT) aggregates, LEFT JOIN counts, plain-column
 // projections), so they run on the single DesktopPrisma client's raw read
 // escape hatch (`prisma.client.$queryRawUnsafe`). Through the libSQL adapter,
 // COUNT(*) aggregates and plain INTEGER columns (e.g. pr_number,

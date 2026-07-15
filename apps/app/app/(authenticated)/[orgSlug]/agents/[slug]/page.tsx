@@ -1,7 +1,8 @@
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Metadata } from "next";
 import { Header } from "@/app/(authenticated)/components/header";
-import { AgentDetailContainer } from "./agent-detail-container";
+import { AgentDetailWithPromote } from "./agent-detail-with-promote";
 
 type AgentDetailPageProps = {
   params: Promise<{ orgSlug: string; slug: string }>;
@@ -22,12 +23,12 @@ export default async function AgentDetailPage({
       <Header
         breadcrumbs={[
           { label: "Agents", href: `/${orgSlug}/agents` },
-          { label: "Agent Detail" },
+          { label: slug },
         ]}
       />
-      <FeatureFlagged flag="agents">
+      <FeatureFlagged flag={AGENTS_FEATURE_FLAG_KEY}>
         <main className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
-          <AgentDetailContainer slug={slug} />
+          <AgentDetailWithPromote slug={slug} />
         </main>
       </FeatureFlagged>
     </>

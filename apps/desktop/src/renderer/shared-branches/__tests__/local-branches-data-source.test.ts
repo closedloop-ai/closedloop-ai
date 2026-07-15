@@ -4,6 +4,8 @@ import type {
   BranchPageDetail,
   BranchUsageSummary,
 } from "@repo/api/src/types/branch";
+import { GitHubDirtyScopeKind } from "@repo/api/src/types/github-dirty-scope-constants";
+import { ReadSource } from "@repo/api/src/types/read-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -22,17 +24,20 @@ type BranchesApi = DesktopApi["branchesApi"];
 
 function fakeDesktopApi(
   overrides: Partial<BranchesApi> = {},
-  onDbChanged?: DesktopApi["onDbChanged"]
+  onDbChanged?: DesktopApi["onDbChanged"],
+  onGitHubResyncNudge?: DesktopApi["onGitHubResyncNudge"]
 ): Parameters<typeof createLocalBranchesDataSource>[0] {
   return {
     branchesApi: {
       list: vi.fn(async () => LIST),
       detail: vi.fn(async () => DETAIL),
+      trace: vi.fn(async () => []),
       usage: vi.fn(async () => USAGE),
       analytics: vi.fn(async () => ANALYTICS),
       ...overrides,
     },
     onDbChanged,
+    onGitHubResyncNudge,
   };
 }
 
@@ -45,8 +50,10 @@ describe("createLocalBranchesDataSource", () => {
     const api = fakeDesktopApi();
     const source = createLocalBranchesDataSource(api);
 
-    await expect(source.list({ repo: "x/y", owner: "alice" })).resolves.toBe(
-      LIST
+    // FEA-3120: the local source stamps `readSource: local` at the boundary, so
+    // the returned envelope carries the local rows *plus* the source tag.
+    await expect(source.list({ repo: "x/y", owner: "alice" })).resolves.toEqual(
+      { ...LIST, readSource: ReadSource.Local }
     );
     await expect(source.usage({ status: "merged" })).resolves.toBe(USAGE);
     await expect(source.analytics({})).resolves.toBe(ANALYTICS);
@@ -59,9 +66,50 @@ describe("createLocalBranchesDataSource", () => {
     expect(api.branchesApi.analytics).toHaveBeenCalledWith({});
   });
 
+  it("forwards forced list refresh requests to the IPC contract", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
+
+    await expect(
+      source.list({ repo: "x/y", forceRefresh: true })
+    ).resolves.toEqual({ ...LIST, readSource: ReadSource.Local });
+
+    expect(api.branchesApi.list).toHaveBeenCalledWith({
+      repo: "x/y",
+      forceRefresh: true,
+    });
+  });
+
+  // FEA-3120: an explicit source the IPC layer already reported wins — the
+  // boundary never clobbers it back to `local`.
+  it("preserves an explicit readSource from the IPC list payload", async () => {
+    const api = fakeDesktopApi({
+      list: vi.fn(async () => ({ ...LIST, readSource: ReadSource.Fallback })),
+    });
+    const source = createLocalBranchesDataSource(api);
+
+    await expect(source.list({})).resolves.toMatchObject({
+      readSource: ReadSource.Fallback,
+    });
+  });
+
   it("returns a present detail unchanged", async () => {
     const source = createLocalBranchesDataSource(fakeDesktopApi());
     await expect(source.detail("repo%2Fowner::main")).resolves.toBe(DETAIL);
+  });
+
+  it("forwards forced detail refresh requests to the IPC contract", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
+
+    await expect(
+      source.detail("repo%2Fowner::main", { forceRefresh: true })
+    ).resolves.toBe(DETAIL);
+
+    expect(api.branchesApi.detail).toHaveBeenCalledWith({
+      id: "repo%2Fowner::main",
+      forceRefresh: true,
+    });
   });
 
   it("rejects a missing detail as a 404 ApiError instead of resolving null", async () => {
@@ -125,8 +173,88 @@ describe("createLocalBranchesDataSource", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it("omits subscribe when the preload exposes no onDbChanged", () => {
+  it("wires subscribe to GitHub resync nudges as scoped branch changes", () => {
+    const unsubscribe = vi.fn();
+    const onGitHubResyncNudge = vi.fn(
+      (_cb: GitHubResyncNudgeCallback) => unsubscribe
+    );
+    const source = createLocalBranchesDataSource(
+      fakeDesktopApi({}, undefined, onGitHubResyncNudge)
+    );
+
+    const onChange = vi.fn();
+    const stop = source.subscribe?.(onChange);
+    expect(onGitHubResyncNudge).toHaveBeenCalledTimes(1);
+
+    const forward = onGitHubResyncNudge.mock.calls[0]?.[0];
+    forward?.({
+      body: {
+        scopes: [
+          {
+            kind: GitHubDirtyScopeKind.Comment,
+            repositoryFullName: "closedloop-ai/symphony-alpha",
+            pullRequestNumber: 42,
+          },
+        ],
+      },
+      branchIds: ["branch-artifact-42"],
+    });
+    expect(onChange).toHaveBeenCalledWith({ branchId: "branch-artifact-42" });
+
+    stop?.();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("derives branch ids from nudge branch scopes when main sends no branch id", () => {
+    const onGitHubResyncNudge = vi.fn(
+      (_cb: GitHubResyncNudgeCallback) => () => undefined
+    );
+    const source = createLocalBranchesDataSource(
+      fakeDesktopApi({}, undefined, onGitHubResyncNudge)
+    );
+
+    const onChange = vi.fn();
+    source.subscribe?.(onChange);
+
+    const forward = onGitHubResyncNudge.mock.calls[0]?.[0];
+    forward?.({
+      body: {
+        scopes: [
+          {
+            kind: GitHubDirtyScopeKind.Branch,
+            repositoryFullName: "closedloop-ai/symphony-alpha",
+            branchName: "feat/nudge",
+          },
+        ],
+      },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      branchId: "closedloop-ai%2Fsymphony-alpha::feat%2Fnudge",
+    });
+  });
+
+  it("maps malformed GitHub resync nudge events to broad branch changes", () => {
+    const onGitHubResyncNudge = vi.fn(
+      (_cb: GitHubResyncNudgeCallback) => () => undefined
+    );
+    const source = createLocalBranchesDataSource(
+      fakeDesktopApi({}, undefined, onGitHubResyncNudge)
+    );
+
+    const onChange = vi.fn();
+    source.subscribe?.(onChange);
+
+    const forward = onGitHubResyncNudge.mock.calls[0]?.[0];
+    forward?.({ body: { scopes: [{ kind: "future" }] } });
+    expect(onChange).toHaveBeenCalledWith({});
+  });
+
+  it("omits subscribe when the preload exposes no live branch events", () => {
     const source = createLocalBranchesDataSource(fakeDesktopApi());
     expect(source.subscribe).toBeUndefined();
   });
 });
+
+type GitHubResyncNudgeCallback = Parameters<
+  NonNullable<DesktopApi["onGitHubResyncNudge"]>
+>[0];

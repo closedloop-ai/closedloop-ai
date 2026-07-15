@@ -316,12 +316,83 @@ async function assertMigratedBranchGraph(
   // asserts read intermediate-only tables like github_pr_review_comments that
   // later migrations drop, so it can't run to HEAD). But runPostMigrationApiRead
   // below loads branch rows through the CURRENT Prisma client, which selects
-  // every branch_detail scalar. Add the lone branch_detail column introduced by
-  // a later migration so that live read resolves. Idempotent + nullable; mirrors
-  // 20260620144141_add_last_activity_at's branch_detail change.
+  // every BranchDetail and PullRequestDetail scalar. Add columns introduced by
+  // later migrations so that live read resolves while this fixture still pins
+  // its destructive-cutover assertions to the intermediate schema.
   await client.query(
     'ALTER TABLE "branch_detail" ADD COLUMN IF NOT EXISTS "last_activity_at" TIMESTAMP(3)'
   );
+  await client.query(`
+    ALTER TABLE "branch_detail"
+      ADD COLUMN IF NOT EXISTS "check_run_retry_state" VARCHAR(32),
+      ADD COLUMN IF NOT EXISTS "check_run_retry_head_sha" TEXT,
+      ADD COLUMN IF NOT EXISTS "check_run_retry_resource_id" VARCHAR(255),
+      ADD COLUMN IF NOT EXISTS "check_run_retry_idempotency_key" VARCHAR(255),
+      ADD COLUMN IF NOT EXISTS "check_run_retry_attempts" INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS "check_run_retry_next_at" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "check_run_retry_last_attempt_at" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "check_run_retry_reason" VARCHAR(64)
+  `);
+  await client.query(`
+    ALTER TABLE "branch_detail"
+      ADD COLUMN IF NOT EXISTS "fetch_credential_owner_id" UUID,
+      ADD COLUMN IF NOT EXISTS "fetch_credential_type" VARCHAR(32),
+      ADD COLUMN IF NOT EXISTS "fetch_mechanism" VARCHAR(32),
+      ADD COLUMN IF NOT EXISTS "fetch_observed_at" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "fetch_result_reason" VARCHAR(64),
+      ADD COLUMN IF NOT EXISTS "fetch_trigger" VARCHAR(32)
+  `);
+  // PLN-1099 Phase 0 (PRD-510 D2/FR13): the current Prisma client selects the
+  // new D2 identity + push-state columns, which are non-null in the live schema.
+  // Add them here, then backfill the write-once org copy from the parent artifact
+  // and the normalized full name from the installation repo — mirroring the real
+  // migration's backfill — so the legacy-seeded branch row reads back cleanly.
+  await client.query(`
+    ALTER TABLE "branch_detail"
+      ADD COLUMN IF NOT EXISTS "organization_id" UUID,
+      ADD COLUMN IF NOT EXISTS "repository_full_name" TEXT,
+      ADD COLUMN IF NOT EXISTS "first_pushed_at" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "push_source" TEXT
+  `);
+  await client.query(`
+    UPDATE "branch_detail" bd
+      SET "organization_id" = a."organization_id"
+      FROM "artifacts" a
+      WHERE a."id" = bd."artifact_id" AND bd."organization_id" IS NULL
+  `);
+  await client.query(`
+    UPDATE "branch_detail" bd
+      SET "repository_full_name" = lower(gir."full_name")
+      FROM "github_installation_repositories" gir
+      WHERE gir."id" = bd."repository_id" AND bd."repository_full_name" IS NULL
+  `);
+  await client.query(`
+    ALTER TABLE "pull_request_detail"
+      ADD COLUMN IF NOT EXISTS "additions" INTEGER,
+      ADD COLUMN IF NOT EXISTS "deletions" INTEGER,
+      ADD COLUMN IF NOT EXISTS "changed_files" INTEGER,
+      ADD COLUMN IF NOT EXISTS "fetch_credential_owner_id" UUID,
+      ADD COLUMN IF NOT EXISTS "fetch_credential_type" VARCHAR(32),
+      ADD COLUMN IF NOT EXISTS "fetch_mechanism" VARCHAR(32),
+      ADD COLUMN IF NOT EXISTS "fetch_observed_at" TIMESTAMP(3),
+      ADD COLUMN IF NOT EXISTS "fetch_result_reason" VARCHAR(64),
+      ADD COLUMN IF NOT EXISTS "fetch_trigger" VARCHAR(32)
+  `);
+  // FEA-2732 (PRD-510 D2): the current Prisma client selects the new
+  // PullRequestDetail D2 identity columns. Add them and backfill the write-once
+  // org copy from the parent branch artifact (mirroring the real migration) so
+  // the legacy-seeded PR row reads back cleanly under the pinned fixture.
+  await client.query(`
+    ALTER TABLE "pull_request_detail"
+      ADD COLUMN IF NOT EXISTS "organization_id" UUID,
+      ADD COLUMN IF NOT EXISTS "repository_full_name" TEXT
+  `);
+  await client.query(`
+    UPDATE "pull_request_detail" prd
+      SET "organization_id" = a."organization_id"
+      FROM "artifacts" a
+      WHERE a."id" = prd."branch_artifact_id" AND prd."organization_id" IS NULL
+  `);
 
   const branch = await client.query(
     `

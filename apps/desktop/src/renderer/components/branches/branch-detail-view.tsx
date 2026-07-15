@@ -1,14 +1,26 @@
-import { BranchDetailPage } from "@repo/app/branches/components/branch-detail-page";
+import {
+  BranchCloudHydrationStatus,
+  type BranchPageDetail,
+} from "@repo/api/src/types/branch";
+import {
+  BranchDetailPage,
+  classifyBranchDetailError,
+} from "@repo/app/branches/components/branch-detail-page";
+import { ConnectGitHubIndicator } from "@repo/app/branches/components/connect-github-indicator";
 import { BranchesLiveBridge } from "@repo/app/branches/data-source/branches-live-bridge";
 import { BranchesDataSourceProvider } from "@repo/app/branches/data-source/provider";
-import {
-  useBranchAnalytics,
-  useBranchDetail,
-  useBranchUsage,
-} from "@repo/app/branches/hooks/use-branches";
-import { ArrowLeftIcon } from "lucide-react";
+import { useBranchDetail } from "@repo/app/branches/hooks/use-branches";
+import { resolveBranchListBanner } from "@repo/app/branches/lib/branch-list-banner";
 import { useState } from "react";
+import {
+  detailTitleKey,
+  usePublishDetailTitle,
+} from "../../navigation/detail-title-context";
+import { DesktopConnectStatus } from "../../shared-branches/desktop-connect-status";
 import { createLocalBranchesDataSource } from "../../shared-branches/local-branches-data-source";
+import { useDesktopGitHubConnect } from "./use-desktop-github-connect";
+
+const DESKTOP_BRANCH_DETAIL_STALE_TIME_MS = 30_000;
 
 /**
  * Desktop wrapper for the shared Branch Detail body (FEA-1949 / Epic C — C3).
@@ -16,7 +28,7 @@ import { createLocalBranchesDataSource } from "../../shared-branches/local-branc
  * Mirrors the verified `SessionDetailView` + `BranchesView` ancestry: it mounts
  * `BranchesDataSourceProvider` injecting the local IPC source and
  * `BranchesLiveBridge` (so scoped invalidation reaches the open page), calls the
- * Epic D read hooks, and forwards their state to the presentational
+ * branch detail read hook, and forwards its state to the presentational
  * `BranchDetailPage`. `ApiAdapterProvider` stays an app-wide ancestor (required
  * even in local mode — the data-source accessor constructs `useApiClient`
  * unconditionally).
@@ -49,39 +61,88 @@ function BranchDetailViewContent({
   branchId: string;
   backHref: string;
 }) {
-  const detailQuery = useBranchDetail(branchId);
-  // Usage + analytics today only feed the D/E/F placeholder slots (a "ready" vs
-  // "pending" word). Firing two global all-branches SQLite scans on every detail
-  // open for that isn't worth it, so gate them off until the real Epic D/E
-  // panels land and wire their own reads (review follow-up). The props stay so
-  // those epics flip `enabled` on without reshaping the wrapper.
-  const usageQuery = useBranchUsage({}, { enabled: false });
-  const analyticsQuery = useBranchAnalytics({}, { enabled: false });
+  const { connectState, connectGitHub: handleConnectGitHub } =
+    useDesktopGitHubConnect(`/branches/${branchId}`);
+  const detailQuery = useBranchDetail(branchId, {
+    refetchOnWindowFocus: true,
+    staleTime: DESKTOP_BRANCH_DETAIL_STALE_TIME_MS,
+  });
+  // Publish the branch name to the Topbar breadcrumb ("Branches / <name>");
+  // null while the detail is still loading.
+  usePublishDetailTitle(
+    detailTitleKey("branch", branchId),
+    detailQuery.data?.branchName ?? null
+  );
+
+  // Desktop currently uses cloud-persisted overlays only; keep this explicit so
+  // the shared page can retain its live-overlay path for non-desktop adapters.
+  const allowDesktopLiveOverlays = false;
+
+  // Gate the standalone connect bar on the SAME shared rule the Branches list
+  // uses (`resolveBranchListBanner` → "connect-github"): show it when this
+  // branch carries no repo identity (GitHub enrichment can never populate), not
+  // whenever a repo is known. Otherwise already-connected users see a permanent
+  // duplicate of the CTA the shared `BranchDetailPage` already gates.
+  //
+  // ALSO show it for repo-known branches whose cloud overlay reports
+  // `NotConnected`: hydration returns that status without clearing
+  // `repoFullName`, so the banner rule alone would hide the CTA — and because
+  // this wrapper forces `allowLiveOverlays={false}`, the shared PR panel never
+  // renders its own connect affordance. Without this branch a disconnected user
+  // on a repo-linked branch would have no way to connect GitHub.
+  const showConnectGitHub =
+    detailQuery.data != null &&
+    (resolveBranchListBanner([detailQuery.data]) === "connect-github" ||
+      detailQuery.data.cloudHydrationStatus ===
+        BranchCloudHydrationStatus.NotConnected);
 
   return (
+    // The Topbar breadcrumb ("Branches / <name>") is the back affordance now;
+    // backHref still feeds the shared not-found state's "Back to Branches" link.
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center border-border border-b px-5 py-3">
-        <a
-          className="sd3-back"
-          href={backHref}
-          onClick={(event) => {
-            event.preventDefault();
-            globalThis.location.hash = backHref;
-          }}
-        >
-          <ArrowLeftIcon aria-hidden className="size-3.5" />
-          Back to Branches
-        </a>
-      </div>
+      <DesktopConnectStatus state={connectState} variant="detail" />
+      <DesktopDetailCloudHydrationStatus detail={detailQuery.data} />
+      {showConnectGitHub ? (
+        <div className="border-b px-4 py-2">
+          <ConnectGitHubIndicator compact onConnect={handleConnectGitHub} />
+        </div>
+      ) : null}
       <BranchDetailPage
-        analytics={analyticsQuery.data}
+        allowLiveOverlays={allowDesktopLiveOverlays}
         backHref={backHref}
         branchId={branchId}
         detail={detailQuery.data}
+        errorKind={classifyBranchDetailError(detailQuery.error)}
         isError={detailQuery.isError}
         isLoading={detailQuery.isLoading}
-        usage={usageQuery.data}
+        onConnectGitHub={handleConnectGitHub}
       />
     </div>
   );
+}
+
+function DesktopDetailCloudHydrationStatus({
+  detail,
+}: {
+  detail?: BranchPageDetail;
+}) {
+  if (!detail) {
+    return null;
+  }
+  if (detail.cloudHydrationStatus === BranchCloudHydrationStatus.Failed) {
+    return (
+      <div className="border-red-200 border-b bg-red-50 px-4 py-2 text-red-900 text-xs">
+        GitHub cloud refresh failed. Local branch details remain visible.
+      </div>
+    );
+  }
+  if (detail.cloudHydrationStatus === BranchCloudHydrationStatus.Stale) {
+    return (
+      <div className="border-amber-200 border-b bg-amber-50 px-4 py-2 text-amber-900 text-xs">
+        GitHub cloud refresh failed. Showing the last synced GitHub overlay with
+        local branch details.
+      </div>
+    );
+  }
+  return null;
 }

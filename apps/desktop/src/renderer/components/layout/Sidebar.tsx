@@ -1,7 +1,7 @@
+import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@closedloop-ai/design-system/components/ui/dropdown-menu";
 import {
@@ -16,15 +16,9 @@ import {
 } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { SidebarCollapsibleSection } from "@closedloop-ai/design-system/components/ui/sidebar-collapsible-section";
 import { ThemeSubmenu } from "@closedloop-ai/design-system/components/ui/theme-submenu";
-import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
-import {
-  ChevronsUpDownIcon,
-  Loader2Icon,
-  SettingsIcon,
-  SunMoonIcon,
-} from "lucide-react";
+import { ChevronsUpDownIcon, Loader2Icon, SunMoonIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   FOCUS_MODE,
@@ -38,7 +32,6 @@ import { useDashboardReady } from "./use-dashboard-ready";
 
 type SidebarProps = {
   activeNav: NavId;
-  runtimeHealthy: boolean;
   /** Nav ids to omit (e.g. feature-flagged-off routes). Defaults to none. */
   hiddenNavIds?: readonly NavId[];
 };
@@ -46,15 +39,11 @@ type SidebarProps = {
 /**
  * Desktop sidebar mirroring the finalized web GlobalSidebar: search on top, the
  * shared top-level / Artifacts / Gateway / Labs nav structure from nav-config,
- * and a footer with the gateway health state and product branding. Items render
- * port links (hrefForNavId), so navigation flows through the desktop navigation
- * adapter exactly like shared component links do.
+ * and a footer with product branding. Items render port links (hrefForNavId),
+ * so navigation flows through the desktop navigation adapter exactly like shared
+ * component links do.
  */
-export function Sidebar({
-  activeNav,
-  runtimeHealthy,
-  hiddenNavIds,
-}: SidebarProps) {
+export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
   const { navigate } = useNavigation();
   const searchParams = useSearchParamsValue();
   const [search, setSearch] = useState(searchParams.get("search") ?? "");
@@ -69,9 +58,9 @@ export function Sidebar({
   const labsItems = visible("labs");
 
   // Sessions is the landing page; the local-first Dashboard ingests in the
-  // background. Mounting the Dashboard runs synchronous local-DB reads on the
-  // main thread, so we must not let it open until ready: the nav item shows a
-  // throbber and is disabled while preparing, then becomes a normal menu item.
+  // background. The Dashboard remains reachable while preparing because its
+  // first live DB read releases the main-process startup path that starts
+  // collectors. The throbber is status-only.
   const dashboardReady = useDashboardReady();
 
   useEffect(() => {
@@ -139,23 +128,6 @@ export function Sidebar({
       </SidebarContent>
       <SidebarFooter className="px-0 pt-1 pb-0">
         <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              className="text-xs"
-              tooltip={runtimeHealthy ? "Gateway healthy" : "Gateway unhealthy"}
-            >
-              <span
-                className={`size-2 shrink-0 rounded-full ${
-                  runtimeHealthy
-                    ? "bg-[var(--success)]"
-                    : "bg-[var(--destructive)]"
-                }`}
-              />
-              <span className="truncate">
-                {runtimeHealthy ? "Gateway healthy" : "Gateway unhealthy"}
-              </span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
           <GatewayMenu />
         </SidebarMenu>
       </SidebarFooter>
@@ -165,12 +137,9 @@ export function Sidebar({
 
 /**
  * Footer gateway menu mirroring the web AccountMenu: the branded "Closedloop
- * Gateway" button opens a dropdown with settings and theme controls. Settings
- * routes to the Settings (Labs) page for now.
+ * Gateway" button opens a dropdown with theme controls.
  */
 function GatewayMenu() {
-  const { navigate } = useNavigation();
-
   return (
     <SidebarMenuItem>
       <DropdownMenu>
@@ -193,12 +162,6 @@ function GatewayMenu() {
           side="top"
           sideOffset={4}
         >
-          <DropdownMenuItem
-            onSelect={() => navigate(hrefForNavId(NavId.Settings))}
-          >
-            <SettingsIcon className="size-4" />
-            Settings
-          </DropdownMenuItem>
           <ThemeSubmenu icon={<SunMoonIcon className="size-4" />} />
         </DropdownMenuContent>
       </DropdownMenu>
@@ -215,8 +178,8 @@ function NavSectionMenu({
   activeNav: NavId;
   /**
    * Whether the local-first Dashboard analytics are ready. While false, the
-   * Dashboard nav item is disabled and shows a throbber so it cannot be opened
-   * (and block the main thread) before its data has finished computing.
+   * Dashboard nav item remains reachable and shows a throbber while its page
+   * handles the loading/progress state.
    */
   dashboardReady?: boolean;
 }) {
@@ -227,7 +190,6 @@ function NavSectionMenu({
         return (
           <SidebarNavLinkItem
             className="text-sm"
-            disabled={preparing}
             href={hrefForNavId(item.id)}
             icon={<item.icon />}
             isActive={activeNav === item.id}

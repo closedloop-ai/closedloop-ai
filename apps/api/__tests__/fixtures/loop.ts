@@ -28,6 +28,7 @@ export function buildPrismaLoop(
     contextRefs: null,
     containerId: null,
     s3StateKey: null,
+    s3StateCleanedAt: null,
     prUrl: null,
     prNumber: null,
     branchName: null,

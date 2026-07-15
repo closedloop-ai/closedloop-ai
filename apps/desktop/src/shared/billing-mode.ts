@@ -80,7 +80,14 @@ export const BILLING_MODES: readonly BillingMode[] = [
 const METERED_MODES: ReadonlySet<BillingMode> = new Set(["api", "cursor_api"]);
 // Subscription-covered → priced only as a hypothetical "would have cost"
 // equivalent, NEVER summed into headline spend.
-const SUBSCRIPTION_MODES: ReadonlySet<BillingMode> = new Set([
+//
+// FEA-3104: exported so the API's parity test can bind its duplicate
+// SUBSCRIPTION_BILLING_MODES set (apps/api/app/agent-sessions/service.ts) to
+// this canonical set. This module is a pure leaf (only `node:path`), so the
+// export adds no boot-path dependency; the API consumes it in a TEST only —
+// never as a desktop-main runtime import (that would risk the pglite boot
+// regression, #1618/#1620).
+export const SUBSCRIPTION_MODES: ReadonlySet<BillingMode> = new Set([
   "subscription_unknown",
   "pro",
   "max_5x",

@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import { isDesktopSessionToken } from "@repo/auth/desktop-session-jwt";
 import type { NextRequest } from "next/server";
 import { withApiKeyAuth } from "./with-api-key-auth";
 import type {
@@ -8,15 +9,20 @@ import type {
   AuthenticatedJsonResponse,
 } from "./with-auth";
 import { withAuth } from "./with-auth";
+import { withDesktopSessionAuth } from "./with-desktop-session-auth";
 
 /**
  * Higher-order function that wraps route handlers with flexible authentication.
  *
- * Checks the Authorization header:
- * - If it starts with `Bearer sk_live_`, delegates to withApiKeyAuth (API key auth)
- * - Otherwise, delegates to withAuth (Clerk session auth)
+ * Routes by the `Authorization: Bearer <token>` header (FEA-2217 contract):
+ * - `Bearer sk_live_*` → withApiKeyAuth (API-key auth).
+ * - Token preclassified as a desktop access token by its non-secret `typ`
+ *   header → withDesktopSessionAuth, which short-circuits: a desktop-typed token
+ *   that fails verification returns 401 and never falls through to Clerk.
+ * - Otherwise → withAuth (Clerk session auth).
  *
- * This allows routes to accept both programmatic (API key) and browser (session) clients.
+ * This allows routes to accept programmatic (API key), desktop-session, and
+ * browser (Clerk session) clients through one central path.
  *
  * @example
  * export const POST = withAnyAuth<ResponseType, '/path'>(async ({ user }, request) => {
@@ -51,6 +57,13 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
       }
       const effectiveOptions = options ?? fallbackOptions;
       return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
+        request,
+        context
+      );
+    }
+
+    if (token && isDesktopSessionToken(token)) {
+      return withDesktopSessionAuth<TResponse, TRoute>(handler)(
         request,
         context
       );

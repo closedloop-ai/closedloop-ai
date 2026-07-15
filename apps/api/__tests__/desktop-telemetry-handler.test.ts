@@ -1,4 +1,8 @@
 import { log } from "@repo/observability/log";
+import {
+  redactGatewaySessionId,
+  SHORT_HASH_PATTERN,
+} from "@repo/observability/redact-correlation";
 import { sanitizeDesktopTelemetryDiagnostics } from "@repo/observability/telemetry/emitter";
 import { Origin } from "@repo/observability/telemetry/origin";
 import {
@@ -399,6 +403,13 @@ describe("handleTelemetryEvent — enrichment failure fallback", () => {
       commandId: validDesktopWirePayload.trace.commandId,
       operationId: validDesktopWirePayload.trace.operationId,
       computeTargetId: validDesktopWirePayload.trace.computeTargetId,
+      // gatewaySessionId is hashed even on the fallback path; the raw token is
+      // never logged.
+      gatewaySessionId: redactGatewaySessionId(
+        validDesktopWirePayload.trace.gatewaySessionId
+      ),
+    });
+    expect(infoMeta.trace).not.toMatchObject({
       gatewaySessionId: validDesktopWirePayload.trace.gatewaySessionId,
     });
     // Critically — none of the server-enrichment fields are present, proving
@@ -415,12 +426,15 @@ describe("handleTelemetryEvent — enrichment failure fallback", () => {
     const warnMeta = warnCall?.[1] as Record<string, unknown>;
     expect(warnMeta).toEqual({
       commandId: validDesktopWirePayload.trace.commandId,
-      gatewaySessionId: validDesktopWirePayload.trace.gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(
+        validDesktopWirePayload.trace.gatewaySessionId
+      ),
       category: validDesktopWirePayload.category,
       errorClass: "TypeError",
     });
 
     // (iii) No PII / unbounded fields leak into the warning
+    expect(warnMeta).not.toHaveProperty("gatewaySessionId");
     expect(warnMeta).not.toHaveProperty("diagnostics");
     expect(warnMeta).not.toHaveProperty("message");
     expect(warnMeta).not.toHaveProperty("trace");
@@ -1815,5 +1829,71 @@ describe("handleTelemetryEvent — onboarding popup telemetry (AC-003)", () => {
     expect(entry).toBeDefined();
     expect(entry?.origin).toBe(Origin.Desktop);
     expect(entry?.category).toBe(category);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (m) handleTelemetryEvent — gatewaySessionId is hashed in every log sink
+//
+// The "Desktop telemetry event received" trace log and the loopPerf drift warn
+// must carry only the redacted hash, never the raw session token (FEA-2277).
+// ---------------------------------------------------------------------------
+
+describe("handleTelemetryEvent — gatewaySessionId redaction", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("logs the trace gatewaySessionId as a hash, never the raw token", () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      validDesktopWirePayload,
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    const infoCall = infoSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry event received"
+    );
+    expect(infoCall).toBeDefined();
+    const meta = infoCall?.[1] as { trace?: { gatewaySessionId?: string } };
+    expect(meta.trace?.gatewaySessionId).toEqual(
+      expect.stringMatching(SHORT_HASH_PATTERN)
+    );
+    expect(meta.trace?.gatewaySessionId).toBe(
+      redactGatewaySessionId(validDesktopWirePayload.trace.gatewaySessionId)
+    );
+    expect(JSON.stringify(meta)).not.toContain(
+      validDesktopWirePayload.trace.gatewaySessionId
+    );
+  });
+
+  it("logs the loopPerf drift warn gatewaySessionId as a hash, never the raw token", () => {
+    vi.spyOn(log, "info").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
+
+    const result = handleTelemetryEvent(
+      {
+        ...validDesktopWirePayload,
+        category: TelemetryCategory.LoopPerfTool,
+        diagnostics: { loopPerf: { event: "post_loop_review", runId: "r-1" } },
+      },
+      defaultHandlerContext
+    );
+    expect(result.ok).toBe(true);
+
+    const warnCall = warnSpy.mock.calls.find(
+      (args) => args[0] === "Desktop telemetry loopPerf event variant unknown"
+    );
+    expect(warnCall).toBeDefined();
+    const meta = warnCall?.[1] as Record<string, unknown>;
+    expect(meta).not.toHaveProperty("gatewaySessionId");
+    expect(meta.gatewaySessionIdHash).toEqual(
+      expect.stringMatching(SHORT_HASH_PATTERN)
+    );
+    expect(JSON.stringify(meta)).not.toContain(
+      validDesktopWirePayload.trace.gatewaySessionId
+    );
   });
 });

@@ -19,6 +19,7 @@ function createEditor() {
   const editor = {
     chain: vi.fn(() => chain),
     commands: { focus: vi.fn() },
+    isDestroyed: false,
     state: {
       selection: { from: 7 },
       tr: transaction,
@@ -121,6 +122,36 @@ describe("inline image upload lifecycle", () => {
     expect(removeInlineImagePlaceholder).toHaveBeenCalledWith("upload-2");
     expect(onInlineImageUploadError).toHaveBeenCalledWith("PUT failed");
     expect(chain.insertContentAt).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch or report an error when the editor is destroyed after a successful upload", async () => {
+    const { chain, editor } = createEditor();
+    (editor as { isDestroyed: boolean }).isDestroyed = true;
+    const onInlineImageUploadError = vi.fn();
+    const removeInlineImagePlaceholder = vi.fn();
+    const findPlaceholderPosition = vi.fn(() => 11);
+    const uploadInlineImage = vi.fn().mockResolvedValue({
+      alt: "diagram",
+      src: ATTACHMENT_REF,
+    });
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      createUploadId: () => "upload-3",
+      editor,
+      file: new File(["image"], "diagram.png", { type: "image/png" }),
+      findPlaceholderPosition,
+      inlineImagesEnabled: true,
+      onInlineImageUploadError,
+      removeInlineImagePlaceholder,
+      uploadInlineImage,
+    });
+
+    expect(uploadInlineImage).toHaveBeenCalledOnce();
+    expect(findPlaceholderPosition).not.toHaveBeenCalled();
+    expect(removeInlineImagePlaceholder).not.toHaveBeenCalled();
+    expect(chain.insertContentAt).not.toHaveBeenCalled();
+    expect(onInlineImageUploadError).not.toHaveBeenCalled();
   });
 
   it("does not upload when inline images are disabled", async () => {

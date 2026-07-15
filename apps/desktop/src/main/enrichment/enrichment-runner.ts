@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { artifactLinkId } from "../collectors/artifact-ref-extractor.js";
+import { artifactLinkId } from "../collectors/parsing/artifact-ref-extractor.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
 import { writePersistentLog } from "../persistent-log.js";
+import { isValidBranchName } from "./branch-validation.js";
 import {
   ghGetCommitStats,
   ghGetPrMetadata,
@@ -275,6 +276,13 @@ function enrichArtifact(
     );
   }
 
+  if (
+    art.kind === ArtifactKind.Branch &&
+    !(art.branch_name && isValidBranchName(art.branch_name))
+  ) {
+    return Promise.resolve(NOT_ENRICHABLE);
+  }
+
   switch (art.kind) {
     case ArtifactKind.Commit:
       return enrichCommit(art, gitPath, ghPath, ghReady, ghThrottle, cwd);
@@ -324,7 +332,14 @@ async function enrichCommit(
 
   if (ghReady && isGitHubRepoFullName(art.repo_full_name)) {
     await ghThrottle();
-    return ghGetCommitStats(ghPath, art.repo_full_name, art.sha);
+    const ghResult = await ghGetCommitStats(
+      ghPath,
+      art.repo_full_name,
+      art.sha
+    );
+    if (ghResult) {
+      return ghResult;
+    }
   }
 
   if (!(cwd || isGitHubRepoFullName(art.repo_full_name))) {
@@ -332,6 +347,45 @@ async function enrichCommit(
   }
 
   return null;
+}
+
+// ghListPrForBranch returns null on transient failures (non-zero exit,
+// malformed JSON) and [] when GitHub confirmed no PRs exist. This helper
+// distinguishes the two so enrichBranch can terminalize only on a confirmed
+// empty result, keeping transient errors on the retry path.
+async function enrichBranchViaGh(
+  prisma: DesktopPrisma,
+  art: ArtifactRow,
+  ghPath: string,
+  ghThrottle: () => Promise<void>
+): Promise<
+  { result: EnrichmentResult } | { result: null; confirmedEmpty: boolean }
+> {
+  await ghThrottle();
+  const prs = await ghListPrForBranch(
+    ghPath,
+    art.repo_full_name!,
+    art.branch_name!
+  );
+  if (prs && prs.length > 0) {
+    const pr = prs[0]!;
+    const isFinal = pr.state === PrState.Merged || pr.state === PrState.Closed;
+
+    await linkBranchSessionsToPr(prisma, art, pr.prNumber, art.repo_full_name!);
+
+    return {
+      result: {
+        stats: {
+          linesAdded: pr.additions,
+          linesRemoved: pr.deletions,
+          filesChanged: 0,
+        },
+        state: isFinal ? EnrichmentState.Final : EnrichmentState.Provisional,
+        source: EnrichmentSource.GhPrList,
+      },
+    };
+  }
+  return { result: null, confirmedEmpty: prs !== null };
 }
 
 async function enrichBranch(
@@ -371,38 +425,20 @@ async function enrichBranch(
     }
   }
 
+  let ghConfirmedNoPrs = false;
   if (ghReady && isGitHubRepoFullName(art.repo_full_name)) {
-    await ghThrottle();
-    const prs = await ghListPrForBranch(
-      ghPath,
-      art.repo_full_name,
-      art.branch_name
-    );
-    if (prs && prs.length > 0) {
-      const pr = prs[0]!;
-      const isFinal =
-        pr.state === PrState.Merged || pr.state === PrState.Closed;
-
-      await linkBranchSessionsToPr(
-        prisma,
-        art,
-        pr.prNumber,
-        art.repo_full_name!
-      );
-
-      return {
-        stats: {
-          linesAdded: pr.additions,
-          linesRemoved: pr.deletions,
-          filesChanged: 0,
-        },
-        state: isFinal ? EnrichmentState.Final : EnrichmentState.Provisional,
-        source: EnrichmentSource.GhPrList,
-      };
+    const gh = await enrichBranchViaGh(prisma, art, ghPath, ghThrottle);
+    if (gh.result) {
+      return gh.result;
     }
+    ghConfirmedNoPrs = gh.confirmedEmpty;
   }
 
   if (!(cwd || isGitHubRepoFullName(art.repo_full_name))) {
+    return NOT_ENRICHABLE;
+  }
+
+  if (cwd && ghConfirmedNoPrs) {
     return NOT_ENRICHABLE;
   }
 

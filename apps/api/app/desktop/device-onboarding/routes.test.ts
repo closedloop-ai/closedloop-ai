@@ -155,6 +155,58 @@ describe("Desktop device-onboarding route contracts", () => {
     });
   });
 
+  it("returns only non-secret presentation fields from the session lookup", async () => {
+    const createdAt = new Date("2026-06-26T18:40:00.000Z");
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    mocks.desktopDeviceOnboardingService.getByUserCode = vi
+      .fn()
+      .mockResolvedValue({
+        id: deviceSessionId,
+        userCode: "ABCD1234",
+        machineName: "Daniel-MBP",
+        platform: "darwin",
+        webAppOrigin: "https://app.closedloop.ai",
+        status: "pending",
+        createdAt,
+        expiresAt,
+        // Secret/internal columns that must never reach the browser.
+        deviceSessionSecretHash: "hash-should-never-be-returned",
+        gatewayPublicKeyPem: "-----BEGIN PUBLIC KEY-----",
+        onboardingAttemptId: "attempt-should-never-be-returned",
+        requestIpHash: "ip-should-never-be-returned",
+      });
+
+    const response = await sessionGET(
+      new Request(
+        "https://api.closedloop.ai/desktop/device-onboarding/session?code=ABCD1234"
+      )
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      userCode: "ABCD1234",
+      machineName: "Daniel-MBP",
+      platform: "darwin",
+      webAppOrigin: "https://app.closedloop.ai",
+      status: "pending",
+      createdAt: createdAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+    });
+    const serialized = JSON.stringify(body);
+    for (const secret of [
+      "hash-should-never-be-returned",
+      // PEM sentinel value (catches a leak even under a renamed field) plus
+      // the field name as a secondary guard.
+      "-----BEGIN PUBLIC KEY-----",
+      "gatewayPublicKeyPem",
+      "attempt-should-never-be-returned",
+      "ip-should-never-be-returned",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
   it("returns an exact retryable session lookup failure when persistence throws", async () => {
     mocks.desktopDeviceOnboardingService.getByUserCode = vi
       .fn()

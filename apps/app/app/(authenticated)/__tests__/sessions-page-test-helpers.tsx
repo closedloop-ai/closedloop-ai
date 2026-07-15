@@ -1,4 +1,5 @@
 import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import type { ReactNode } from "react";
 import { type Mock, vi } from "vitest";
 
@@ -112,14 +113,18 @@ vi.mock("@repo/app/agents/components/sessions/sessions-toolbar", () => ({
       <button
         onClick={() =>
           onFiltersChange({
-            statuses: ["completed"],
+            statuses: [
+              SESSION_STATUS.ACTIVE,
+              SESSION_STATUS.COMPLETED,
+              SESSION_STATUS.ABANDONED,
+            ],
             userIds: [],
             repositories: [],
           })
         }
         type="button"
       >
-        Filter completed
+        Apply lifecycle filters
       </button>
     </div>
   ),

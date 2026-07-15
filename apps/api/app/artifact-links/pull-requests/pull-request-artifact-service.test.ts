@@ -1,11 +1,49 @@
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { describe, expect, it } from "vitest";
+import { Result, Status } from "@repo/api/src/types/result";
+import { GitHubInstallationStatus } from "@repo/database";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   findAssertionMismatch,
+  pullRequestArtifactLinkService,
+} from "./pull-request-artifact-service";
+import {
   isSafeRepositorySegment,
   parseGitHubPullRequestUrl,
-} from "./pull-request-artifact-service";
+} from "./pull-request-url";
 import type { CreatePrArtifactInput } from "./route-contract";
+
+const {
+  mockBranchService,
+  mockGetSinglePullRequest,
+  mockLoadProjectPrLinkRepositories,
+  mockWithDb,
+} = vi.hoisted(() => ({
+  mockBranchService: {
+    upsertBranchArtifact: vi.fn(),
+  },
+  mockGetSinglePullRequest: vi.fn(),
+  mockLoadProjectPrLinkRepositories: vi.fn(),
+  mockWithDb: vi.fn(),
+}));
+
+vi.mock("@repo/database", () => ({
+  GitHubInstallationStatus: {
+    ACTIVE: "ACTIVE",
+  },
+  withDb: mockWithDb,
+}));
+
+vi.mock("@repo/github", () => ({
+  getSinglePullRequest: mockGetSinglePullRequest,
+}));
+
+vi.mock("@/app/branches/branch-service", () => ({
+  branchService: mockBranchService,
+}));
+
+vi.mock("@/app/projects/repository-resolver", () => ({
+  loadProjectPrLinkRepositories: mockLoadProjectPrLinkRepositories,
+}));
 
 // ---------------------------------------------------------------------------
 // parseGitHubPullRequestUrl
@@ -251,5 +289,69 @@ describe("findAssertionMismatch", () => {
         makeLivePr()
       )
     ).toBe("githubId");
+  });
+});
+
+describe("pullRequestArtifactLinkService", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWithDb.mockResolvedValue({
+      id: "project-1",
+      settings: {},
+    });
+    mockLoadProjectPrLinkRepositories.mockResolvedValue([
+      {
+        installationRepositoryId: "repo-1",
+        fullName: "acme/repo",
+      },
+    ]);
+    mockBranchService.upsertBranchArtifact.mockResolvedValue(
+      Result.ok({ id: "branch-artifact-1" })
+    );
+  });
+
+  it("rejects tombstoned repositories before live PR fetch and artifact creation", async () => {
+    const repositoryDb = {
+      gitHubInstallationRepository: {
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+    };
+    mockWithDb
+      .mockResolvedValueOnce({ id: "project-1", settings: {} })
+      .mockImplementationOnce((callback) => callback(repositoryDb));
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody(),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.status).toBe(Status.NotFound);
+    }
+    expect(
+      repositoryDb.gitHubInstallationRepository.findFirst
+    ).toHaveBeenCalledWith({
+      where: {
+        id: "repo-1",
+        fullName: "acme/repo",
+        removedAt: null,
+        installation: {
+          organizationId: "org-1",
+          status: GitHubInstallationStatus.ACTIVE,
+        },
+      },
+      select: {
+        id: true,
+        fullName: true,
+        owner: true,
+        name: true,
+        installation: { select: { installationId: true } },
+      },
+    });
+    expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
+    expect(mockBranchService.upsertBranchArtifact).not.toHaveBeenCalled();
   });
 });

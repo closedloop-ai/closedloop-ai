@@ -15,7 +15,8 @@ import { githubService } from "./service";
 export const GET = withAnyAuth<GitHubIntegrationStatus, "/integrations/github">(
   async ({ user }) => {
     const result = await githubService.getIntegrationStatus(
-      user.organizationId
+      user.organizationId,
+      user.id
     );
     return successResponse(result);
   }

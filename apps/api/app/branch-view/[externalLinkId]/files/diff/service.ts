@@ -44,21 +44,6 @@ export type GetFileDiffResult =
   | { data: BranchViewFileDiff; error: null }
   | { data: null; error: string };
 
-export function isRequestedDiffInPullRequest(
-  files: Array<{
-    filename: string;
-    previous_filename?: string;
-  }>,
-  path: string,
-  previousPath: string | null
-): boolean {
-  return files.some(
-    (file) =>
-      file.filename === path &&
-      (file.previous_filename ?? null) === previousPath
-  );
-}
-
 export async function findCachedBranchFileChange(
   ctx: PrContext,
   path: string,

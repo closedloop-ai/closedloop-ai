@@ -1,11 +1,11 @@
 "use client";
 
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { Button } from "@repo/design-system/components/ui/button";
 import {
   type ComputeTarget,
   DesktopSecurityStatus,
 } from "@closedloop-ai/loops-api/compute-target";
-import { Badge } from "@repo/design-system/components/ui/badge";
-import { Button } from "@repo/design-system/components/ui/button";
 import { Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 
 export type TargetSecurity = NonNullable<ComputeTarget["security"]>;

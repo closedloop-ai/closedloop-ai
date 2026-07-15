@@ -1,8 +1,8 @@
+import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import type {
   DocumentWithProject,
   GenerationStatus,
-  PullRequestInfo,
 } from "@repo/api/src/types/document";
 import {
   DocumentStatus,
@@ -10,6 +10,7 @@ import {
   SnapshotSource,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 
 /**
  * Factory for creating mock DocumentWithProject objects.
@@ -59,35 +60,6 @@ export const createMockGenerationStatus = (
   correlationId: "corr-123",
   ...overrides,
 });
-
-/**
- * Factory for creating mock PullRequestInfo objects.
- * If only `number` is provided, `htmlUrl` will be automatically generated to match.
- */
-export const createMockPullRequest = (
-  overrides?: Partial<PullRequestInfo>
-): PullRequestInfo => {
-  const number = overrides?.number ?? 42;
-  const htmlUrl =
-    overrides?.htmlUrl ?? `https://github.com/org/repo/pull/${number}`;
-
-  return {
-    id: "pr-123",
-    number,
-    title: "Add new feature",
-    htmlUrl,
-    state: GitHubPRState.Open,
-    headBranch: "feature-branch",
-    baseBranch: "main",
-    createdAt: new Date("2024-01-15T10:00:00Z"),
-    checksStatus: null,
-    reviewDecision: null,
-    externalLinkId: null,
-    repoFullName: "org/repo",
-    ...overrides,
-    isDraft: overrides?.isDraft ?? false,
-  };
-};
 
 /**
  * Shared fixture user constant reused by document-table test files.
@@ -146,3 +118,36 @@ export const makePlanArtifact = (
     slug: "PLAN-1",
     ...overrides,
   });
+
+/**
+ * Factory for raw non-document artifacts rendered by document-table rows.
+ * Branch/session rows use the free-form Artifact shape instead of
+ * DocumentWithProject, so keep their defaults close to the table fixtures.
+ */
+export function makeRawArtifact(
+  type: ArtifactType,
+  overrides: Partial<Artifact> = {}
+): Artifact {
+  const status =
+    type === ArtifactType.Branch ? GitHubPRState.Open : SESSION_STATUS.ACTIVE;
+  return {
+    id: "artifact-1",
+    organizationId: "org-1",
+    projectId: "project-1",
+    type,
+    subtype: null,
+    name: "Artifact",
+    slug: null,
+    externalUrl: null,
+    status,
+    priority: null,
+    assigneeId: null,
+    assignee: null,
+    dueDate: null,
+    sortOrder: null,
+    createdById: null,
+    createdAt: new Date("2026-07-14T00:00:00.000Z"),
+    updatedAt: new Date("2026-07-14T00:00:00.000Z"),
+    ...overrides,
+  };
+}

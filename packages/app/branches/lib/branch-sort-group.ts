@@ -2,7 +2,7 @@ import {
   BRANCH_STATUS_CONFIG,
   type BranchRow,
   shortRepoName,
-} from "./branch-sample-data";
+} from "./branch-row";
 
 /**
  * Client-side sort keys for the Branches table. Values match the table column
@@ -56,36 +56,43 @@ export function sortBranchRows(
   key: BranchSortKey,
   dir: BranchSortDir
 ): BranchRow[] {
-  const sorted = [...rows];
-  const compare = (a: BranchRow, b: BranchRow): number => {
-    if (key === BranchSortKey.Name) {
-      return a.branchName.localeCompare(b.branchName);
+  // Decorate-sort-undecorate: derive each row's sort key exactly once (O(N))
+  // instead of recomputing it for both operands on every comparison
+  // (~2·N·log₂N `Date.parse` / `shortRepoName` / status-label lookups for the
+  // default lastActivity sort). String keys compare by `localeCompare`, every
+  // other key by numeric subtraction — the same field, comparison, and
+  // fall-through the per-row comparator used.
+  const stringKey =
+    key === BranchSortKey.Name ||
+    key === BranchSortKey.Repo ||
+    key === BranchSortKey.Owner ||
+    key === BranchSortKey.Status;
+  const sortKeyOf = (row: BranchRow): string | number => {
+    switch (key) {
+      case BranchSortKey.Name:
+        return row.branchName;
+      case BranchSortKey.Repo:
+        return shortRepoName(row.repo);
+      case BranchSortKey.Owner:
+        return row.owner;
+      case BranchSortKey.Status:
+        return BRANCH_STATUS_CONFIG[row.status].label;
+      case BranchSortKey.Changes:
+        return changeTotal(row);
+      case BranchSortKey.LastActivity:
+        return parseActivityMs(row.lastActivityAt);
+      default:
+        return row.sessionCount;
     }
-    if (key === BranchSortKey.Repo) {
-      return shortRepoName(a.repo).localeCompare(shortRepoName(b.repo));
-    }
-    if (key === BranchSortKey.Owner) {
-      return a.owner.localeCompare(b.owner);
-    }
-    if (key === BranchSortKey.Status) {
-      return BRANCH_STATUS_CONFIG[a.status].label.localeCompare(
-        BRANCH_STATUS_CONFIG[b.status].label
-      );
-    }
-    if (key === BranchSortKey.Changes) {
-      return changeTotal(a) - changeTotal(b);
-    }
-    if (key === BranchSortKey.LastActivity) {
-      return (
-        parseActivityMs(a.lastActivityAt) - parseActivityMs(b.lastActivityAt)
-      );
-    }
-    return a.sessionCount - b.sessionCount;
   };
-  sorted.sort((a, b) =>
-    dir === BranchSortDir.Asc ? compare(a, b) : -compare(a, b)
-  );
-  return sorted;
+  const decorated = rows.map((row) => ({ row, sortKey: sortKeyOf(row) }));
+  decorated.sort((a, b) => {
+    const compared = stringKey
+      ? (a.sortKey as string).localeCompare(b.sortKey as string)
+      : (a.sortKey as number) - (b.sortKey as number);
+    return dir === BranchSortDir.Asc ? compared : -compared;
+  });
+  return decorated.map((entry) => entry.row);
 }
 
 /**

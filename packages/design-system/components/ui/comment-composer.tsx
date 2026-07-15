@@ -1,18 +1,28 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
-import { Textarea } from "@repo/design-system/components/ui/textarea";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { Textarea } from "@closedloop-ai/design-system/components/ui/textarea";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type CommentComposerProps = {
   value?: string;
   defaultValue?: string;
   placeholder?: string;
+  ariaLabel?: string;
   submitLabel?: ReactNode;
   cancelLabel?: ReactNode;
   disabled?: boolean;
   isPending?: boolean;
+  /**
+   * In uncontrolled mode, whether `submit()` should eagerly reset the draft.
+   * Defaults to `true` for consumers that unmount on success or manage no
+   * external draft. Set to `false` when `onSubmit` triggers an async mutation
+   * and the composer stays mounted on failure, so the typed draft is preserved
+   * for retry rather than wiped before the mutation resolves. Ignored in
+   * controlled mode (`value` provided), where the parent owns the reset.
+   */
+  clearOnSubmit?: boolean;
   minHeightClassName?: string;
   containerClassName?: string;
   footerClassName?: string;
@@ -27,10 +37,12 @@ export function CommentComposer({
   value,
   defaultValue = "",
   placeholder = "Add a comment...",
+  ariaLabel,
   submitLabel = "Comment",
   cancelLabel = "Cancel",
   disabled = false,
   isPending = false,
+  clearOnSubmit = true,
   minHeightClassName = "min-h-[96px]",
   containerClassName,
   footerClassName,
@@ -43,14 +55,20 @@ export function CommentComposer({
   const [internalValue, setInternalValue] = useState(defaultValue);
   const draft = value ?? internalValue;
 
+  // Tracks whether the user has typed into an uncontrolled composer since it
+  // was last seeded. Once dirtied, a changing `defaultValue` (e.g. a background
+  // refetch of the source comment body) must not clobber the in-progress edit.
+  const hasUserEditedRef = useRef(false);
+
   useEffect(() => {
-    if (value === undefined) {
+    if (value === undefined && !hasUserEditedRef.current) {
       setInternalValue(defaultValue);
     }
   }, [defaultValue, value]);
 
   function setDraft(nextValue: string) {
     if (value === undefined) {
+      hasUserEditedRef.current = true;
       setInternalValue(nextValue);
     }
     onValueChange?.(nextValue);
@@ -62,7 +80,8 @@ export function CommentComposer({
       return;
     }
     onSubmit(trimmed);
-    if (value === undefined) {
+    if (value === undefined && clearOnSubmit) {
+      hasUserEditedRef.current = false;
       setInternalValue("");
       onValueChange?.("");
     }
@@ -71,6 +90,7 @@ export function CommentComposer({
   function handleCancelClick(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
     if (value === undefined) {
+      hasUserEditedRef.current = false;
       setInternalValue(defaultValue);
       onValueChange?.(defaultValue);
     }
@@ -98,6 +118,7 @@ export function CommentComposer({
     >
       {helperText == null ? null : helperText}
       <Textarea
+        aria-label={ariaLabel ?? placeholder}
         className={`${minHeightClassName} resize-y text-sm`}
         data-comment-control="true"
         disabled={disabled || isPending}

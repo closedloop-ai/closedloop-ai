@@ -30,6 +30,10 @@ export function registerCreateLoop(
         "Best practice: Create a manual loop whenever you begin work on any Closedloop document (FEA-*, PLN-*, PRD-*). " +
         "Always include repoFullName and repoBranch so the loop links to the correct repository context. " +
         "Post progress events via add-loop-event at meaningful milestones throughout the work — don't just create and complete.",
+      // inputSchema must be a ZodRawShape (a plain field map), not a built
+      // ZodObject/ZodEffects — the MCP SDK builds the object itself, so a
+      // z.object().refine() here is rejected. The cross-field "both or neither"
+      // rule can't be expressed on a raw shape, so it lives in the handler below.
       inputSchema: {
         documentId: z
           .string()
@@ -42,18 +46,29 @@ export function registerCreateLoop(
           ),
         repoFullName: z
           .string()
+          .min(1)
           .optional()
           .describe(
-            "Repository in owner/repo format (e.g. 'closedloop-ai/symphony-alpha')"
+            "Repository in owner/repo format (e.g. 'closedloop-ai/symphony-alpha'). Must be provided together with repoBranch."
           ),
         repoBranch: z
           .string()
+          .min(1)
           .optional()
-          .describe("Git branch name (e.g. 'feature/fea-653')"),
+          .describe(
+            "Git branch name (e.g. 'feature/fea-653'). Must be provided together with repoFullName."
+          ),
       },
     },
     ({ documentId, prompt, repoFullName, repoBranch }) =>
       withErrorHandling(async () => {
+        // Cross-field validation (see inputSchema note): repoFullName/repoBranch
+        // are both-or-neither so the loop links to the correct repo context.
+        if ((repoFullName === undefined) !== (repoBranch === undefined)) {
+          throw new Error(
+            "repoFullName and repoBranch must be provided together (both or neither) so the loop links to the correct repository context."
+          );
+        }
         const body: Record<string, unknown> = {
           command: LoopCommand.Manual,
           documentId,

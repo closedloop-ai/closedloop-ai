@@ -8,6 +8,12 @@ import {
   PRReviewCommentState,
   PrCommentAuthorKind,
 } from "@repo/api/src/types/branch-view";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+  GitHubSyncResultReason,
+} from "@repo/api/src/types/github-read-model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -223,6 +229,14 @@ describe("branchViewConversationService", () => {
         pullRequestDetailId: "pr-detail-1",
         githubCommentId: "123",
         deletedAt: expect.any(Date),
+        fetchProvenance: expect.objectContaining({
+          credentialType: GitHubFetchCredentialType.UserOAuth,
+          credentialOwnerId: "user-1",
+          mechanism: GitHubFetchMechanism.Rest,
+          trigger: GitHubFetchTrigger.UserAction,
+          observedAt: expect.any(Date),
+          resultReason: GitHubSyncResultReason.Success,
+        }),
       }
     );
     expect(mocks.upsertGitHubIssueCommentThread).not.toHaveBeenCalled();

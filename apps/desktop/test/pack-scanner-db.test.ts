@@ -1,9 +1,8 @@
 /**
  * @file pack-scanner-db.test.ts
- * @description FEA-1791 (PLN-886 follow-up) — covers the two pack-scanner
- * functions that touch the DB directly (everything else probes the filesystem
- * and upserts via pack-store). Both now run on the single DesktopPrisma client
- * via typed delegates rather than raw SQL:
+ * @description Covers the two pack-scanner functions that touch the DB directly
+ * (everything else probes the filesystem and upserts via pack-store). Both run
+ * on the single DesktopPrisma client via typed delegates:
  *   - getRecentProjectRoots → `session.findMany` with `distinct: ['cwd']` and
  *     the recency (updated_at/started_at) lookback filter.
  *   - pruneStaleRows → `agentPack.updateMany` / `skill.updateMany` tombstones

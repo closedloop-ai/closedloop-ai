@@ -5,8 +5,8 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
-import { cn } from "@repo/design-system/lib/utils";
+} from "@closedloop-ai/design-system/components/ui/tabs";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 
 type MetadataPanelProps = {
   title?: string;

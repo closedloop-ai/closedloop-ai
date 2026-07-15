@@ -2,7 +2,7 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import type { DocumentMetaMap } from "@repo/api/src/types/document";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { env } from "@/env";
+import { resolveApiOrigin } from "@/lib/api-origin";
 
 /**
  * Fetches a batch of artifact titles from the BFF API for a list of slugs.
@@ -17,11 +17,6 @@ export async function fetchBatchMeta(
     return {};
   }
 
-  if (!env.NEXT_PUBLIC_API_URL) {
-    log.error("NEXT_PUBLIC_API_URL is not set");
-    return {};
-  }
-
   try {
     const token = await getToken();
     if (!token) {
@@ -29,7 +24,7 @@ export async function fetchBatchMeta(
       return {};
     }
 
-    const url = `${env.NEXT_PUBLIC_API_URL}/documents/batch-meta?slugs=${slugs.join(",")}`;
+    const url = `${resolveApiOrigin()}/documents/batch-meta?slugs=${slugs.join(",")}`;
     const response = await fetch(url, {
       method: "GET",
       headers: {

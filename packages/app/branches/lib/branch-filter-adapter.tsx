@@ -6,7 +6,7 @@ import {
   type BranchRow,
   branchRepoFilterOptions,
   branchStatusFilterOptions,
-} from "./branch-sample-data";
+} from "./branch-row";
 
 /**
  * Maps the multi-select Branch filter state to the generic `FilterPopover`

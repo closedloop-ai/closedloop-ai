@@ -73,7 +73,7 @@ describe("initDatadogRum", () => {
       expect.objectContaining({
         plugins: [{ name: "nextjs" }],
         sessionReplaySampleRate: 0,
-        trackUserInteractions: false,
+        trackUserInteractions: true,
       })
     );
   });

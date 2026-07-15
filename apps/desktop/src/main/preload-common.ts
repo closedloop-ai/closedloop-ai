@@ -1,14 +1,25 @@
 import { createRequire } from "node:module";
+import type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
+import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
 import type {
   RelayHttpRequestPayload,
   RelayResponseEnvelope,
 } from "@repo/shared-platform/relay-request-model";
-import type { AgentMonitorUrl } from "../renderer/types/desktop-api.js";
+import type {
+  AgentMonitorUrl,
+  DesktopAuthState,
+  DesktopBrowserSignInResult,
+  GitHubConnectOpenRequest,
+  GitHubConnectOpenResult,
+} from "../renderer/types/desktop-api.js";
 import type {
   AgentMonitorHooksResult,
   ManagedKeyHintState,
 } from "../shared/contracts.js";
+import { DesktopIdentityIpcChannel } from "../shared/desktop-identity-channel.js";
 import { GATEWAY_DISPATCH_CHANNEL } from "../shared/gateway-dispatch-channel.js";
+import { GitHubIntegrationStatusIpcChannel } from "../shared/github-integration-status-channel.js";
+import { MOVE_TO_APPLICATIONS_IPC_CHANNEL } from "../shared/move-to-applications-ipc-channel.js";
 import {
   RENDERER_OTEL_EXPORT_CHANNEL,
   type RendererOtelBridgePayload,
@@ -31,6 +42,10 @@ type IpcRendererLike = {
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
   send: (channel: string, ...args: unknown[]) => void;
   on?: (channel: string, listener: (...args: never[]) => void) => void;
+  removeListener?: (
+    channel: string,
+    listener: (...args: never[]) => void
+  ) => void;
 };
 type IpcRendererEventsLike = {
   on: (channel: string, listener: (...args: never[]) => void) => void;
@@ -55,6 +70,12 @@ type ElectronPreloadApi = {
  */
 function readMacOSMajorVersion(): number | null {
   if (process.platform !== "darwin") {
+    return null;
+  }
+  // `process.getSystemVersion` is injected by Electron and is absent in plain
+  // Node (e.g. the test:node runner), so guard before calling to keep
+  // createDesktopApi usable outside the Electron runtime.
+  if (typeof process.getSystemVersion !== "function") {
     return null;
   }
   const version = process.getSystemVersion();
@@ -279,6 +300,8 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
       ipcRendererLike.invoke("desktop:check-for-update") as Promise<unknown>,
     applyUpdate: () =>
       ipcRendererLike.invoke("desktop:apply-update") as Promise<unknown>,
+    moveToApplications: async () =>
+      (await ipcRendererLike.invoke(MOVE_TO_APPLICATIONS_IPC_CHANNEL)) === true,
     isDebugAuthEnabled: () =>
       ipcRendererLike.invoke(
         "desktop:is-debug-auth-enabled"
@@ -321,6 +344,15 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
         draft,
         harness
       ) as Promise<string>,
+    getCoachingPack: () =>
+      ipcRendererLike.invoke(
+        "desktop:agent-coaching:get-pack"
+      ) as Promise<unknown>,
+    installCoachingPack: (sourceDir: string) =>
+      ipcRendererLike.invoke(
+        "desktop:agent-coaching:install-pack",
+        sourceDir
+      ) as Promise<unknown>,
     getBinaryPaths: () =>
       ipcRendererLike.invoke("desktop:get-binary-paths") as Promise<unknown>,
     patchBinaryPaths: (patch: unknown) =>
@@ -349,6 +381,49 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
     /** Notify main that the renderer has nonblank shell content to show. */
     notifyRendererReady: () => {
       ipcRendererLike.send("desktop:renderer-ready");
+    },
+    // First-party desktop auth (FEA-2219). Sign-in/out + identity flow entirely
+    // through the main-process DesktopSessionManager; only the short-lived access
+    // token crosses here (for Authorization: Bearer attachment). The refresh
+    // token and device-session secret never leave the main process.
+    getDesktopAuthState: () =>
+      ipcRendererLike.invoke(
+        "desktop:get-desktop-auth-state"
+      ) as Promise<DesktopAuthState>,
+    beginDesktopSignIn: () =>
+      ipcRendererLike.invoke(
+        "desktop:begin-desktop-sign-in"
+      ) as Promise<DesktopBrowserSignInResult>,
+    cancelDesktopSignIn: () =>
+      ipcRendererLike.invoke("desktop:cancel-desktop-sign-in") as Promise<void>,
+    signOutDesktop: () =>
+      ipcRendererLike.invoke("desktop:sign-out-desktop") as Promise<void>,
+    getDesktopAccessToken: () =>
+      ipcRendererLike.invoke("desktop:get-desktop-access-token") as Promise<
+        string | null
+      >,
+    getGitHubIntegrationStatus: () =>
+      ipcRendererLike.invoke(
+        GitHubIntegrationStatusIpcChannel.Get
+      ) as Promise<GitHubIntegrationStatus | null>,
+    getDesktopIdentity: () =>
+      ipcRendererLike.invoke(
+        DesktopIdentityIpcChannel.Get
+      ) as Promise<DesktopIdentity | null>,
+    openGitHubConnect: (request?: GitHubConnectOpenRequest) =>
+      ipcRendererLike.invoke(
+        "desktop:open-github-connect",
+        request
+      ) as Promise<GitHubConnectOpenResult>,
+    onDesktopAuthStateChanged: (
+      callback: (state: DesktopAuthState) => void
+    ) => {
+      const handler = ((_event: unknown, state: DesktopAuthState) =>
+        callback(state)) as (...args: never[]) => void;
+      ipcRendererLike.on?.("desktop:auth-state-changed", handler);
+      return () => {
+        ipcRendererLike.removeListener?.("desktop:auth-state-changed", handler);
+      };
     },
     ...createProfileConfigDesktopApi(ipcRendererLike),
     getAgentMonitorUrl: () =>
@@ -389,6 +464,13 @@ export function createDesktopApi(ipcRendererLike: IpcRendererLike) {
           { total: number; parsed: number; imported: number; complete: boolean }
         >;
       } | null>,
+    // Pause/resume the first-launch backfill from the import banner. The flag is
+    // in-memory in the main process, so it resets to running on app restart.
+    setAgentMonitorImportPaused: (paused: boolean) =>
+      ipcRendererLike.invoke(
+        "desktop:set-agent-monitor-import-paused",
+        paused
+      ) as Promise<void>,
     // FEA-1334: clear the dashboard DB and restart the sidecar so it re-imports
     // every agent session from scratch. The progress banner tracks the re-import.
     reprocessAgentLogs: () =>

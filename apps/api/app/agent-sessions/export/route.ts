@@ -2,7 +2,10 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { forbiddenResponse, parseQueryParams } from "@/lib/route-utils";
-import { getAgentSessionViewerScope } from "../route-helpers";
+import {
+  authorizeAgentSessionTeamScope,
+  getAgentSessionViewerScope,
+} from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { baseAgentSessionQuerySchema } from "../validators";
 
@@ -44,7 +47,15 @@ function buildCsvFilename(orgSlug: string): string {
 }
 
 export const GET = withAnyAuth<never, "/agent-sessions/export">(
-  async ({ user, clerkUserId }, request) => {
+  async ({ user, clerkOrgId, clerkUserId }, request) => {
+    const { params: filters, errorResponse } = parseQueryParams(
+      request,
+      baseAgentSessionQuerySchema
+    );
+    if (errorResponse) {
+      return errorResponse;
+    }
+
     const viewerScope = await getAgentSessionViewerScope({
       userId: user.id,
       clerkUserId,
@@ -53,12 +64,15 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
       return forbiddenResponse();
     }
 
-    const { params: filters, errorResponse } = parseQueryParams(
-      request,
-      baseAgentSessionQuerySchema
-    );
-    if (errorResponse) {
-      return errorResponse;
+    const teamScopeAllowed = await authorizeAgentSessionTeamScope({
+      organizationId: user.organizationId,
+      userId: user.id,
+      clerkOrgId,
+      clerkUserId,
+      filters,
+    });
+    if (!teamScopeAllowed) {
+      return forbiddenResponse();
     }
 
     const { rows, orgSlug } = await agentSessionsService.findExportRows({

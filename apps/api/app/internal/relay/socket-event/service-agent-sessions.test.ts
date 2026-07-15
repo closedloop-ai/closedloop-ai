@@ -21,7 +21,7 @@ describe("dispatchSocketEvent desktop.agent-sessions", () => {
     });
 
     const payload = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       batchId: "7bf9fe88-9a77-471d-a0ce-2b14a7fd5f4a",
       syncMode: "incremental",
       sessionCount: 0,

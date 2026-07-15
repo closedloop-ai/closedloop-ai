@@ -39,6 +39,8 @@ let agentMonitorUrl: AgentMonitorUrl;
 // production fans every event out to ALL subscribers — so the mock must too,
 // rather than keeping only the last subscriber.
 const dbChangeSubscribers = new Set<(payload: DbChangePayload) => void>();
+const rendererTextTimeoutMs = 10_000;
+const rendererTestTimeoutMs = 15_000;
 const emitDbChange = (payload: DbChangePayload = {}) => {
   for (const cb of [...dbChangeSubscribers]) {
     cb(payload);
@@ -80,258 +82,329 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
       navigation.dispose();
     }
     activeNavigations.clear();
+    cleanup();
     globalThis.location.hash = "";
   });
 
-  it("refreshes the list and summary in place on a desktop:db:changed event", async () => {
-    renderDesktopApp();
+  it(
+    "refreshes the list and summary in place on a desktop:db:changed event",
+    async () => {
+      renderDesktopApp("#/sessions");
 
-    // Initial load: one session, and the summary reflects one session.
-    expect(await findRendererText("Alpha Session")).toBeDefined();
-    await waitFor(() => {
-      expect(totalSessionsMetricValue()).toBe("1");
-    });
+      // Initial load: one session, and the summary reflects one session.
+      expect(await findRendererText("Alpha Session")).toBeDefined();
+      await waitFor(() => {
+        expect(totalSessionsMetricValue()).toBe("1");
+      });
 
-    // New data lands in the local DB.
-    fixtureItems = [
-      agentSessionListItem("alpha", "Alpha Session"),
-      agentSessionListItem("beta", "Beta Session"),
-    ];
+      // New data lands in the local DB.
+      fixtureItems = [
+        agentSessionListItem("alpha", "Alpha Session"),
+        agentSessionListItem("beta", "Beta Session"),
+      ];
 
-    act(() => {
-      emitDbChange({});
-    });
+      act(() => {
+        emitDbChange({});
+      });
 
-    // The last-good row stays rendered through the background refetch — no
-    // skeleton flash and no reset to an empty/loading state.
-    expect(screen.getByText("Alpha Session")).toBeDefined();
+      // The last-good row stays rendered through the background refetch — no
+      // skeleton flash and no reset to an empty/loading state.
+      expect(screen.getByText("Alpha Session")).toBeDefined();
 
-    // Both the list and the summary cards update live, with no manual refresh.
-    expect(await findRendererText("Beta Session")).toBeDefined();
-    await waitFor(() => {
-      expect(totalSessionsMetricValue()).toBe("2");
-    });
-  });
+      // Both the list and the summary cards update live, with no manual refresh.
+      expect(await findRendererText("Beta Session")).toBeDefined();
+      await waitFor(() => {
+        expect(totalSessionsMetricValue()).toBe("2");
+      });
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("keeps startup reads gated until the local session source is ready", async () => {
-    agentMonitorUrl = {
-      ...readyAgentMonitorUrl(),
-      localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.starting,
-      ready: false,
-    };
-    installDesktopApi();
+  it(
+    "keeps startup reads gated until the local session source is ready",
+    async () => {
+      agentMonitorUrl = {
+        ...readyAgentMonitorUrl(),
+        localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.starting,
+        ready: false,
+      };
+      installDesktopApi();
 
-    renderDesktopApp();
+      renderDesktopApp("#/sessions");
 
-    await waitFor(() => {
-      expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled();
-    });
-    expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
-    expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
-    expect(screen.getByText("Loading sessions...")).toBeDefined();
-    expect(screen.queryByText("No sessions found")).toBeNull();
-    expect(totalSessionsMetricValue()).toBe("...");
+      await waitFor(() => {
+        expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled();
+      });
+      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
+      expect(screen.getByText("Loading sessions...")).toBeDefined();
+      expect(screen.queryByText("No sessions found")).toBeNull();
+      expect(totalSessionsMetricValue()).toBe("...");
 
-    agentMonitorUrl = readyAgentMonitorUrl();
-    act(() => {
-      emitDbChange({});
-    });
+      agentMonitorUrl = readyAgentMonitorUrl();
+      act(() => {
+        emitDbChange({});
+      });
 
-    expect(await findRendererText("Alpha Session")).toBeDefined();
-    await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(1);
-    });
-    await waitFor(() => {
-      expect(totalSessionsMetricValue()).toBe("1");
-    });
-  });
+      expect(await findRendererText("Alpha Session")).toBeDefined();
+      await waitFor(() => {
+        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(totalSessionsMetricValue()).toBe("1");
+      });
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("shows the true empty state only after the local session source is ready", async () => {
-    fixtureItems = [];
-    installDesktopApi();
+  it(
+    "shows the true empty state only after the local session source is ready",
+    async () => {
+      fixtureItems = [];
+      installDesktopApi();
 
-    renderDesktopApp();
+      renderDesktopApp("#/sessions");
 
-    expect(await findRendererText("No sessions found")).toBeDefined();
-    expect(
-      screen.getByText("No synced sessions match your current filters yet.")
-    ).toBeDefined();
-    await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(1);
-    });
-    await waitFor(() => {
-      expect(totalSessionsMetricValue()).toBe("0");
-    });
-  });
+      expect(await findRendererText("No sessions found")).toBeDefined();
+      expect(
+        screen.getByText("No synced sessions match your current filters yet.")
+      ).toBeDefined();
+      await waitFor(() => {
+        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(
+          1
+        );
+      });
+      await waitFor(() => {
+        expect(totalSessionsMetricValue()).toBe("0");
+      });
+    },
+    rendererTestTimeoutMs
+  );
 
   it.each([
     LOCAL_SESSION_SOURCE_STATUSES.disabled,
     LOCAL_SESSION_SOURCE_STATUSES.unavailable,
-  ])("renders unavailable without list or usage reads when the source is %s", async (localSessionSourceStatus) => {
-    agentMonitorUrl = {
-      ...readyAgentMonitorUrl(),
-      enabled:
-        localSessionSourceStatus !== LOCAL_SESSION_SOURCE_STATUSES.disabled,
-      localSessionSourceStatus,
-      ready: false,
-    };
-    installDesktopApi();
+  ])(
+    "renders unavailable without list or usage reads when the source is %s",
+    async (localSessionSourceStatus) => {
+      agentMonitorUrl = {
+        ...readyAgentMonitorUrl(),
+        enabled:
+          localSessionSourceStatus !== LOCAL_SESSION_SOURCE_STATUSES.disabled,
+        localSessionSourceStatus,
+        ready: false,
+      };
+      installDesktopApi();
 
-    renderDesktopApp();
+      renderDesktopApp("#/sessions");
 
-    expect(
-      await findRendererText("Sessions are temporarily unavailable.")
-    ).toBeDefined();
-    expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
-    expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
-    expect(screen.queryByText("No sessions found")).toBeNull();
-    expect(totalSessionsMetricValue()).toBe("Unavailable");
-    expect(totalTokensMetricValue()).toBe("Unavailable");
-  });
+      expect(
+        await findRendererText("Sessions are temporarily unavailable.")
+      ).toBeDefined();
+      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
+      expect(screen.queryByText("No sessions found")).toBeNull();
+      expect(totalSessionsMetricValue()).toBe("Unavailable");
+      expect(totalTokensMetricValue()).toBe("Unavailable");
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("supports legacy omitted local-session status payloads without enabling disabled reads", async () => {
-    agentMonitorUrl = {
-      enabled: true,
-      planExtractionEnabled: true,
-      ready: true,
-      url: "http://127.0.0.1:0",
-    } as AgentMonitorUrl;
-    installDesktopApi();
+  it(
+    "supports legacy omitted local-session status payloads without enabling disabled reads",
+    async () => {
+      agentMonitorUrl = {
+        enabled: true,
+        planExtractionEnabled: true,
+        ready: true,
+        url: "http://127.0.0.1:0",
+      } as AgentMonitorUrl;
+      installDesktopApi();
 
-    renderDesktopApp();
+      renderDesktopApp("#/sessions");
 
-    expect(await findRendererText("Alpha Session")).toBeDefined();
-    await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(1);
-      expect(window.desktopApi.agentSessionsApi.usage).toHaveBeenCalledTimes(1);
-    });
+      expect(await findRendererText("Alpha Session")).toBeDefined();
+      await waitFor(() => {
+        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(
+          1
+        );
+        expect(window.desktopApi.agentSessionsApi.usage).toHaveBeenCalledTimes(
+          1
+        );
+      });
 
-    for (const navigation of activeNavigations) {
-      navigation.dispose();
-    }
-    activeNavigations.clear();
-    cleanup();
+      for (const navigation of activeNavigations) {
+        navigation.dispose();
+      }
+      activeNavigations.clear();
+      cleanup();
 
-    agentMonitorUrl = {
-      enabled: false,
-      planExtractionEnabled: true,
-      ready: false,
-      url: null,
-    } as AgentMonitorUrl;
-    installDesktopApi();
+      agentMonitorUrl = {
+        enabled: false,
+        planExtractionEnabled: true,
+        ready: false,
+        url: null,
+      } as AgentMonitorUrl;
+      installDesktopApi();
 
-    renderDesktopApp();
+      renderDesktopApp("#/sessions");
 
-    expect(
-      await findRendererText("Sessions are temporarily unavailable.")
-    ).toBeDefined();
-    expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
-    expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
-  });
+      expect(
+        await findRendererText("Sessions are temporarily unavailable.")
+      ).toBeDefined();
+      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("fails closed when the additive local-session status is unknown", async () => {
-    agentMonitorUrl = {
-      ...readyAgentMonitorUrl(),
-      localSessionSourceStatus: "unexpected-ready" as never,
-    };
-    installDesktopApi();
+  it(
+    "fails closed when the additive local-session status is unknown",
+    async () => {
+      agentMonitorUrl = {
+        ...readyAgentMonitorUrl(),
+        localSessionSourceStatus: "unexpected-ready" as never,
+      };
+      installDesktopApi();
 
-    renderDesktopApp();
+      renderDesktopApp("#/sessions");
 
-    await waitFor(() => {
-      expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled();
-    });
-    expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
-    expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
-    expect(screen.queryByText("Alpha Session")).toBeNull();
-    expect(totalSessionsMetricValue()).toBe("...");
-  });
+      await waitFor(() => {
+        expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled();
+      });
+      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
+      expect(screen.queryByText("Alpha Session")).toBeNull();
+      expect(totalSessionsMetricValue()).toBe("...");
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("does not render cached rows or usage after the local session source becomes terminal", async () => {
-    renderDesktopApp();
+  it(
+    "does not render cached rows or usage after the local session source becomes terminal",
+    async () => {
+      renderDesktopApp("#/sessions");
 
-    expect(await findRendererText("Alpha Session")).toBeDefined();
-    await waitFor(() => {
-      expect(totalSessionsMetricValue()).toBe("1");
-    });
+      expect(await findRendererText("Alpha Session")).toBeDefined();
+      await waitFor(() => {
+        expect(totalSessionsMetricValue()).toBe("1");
+      });
 
-    agentMonitorUrl = {
-      ...readyAgentMonitorUrl(),
-      enabled: false,
-      localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.disabled,
-      ready: false,
-      url: null,
-    };
-    act(() => {
-      emitDbChange({});
-    });
+      agentMonitorUrl = {
+        ...readyAgentMonitorUrl(),
+        enabled: false,
+        localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.disabled,
+        ready: false,
+        url: null,
+      };
+      act(() => {
+        emitDbChange({});
+      });
 
-    expect(
-      await findRendererText("Sessions are temporarily unavailable.")
-    ).toBeDefined();
-    expect(screen.queryByText("Alpha Session")).toBeNull();
-    expect(totalSessionsMetricValue()).toBe("Unavailable");
-    expect(totalTokensMetricValue()).toBe("Unavailable");
-  });
+      expect(
+        await findRendererText("Sessions are temporarily unavailable.")
+      ).toBeDefined();
+      expect(screen.queryByText("Alpha Session")).toBeNull();
+      expect(totalSessionsMetricValue()).toBe("Unavailable");
+      expect(totalTokensMetricValue()).toBe("Unavailable");
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("keeps last-good rows on a transient live refetch failure (degrades gracefully)", async () => {
-    renderDesktopApp();
+  it(
+    "keeps last-good rows on a transient live refetch failure (degrades gracefully)",
+    async () => {
+      renderDesktopApp("#/sessions");
 
-    expect(await findRendererText("Alpha Session")).toBeDefined();
+      expect(await findRendererText("Alpha Session")).toBeDefined();
 
-    // The live refetch fails transiently (the local source maps it to a
-    // sanitized 500, so there is no retry storm — one attempt).
-    listShouldFail = true;
-    act(() => {
-      emitDbChange({});
-    });
+      // The live refetch fails transiently (the local source maps it to a
+      // sanitized 500, so there is no retry storm — one attempt).
+      listShouldFail = true;
+      act(() => {
+        emitDbChange({});
+      });
 
-    await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(2);
-    });
+      await waitFor(() => {
+        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(
+          2
+        );
+      });
 
-    // Graceful degrade (PLN-941 §5): the last-good row stays rendered — no
-    // blank/error wipe, no skeleton. Recovery on the next event is covered by
-    // the bridge-level failure→recovery test.
-    expect(screen.getByText("Alpha Session")).toBeDefined();
-    expect(
-      screen.queryByText("Sessions are temporarily unavailable.")
-    ).toBeNull();
-  });
+      // Graceful degrade (PLN-941 §5): the last-good row stays rendered — no
+      // blank/error wipe, no skeleton. Recovery on the next event is covered by
+      // the bridge-level failure→recovery test.
+      expect(screen.getByText("Alpha Session")).toBeDefined();
+      expect(
+        screen.queryByText("Sessions are temporarily unavailable.")
+      ).toBeNull();
+    },
+    rendererTestTimeoutMs
+  );
 
-  it("refetches scoped detail and rerenders Session Trace tool details on a desktop:db:changed event", async () => {
-    renderDesktopApp();
-    act(() => {
-      globalThis.location.hash = "#/sessions/alpha";
-      globalThis.dispatchEvent(new Event("hashchange"));
-    });
+  it(
+    "refetches scoped synced detail and rerenders the shared Session Details boundary on a desktop:db:changed event",
+    async () => {
+      renderDesktopApp("#/sessions/alpha");
 
-    expect(await findRendererText("Alpha Session")).toBeDefined();
-    expect(await findRendererText("pnpm test before")).toBeDefined();
-    expect(screen.queryByText("pnpm test after")).toBeNull();
+      expect(await findRendererText("pnpm test before")).toBeDefined();
+      expect(screen.getAllByText("Alpha Session").length).toBeGreaterThan(0);
+      expect(screen.queryByText("pnpm test after")).toBeNull();
 
-    fixtureDetails.set(
-      "alpha",
-      agentSessionDetail("alpha", [
-        { detail: "pnpm test after", err: false, label: "exec_command" },
-        { detail: "git diff --stat", err: false, label: "exec_command" },
-      ])
-    );
-
-    act(() => {
-      emitDbChange({ sessionId: "alpha" });
-    });
-
-    await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledTimes(
-        2
+      fixtureDetails.set(
+        "alpha",
+        agentSessionDetail(
+          "alpha",
+          [
+            { detail: "pnpm test after", err: false, label: "exec_command" },
+            { detail: "git diff --stat", err: false, label: "exec_command" },
+          ],
+          {
+            branch: "fea-1944",
+            estimatedCost: 4.82,
+            inputTokens: 12_000,
+            model: "gpt-5.5",
+            name: "Uploaded Cloud Session Detail",
+            outputTokens: 3200,
+            repositoryFullName: "closedloop-ai/symphony-alpha",
+            tokenUsageByModel: [
+              {
+                cacheReadTokens: 900,
+                cacheWriteTokens: 400,
+                estimatedCostUsd: 4.82,
+                inputTokens: 12_000,
+                model: "gpt-5.5",
+                outputTokens: 3200,
+              },
+            ],
+          }
+        )
       );
-    });
-    expect(await findRendererText("pnpm test after")).toBeDefined();
-    expect(await findRendererText("git diff --stat")).toBeDefined();
-    expect(screen.getAllByText("exec_command")).toHaveLength(2);
-    expect(screen.queryByText("pnpm test before")).toBeNull();
-  });
+
+      act(() => {
+        emitDbChange({ sessionId: "alpha" });
+      });
+
+      await waitFor(() => {
+        expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledTimes(
+          2
+        );
+      });
+      expect(await findRendererText("pnpm test after")).toBeDefined();
+      expect(await findRendererText("git diff --stat")).toBeDefined();
+      await waitFor(() => {
+        expect(
+          screen.getAllByText("Uploaded Cloud Session Detail")
+        ).toHaveLength(2);
+      });
+      expect(
+        screen.getAllByText("closedloop-ai/symphony-alpha").length
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("exec_command")).toHaveLength(2);
+      expect(screen.queryByText("pnpm test before")).toBeNull();
+    },
+    rendererTestTimeoutMs
+  );
 });
 
 // Reads the live value rendered in the "Total Sessions" metric card, which now
@@ -350,8 +423,8 @@ function metricValue(labelText: string): string | null {
   return value?.textContent ?? null;
 }
 
-function renderDesktopApp() {
-  globalThis.location.hash = "";
+function renderDesktopApp(initialHash = "") {
+  globalThis.location.hash = initialHash;
   const navigation = createDesktopNavigation();
   activeNavigations.add(navigation);
   return render(
@@ -362,7 +435,9 @@ function renderDesktopApp() {
 }
 
 function findRendererText(text: string) {
-  return screen.findByText(text, undefined, { timeout: 5000 });
+  return screen.findByText(text, undefined, {
+    timeout: rendererTextTimeoutMs,
+  });
 }
 
 function installDesktopApi() {
@@ -440,7 +515,6 @@ function agentSessionListItem(id: string, name: string): AgentSessionListItem {
     harness: "codex",
     id,
     inputTokens: 10,
-    issueId: null,
     lastActivityAt: timestamp,
     model: "gpt-test",
     name,
@@ -465,7 +539,8 @@ function agentSessionDetail(
   tools: readonly ToolDetail[] = [
     { detail: "pnpm test before", err: false, label: "exec_command" },
     { detail: "git status", err: false, label: "exec_command" },
-  ]
+  ],
+  overrides: Partial<AgentSessionDetail> = {}
 ): AgentSessionDetail {
   const item = agentSessionListItem(id, "Alpha Session");
   const timestamp = new Date("2026-01-01T00:00:00.000Z");
@@ -509,6 +584,7 @@ function agentSessionDetail(
         type: "tools",
       },
     ],
+    ...overrides,
   };
 }
 

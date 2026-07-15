@@ -4,7 +4,7 @@ import {
   TableBody,
   TableHeader,
   TableRow,
-} from "@repo/design-system/components/ui/table";
+} from "@closedloop-ai/design-system/components/ui/table";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2807-10070";

@@ -80,20 +80,20 @@ export function createEvaluationHandler(
       artifacts: JudgesArtifacts
     ) {
       if (!loop.documentId) {
-        log.warn(
-          `[loop-document-ingestion] No artifactId on loop, skipping ${label} evaluation ingestion`,
-          { loopId: loop.id }
-        );
+        log.warn("loop.document_ingestion.evaluation_artifact_id_missing", {
+          loopId: loop.id,
+          label,
+        });
         return;
       }
 
       const { report } = artifacts;
 
       if (!report) {
-        log.info(
-          `[loop-document-ingestion] No ${label} judges report to ingest`,
-          { documentId: loop.documentId }
-        );
+        log.info("loop.document_ingestion.judges_report_missing", {
+          documentId: loop.documentId,
+          label,
+        });
         return;
       }
 
@@ -113,10 +113,11 @@ export function createEvaluationHandler(
           const latestVersion = artifact?.document?.latestVersion;
           if (latestVersion != null && latestVersion > loop.documentVersion) {
             log.info(
-              `[loop-document-ingestion] Skipping ${label} evaluation ingest — artifact has a newer version`,
+              "loop.document_ingestion.evaluation_ingest_skipped_stale",
               {
                 documentId,
                 loopId: loop.id,
+                label,
                 loopArtifactVersion: loop.documentVersion,
                 currentArtifactVersion: latestVersion,
               }

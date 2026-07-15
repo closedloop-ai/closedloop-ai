@@ -22,7 +22,7 @@ export function registerFailLoop(
       description:
         "Mark a manual loop as FAILED. Call if implementation fails or you're abandoning the work.\n\n" +
         "Provide a clear error message explaining why the work failed so your team has context.\n\n" +
-        "After failing a loop, update the linked document's status back to DRAFT via update-document so it's clear the work hasn't been completed.",
+        "After failing a loop, update the linked document's status via update-document so it's clear the work hasn't been completed — for a Feature: BLOCKED if it's stuck on something, CANCELED if the work is being abandoned; for a Document (PRD/Plan): DRAFT.",
       inputSchema: {
         loopId: z.string().describe("Loop UUID returned by create-loop"),
         errorMessage: z

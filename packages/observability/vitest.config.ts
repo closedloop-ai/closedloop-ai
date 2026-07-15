@@ -9,10 +9,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@closedloop-ai/loops-api": path.resolve(
-        import.meta.dirname,
-        "../loops-api/src"
-      ),
+      "@closedloop-ai/loops-api": path.resolve(import.meta.dirname, "../loops-api/src"),
       "@closedloop-ai/telemetry-contract": path.resolve(
         import.meta.dirname,
         "../telemetry-contract/src"

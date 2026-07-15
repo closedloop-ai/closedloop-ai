@@ -83,7 +83,7 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 
 ### Feature Flags & Org Scope
 
-- **[pattern]**: Feature flags must gate every reachable entry point: visible controls, direct URL/tab states, mutations, and analytics. (context: feature-flags|routing|analytics)
+- **[pattern]**: Feature flags must gate every reachable entry point: visible controls, direct URL/tab states, mutations, and analytics. When adding a new flag-gated feature, ensure the flag is exposed in the Settings/Labs UI if user-togglable, or document why it's admin-only. (context: feature-flags|routing|analytics|labs)
 - **[pattern]**: Persisted client state, refs, storage keys, and recovery guards that depend on the active org must include the org key and reset when it changes; `queryClient.clear()` does not remount components. (context: org-scope|localStorage|refs)
 
 ### Tables & Sorting
@@ -105,6 +105,7 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 - **[pattern]**: Shared client-only UI state that must survive component remounts, route transitions, or browser back/forward should live in a small `useSyncExternalStore` store module, following `lib/engineer/routing-store.ts` and `lib/engineer/electron-detection.ts`. Keep reset semantics explicit: module memory for current-tab only, `localStorage` only when refresh/new-tab persistence is intended.
 - **[mistake]**: Do not put navigation-sensitive shared state in component module-local `Set`/`Map`/`let` values or ad hoc `window` globals. This repo does not currently use Zustand in `apps/app`; do not add it just to store small client-only state unless a human explicitly asks for a state-library migration.
 - **[mistake]**: Avoid querying all entities (documents, trees, projects) and filtering client-side for unbounded or large datasets — use backend-scoped queries, server-side filtering, or pagination. Client-side filtering is acceptable for small, bounded datasets or when the data is already fetched for another purpose. When filtering client-side, ensure the dataset has a known upper bound and won't grow unbounded as the project scales. (context: performance|overfetch|client-filter)
+- **[mistake]**: When a query errors, render a degraded/error state — never leave the UI stuck on a loading skeleton. Catch query errors and show an inline error or fallback, not an infinite spinner. (context: error-state|loading|skeleton)
 
 ### UI Patterns
 
@@ -117,6 +118,15 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 - **[pattern]**: After adding required props, run typecheck to find test files with outdated mock/defaultProps.
 - **[mistake]**: Mocking `next/navigation` in Vitest: must provide useRouter, usePathname, AND useSearchParams.
 - **[mistake]**: Test mocks must expose the same mutation method the production code calls — if the hook uses `mutateAsync`, the mock must provide `mutateAsync` (not just `mutate`), and vice versa. Grep the source for `.mutate(` vs `.mutateAsync(` before writing mock factories. (context: testing|mock|tanstack-query|mutation)
+- **[convention]**: New features, components, hooks, and API routes in `apps/app` must ship with tests. Features without tests are the ones that break in production and require follow-up fix PRs. (context: testing|coverage|new-feature|app)
+
+### Review Quality (from 48-hour audit, July 2026)
+- **[mistake]**: Exported types/interfaces must match the actual runtime shape. If the type says `string` but the code can return `undefined`, downstream consumers silently mishandle data. Verify the code path that produces the value, not just the type annotation. (context: type-safety|interface|runtime-shape)
+- **[mistake]**: Transform/filter functions must actually transform in every code path. Silent passthrough means callers think they got processed data when they got raw input. (context: passthrough|no-op|transform)
+- **[mistake]**: When adding a new variant to a union, enum, or status, check every switch/if-else/Record map that handles that type. Add exhaustive checks so missing cases fail at compile time. (context: exhaustiveness|switch|enum|record)
+- **[mistake]**: When aggregating data across multiple sources (sessions, events, PRs), check whether the same entity can appear in multiple input streams. Deduplication that relies on nullable fields will fail silently and double-count. (context: aggregation|double-count|dedup|join)
+- **[pattern]**: When code is shared between `apps/app` and `apps/desktop` (via `packages/app` or direct imports), verify both surfaces after changes. A hook or utility that works in web may break in Electron due to different runtime environments, API routing, or feature flags. (context: cross-surface|app|desktop|electron)
+- **[pattern]**: File-level churn is a signal. If a file has had 10+ commits in the last week, it's unstable or under-tested. Before modifying such a file, check its recent history and consider whether the fix addresses root cause or just symptoms. (context: churn|hot-file|review|stability)
 
 ### CSS & Animations
 

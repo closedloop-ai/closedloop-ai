@@ -1,14 +1,13 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@repo/design-system/components/ui/card";
-import { formatMetricValue } from "@repo/design-system/components/ui/primitives/format-metric-value";
-import { cn } from "@repo/design-system/lib/utils";
-import type { LucideIcon } from "lucide-react";
+} from "@closedloop-ai/design-system/components/ui/card";
+import { formatMetricValue } from "@closedloop-ai/design-system/components/ui/primitives/format-metric-value";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { ReactNode } from "react";
 
 type WorkflowStatTileProps = {
@@ -16,7 +15,6 @@ type WorkflowStatTileProps = {
   value: string | number;
   description?: string;
   eyebrow?: string;
-  icon?: LucideIcon;
   meta?: ReactNode;
   className?: string;
 };
@@ -26,7 +24,6 @@ export function WorkflowStatTile({
   value,
   description,
   eyebrow,
-  icon: Icon,
   meta,
   className,
 }: WorkflowStatTileProps) {
@@ -49,11 +46,6 @@ export function WorkflowStatTile({
             {formatMetricValue(value)}
           </CardTitle>
         </div>
-        {Icon ? (
-          <span className="flex size-9 items-center justify-center rounded-xl border border-primary/10 bg-primary/10 text-primary">
-            <Icon className="size-4" />
-          </span>
-        ) : null}
       </CardHeader>
       {description || meta ? (
         <CardContent className="flex items-end justify-between gap-3 pt-0">

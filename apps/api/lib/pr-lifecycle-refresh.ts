@@ -7,14 +7,23 @@ import {
   BranchViewSyncFailureReason,
 } from "@repo/api/src/types/branch-view";
 import type { GitHubPRState } from "@repo/api/src/types/github";
-import { withDb } from "@repo/database";
+import {
+  type GitHubFetchTrigger,
+  GitHubSyncResultReason,
+} from "@repo/api/src/types/github-read-model";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   GitHubProviderResultStatus,
   type getSinglePullRequest,
   getSinglePullRequestWithProviderResult,
 } from "@repo/github";
 import { log } from "@repo/observability/log";
+import { pullRequestLocData } from "@/app/branches/pull-request-loc-data";
 import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
+import {
+  gitHubFetchProvenanceData,
+  githubAppRestFetchProvenance,
+} from "@/lib/github-fetch-provenance";
 
 export type PrLifecycleRefreshResult =
   | { status: "not_applicable" }
@@ -62,6 +71,7 @@ type RefreshPullRequestLifecycleInput = {
   pullRequestDetailId: string | null;
   repositoryId: string | null;
   requireCurrentRelation: boolean;
+  fetchTrigger?: GitHubFetchTrigger;
   artifactPatch?: {
     updateBranchIdentity?: boolean;
   };
@@ -88,6 +98,16 @@ export async function refreshPullRequestLifecycle(
   }
 
   const branchArtifactId = input.branchArtifactId;
+  const now = new Date();
+  const attemptProvenance = githubAppRestFetchProvenance({
+    observedAt: now,
+    resultReason: GitHubSyncResultReason.Unknown,
+    trigger: input.fetchTrigger,
+  });
+  const successProvenance = githubAppRestFetchProvenance({
+    observedAt: now,
+    trigger: input.fetchTrigger,
+  });
 
   if (input.requireCurrentRelation) {
     const currentRelation = await withDb((db) =>
@@ -98,11 +118,13 @@ export async function refreshPullRequestLifecycle(
     }
   }
 
-  const now = new Date();
   const stamp = await withDb((db) =>
     db.pullRequestDetail.updateMany({
       where: guardedPullRequestWhere(input),
-      data: { lastRefreshAttemptAt: now },
+      data: {
+        lastRefreshAttemptAt: now,
+        ...gitHubFetchProvenanceData(attemptProvenance),
+      },
     })
   );
   if (stamp.count === 0) {
@@ -116,6 +138,10 @@ export async function refreshPullRequestLifecycle(
     input.pullNumber
   );
   if (freshPrResult.status === GitHubProviderResultStatus.ProviderRateLimit) {
+    await stampRefreshResultReason(
+      input,
+      GitHubSyncResultReason.ProviderUnavailable
+    );
     return {
       status: GitHubProviderResultStatus.ProviderRateLimit,
       retryAfterSeconds: freshPrResult.retryAfterSeconds,
@@ -126,6 +152,10 @@ export async function refreshPullRequestLifecycle(
       ? freshPrResult.value
       : null;
   if (!freshPr) {
+    await stampRefreshResultReason(
+      input,
+      GitHubSyncResultReason.ProviderUnavailable
+    );
     return {
       status: GitHubProviderResultStatus.ProviderUnavailable,
       code: BranchViewSyncErrorCode.PrLifecycleUnavailable,
@@ -176,6 +206,7 @@ export async function refreshPullRequestLifecycle(
           headShaSource: BranchHeadShaSource.PullRequestWebhook,
           headShaObservedAt: now,
           lastPushBeforeSha: null,
+          ...gitHubFetchProvenanceData(successProvenance),
         },
       });
       if (branch.count === 0) {
@@ -187,7 +218,10 @@ export async function refreshPullRequestLifecycle(
 
       const detail = await tx.pullRequestDetail.updateMany({
         where: guardedPullRequestWhere(input),
-        data: pullRequestLifecycleData(freshPr, now),
+        data: {
+          ...pullRequestLifecycleData(freshPr, now),
+          ...gitHubFetchProvenanceData(successProvenance),
+        },
       });
       if (detail.count === 0) {
         throw new GuardedWriteFailed("pull_request_detail");
@@ -233,6 +267,7 @@ function pullRequestLifecycleData(
     closedAt: freshPr.closedAt ? new Date(freshPr.closedAt) : null,
     mergedAt: freshPr.mergedAt ? new Date(freshPr.mergedAt) : null,
     mergeCommitSha: freshPr.mergeCommitSha,
+    ...pullRequestLocData(freshPr),
     lastVerifiedAt: now,
   };
 }
@@ -244,7 +279,11 @@ function guardedPullRequestWhere(input: RefreshPullRequestLifecycleInput) {
     repositoryId: input.repositoryId!,
     branchArtifact: { organizationId: input.organizationId },
     repository: {
-      installation: { organizationId: input.organizationId },
+      removedAt: null,
+      installation: {
+        organizationId: input.organizationId,
+        status: GitHubInstallationStatus.ACTIVE,
+      },
     },
     ...(input.requireCurrentRelation
       ? { currentForBranches: { some: guardedBranchWhere(input) } }
@@ -258,7 +297,11 @@ function guardedBranchWhere(input: RefreshPullRequestLifecycleInput) {
     repositoryId: input.repositoryId!,
     artifact: { organizationId: input.organizationId },
     repository: {
-      installation: { organizationId: input.organizationId },
+      removedAt: null,
+      installation: {
+        organizationId: input.organizationId,
+        status: GitHubInstallationStatus.ACTIVE,
+      },
     },
     ...(input.requireCurrentRelation
       ? { currentPullRequestDetailId: input.pullRequestDetailId! }
@@ -284,4 +327,21 @@ function guardedWriteFailed(
     httpStatus: 409,
     details: { reason: BranchViewSyncFailureReason.GuardedWriteFailed },
   };
+}
+
+async function stampRefreshResultReason(
+  input: RefreshPullRequestLifecycleInput,
+  resultReason: GitHubSyncResultReason
+): Promise<void> {
+  await withDb((db) =>
+    db.pullRequestDetail.updateMany({
+      where: guardedPullRequestWhere(input),
+      data: gitHubFetchProvenanceData(
+        githubAppRestFetchProvenance({
+          resultReason,
+          trigger: input.fetchTrigger,
+        })
+      ),
+    })
+  );
 }

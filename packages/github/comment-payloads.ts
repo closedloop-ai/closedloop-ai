@@ -56,6 +56,16 @@ export type GitHubPullRequestReviewComment = {
   is_updated: boolean;
 };
 
+/** Stable subset of a pull request review returned by the GitHub REST reviews list. */
+export type GitHubPullRequestReview = {
+  id: number;
+  user: { login: string; avatar_url: string } | null;
+  state: string;
+  body: string | null;
+  submitted_at: string | null;
+  html_url: string;
+};
+
 export type CreatePullRequestReviewCommentWithUserTokenInput = {
   body: string;
   commitId: string;

@@ -109,6 +109,7 @@ import {
   RUNNER_RATE_LIMIT_LOOP_ERROR,
   RUNNER_UNKNOWN_SKILL_LOOP_ERROR,
 } from "@repo/app/shared/test-fixtures/loops";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { LoopDetailContainer } from "@/app/(authenticated)/[orgSlug]/loops/[id]/loop-detail-container";
 import { useCancelLoop } from "@/hooks/queries/use-loops";
 
@@ -1184,5 +1185,175 @@ describe("LoopDetailContainer -- support artifacts", () => {
     expect(
       screen.getByRole("link", { name: SUPPORT_PERF_LINK })
     ).toHaveAttribute("href", "https://download.example/perf");
+  });
+});
+
+describe("LoopDetailContainer -- ship celebration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useResumeLoop).mockReturnValue({
+      mutate: mockMutate,
+      mutateAsync: mockMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeLoop>);
+    vi.mocked(useCancelLoop).mockReturnValue({
+      mutate: mockCancelMutate,
+      mutateAsync: mockCancelMutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useCancelLoop>);
+  });
+
+  const shipCelebrationFlagEnabled = (enabled: boolean) => {
+    vi.mocked(useFeatureFlag).mockImplementation((key: string) =>
+      key === "loop-ship-celebration"
+        ? { key, enabled, variant: undefined, payload: undefined }
+        : undefined
+    );
+  };
+
+  const completedShippedLoop = () =>
+    ({
+      data: {
+        ...createMockLoopWithUser({
+          status: LoopStatus.Completed,
+          startedAt: new Date("2024-01-01T00:00:00Z"),
+          completedAt: new Date("2024-01-01T00:05:30Z"),
+        }),
+        primaryPullRequest: {
+          id: "pr-1",
+          number: 42,
+          title: "Ship the feature",
+          htmlUrl: "https://github.com/org/repo/pull/42",
+          state: "OPEN",
+          isDraft: false,
+          headBranch: "feature/ship",
+          baseBranch: "main",
+          createdAt: new Date("2024-01-01T00:00:00Z"),
+          checksStatus: null,
+          reviewDecision: null,
+          externalLinkId: null,
+          repoFullName: "org/repo",
+        },
+      },
+      isLoading: false,
+      error: null,
+    }) as ReturnType<typeof useLoop>;
+
+  it("enriches the Shipped toast with the PR deep link and duration on the RUNNING -> COMPLETED edge", () => {
+    shipCelebrationFlagEnabled(true);
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({ status: LoopStatus.Running }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    const { rerender } = render(<LoopDetailContainer id="loop-ship" />);
+    expect(toast.success).not.toHaveBeenCalled();
+
+    vi.mocked(useLoop).mockReturnValue(completedShippedLoop());
+    rerender(<LoopDetailContainer id="loop-ship" />);
+
+    expect(toast.success).toHaveBeenCalledWith("Shipped! 🎉", {
+      description: "PR #42 · shipped in 5m 30s",
+      action: {
+        label: "View PR",
+        onClick: expect.any(Function),
+      },
+    });
+  });
+
+  it("does not fire the celebration when the flag is disabled", () => {
+    shipCelebrationFlagEnabled(false);
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({ status: LoopStatus.Running }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    const { rerender } = render(<LoopDetailContainer id="loop-ship" />);
+    vi.mocked(useLoop).mockReturnValue(completedShippedLoop());
+    rerender(<LoopDetailContainer id="loop-ship" />);
+
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the legacy loop PR fields when primaryPullRequest is absent", () => {
+    // Document-less / legacy loops carry PR data only on the loop row
+    // (loop.prNumber / loop.prUrl); the API only builds primaryPullRequest
+    // from document PR projections. The toast must still surface the PR number
+    // and the "View PR" action from the loaded legacy fields — matching
+    // renderLegacyLoopPrLink — instead of dropping both.
+    shipCelebrationFlagEnabled(true);
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({ status: LoopStatus.Running }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    const { rerender } = render(<LoopDetailContainer id="loop-ship-legacy" />);
+    expect(toast.success).not.toHaveBeenCalled();
+
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        startedAt: new Date("2024-01-01T00:00:00Z"),
+        completedAt: new Date("2024-01-01T00:05:30Z"),
+        prNumber: 77,
+        prUrl: "https://github.com/org/legacy-repo/pull/77",
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+    rerender(<LoopDetailContainer id="loop-ship-legacy" />);
+
+    expect(toast.success).toHaveBeenCalledWith("Shipped! 🎉", {
+      description: "PR #77 · shipped in 5m 30s",
+      action: {
+        label: "View PR",
+        onClick: expect.any(Function),
+      },
+    });
+  });
+
+  it("omits the duration segment when completedAt is null at the Completed edge", () => {
+    // formatDuration treats a null completedAt as still-running (start→now), so
+    // surfacing it here would show an ever-growing running-clock value for an
+    // already-completed loop. The toast must drop the "shipped in ..." segment
+    // until the merge/completion instant is known.
+    shipCelebrationFlagEnabled(true);
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({ status: LoopStatus.Running }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    const { rerender } = render(
+      <LoopDetailContainer id="loop-ship-nocompleted" />
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Completed,
+        startedAt: new Date("2024-01-01T00:00:00Z"),
+        // completedAt still null at the status-flip edge.
+        completedAt: null,
+        primaryPullRequest: null,
+        prNumber: 88,
+        prUrl: "https://github.com/org/repo/pull/88",
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+    rerender(<LoopDetailContainer id="loop-ship-nocompleted" />);
+
+    // PR context still surfaces; the duration segment is absent (no "shipped in").
+    expect(toast.success).toHaveBeenCalledWith("Shipped! 🎉", {
+      description: "PR #88",
+      action: {
+        label: "View PR",
+        onClick: expect.any(Function),
+      },
+    });
   });
 });

@@ -1,19 +1,29 @@
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import {
+  DocumentStatus,
+  DocumentType,
+  isTerminalStatusForSubtype,
+} from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { SESSION_STATUS } from "@repo/app/agents/lib/session-types";
+// Documents table rows can render SESSION artifacts; reuse the sessions slice's
+// status labels so table tooltips stay aligned with session filters.
+import { SESSION_STATUS_LABELS } from "@repo/app/agents/lib/session-status-filters";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import {
   getDocumentRoute,
   isNavigableDocument,
 } from "@repo/app/documents/lib/document-navigation";
 import {
+  BRANCH_STATUS_LABELS,
   BRANCH_STATUS_TO_ICON,
-  DOCUMENT_STATUS_TO_ICON,
   DOCUMENT_TYPE_BADGE_LABELS,
   DOCUMENT_TYPE_COLORS,
   DOCUMENT_TYPE_ICONS,
 } from "@repo/app/projects/lib/project-constants";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
+import {
+  SESSION_STATUS,
+  TERMINAL_SESSION_STATUSES,
+} from "@closedloop-ai/loops-api/session-status";
 import { GitBranchIcon, TerminalIcon } from "lucide-react";
 import type { ElementType } from "react";
 
@@ -53,8 +63,16 @@ export type RowTypeConfig = {
    * Null means the dialog's default body applies.
    */
   deleteDialogDescription: ((itemName: string) => string) | null;
-  /** Status icon for the row's current `status` value. */
-  statusIcon: StatusIconStatus;
+  /**
+   * Status icon (visual vocabulary) for the row's current `status` value. Set
+   * only for branch/session rows, whose statuses map onto the generic
+   * `StatusIcon`. Document/Feature rows render their own domain status icons
+   * (DocumentStatusIcon / FeatureStatusIcon) keyed off `data.status`, so they
+   * leave this unset.
+   */
+  statusIcon?: StatusIconStatus;
+  /** User-facing status label for branch/session row status icon tooltips. */
+  statusLabel?: string;
 };
 
 export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
@@ -62,7 +80,7 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
     case "project":
       return null;
     case "document": {
-      const { type, status, slug } = item.data;
+      const { type, slug } = item.data;
       const colors = DOCUMENT_TYPE_COLORS[type];
       return {
         badgeLabel: DOCUMENT_TYPE_BADGE_LABELS[type],
@@ -76,7 +94,6 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
         deleteDialogTitle:
           type === DocumentType.Feature ? "Feature" : "Document",
         deleteDialogDescription: null,
-        statusIcon: DOCUMENT_STATUS_TO_ICON[status],
       };
     }
     case "branch":
@@ -95,6 +112,7 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
         deleteDialogDescription: (itemName) =>
           `This removes "${itemName}" from Closedloop only. The pull request and branch on GitHub are not closed or deleted.`,
         statusIcon: branchStatusToIcon(item.data.status),
+        statusLabel: branchStatusToLabel(item.data.status),
       };
     case "session":
       return {
@@ -110,6 +128,7 @@ export function getRowTypeConfig(item: DocumentRowItem): RowTypeConfig | null {
         deleteDialogTitle: "Session",
         deleteDialogDescription: null,
         statusIcon: sessionStatusToIcon(item.data.status),
+        statusLabel: sessionStatusToLabel(item.data.status),
       };
     default: {
       // Exhaustiveness check: a new row kind must be handled explicitly.
@@ -130,10 +149,43 @@ export function isDocumentRowItem(
   return item.kind === "document";
 }
 
+const STATUS_WORD_SEPARATOR_REGEX = /[-_]+/g;
+const WHITESPACE_REGEX = /\s+/g;
+const SESSION_STATUS_LABEL_LOOKUP = new Map<string, string>(
+  Object.entries(SESSION_STATUS_LABELS)
+);
+
 function branchStatusToIcon(status: string): StatusIconStatus {
-  const normalized = status.toUpperCase() as GitHubPRState;
-  return BRANCH_STATUS_TO_ICON[normalized] ?? "in-progress";
+  const normalized = normalizeBranchStatus(status);
+  return normalized ? BRANCH_STATUS_TO_ICON[normalized] : "in-progress";
 }
+
+function branchStatusToLabel(status: string): string {
+  const normalized = normalizeBranchStatus(status);
+  return normalized ? BRANCH_STATUS_LABELS[normalized] : humanizeStatus(status);
+}
+
+function normalizeBranchStatus(status: string): GitHubPRState | null {
+  const normalized = status.toUpperCase() as GitHubPRState;
+  return normalized === GitHubPRState.Open ||
+    normalized === GitHubPRState.Merged ||
+    normalized === GitHubPRState.Closed
+    ? normalized
+    : null;
+}
+
+/**
+ * Documents that the hide-completed table filter treats as completed. This is
+ * intentionally NARROWER than the domain-wide `TERMINAL_DOCUMENT_STATUSES`
+ * (which also includes APPROVED): an APPROVED document is still actively worked
+ * (it awaits execution), so hide-completed keeps it visible. Only EXECUTED and
+ * OBSOLETE documents drop out. The broad terminal set stays untouched for the
+ * backend loop/blocker semantics that legitimately treat APPROVED as done.
+ */
+const HIDE_COMPLETED_DOCUMENT_STATUSES: ReadonlySet<string> = new Set<string>([
+  DocumentStatus.Executed,
+  DocumentStatus.Obsolete,
+]);
 
 /**
  * Whether a row counts as "completed" for table semantics (the hide-completed
@@ -147,10 +199,13 @@ export function isRowItemCompleted(item: DocumentRowItem): boolean {
     case "project":
       return false;
     case "document":
-      return (
-        item.data.status === DocumentStatus.Done ||
-        item.data.status === DocumentStatus.Obsolete
-      );
+      // The "document" row kind covers both Documents and Features (PRD-495).
+      // Features hide on their terminal statuses (DONE/CANCELED); Documents use
+      // the narrower hide-completed set above (EXECUTED/OBSOLETE only — APPROVED
+      // stays visible).
+      return item.data.type === DocumentType.Feature
+        ? isTerminalStatusForSubtype(item.data.type, item.data.status)
+        : HIDE_COMPLETED_DOCUMENT_STATUSES.has(item.data.status);
     case "branch": {
       const normalized = item.data.status.toUpperCase();
       return (
@@ -171,15 +226,15 @@ export function isRowItemCompleted(item: DocumentRowItem): boolean {
 /**
  * Whether a session `status` is terminal. Session status is a free-form
  * harness string, so this matches by pattern rather than by enum: exact
- * `SESSION_STATUS.COMPLETED`, plus any "fail"/"error" variant (e.g. "failed",
- * "execution_failed", "timeout_error") — the same strategy the agent-session
- * sync service uses. Single definition shared by the status-icon mapping and
- * the hide-completed filter so the two can't disagree on what terminal means.
+ * the canonical terminal set plus any legacy "fail"/"error" variant (e.g.
+ * "failed", "execution_failed", "timeout_error"). Single definition shared by
+ * the status-icon mapping and the hide-completed filter so the two can't
+ * disagree on what terminal means.
  */
 export function isTerminalSessionStatus(status: string): boolean {
   const normalized = status.toLowerCase();
   return (
-    normalized === SESSION_STATUS.COMPLETED ||
+    TERMINAL_SESSION_STATUSES.has(normalized) ||
     normalized.includes("fail") ||
     normalized.includes("error")
   );
@@ -202,4 +257,28 @@ function sessionStatusToIcon(status: string): StatusIconStatus {
     return "in-review";
   }
   return "in-progress";
+}
+
+function sessionStatusToLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  const knownLabel = SESSION_STATUS_LABEL_LOOKUP.get(normalized);
+  if (knownLabel) {
+    return knownLabel;
+  }
+  if (normalized.includes("fail") || normalized.includes("error")) {
+    return SESSION_STATUS_LABELS[SESSION_STATUS.ERROR];
+  }
+  return humanizeStatus(status);
+}
+
+function humanizeStatus(status: string): string {
+  const label = status
+    .trim()
+    .toLowerCase()
+    .replace(STATUS_WORD_SEPARATOR_REGEX, " ")
+    .replace(WHITESPACE_REGEX, " ");
+  if (!label) {
+    return "Status";
+  }
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }

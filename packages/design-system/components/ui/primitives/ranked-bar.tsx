@@ -1,6 +1,6 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
-import { Progress } from "@repo/design-system/components/ui/progress";
-import { cn } from "@repo/design-system/lib/utils";
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
+import { Progress } from "@closedloop-ai/design-system/components/ui/progress";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { ReactNode } from "react";
 
 type RankedBarProps = {

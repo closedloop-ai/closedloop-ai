@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   loadActiveDesktopManagedGatewayIds: vi.fn(),
   isAgentSessionSyncSupportedForUser: vi.fn(),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  deleteTranscriptObjects: vi.fn(),
+  logError: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -27,6 +29,14 @@ vi.mock("@repo/database", () => ({
     USER_CREATED: "USER_CREATED",
   },
   withDb: mocks.withDb,
+}));
+
+vi.mock("@repo/aws", () => ({
+  deleteTranscriptObjects: mocks.deleteTranscriptObjects,
+}));
+
+vi.mock("@repo/observability/log", () => ({
+  log: { error: mocks.logError, warn: vi.fn(), info: vi.fn() },
 }));
 
 vi.mock("@/lib/auth/desktop-managed-pop", () => ({
@@ -1115,6 +1125,213 @@ describe("computeTargetsService health-check snapshots", () => {
   });
 });
 
+describe("computeTargetsService deleteOwned", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deletes session transcripts before the compute target", async () => {
+    const artifactDeleteMany = vi.fn().mockResolvedValue({ count: 2 });
+    const transcriptFindMany = vi.fn().mockResolvedValue([]);
+    const transcriptDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
+    const targetDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        deleteMany: targetDeleteMany,
+      },
+      artifact: {
+        deleteMany: artifactDeleteMany,
+      },
+      sessionTranscript: {
+        findMany: transcriptFindMany,
+        deleteMany: transcriptDeleteMany,
+      },
+    });
+
+    const deleted = await computeTargetsService.deleteOwned(
+      "target-1",
+      "org-1",
+      "user-1"
+    );
+
+    expect(deleted).toBe(true);
+    // The RESTRICT FK on session_transcript.compute_target_id requires the
+    // transcript rows to be cleared before the target row (FEA-2807).
+    expect(transcriptDeleteMany).toHaveBeenCalledWith({
+      where: { computeTargetId: "target-1" },
+    });
+    expect(transcriptDeleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      targetDeleteMany.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("purges the collected transcript objects after the rows are deleted", async () => {
+    const transcriptFindMany = vi.fn().mockResolvedValue([
+      { objectStorageKey: "transcripts/org-1/a.jsonl" },
+      { objectStorageKey: "transcripts/org-1/b.jsonl" },
+      // An empty key is filtered out so it never reaches the purge call.
+      { objectStorageKey: "" },
+    ]);
+    const transcriptDeleteMany = vi.fn().mockResolvedValue({ count: 3 });
+    const targetDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
+    mocks.deleteTranscriptObjects.mockResolvedValue(undefined);
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        deleteMany: targetDeleteMany,
+      },
+      artifact: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      sessionTranscript: {
+        findMany: transcriptFindMany,
+        deleteMany: transcriptDeleteMany,
+      },
+    });
+
+    const deleted = await computeTargetsService.deleteOwned(
+      "target-1",
+      "org-1",
+      "user-1"
+    );
+
+    expect(deleted).toBe(true);
+    // Keys are collected before the rows carrying them are dropped.
+    expect(transcriptFindMany).toHaveBeenCalledWith({
+      where: { computeTargetId: "target-1" },
+      select: { objectStorageKey: true },
+    });
+    expect(transcriptFindMany.mock.invocationCallOrder[0]).toBeLessThan(
+      transcriptDeleteMany.mock.invocationCallOrder[0]
+    );
+    // The S3 objects are purged with exactly the non-empty collected keys.
+    expect(mocks.deleteTranscriptObjects).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteTranscriptObjects).toHaveBeenCalledWith([
+      "transcripts/org-1/a.jsonl",
+      "transcripts/org-1/b.jsonl",
+    ]);
+  });
+
+  it("does not purge transcript objects when there are none", async () => {
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      sessionTranscript: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    });
+
+    const deleted = await computeTargetsService.deleteOwned(
+      "target-1",
+      "org-1",
+      "user-1"
+    );
+
+    expect(deleted).toBe(true);
+    expect(mocks.deleteTranscriptObjects).not.toHaveBeenCalled();
+  });
+
+  it("still reports success and logs the orphaned keys when the object purge fails", async () => {
+    mocks.deleteTranscriptObjects.mockRejectedValue(new Error("s3 down"));
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      sessionTranscript: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { objectStorageKey: "transcripts/org-1/a.jsonl" },
+          ]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    });
+
+    const deleted = await computeTargetsService.deleteOwned(
+      "target-1",
+      "org-1",
+      "user-1"
+    );
+
+    // The FK-ordering fix must not be corrupted by an S3 failure: the target
+    // row is already gone, so the delete still reports success.
+    expect(deleted).toBe(true);
+    expect(mocks.logError).toHaveBeenCalledTimes(1);
+    expect(mocks.logError.mock.calls[0][1]).toMatchObject({
+      computeTargetId: "target-1",
+      objectStorageKeys: ["transcripts/org-1/a.jsonl"],
+    });
+  });
+
+  it("does not purge transcript objects when the target row was not deleted", async () => {
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        // A concurrent delete won the race: count 0.
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      artifact: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      sessionTranscript: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { objectStorageKey: "transcripts/org-1/a.jsonl" },
+          ]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    });
+
+    const deleted = await computeTargetsService.deleteOwned(
+      "target-1",
+      "org-1",
+      "user-1"
+    );
+
+    expect(deleted).toBe(false);
+    expect(mocks.deleteTranscriptObjects).not.toHaveBeenCalled();
+  });
+
+  it("returns false without deleting when the target is not owned", async () => {
+    const artifactDeleteMany = vi.fn();
+    const transcriptFindMany = vi.fn();
+    const transcriptDeleteMany = vi.fn();
+    const targetDeleteMany = vi.fn();
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        deleteMany: targetDeleteMany,
+      },
+      artifact: {
+        deleteMany: artifactDeleteMany,
+      },
+      sessionTranscript: {
+        findMany: transcriptFindMany,
+        deleteMany: transcriptDeleteMany,
+      },
+    });
+
+    const deleted = await computeTargetsService.deleteOwned(
+      "target-1",
+      "org-1",
+      "user-1"
+    );
+
+    expect(deleted).toBe(false);
+    expect(artifactDeleteMany).not.toHaveBeenCalled();
+    expect(transcriptFindMany).not.toHaveBeenCalled();
+    expect(transcriptDeleteMany).not.toHaveBeenCalled();
+    expect(targetDeleteMany).not.toHaveBeenCalled();
+    expect(mocks.deleteTranscriptObjects).not.toHaveBeenCalled();
+  });
+});
+
 describe("upsertHealthCheckSnapshot auto-default harness selection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1397,5 +1614,80 @@ describe("deriveAvailableHarnesses", () => {
 
   test.each(cases)("$label", ({ input, expected }) => {
     expect(deriveAvailableHarnesses(input)).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEA-2923 (Gap A): device-facing listings must exclude the synthetic per-org
+// "cloud" sentinel compute target that owns backfilled cloud-authored agents.
+// ---------------------------------------------------------------------------
+describe("computeTargetsService cloud-sentinel exclusion", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(true);
+    mocks.loadActiveDesktopManagedGatewayIds.mockResolvedValue(new Set());
+  });
+
+  it("listByOwner filters out the cloud sentinel (isCloudSentinel: false)", async () => {
+    const findMany = vi.fn().mockResolvedValue([buildTarget()]);
+    installDb({
+      computeTarget: { findMany },
+      apiKey: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    await computeTargetsService.listByOwner("org-1", "user-1", "clerk-user-1");
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: "org-1",
+          userId: "user-1",
+          isCloudSentinel: false,
+        }),
+      })
+    );
+  });
+
+  it("listAvailableForOrg filters out the cloud sentinel (isCloudSentinel: false)", async () => {
+    const findMany = vi.fn().mockResolvedValue([buildTarget()]);
+    installDb({
+      computeTarget: { findMany },
+      apiKey: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    await computeTargetsService.listAvailableForOrg(
+      "org-1",
+      "user-1",
+      "clerk-user-1"
+    );
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: "org-1",
+          isCloudSentinel: false,
+        }),
+      })
+    );
+  });
+
+  it("hasAnyForOwner filters out the cloud sentinel (isCloudSentinel: false)", async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    installDb({ computeTarget: { findFirst } });
+
+    await computeTargetsService.hasAnyForOwner("org-1", "user-1");
+
+    // Defense-in-depth: a "does the owner have a real device?" gate must not be
+    // satisfied by the synthetic cloud sentinel that owns cloud-authored agent
+    // components.
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: "org-1",
+          userId: "user-1",
+          isCloudSentinel: false,
+        }),
+      })
+    );
   });
 });

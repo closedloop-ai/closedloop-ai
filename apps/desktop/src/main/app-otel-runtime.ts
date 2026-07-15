@@ -1,8 +1,10 @@
 import { AppTelemetrySchema } from "@closedloop-ai/telemetry-contract/app";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import { createEmit } from "@closedloop-ai/telemetry-contract/emit";
+import { IpcTelemetrySchema } from "@closedloop-ai/telemetry-contract/ipc";
 import { TelemetrySchemaName } from "@closedloop-ai/telemetry-contract/schema-name";
-import type { Attributes } from "@opentelemetry/api";
+import { SyncTelemetrySchema } from "@closedloop-ai/telemetry-contract/sync";
+import { type Attributes, SpanStatusCode, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import {
   defaultResource,
@@ -47,6 +49,10 @@ import type {
   DesktopAppLifecycleEvent,
   DesktopAppOperatingMode,
 } from "./app-otel-runtime-lifecycle.js";
+import {
+  isUsableDesktopServiceVersion,
+  UNRESOLVED_DESKTOP_SERVICE_VERSION,
+} from "./desktop-service-version.js";
 import { createRelayOtlpExporters } from "./relay-otlp-exporters.js";
 import type { DesktopTelemetryTransport } from "./relay-telemetry-transport.js";
 
@@ -66,6 +72,8 @@ export type DesktopOtelRuntime = {
   start: () => Promise<void>;
   emitAppLifecycleEvent: (input: DesktopAppLifecycleEventInput) => void;
   emitAppExceptionEvent: (input: DesktopAppExceptionEventInput) => void;
+  emitIpcPerfEvent: (input: DesktopIpcPerfEventInput) => void;
+  emitSyncBatchEvent: (input: DesktopSyncBatchEventInput) => void;
   shutdown: () => Promise<void>;
   getBufferedRecords: () => DesktopOtelBufferedRecord[];
   resetBuffer: () => void;
@@ -77,9 +85,57 @@ export type DesktopOtelRuntime = {
 export type DesktopAppLifecycleEventInput = {
   event: DesktopAppLifecycleEvent;
   operatingMode: DesktopAppOperatingMode;
+  /**
+   * Authenticated organization id (multiplayer org attribution, FEA-1996).
+   * Present only when the install is authenticated; omitted in single-player so
+   * unauthenticated lifecycle telemetry never carries org identity.
+   */
+  organizationId?: string;
 };
 
 export type DesktopAppExceptionEventInput = DesktopExceptionTelemetryInput;
+
+/** Instrumented Agent Dashboard IPC handlers carrying perf wide events (FEA-1997). */
+export const DesktopIpcOperation = {
+  List: "list",
+  Detail: "detail",
+  Usage: "usage",
+} as const;
+
+export type DesktopIpcOperation =
+  (typeof DesktopIpcOperation)[keyof typeof DesktopIpcOperation];
+
+export type DesktopIpcPerfEventInput = {
+  operation: DesktopIpcOperation;
+  /** Wall-clock span start (epoch ms); span duration is exactly `durationMs`. */
+  startTimeUnixMs: number;
+  /** Measured handler duration in whole milliseconds (already rounded). */
+  durationMs: number;
+  payloadBytes: number;
+  resultCount: number;
+  sessionCount: number;
+  /** Set only when the handler threw; marks the span ERROR for tail retention. */
+  errorType?: string;
+};
+
+/**
+ * Transport-health outcome of a single agent-session sync batch (FEA-1995). The
+ * permanent-removal class (`dead_letter`) is the oversized-session wedge the
+ * sync service drops after the >256 KiB cap or repeated ack timeouts/rate
+ * limits; the dashboard surfaces it instead of waiting for a user complaint.
+ */
+export type DesktopSyncBatchOutcome = "success" | "failure" | "dead_letter";
+
+/**
+ * Strictly transport-health (PRD-468/FEA-1981 guardrail): counts, bytes,
+ * latency, and outcome only — never session ids or content. `latencyMs` is
+ * omitted for dead-letters dropped before any send (no round-trip occurred).
+ */
+export type DesktopSyncBatchEventInput = {
+  outcome: DesktopSyncBatchOutcome;
+  payloadBytes: number;
+  latencyMs?: number;
+};
 
 export type CreateDesktopOtelRuntimeOptions = {
   appVersion: string;
@@ -103,7 +159,11 @@ const DEPLOYMENT_ENVIRONMENT_MAX_LENGTH = 128;
 const OTEL_DISABLED_VALUES = new Set(["1", "true", "yes"]);
 const APP_LIFECYCLE_EVENT_NAME = "app.lifecycle";
 const APP_EXCEPTION_EVENT_NAME = "exception";
+const SYNC_BATCH_EVENT_NAME = "sync.batch";
 const APP_LIFECYCLE_LOGGER_NAME = "closedloop-desktop-app-lifecycle";
+const IPC_PERF_TRACER_NAME = "closedloop-desktop-ipc";
+const IPC_PERF_SPAN_NAME_PREFIX = "ipc.";
+const SYNC_LOGGER_NAME = "closedloop-desktop-sync";
 const SERVICE_NAME = "closedloop-desktop";
 
 export function createDesktopOtelRuntime(
@@ -149,11 +209,17 @@ export function createDesktopOtelRuntime(
       const attributes = AppTelemetrySchema.parse({
         [TelemetryAttribute.AppLifecycleEvent]: input.event,
         [TelemetryAttribute.AppOperatingMode]: input.operatingMode,
+        ...(input.organizationId
+          ? { [TelemetryAttribute.AppOrganizationId]: input.organizationId }
+          : {}),
       });
-      createEmit(createDesktopOtelLogEmitChannel())(TelemetrySchemaName.App, {
-        name: APP_LIFECYCLE_EVENT_NAME,
-        attributes,
-      });
+      createEmit(createDesktopOtelLogEmitChannel(APP_LIFECYCLE_LOGGER_NAME))(
+        TelemetrySchemaName.App,
+        {
+          name: APP_LIFECYCLE_EVENT_NAME,
+          attributes,
+        }
+      );
     },
     emitAppExceptionEvent(input) {
       if (state !== DesktopOtelRuntimeState.Started) {
@@ -164,13 +230,87 @@ export function createDesktopOtelRuntime(
         const attributes = AppTelemetrySchema.parse(
           sanitizeDesktopException(input)
         );
-        createEmit(createDesktopOtelLogEmitChannel())(TelemetrySchemaName.App, {
-          name: APP_EXCEPTION_EVENT_NAME,
-          attributes,
-        });
+        createEmit(createDesktopOtelLogEmitChannel(APP_LIFECYCLE_LOGGER_NAME))(
+          TelemetrySchemaName.App,
+          {
+            name: APP_EXCEPTION_EVENT_NAME,
+            attributes,
+          }
+        );
       } catch {
         // Exception telemetry is best-effort. It must never affect process
         // crash handling, renderer reporting, or Desktop shutdown paths.
+      }
+    },
+    emitIpcPerfEvent(input) {
+      if (state !== DesktopOtelRuntimeState.Started) {
+        return;
+      }
+
+      try {
+        // Validate against the closed-world ipc contract; an out-of-range value
+        // (negative count, over-cap duration) throws and is swallowed below
+        // rather than shipping a malformed wide event.
+        const attributes = IpcTelemetrySchema.parse({
+          [TelemetryAttribute.IpcOperation]: input.operation,
+          [TelemetryAttribute.DurationMs]: input.durationMs,
+          [TelemetryAttribute.IpcPayloadBytes]: input.payloadBytes,
+          [TelemetryAttribute.IpcResultCount]: input.resultCount,
+          [TelemetryAttribute.IpcSessionCount]: input.sessionCount,
+          ...(input.errorType
+            ? { [TelemetryAttribute.ErrorType]: input.errorType }
+            : {}),
+        });
+        // Wide event = one span. Span duration (end - start) is the source of
+        // truth the collector tail-sampling latency policy reads; duration_ms is
+        // also carried as an explicit, flat query dimension.
+        const span = trace
+          .getTracer(IPC_PERF_TRACER_NAME)
+          .startSpan(`${IPC_PERF_SPAN_NAME_PREFIX}${input.operation}`, {
+            startTime: input.startTimeUnixMs,
+            attributes: normalizeAttributes(attributes),
+          });
+        if (input.errorType) {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: input.errorType,
+          });
+        }
+        span.end(input.startTimeUnixMs + input.durationMs);
+      } catch {
+        // IPC perf telemetry is best-effort and must never affect the handler
+        // result it wraps.
+      }
+    },
+    emitSyncBatchEvent(input) {
+      if (state !== DesktopOtelRuntimeState.Started) {
+        return;
+      }
+
+      try {
+        // `.strict()` closed-world validation rejects any attribute outside the
+        // four sync.* transport-health keys, so a regression that tried to
+        // attach session content would throw here rather than leak it.
+        const attributes = SyncTelemetrySchema.parse({
+          [TelemetryAttribute.SyncEvent]: "batch",
+          [TelemetryAttribute.SyncOutcome]: input.outcome,
+          [TelemetryAttribute.SyncPayloadBytes]: input.payloadBytes,
+          ...(input.latencyMs === undefined
+            ? {}
+            : { [TelemetryAttribute.SyncLatencyMs]: input.latencyMs }),
+        });
+        createEmit(createDesktopOtelLogEmitChannel(SYNC_LOGGER_NAME))(
+          TelemetrySchemaName.Sync,
+          {
+            name: SYNC_BATCH_EVENT_NAME,
+            attributes,
+          }
+        );
+      } catch {
+        // Transport-health telemetry is best-effort. A schema rejection must
+        // never propagate into the sync loop's catch (where it would log a
+        // misleading "sync failed" for a batch that actually succeeded) or
+        // otherwise affect sync semantics. Mirrors emitAppExceptionEvent.
       }
     },
     async shutdown() {
@@ -251,10 +391,23 @@ export function createDesktopOtelRuntime(
       env: options.env,
       isPackaged: options.isPackaged,
     });
+    // Backstop guard (FEA-2199): never stamp an unusable `service.version` onto
+    // the resource. `app.getVersion()` can return Electron's `"0.0"` sentinel (no
+    // resolvable manifest) or the Electron runtime version (unpackaged); either
+    // poisons the per-version fleet slicing. Caller resolution (app.ts) normally
+    // supplies the build-time version, but normalizing here makes the runtime
+    // self-protecting for ANY caller and covers renderer-bridge records, which
+    // inherit this snapshot. The same value feeds the transport handshake below
+    // so the resource and the relay session can never disagree.
+    const serviceVersion = isUsableDesktopServiceVersion(options.appVersion, {
+      electronVersion: process.versions.electron,
+    })
+      ? options.appVersion
+      : UNRESOLVED_DESKTOP_SERVICE_VERSION;
     const resource = defaultResource().merge(
       resourceFromAttributes({
         [TelemetryAttribute.ServiceName]: SERVICE_NAME,
-        [TelemetryAttribute.ServiceVersion]: options.appVersion,
+        [TelemetryAttribute.ServiceVersion]: serviceVersion,
         [TelemetryAttribute.AppInstallationId]: appInstallationId,
         [TelemetryAttribute.DeploymentEnvironmentName]:
           deploymentEnvironmentName,
@@ -290,7 +443,7 @@ export function createDesktopOtelRuntime(
       // connecting transport (early exports land in its warm-up queue).
       transport.start({
         appInstallationId,
-        serviceVersion: options.appVersion,
+        serviceVersion,
         deploymentEnvironmentName,
       });
       state = DesktopOtelRuntimeState.Started;
@@ -322,10 +475,10 @@ export function createDesktopOtelRuntime(
   }
 }
 
-function createDesktopOtelLogEmitChannel() {
+function createDesktopOtelLogEmitChannel(loggerName: string) {
   return {
     info(message: string, meta: Record<string, unknown>): void {
-      logs.getLogger(APP_LIFECYCLE_LOGGER_NAME).emit({
+      logs.getLogger(loggerName).emit({
         eventName: message,
         attributes: normalizeAttributes(meta),
       });

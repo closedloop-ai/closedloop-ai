@@ -168,6 +168,19 @@ export const keys = () =>
         })
         .optional(),
 
+      // Dedicated secret for signing first-party desktop session access tokens
+      // (FEA-1514). Separate from the runner secret on purpose: desktop session
+      // tokens must never be signed or verified with runner/gateway/Clerk/
+      // API-key/webhook material. Optional because not every environment
+      // exercises desktop-session flows.
+      DESKTOP_SESSION_JWT_SECRET: z
+        .string()
+        .min(RUNNER_JWT_MIN_SECRET_LENGTH)
+        .refine((value) => new Set(value).size >= RUNNER_JWT_MIN_UNIQUE_CHARS, {
+          message: `DESKTOP_SESSION_JWT_SECRET is too weak (must contain at least ${RUNNER_JWT_MIN_UNIQUE_CHARS} unique characters)`,
+        })
+        .optional(),
+
       // Added by Vercel
       NEXT_RUNTIME: z.enum(["nodejs", "edge"]).optional(),
 
@@ -188,6 +201,7 @@ export const keys = () =>
     runtimeEnv: {
       ANALYZE: process.env.ANALYZE,
       CLOSEDLOOP_RUNNER_JWT_SECRET: process.env.CLOSEDLOOP_RUNNER_JWT_SECRET,
+      DESKTOP_SESSION_JWT_SECRET: process.env.DESKTOP_SESSION_JWT_SECRET,
       NEXT_RUNTIME: process.env.NEXT_RUNTIME,
       VERCEL: process.env.VERCEL,
       VERCEL_ENV: process.env.VERCEL_ENV,

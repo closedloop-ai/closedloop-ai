@@ -4,8 +4,9 @@
  * the old plan-store.js, plan-extractor.js, and plan-backfill.js into a single
  * first-party ESM module for the design-system dashboard runtime.
  *
- * Schema lives in SQLITE_SCHEMA (sqlite.ts) — no schema creation here.
- * All DB calls use the SQLite async query API with positional $N params.
+ * Schema is owned by Prisma + the migration runner — no schema creation here.
+ * The store runs on the single DesktopPrisma client (typed delegates for reads,
+ * raw SQL via `prisma.write` for the hand-tuned upserts).
  *
  * Part of CLOSEDLOOP plan-extraction (FEA-1189 / PLN-613).
  */
@@ -17,7 +18,7 @@ import type {
   PlanRecord,
   PlanVersionRecord,
 } from "../../shared/agent-db-contract.js";
-import type { DesktopPrisma } from "../database/prisma-client.js";
+import type { DbHostPrisma, DesktopPrisma } from "../database/prisma-client.js";
 
 // The whole plan store runs on the single DesktopPrisma client. The write path
 // (findExistingPlan/upsertPlan/upsertPlanVersion) keeps its hand-tuned SQL —
@@ -588,7 +589,7 @@ function planRecordFromModel(plan: {
 }
 
 export async function listPlans(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   opts: PlanListFilters = {}
 ): Promise<PlanRecord[]> {
   const { limit = 100, offset = 0 } = opts;
@@ -617,7 +618,7 @@ export async function listPlans(
 }
 
 export async function getPlanVersions(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   planId: string
 ): Promise<PlanVersionRecord[]> {
   const rows = await prisma.client.planVersion.findMany({
@@ -637,7 +638,7 @@ export async function getPlanVersions(
 }
 
 export async function getPlan(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   id: string
 ): Promise<PlanRecord | null> {
   const plan = await prisma.client.plan.findUnique({

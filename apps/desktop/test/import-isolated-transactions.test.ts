@@ -1,21 +1,19 @@
 /**
  * @file import-isolated-transactions.test.ts
- * @description FEA-1791 / PLN-886 — the normal ingest path (`importSession`)
- * commits each record group in its OWN isolated transaction instead of wrapping
- * the whole import in one transaction. These tests pin the three behaviors that
- * decomposition introduces and that the old single-transaction path could not
+ * @description The normal ingest path (`importSession`) commits each record
+ * group in its OWN isolated transaction rather than wrapping the whole import in
+ * one transaction. These tests pin the three behaviors that per-group commits
  * provide:
  *
  *   1. Tolerance + isolation: a mid-pipeline group failing (here: the
  *      token_events+costs group) does NOT abort the import — groups before it
  *      stay committed AND groups after it still run, and the import is flagged
- *      `incomplete` so the source is re-imported (not marked seen). Under the
- *      old single transaction the whole import rolled back, persisting nothing.
+ *      `incomplete` so the source is re-imported (not marked seen).
  *   2. Gating: if the session+main-agent group (the FK parent) fails, the import
  *      is reported failed and no child rows are written.
  *   3. Idempotency: re-importing the same session is a no-op (skipped) and leaves
  *      row counts stable — each group is a delete-then-reinsert / ON CONFLICT
- *      unit, so per-group commits converge exactly like the atomic path did.
+ *      unit, so per-group commits converge.
  *
  * The importer is electron-tainted transitively (via sqlite.ts), so like the
  * rest of the desktop node suite these run in CI, not the sandbox.
@@ -27,6 +25,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
 const NOW = "2026-06-16T12:00:00.000Z";
 
@@ -37,35 +36,19 @@ const NOW = "2026-06-16T12:00:00.000Z";
  *  bracket the failed group. When `activity` is false the session derives no
  *  events, so `inserted === 0` and a re-import is `skipped` (idempotency). */
 function makeSession(sessionId: string, activity = true): NormalizedSession {
-  return {
+  return baseSession({
     sessionId,
-    name: sessionId,
     cwd: "/sandbox/project",
     model: "gpt-5",
-    version: null,
-    slug: null,
-    gitBranch: null,
     startedAt: NOW,
     endedAt: "2026-06-16T12:05:00.000Z",
-    teams: [],
     userMessages: 1,
     assistantMessages: 1,
+    entrypoint: "codex",
     tokensByModel: {
       "gpt-5": { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
     },
     messageTimestamps: activity ? ["2026-06-16T12:01:00.000Z"] : [],
-    toolUses: [],
-    plans: [],
-    compactions: [],
-    apiErrors: [],
-    fileModifiedAt: null,
-    turnDurations: [],
-    entrypoint: "codex",
-    permissionMode: null,
-    thinkingBlockCount: 0,
-    toolResultErrors: [],
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
-    messages: [],
     tokenSeries: [
       {
         timestamp: "2026-06-16T12:01:00.000Z",
@@ -76,10 +59,7 @@ function makeSession(sessionId: string, activity = true): NormalizedSession {
         cacheWrite: 0,
       },
     ],
-    diffStats: null,
-    slashCommands: [],
-    artifacts: { prs: [], issues: [], repo: null },
-  };
+  });
 }
 
 type Db = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;

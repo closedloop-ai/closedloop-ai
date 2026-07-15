@@ -3,14 +3,14 @@
 import * as React from "react";
 import { CalendarIcon, XIcon } from "lucide-react";
 import { format } from "date-fns";
-import { cn } from "@repo/design-system/lib/utils";
-import { Button } from "@repo/design-system/components/ui/button";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@repo/design-system/components/ui/popover";
-import { Calendar } from "@repo/design-system/components/ui/calendar";
+} from "@closedloop-ai/design-system/components/ui/popover";
+import { Calendar } from "@closedloop-ai/design-system/components/ui/calendar";
 
 interface DatePickerPopoverProps {
   /** Currently selected date */

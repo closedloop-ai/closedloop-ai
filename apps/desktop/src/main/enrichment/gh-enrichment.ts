@@ -1,3 +1,8 @@
+import {
+  GitHubProviderBudgetState,
+  type GitHubReadModelPullRequest,
+} from "@repo/api/src/types/github-read-model";
+import { fetchBundledPullRequestsWithGh } from "../github/gh-graphql-transport.js";
 import { gitExec } from "./git-exec.js";
 import {
   type EnrichmentResult,
@@ -55,6 +60,33 @@ export async function ghGetPrMetadata(
   repoFullName: string,
   prNumber: number
 ): Promise<PrMetadata | null> {
+  const [owner, repo] = repoFullName.split("/");
+  if (owner && repo) {
+    const bundled = await fetchBundledPullRequestsWithGh(
+      ghPath,
+      owner,
+      repo,
+      [prNumber],
+      {
+        maxItems: 500,
+        maxPages: 5,
+        targetNumbers: [prNumber],
+      }
+    );
+    if (!bundled.ok) {
+      return null;
+    }
+    const pr = bundled.value.pullRequests.find(
+      (candidate) => candidate.number === prNumber
+    );
+    if (pr) {
+      return mapBundledPrMetadata(pr);
+    }
+    if (bundled.value.rateLimit.state === GitHubProviderBudgetState.Low) {
+      return null;
+    }
+  }
+
   const { stdout, exitCode } = await gitExec(
     ghPath,
     [
@@ -94,6 +126,31 @@ export async function ghGetPrMetadata(
   } catch {
     return null;
   }
+}
+
+function mapBundledPrMetadata(pr: GitHubReadModelPullRequest): PrMetadata {
+  return {
+    prState: mapSharedPrState(pr.state),
+    additions: pr.additions ?? 0,
+    deletions: pr.deletions ?? 0,
+    changedFiles: pr.changedFiles ?? 0,
+    mergeCommitSha: pr.mergeCommitSha,
+    baseRefName: pr.baseBranch || null,
+    headRefName: pr.headBranch || null,
+    openedAt: pr.openedAt,
+    mergedAt: pr.mergedAt,
+    closedAt: pr.closedAt,
+  };
+}
+
+function mapSharedPrState(state: string): PrState {
+  if (state === "MERGED") {
+    return PrState.Merged;
+  }
+  if (state === "CLOSED") {
+    return PrState.Closed;
+  }
+  return PrState.Open;
 }
 
 // `gh ... --json mergedAt,closedAt` reports unset timestamp fields as either

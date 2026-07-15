@@ -3,7 +3,14 @@ import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  Prisma: { JsonNull: "DbNull", InputJsonValue: {} },
+  Prisma: {
+    JsonNull: "DbNull",
+    InputJsonValue: {},
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
 }));
 
 vi.mock("@repo/collaboration/shared/room-utils", () => ({
@@ -375,6 +382,40 @@ describe("commentsService", () => {
 
       expect(result).toBeNull();
       expect(mockDb.commentThread.update).not.toHaveBeenCalled();
+    });
+
+    it("locks the thread row with SELECT ... FOR UPDATE before mutating", async () => {
+      const resolvedAt = new Date("2025-06-01");
+      const queryRaw = vi.fn().mockResolvedValue([{ id: "db-th-1" }]);
+      const mockDb = {
+        $queryRaw: queryRaw,
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Open,
+            resolvedAt: null,
+            resolvedById: null,
+            metadata: null,
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt,
+            resolvedById: null,
+            metadata: {},
+          }),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      await commentsService.resolveThread(ORG_ID, THREAD_ID, resolvedAt);
+
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+      const sql = queryRaw.mock.calls[0][0] as { strings: string[] };
+      expect(sql.strings.join("")).toContain("FOR UPDATE");
+      expect(queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        mockDb.commentThread.update.mock.invocationCallOrder[0]
+      );
     });
 
     it("marks a Liveblocks thread as resolved without GitHub attribution", async () => {

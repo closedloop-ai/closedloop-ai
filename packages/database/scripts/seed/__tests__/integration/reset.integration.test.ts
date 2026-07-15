@@ -744,7 +744,7 @@ async function seedResetOnlyFixture(
   const oAuthAuthorizationCode = await ctx.prisma.oAuthAuthorizationCode.create(
     {
       data: {
-        code: `code-${uniq}`,
+        codeFingerprint: `code-fp-${uniq}`,
         encryptedApiKey: `enc-${uniq}`,
         keyId: `kid-${uniq}`,
         userId,

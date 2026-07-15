@@ -1,4 +1,5 @@
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import { LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Link } from "@repo/navigation/link";
 import type { Metadata } from "next";
@@ -28,7 +29,7 @@ export default async function LoopsPage({
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <FeatureFlagged flag="loops-usage-page">
+            <FeatureFlagged flag={LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY}>
               <Button asChild variant="outline">
                 <Link href={`/${orgSlug}/loops/usage`}>Usage</Link>
               </Button>

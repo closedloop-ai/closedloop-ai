@@ -6,6 +6,7 @@ import {
 } from "@repo/api/src/types/branch-view";
 import { describe, expect, it } from "vitest";
 import {
+  getReplyTargetGithubCommentId,
   isResolvableReviewComment,
   isResolvedComment,
 } from "../comment-resolution";
@@ -58,6 +59,43 @@ describe("isResolvableReviewComment", () => {
       resolvable: true,
     });
     expect(isResolvableReviewComment(issueComment)).toBe(false);
+  });
+});
+
+describe("getReplyTargetGithubCommentId", () => {
+  it("returns the parsed positive integer for a numeric github comment id", () => {
+    expect(
+      getReplyTargetGithubCommentId(makeComment({ githubCommentId: "1001" }))
+    ).toBe(1001);
+  });
+
+  it("tolerates surrounding whitespace", () => {
+    expect(
+      getReplyTargetGithubCommentId(makeComment({ githubCommentId: " 42 " }))
+    ).toBe(42);
+  });
+
+  it("returns null for non-numeric ids so the reply payload never becomes NaN", () => {
+    expect(
+      getReplyTargetGithubCommentId(
+        makeComment({ githubCommentId: "review-1001" })
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for empty, zero, negative, and non-integer ids", () => {
+    expect(
+      getReplyTargetGithubCommentId(makeComment({ githubCommentId: "" }))
+    ).toBeNull();
+    expect(
+      getReplyTargetGithubCommentId(makeComment({ githubCommentId: "0" }))
+    ).toBeNull();
+    expect(
+      getReplyTargetGithubCommentId(makeComment({ githubCommentId: "-5" }))
+    ).toBeNull();
+    expect(
+      getReplyTargetGithubCommentId(makeComment({ githubCommentId: "12.5" }))
+    ).toBeNull();
   });
 });
 

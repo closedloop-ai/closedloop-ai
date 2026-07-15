@@ -1,17 +1,16 @@
 /**
  * @file codex-otel-writer-prisma.test.ts
- * @description FEA-1791 / PLN-886 Phase 3 — electron-free coverage for the
- * Codex OTel writer after its move onto the single `DesktopPrisma` client.
- * Builds the writer over the shared {@link openTestPrisma} harness and calls
- * `persistCodexOtelBatch` directly (mirroring the sqlite.ts wrapper: parse, then
- * persist) so the conversion mechanics — the typed `codexTraceSpan.upsert`, the
- * raw session/token_usage upserts, and the single atomic `$transaction` — run
- * locally instead of only behind the electron-tainted integration harness in
- * codex-otel-writer.test.ts.
+ * @description Electron-free coverage for the Codex OTel writer on the single
+ * `DesktopPrisma` client. Builds the writer over the shared {@link openTestPrisma}
+ * harness and calls `persistCodexOtelBatch` directly (mirroring the sqlite.ts
+ * wrapper: parse, then persist) so the writer mechanics — the typed
+ * `codexTraceSpan.upsert`, the raw session/token_usage upserts, and the single
+ * atomic `$transaction` — run locally instead of only behind the electron-tainted
+ * integration harness in codex-otel-writer.test.ts.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/data-revision.js";
+import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
 import {
   CodexOtelSpanStatus,
   CodexOtelTokenUsageSource,

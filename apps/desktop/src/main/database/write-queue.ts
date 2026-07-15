@@ -2,12 +2,12 @@
  * @file write-queue.ts
  * @description The desktop store's single-writer serialization queue.
  *
- * SQLite is single-connection for writes, so every write (raw `db.transaction`
- * and every `prisma.write(...)`) must serialize through ONE queue or a second
- * write opening while another's transaction is live fails with SQLITE_BUSY.
- * `createDesktopPrisma` takes a {@link WriteSerializer} and routes `write(fn)`
- * through it; `openSqliteAgentDatabase` builds the single queue and shares it
- * between the raw store path and the Prisma client.
+ * SQLite is single-connection for writes, so every `prisma.write(...)` must
+ * serialize through ONE queue or a second write opening while another's
+ * transaction is live fails with SQLITE_BUSY. `createDesktopPrisma` takes a
+ * {@link WriteSerializer} and routes `write(fn)` through it;
+ * `openSqliteAgentDatabase` builds the single queue and hands it to the Prisma
+ * client.
  *
  * Extracted from `sqlite.ts` so it can be imported WITHOUT pulling that module's
  * electron-dependent boot graph — the Prisma test harness (`prisma-test-utils`'s

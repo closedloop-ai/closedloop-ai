@@ -1,7 +1,3 @@
-import {
-  ExecutionResultFileSchema,
-  ExecutionResultV2Schema,
-} from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
@@ -11,6 +7,10 @@ import {
 } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
+import {
+  ExecutionResultFileSchema,
+  ExecutionResultV2Schema,
+} from "@closedloop-ai/loops-api/execution-result";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import {
@@ -62,13 +62,10 @@ export async function downloadExecutionArtifacts(
     try {
       rawData = JSON.parse(executionResultBuf.toString("utf-8"));
     } catch (err) {
-      log.error(
-        "[loop-document-ingestion] Malformed execution-result.json — skipping execution ingestion",
-        {
-          loopId: loop.id,
-          error: err instanceof Error ? err.message : String(err),
-        }
-      );
+      log.error("loop.document_ingestion.execution_result_malformed", {
+        loopId: loop.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     if (rawData !== null) {
@@ -76,20 +73,17 @@ export async function downloadExecutionArtifacts(
 
       if (parsed.ok === true) {
         executionResult = parsed.results;
-        log.info("[loop-document-ingestion] Parsed execution result file", {
+        log.info("loop.document_ingestion.execution_result_parsed", {
           loopId: loop.id,
           schemaVersion: parsed.schemaVersion,
           repoCount: parsed.repoCount,
         });
       } else {
-        log.error(
-          "[loop-document-ingestion] Failed to parse execution result file",
-          {
-            loopId: loop.id,
-            error: parsed.error,
-            schemaVersion: parsed.schemaVersion,
-          }
-        );
+        log.error("loop.document_ingestion.execution_result_parse_failed", {
+          loopId: loop.id,
+          error: parsed.error,
+          schemaVersion: parsed.schemaVersion,
+        });
       }
     }
   }
@@ -101,10 +95,7 @@ export async function downloadExecutionArtifacts(
   );
 
   const promptsSnapshot: PromptsSnapshot | null =
-    parsePromptsSnapshotFromMarkdownEntries(
-      promptMarkdownEntries,
-      "[loop-document-ingestion]"
-    );
+    parsePromptsSnapshotFromMarkdownEntries(promptMarkdownEntries);
 
   return { executionResult, codeJudgesReport, promptsSnapshot };
 }
@@ -123,14 +114,14 @@ export async function ingestExecutionArtifacts(
   artifacts: ExecutionArtifacts
 ): Promise<void> {
   if (!artifacts.executionResult) {
-    log.info("[loop-document-ingestion] No execution result to ingest", {
+    log.info("loop.document_ingestion.execution_result_missing", {
       loopId: loop.id,
     });
     return;
   }
 
   if (!loop.documentId) {
-    log.warn("[loop-document-ingestion] Loop missing documentId", {
+    log.warn("loop.document_ingestion.document_id_missing", {
       loopId: loop.id,
     });
     return;
@@ -202,7 +193,7 @@ export function executionArtifactsFromUpload(
       executionResult = result.results;
     } else {
       log.error(
-        "[loop-document-ingestion] Failed to parse execution result from upload",
+        "loop.document_ingestion.execution_result_upload_parse_failed",
         {
           loopId: loop.id,
           error: result.error,

@@ -41,7 +41,7 @@ export function HarnessSelector({
 }: Props) {
   if (availableHarnesses.length === 0) {
     return (
-      <Alert variant="destructive">
+      <Alert variant="error">
         <TriangleAlert className="size-4" />
         <AlertDescription>No AI harness available</AlertDescription>
       </Alert>

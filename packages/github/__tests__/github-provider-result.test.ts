@@ -1,3 +1,12 @@
+import {
+  ChecksStatus,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-checks";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  GitHubBundledPullRequestsStopReason,
+  GitHubProviderBudgetState,
+} from "@repo/api/src/types/github-read-model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -35,6 +44,8 @@ import {
   compareBranchFileChangesWithProviderResult,
   GitHubProviderResultStatus,
   getGitHubRetryAfterSeconds,
+  getRepositoryPullRequests,
+  getRepositoryPullRequestsWithMetadata,
   getSinglePullRequest,
   getSinglePullRequestWithProviderResult,
   listPullRequestIssueComments,
@@ -43,6 +54,7 @@ import {
   listPullRequestReviewCommentsWithProviderResult,
   listPullRequestReviews,
   listPullRequestReviewsWithProviderResult,
+  queryBundledPullRequestsWithProviderResult,
   queryStatusCheckRollup,
   queryStatusCheckRollupWithProviderResult,
 } from "../index";
@@ -105,6 +117,36 @@ function partialRateLimitedStatusRollupError() {
   });
 }
 
+function buildRepositoryPullRequestNode(number: number) {
+  return {
+    id: `PR_${number}`,
+    databaseId: 42_000 + number,
+    number,
+    title: `Pull request ${number}`,
+    url: `https://github.com/acme/repo/pull/${number}`,
+    state: GitHubPRState.Open,
+    isDraft: false,
+    baseRefName: "main",
+    headRefName: `feature/${number}`,
+    headRefOid: `head-sha-${number}`,
+    closedAt: null,
+    mergedAt: null,
+    mergeCommit: null,
+    updatedAt: "2026-07-06T07:00:00Z",
+    author: { login: "octocat" },
+    reviewDecision: null,
+    commits: {
+      nodes: [
+        {
+          commit: {
+            statusCheckRollup: null,
+          },
+        },
+      ],
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetInstallationOctokit.mockResolvedValue(mockOctokit);
@@ -115,6 +157,220 @@ beforeEach(() => {
   mockOctokit.pulls.listReviewComments.mockReset();
   mockOctokit.pulls.listReviews.mockReset();
   mockOctokit.rest.pulls.get.mockReset();
+});
+
+describe("getRepositoryPullRequests", () => {
+  it("preserves bundled check and review summaries on repository PR list rows", async () => {
+    mockOctokit.graphql.mockResolvedValue({
+      rateLimit: {
+        cost: 1,
+        remaining: 100,
+        resetAt: "2026-07-06T08:00:00Z",
+      },
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_kwDO1",
+              databaseId: 42_042,
+              number: 42,
+              title: "Ship cloud PR data",
+              url: "https://github.com/acme/repo/pull/42",
+              state: GitHubPRState.Open,
+              isDraft: false,
+              additions: 22,
+              deletions: 5,
+              changedFiles: 3,
+              baseRefName: "main",
+              headRefName: "feature/cloud-pr-data",
+              headRefOid: "head-sha",
+              closedAt: null,
+              mergedAt: null,
+              mergeCommit: null,
+              updatedAt: "2026-07-06T07:00:00Z",
+              author: { login: "octocat" },
+              reviewDecision: ReviewDecision.Approved,
+              commits: {
+                nodes: [
+                  {
+                    commit: {
+                      statusCheckRollup: { state: "SUCCESS" },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    await expect(
+      getRepositoryPullRequests(INSTALLATION_ID, OWNER, REPO, {
+        state: "all",
+        limit: 100,
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        number: 42,
+        additions: 22,
+        deletions: 5,
+        changedFiles: 3,
+        checksStatus: ChecksStatus.Passing,
+        reviewDecision: ReviewDecision.Approved,
+      }),
+    ]);
+  });
+
+  it("keeps requested target PRs beyond the normal limited window", async () => {
+    mockOctokit.graphql.mockResolvedValue({
+      rateLimit: {
+        cost: 1,
+        remaining: 100,
+        resetAt: "2026-07-06T08:00:00Z",
+      },
+      repository: {
+        pullRequests: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [
+            ...Array.from({ length: 31 }, (_, index) =>
+              buildRepositoryPullRequestNode(index + 1)
+            ),
+            buildRepositoryPullRequestNode(150),
+          ],
+        },
+      },
+    });
+
+    const result = await getRepositoryPullRequestsWithMetadata(
+      INSTALLATION_ID,
+      OWNER,
+      REPO,
+      {
+        state: "all",
+        limit: 30,
+        targetNumbers: [150],
+      }
+    );
+
+    expect(result.pullRequests.map((pr) => pr.number)).toEqual([
+      ...Array.from({ length: 30 }, (_, index) => index + 1),
+      150,
+    ]);
+  });
+});
+
+describe("queryBundledPullRequestsWithProviderResult", () => {
+  it("pages until a requested target PR outside the first page is found", async () => {
+    mockOctokit.graphql
+      .mockResolvedValueOnce({
+        rateLimit: {
+          cost: 1,
+          remaining: 5000,
+          resetAt: "2026-07-06T08:00:00Z",
+        },
+        repository: {
+          pullRequests: {
+            pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+            nodes: [
+              {
+                id: "PR_first",
+                number: 1,
+                title: "First page",
+                url: "https://github.com/acme/repo/pull/1",
+              },
+            ],
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        rateLimit: {
+          cost: 1,
+          remaining: 4999,
+          resetAt: "2026-07-06T08:00:00Z",
+        },
+        repository: {
+          pullRequests: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "PR_target",
+                number: 150,
+                title: "Target page",
+                url: "https://github.com/acme/repo/pull/150",
+              },
+            ],
+          },
+        },
+      });
+
+    const result = await queryBundledPullRequestsWithProviderResult(
+      INSTALLATION_ID,
+      OWNER,
+      REPO,
+      [150],
+      { maxItems: 300, maxPages: 3, targetNumbers: [150] }
+    );
+
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    if (result.status === GitHubProviderResultStatus.Success) {
+      expect(result.value.pullRequests.map((pr) => pr.number)).toEqual([
+        1, 150,
+      ]);
+      expect(result.value.stopReason).toBe(
+        GitHubBundledPullRequestsStopReason.TargetFound
+      );
+      expect(result.value.truncated).toBe(false);
+    }
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(2);
+    expect(mockOctokit.graphql).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ after: "cursor-1", pageSize: 100 })
+    );
+  });
+
+  it("stops target paging on low provider budget and marks the result truncated", async () => {
+    mockOctokit.graphql.mockResolvedValueOnce({
+      rateLimit: {
+        cost: 10,
+        remaining: 1,
+        resetAt: "2026-07-06T08:00:00Z",
+      },
+      repository: {
+        pullRequests: {
+          pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+          nodes: [
+            {
+              id: "PR_first",
+              number: 1,
+              title: "First page",
+              url: "https://github.com/acme/repo/pull/1",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await queryBundledPullRequestsWithProviderResult(
+      INSTALLATION_ID,
+      OWNER,
+      REPO,
+      [150],
+      { maxItems: 300, maxPages: 3, targetNumbers: [150] }
+    );
+
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    if (result.status === GitHubProviderResultStatus.Success) {
+      expect(result.value.rateLimit.state).toBe(GitHubProviderBudgetState.Low);
+      expect(result.value.stopReason).toBe(
+        GitHubBundledPullRequestsStopReason.BudgetLow
+      );
+      expect(result.value.missingTargetNumbers).toEqual([150]);
+      expect(result.value.truncated).toBe(true);
+    }
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("getGitHubRetryAfterSeconds", () => {
@@ -251,6 +507,9 @@ describe("provider-result wrappers", () => {
         base: { ref: "main", sha: "base-sha" },
         merge_commit_sha: null,
         user: { login: "octocat" },
+        additions: 33,
+        deletions: 7,
+        changed_files: 4,
       },
     });
     mockOctokit.paginate.mockImplementation((_method, _params, map) => {
@@ -297,7 +556,14 @@ describe("provider-result wrappers", () => {
         REPO,
         PULL_NUMBER
       )
-    ).resolves.toMatchObject({ status: GitHubProviderResultStatus.Success });
+    ).resolves.toMatchObject({
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        additions: 33,
+        deletions: 7,
+        changedFiles: 4,
+      },
+    });
     await expect(
       compareBranchFileChangesWithProviderResult(
         INSTALLATION_ID,
@@ -554,4 +820,136 @@ describe("provider-result wrappers", () => {
     ).resolves.toBeNull();
     expect(JSON.stringify(mockLogWarn.mock.calls)).not.toContain("ghp_secret");
   });
+
+  it("bounds review-comment provider page sizes by the remaining limit", async () => {
+    mockOctokit.pulls.listReviewComments.mockImplementation(
+      ({ per_page: perPage }: { per_page: number }) =>
+        Promise.resolve({
+          data: makeReviewComments(perPage),
+        })
+    );
+
+    await expect(
+      listPullRequestReviewCommentsWithProviderResult(
+        INSTALLATION_ID,
+        OWNER,
+        REPO,
+        PULL_NUMBER,
+        { limit: 101, pageSize: 50, includeReviewThreadMetadata: false }
+      )
+    ).resolves.toMatchObject({
+      status: GitHubProviderResultStatus.Success,
+      value: expect.arrayContaining([expect.objectContaining({ id: 1 })]),
+    });
+
+    expect(
+      mockOctokit.pulls.listReviewComments.mock.calls.map(
+        ([params]) => params.per_page
+      )
+    ).toEqual([50, 50, 1]);
+    expect(mockFetchReviewThreadMetadataByCommentId).not.toHaveBeenCalled();
+  });
+
+  it("bounds issue-comment provider page sizes by the remaining limit", async () => {
+    mockOctokit.issues.listComments.mockImplementation(
+      ({ per_page: perPage }: { per_page: number }) =>
+        Promise.resolve({
+          data: makeIssueComments(perPage),
+        })
+    );
+
+    await expect(
+      listPullRequestIssueCommentsWithProviderResult(
+        INSTALLATION_ID,
+        OWNER,
+        REPO,
+        PULL_NUMBER,
+        { limit: 101, pageSize: 50 }
+      )
+    ).resolves.toMatchObject({
+      status: GitHubProviderResultStatus.Success,
+      value: expect.arrayContaining([expect.objectContaining({ id: 1 })]),
+    });
+
+    expect(
+      mockOctokit.issues.listComments.mock.calls.map(
+        ([params]) => params.per_page
+      )
+    ).toEqual([50, 50, 1]);
+  });
+
+  it("bounds review-body provider page sizes by the remaining limit", async () => {
+    mockOctokit.pulls.listReviews.mockImplementation(
+      ({ per_page: perPage }: { per_page: number }) =>
+        Promise.resolve({
+          data: makeReviews(perPage),
+        })
+    );
+
+    await expect(
+      listPullRequestReviewsWithProviderResult(
+        INSTALLATION_ID,
+        OWNER,
+        REPO,
+        PULL_NUMBER,
+        { limit: 101, pageSize: 50 }
+      )
+    ).resolves.toMatchObject({
+      status: GitHubProviderResultStatus.Success,
+      value: expect.arrayContaining([expect.objectContaining({ id: 1 })]),
+    });
+
+    expect(
+      mockOctokit.pulls.listReviews.mock.calls.map(
+        ([params]) => params.per_page
+      )
+    ).toEqual([50, 50, 1]);
+  });
 });
+
+function makeIssueComments(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    node_id: `IC_${index + 1}`,
+    user: null,
+    body: "issue body",
+    author_association: "CONTRIBUTOR",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    html_url: `https://github.com/acme/repo/pull/42#issuecomment-${index + 1}`,
+  }));
+}
+
+function makeReviewComments(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    node_id: `PRRC_${index + 1}`,
+    path: "src/index.ts",
+    line: 20,
+    side: "RIGHT",
+    start_line: null,
+    start_side: null,
+    original_line: 20,
+    original_start_line: null,
+    body: "review body",
+    user: null,
+    author_association: "MEMBER",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    html_url: `https://github.com/acme/repo/pull/42#discussion_r${index + 1}`,
+    commit_id: "abc123",
+    pull_request_review_id: 456,
+    in_reply_to_id: null,
+  }));
+}
+
+function makeReviews(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    user: null,
+    state: "COMMENTED",
+    body: "review body",
+    submitted_at: "2026-01-01T00:00:00Z",
+    html_url: `https://github.com/acme/repo/pull/42#pullrequestreview-${index + 1}`,
+  }));
+}

@@ -40,7 +40,12 @@ export function RenameDialogShell({
       return;
     }
 
-    await onSubmit();
+    try {
+      await onSubmit();
+    } catch {
+      // Failure surfaced by the mutation's onError handler; swallow here to
+      // prevent an unhandled rejection from a future consumer.
+    }
   };
 
   return (

@@ -21,9 +21,50 @@ describe("summarizeLookback", () => {
     expect(metrics.totalInputTokens).toBe(300);
     expect(metrics.totalOutputTokens).toBe(150);
     expect(metrics.totalTokens).toBe(450);
+    // Cost is summed from the per-day window (1.5 + 3), NOT the all-time
+    // byModel spend (9) — a windowed token count must not carry a lifetime cost.
     expect(metrics.estimatedCostUsd).toBeCloseTo(4.5);
     expect(metrics.avgSessionDurationSec).toBe(120);
     expect(metrics.totalSkillInvocations).toBe(4);
+  });
+
+  it("uses the payload windowDays for lookbackDays", () => {
+    const metrics = summarizeLookback(makeInput(), 1);
+
+    // FEA-2345: lookbackDays now comes from the payload's windowDays (30),
+    // not the caller's lookbackDays parameter.
+    expect(metrics.lookbackDays).toBe(30);
+    // Totals come from the payload directly, not re-sliced from byDay.
+    expect(metrics.totalTokens).toBe(450);
+    expect(metrics.estimatedCostUsd).toBeCloseTo(4.5);
+  });
+
+  it("reports null cost when byDay window is empty", () => {
+    const analytics = makeAnalytics();
+    const metrics = summarizeLookback(
+      makeInput({
+        analytics: {
+          ...analytics,
+          tokens: { ...analytics.tokens, byDay: [] },
+        },
+      })
+    );
+
+    expect(metrics.totalTokens).toBe(450);
+    expect(metrics.estimatedCostUsd).toBeNull();
+  });
+
+  it("omits cost when the window has token history but no per-day spend", () => {
+    const metrics = summarizeLookback(
+      makeInput({
+        analytics: makeAnalyticsWithoutPerDayCost(),
+      })
+    );
+
+    // A windowed token count with no windowable cost reports null rather than
+    // overstating spend with the all-time total.
+    expect(metrics.totalTokens).toBe(450);
+    expect(metrics.estimatedCostUsd).toBeNull();
   });
 
   it("measures the share of shell commands not routed through rtk", () => {
@@ -85,6 +126,26 @@ describe("renderAgentCoachingPrompt", () => {
     expect(prompt).toContain("old-tip");
     expect(request.excludeTipIds).toEqual(["old-tip"]);
   });
+
+  it("lets a coaching pack's signals override the built-in defaults", () => {
+    const input = makeInput();
+    const packSignals = [
+      "Cache efficiency is the biggest lever — keep the prefix stable.",
+      "Read targeted spans, not whole files.",
+    ];
+    const request = buildAgentCoachingLlmRequest(input, [], packSignals);
+    expect(request.bestPracticeSignals).toEqual(packSignals);
+
+    const prompt = renderAgentCoachingPrompt(request);
+    expect(prompt).toContain("Cache efficiency is the biggest lever");
+    // The built-in agentic-development signals are replaced, not appended.
+    expect(prompt).not.toContain("OpenCode");
+  });
+
+  it("falls back to the built-in defaults when pack signals are empty", () => {
+    const request = buildAgentCoachingLlmRequest(makeInput(), [], []);
+    expect(request.bestPracticeSignals.join(" ")).toContain("Claude Code");
+  });
 });
 
 describe("parseGeneratedTips", () => {
@@ -132,12 +193,24 @@ function makeAnalytics(): AnalyticsData {
     toolUsage: [],
     tokens: {
       byDay: [
-        { day: "2026-06-16", inputTokens: 100, outputTokens: 50 },
-        { day: "2026-06-17", inputTokens: 200, outputTokens: 100 },
+        {
+          day: "2026-06-16",
+          inputTokens: 100,
+          outputTokens: 50,
+          estimatedCostUsd: 1.5,
+        },
+        {
+          day: "2026-06-17",
+          inputTokens: 200,
+          outputTokens: 100,
+          estimatedCostUsd: 3,
+        },
       ],
+      // All-time spend is higher than the per-day window sum (4.5) so tests can
+      // prove the windowed cost comes from byDay, not this lifetime total.
       byModel: [
         {
-          estimatedCostUsd: 4.5,
+          estimatedCostUsd: 9,
           inputTokens: 300,
           model: "claude-sonnet-4-5",
           outputTokens: 150,
@@ -148,10 +221,25 @@ function makeAnalytics(): AnalyticsData {
       totalCacheWriteTokens: 0,
       totalInputTokens: 300,
       totalOutputTokens: 150,
+      windowDays: 30,
     },
     totalAgents: 4,
     totalEvents: 40,
     totalSessions: 2,
+  };
+}
+
+// Older per-day rows can predate cost estimation and lack estimatedCostUsd.
+function makeAnalyticsWithoutPerDayCost(): AnalyticsData {
+  const analytics = makeAnalytics();
+  return {
+    ...analytics,
+    tokens: {
+      ...analytics.tokens,
+      byDay: analytics.tokens.byDay.map(
+        ({ estimatedCostUsd: _drop, ...rest }) => rest
+      ),
+    },
   };
 }
 

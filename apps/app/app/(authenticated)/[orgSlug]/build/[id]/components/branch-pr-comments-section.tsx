@@ -68,6 +68,7 @@ import { type MouseEvent, type ReactNode, useMemo, useState } from "react";
 import { CommentMarkdown } from "@/lib/markdown";
 import { getBranchViewCommentUiId } from "../comment-context";
 import {
+  getReplyTargetGithubCommentId,
   getReviewThreadActionId,
   isResolvableReviewComment,
 } from "../comment-resolution";
@@ -254,6 +255,7 @@ function ConversationComposer({
   return (
     <div className="border-border border-b bg-background p-3 sm:p-4">
       <Textarea
+        aria-label="Write a comment"
         className="min-h-[96px] resize-y text-sm"
         data-comment-control="true"
         disabled={isPending}
@@ -314,6 +316,7 @@ function InlineReplyComposer({
       data-comment-control="true"
     >
       <Textarea
+        aria-label="Write a reply"
         className="min-h-[88px] resize-y text-sm"
         data-comment-control="true"
         disabled={isPending}
@@ -372,6 +375,7 @@ function InlineEditComposer({
   return (
     <div className="flex flex-col gap-2" data-comment-control="true">
       <Textarea
+        aria-label="Edit comment"
         className="min-h-[96px] resize-y text-sm"
         data-comment-control="true"
         disabled={isPending}
@@ -1052,9 +1056,14 @@ export function BranchPrCommentsSection({
     if (!(comment && comment.canReply === true)) {
       return;
     }
+    const commentGithubId = getReplyTargetGithubCommentId(comment);
+    if (commentGithubId === null) {
+      toast.error("Can't reply to this comment — it has no GitHub comment id.");
+      return;
+    }
     replyMutation.mutate(
       {
-        commentGithubId: Number(comment.githubCommentId),
+        commentGithubId,
         body: replyDraft.trim(),
       },
       {

@@ -9,6 +9,13 @@ import { loopsService } from "../../service";
 
 const uploadUrlsValidator = z.object({
   keys: z.array(z.string().min(1).max(1024)).min(1).max(500),
+  // Optional subset of `keys` whose objects the client will PUT
+  // gzip-compressed. Their presigned URLs are signed with
+  // `Content-Encoding: gzip` so the stored object carries that metadata and
+  // every reader transparently decompresses. Backward compatible: callers that
+  // omit it (the ECS harness) get uncompressed URLs unchanged. Keys listed here
+  // that are absent from `keys` are inert.
+  gzipKeys: z.array(z.string().min(1).max(1024)).max(500).optional(),
 });
 
 /**
@@ -61,12 +68,27 @@ export async function POST(
       return errorResponse("Loop not found", new Error("Not Found"), 404);
     }
 
-    // Generate pre-signed PUT URLs for each key
+    // Generate pre-signed PUT URLs for each key. Keys the client flagged as
+    // gzip get a URL signed with Content-Encoding: gzip so their compressed
+    // bodies are stored with that metadata for transparent read-time decode.
+    // The applied encoding is echoed back per URL (additive, optional) so a
+    // version-skewed client compresses a body only when the backend confirms it
+    // signed for gzip — an older backend omits the field and the client falls
+    // back to an uncompressed upload.
+    const gzipKeys = new Set(body.gzipKeys ?? []);
     const urls = await Promise.all(
-      body.keys.map(async (key) => ({
-        key,
-        url: await generateUploadUrl(key),
-      }))
+      body.keys.map(async (key) => {
+        const gzip = gzipKeys.has(key);
+        return {
+          key,
+          url: await generateUploadUrl(
+            key,
+            undefined,
+            gzip ? { contentEncoding: "gzip" } : {}
+          ),
+          ...(gzip ? { contentEncoding: "gzip" } : {}),
+        };
+      })
     );
 
     return successResponse({ urls });

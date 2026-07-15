@@ -1,5 +1,6 @@
 import type { JsonValue } from "@repo/api/src/types/common";
 import type {
+  ComputeTargetServerCapabilities,
   DesktopCommandEventType,
   DesktopHelloNackReason,
 } from "@repo/api/src/types/compute-target";
@@ -27,6 +28,10 @@ export type DesktopHelloPayload = {
   machineName: string;
   platform: string;
   pluginVersion: string;
+  /** Electron app version (from app.getVersion()), distinct from the wire protocol version. */
+  desktopClientVersion?: string;
+  /** Gateway wire-protocol version, distinct from the Socket.IO envelope protocolVersion. */
+  gatewayProtocolVersion?: string;
   supportedOperations: string[];
   maxInFlightCommands: number;
   allowedDirectoriesHash?: string;
@@ -40,6 +45,7 @@ export type SocketConnectionContext = {
   clerkUserId?: string | null;
   sessionId: string;
   pluginVersion?: string;
+  serverCapabilities?: ComputeTargetServerCapabilities;
   unsubscribeOperations: () => void;
   unsubscribeConnectionClose: () => void;
   heartbeatTimer: ReturnType<typeof setInterval>;

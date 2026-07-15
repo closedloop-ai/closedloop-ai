@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -103,6 +110,76 @@ describe("terminal chat Claude subprocess env", () => {
       capturedEnv[ClaudeCodeOtelEnvVar.OtlpEndpoint],
       "http://127.0.0.1:4318"
     );
+  });
+});
+
+describe("terminal chat history persistence", () => {
+  test("persists the captured Claude session id before the request resolves", async () => {
+    const tempDir = await mkdtemp(
+      path.join(os.tmpdir(), "terminal-chat-persist-")
+    );
+    tempDirs.push(tempDir);
+    const fakeBin = path.join(tempDir, "bin");
+    const symphonyDir = path.join(tempDir, "symphony");
+    const worktreeDir = path.join(tempDir, "repo");
+    await mkdir(worktreeDir, { recursive: true });
+    await writeFakeClaude(fakeBin);
+    await writeFile(path.join(worktreeDir, ".keep"), "", { flag: "w" });
+
+    const processManager = {
+      spawnStreaming: (
+        options: StreamingSpawnOptions
+      ): Promise<StreamingProcessHandle> => {
+        // Emit the init session id, then exit, on a later macrotask turn so the
+        // save is fire-and-forget relative to spawnStreaming returning. The
+        // request must still not resolve until that save has landed.
+        setImmediate(() => {
+          options.onLine?.(
+            JSON.stringify({ type: "init", sessionId: "claude-abc123" })
+          );
+          options.onExit?.(0, null);
+        });
+        return Promise.resolve({ pid: 4242, process: {} as never });
+      },
+    } as unknown as ProcessManager;
+    const dispatcher = new OperationDispatcher();
+    const getClaudeShellEnv = createClaudeCodeShellEnvProvider({
+      getReceiverStatus: () => ({
+        state: ClaudeCodeOtelReceiverState.Ready,
+        host: "127.0.0.1",
+        port: 4318,
+      }),
+      getBaseShellEnv: async () => ({ PATH: fakeBin }),
+    });
+    registerTerminalChatRoutes(
+      dispatcher,
+      processManager,
+      () => [worktreeDir],
+      () => symphonyDir,
+      getClaudeShellEnv
+    );
+
+    await withShellPathEnvForTest(
+      { PATH: fakeBin, SHELL: "/bin/sh", HOME: tempDir },
+      async () => {
+        setShellPathForTest();
+        await dispatchPost(dispatcher, { message: "hello" });
+      }
+    );
+
+    // No polling: dispatchPost only resolves once streamClaude's finish() has
+    // drained the queued history writes. If the session-id save were still
+    // fire-and-forget, this synchronous read would race (and lose to) the write.
+    const historyPath = path.join(
+      symphonyDir,
+      "chats",
+      "_terminal",
+      "chat-history.json"
+    );
+    const saved = JSON.parse(await readFile(historyPath, "utf-8")) as {
+      claudeSessionId?: string;
+    };
+    assert.equal(saved.claudeSessionId, "claude-abc123");
   });
 });
 

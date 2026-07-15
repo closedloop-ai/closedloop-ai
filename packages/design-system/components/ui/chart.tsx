@@ -3,7 +3,7 @@
 import * as React from "react"
 import * as RechartsPrimitive from "recharts"
 
-import { cn } from "@repo/design-system/lib/utils"
+import { cn } from "@closedloop-ai/design-system/lib/utils"
 
 const RESPONSIVE_CONTAINER_DIMENSIONS = {
   minHeight: 0,
@@ -122,6 +122,7 @@ function ChartTooltipContent({
   labelFormatter,
   labelClassName,
   formatter,
+  valueFormatter,
   color,
   nameKey,
   labelKey,
@@ -132,6 +133,9 @@ function ChartTooltipContent({
     indicator?: "line" | "dot" | "dashed"
     nameKey?: string
     labelKey?: string
+    // Formats the per-series numeric value (e.g. currency, tokens) while keeping
+    // the default indicator + label layout. Falls back to `toLocaleString()`.
+    valueFormatter?: (value: number) => string
   }) {
   const { config } = useChart()
 
@@ -243,7 +247,9 @@ function ChartTooltipContent({
                       </div>
                       {item.value != null && (
                         <span className="text-foreground font-mono font-medium tabular-nums">
-                          {item.value.toLocaleString()}
+                          {valueFormatter
+                            ? valueFormatter(Number(item.value))
+                            : item.value.toLocaleString()}
                         </span>
                       )}
                     </div>
@@ -357,11 +363,25 @@ function getPayloadConfigFromPayload(
     : config[key as keyof typeof config]
 }
 
+/**
+ * Build an axis tick formatter: use the caller-supplied `valueFormatter` (e.g.
+ * currency) when present, else the chart's own default (`fallback`). Shared by
+ * the chart composites so the "formatter ?? default" wrapper lives in one place.
+ */
+function resolveTickFormatter(
+  valueFormatter: ((value: number) => string) | undefined,
+  fallback: (value: number | string) => string
+): (value: number | string) => string {
+  return (value) =>
+    valueFormatter ? valueFormatter(Number(value)) : fallback(value)
+}
+
 export {
   ChartContainer,
   ChartLegend,
   ChartLegendContent,
   ChartStyle,
   ChartTooltip,
-  ChartTooltipContent
+  ChartTooltipContent,
+  resolveTickFormatter
 }

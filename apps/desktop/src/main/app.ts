@@ -1,11 +1,21 @@
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  accessSync,
+  constants as fsConstants,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  type DistributionDto,
+  toOptInDistributionDto,
+} from "@repo/api/src/types/distribution";
+import { DesktopDeviceSessionStatus } from "@repo/api/src/types/onboarding";
 import {
   app,
   dialog,
@@ -17,6 +27,7 @@ import {
   type WebContents,
 } from "electron";
 import pkg from "electron-updater";
+import type { BranchPrIdentity } from "../server/operations/git-pr.js";
 import { resetMcpDetectionCache } from "../server/operations/mcp-detection.js";
 import { getCodePluginVersion } from "../server/operations/plugin-cache.js";
 import { enrichJobSnapshot } from "../server/operations/symphony-job-snapshot.js";
@@ -36,13 +47,19 @@ import type {
 } from "../server/router.js";
 import { DesktopGatewayServer } from "../server/server.js";
 import { resolveBinaryFromLoginShell } from "../server/shell-path.js";
+import { CLI_BINARY_TOOLS } from "../shared/cli-binary-tools.js";
 import {
   buildCommandSigningCapabilities,
   shouldEnforceCommandSigning,
 } from "../shared/command-signing-policy.js";
 import {
+  ConnectionSecurityMode,
+  type ConnectionSecurityStatus,
+} from "../shared/connection-security.js";
+import {
   type AlwaysAllowRule,
   DEFAULT_DESKTOP_SETTINGS,
+  DesktopAuthStatus,
   type DesktopSettings,
   EMPTY_CAPABILITIES,
   GATEWAY_PROTOCOL_VERSION,
@@ -50,14 +67,22 @@ import {
   type RiskTier,
   type SavedConfig,
 } from "../shared/contracts.js";
+import { DesktopIdentityIpcChannel } from "../shared/desktop-identity-channel.js";
 import {
+  DESKTOP_AGENT_COACHING_PACKS_FEATURE_FLAG_KEY,
   DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY,
+  DESKTOP_FIRST_PARTY_AUTH_FEATURE_FLAG_KEY,
   FEATURE_FLAGS,
   type FlagKey,
 } from "../shared/feature-flags.js";
-import { GATEWAY_DISPATCH_CHANNEL } from "../shared/gateway-dispatch-channel.js";
+import {
+  GATEWAY_DISPATCH_CHANNEL,
+  GATEWAY_DISPATCH_RENDERER_SOURCE,
+} from "../shared/gateway-dispatch-channel.js";
 import { isGitRepository } from "../shared/git-utils.js";
+import { GitHubIntegrationStatusIpcChannel } from "../shared/github-integration-status-channel.js";
 import { LOCAL_SESSION_SOURCE_STATUSES } from "../shared/local-session-source-status.js";
+import { PackagedUpdateInstallBlockedReason } from "../shared/packaged-update-install-blocked-reason.js";
 import { RENDERER_OTEL_EXPORT_CHANNEL } from "../shared/renderer-otel-bridge-constants.js";
 import {
   buildAllowedDirectories,
@@ -76,6 +101,15 @@ import {
   generateCoachingTips,
   installCoachingArtifact,
 } from "./agent-coaching-harness.js";
+import {
+  coachingPackSlug,
+  getActiveCoachingPack,
+  installCoachingPack,
+  installCoachingPackFromDistribution,
+  resolveBundledCoachingPacksDir,
+  seedBundledCoachingPacks,
+  shouldHonorDistributionDefault,
+} from "./agent-coaching-packs.js";
 import type { AgentDashboardDesignSystemRuntime } from "./agent-dashboard-design-system-runtime.js";
 import {
   DESIGN_SYSTEM_DB_IPC_CHANNELS,
@@ -89,6 +123,7 @@ import {
 import { createAgentSessionPayloadWorkerPreparer } from "./agent-session-sync-payload-worker-runner.js";
 import { AgentSessionSyncService } from "./agent-session-sync-service.js";
 import { ApiKeyStore } from "./api-key-store.js";
+import { unwrapApiResultData } from "./api-response-utils.js";
 import {
   createDesktopOtelRuntime,
   type DesktopOtelRuntime,
@@ -149,11 +184,34 @@ import type {
 import { CommandSignatureVerifier } from "./command-signature-verifier.js";
 import { CostReconciliationService } from "./cost-reconciliation-service.js";
 import {
+  DESKTOP_AUTH_STATE_CHANGED_CHANNEL,
+  registerDesktopAuthIpcHandlers,
+} from "./desktop-auth-ipc.js";
+import { createDesktopComponentsClient } from "./desktop-components-client.js";
+import {
+  pollDeviceOnboarding,
+  startDeviceOnboarding,
+} from "./desktop-device-onboarding-client.js";
+import { fetchDesktopIdentity } from "./desktop-identity-client.js";
+import {
   type DesktopPopHeaders,
   type DesktopPopSigningRequest,
   DesktopPopUnavailableError,
   signDesktopPopHeaders,
 } from "./desktop-pop.js";
+import { resolveDesktopServiceVersion } from "./desktop-service-version.js";
+import {
+  type DesktopAuthState,
+  type DesktopDeviceDescriptor,
+  DesktopSessionManager,
+} from "./desktop-session-manager.js";
+import { DesktopSessionStore } from "./desktop-session-store.js";
+import { resolveDesktopTelemetryEgressEnabled } from "./desktop-telemetry-egress.js";
+import { createDesktopTranscriptsClient } from "./desktop-transcripts-client.js";
+import {
+  isAllowedDesktopVerificationUrl,
+  isAllowedExternalUrl,
+} from "./external-url-allowlist.js";
 import { createGatewayDispatchHandler } from "./gateway-dispatch-ipc.js";
 import { gatewayLog, isNetworkError } from "./gateway-logger.js";
 import { GatewayRecoveryManager } from "./gateway-recovery.js";
@@ -161,12 +219,20 @@ import {
   type GatewaySigningKeyResult,
   GatewaySigningKeyStore,
 } from "./gateway-signing-key-store.js";
+import { registerGitHubConnectOpenerIpcHandlers } from "./github-connect-opener-ipc.js";
+import { fetchGitHubIntegrationStatus } from "./github-integration-status-client.js";
+import {
+  classifyGitHubResyncNudgeCommand,
+  handleGitHubResyncNudgeCommand as handleReservedGitHubResyncNudge,
+} from "./github-resync-nudge.js";
+import type { GoldenModeConfig } from "./golden-mode.js";
 import { isTerminalJobStatus, JobStore, type LocalJob } from "./job-store.js";
 import { LocalSessionStore } from "./local-session-store.js";
 import {
   DesktopMigrationError,
   userFacingMigrationRefusal,
 } from "./migration-refusal.js";
+import { registerMoveToApplicationsIpcHandler } from "./move-to-applications-ipc.js";
 import { Observability } from "./observability.js";
 import {
   normalizeAndValidateOrigin,
@@ -181,6 +247,12 @@ import {
   type PackagedUpdateStatusPayload,
   toPackagedUpdateStatusPayload,
 } from "./packaged-update-state.js";
+import { installCoachingDistribution } from "./packs/coaching-distribution-install.js";
+import { registerPackAnalyticsIpc } from "./packs/pack-analytics-ipc.js";
+import {
+  type CoachingInstallOutcome,
+  RequiredPluginInstaller,
+} from "./packs/required-plugin-installer.js";
 import {
   electronLog,
   getMainLogFilePath,
@@ -211,13 +283,23 @@ import {
 import type { ShutdownResult } from "./shutdown.js";
 import { runShutdownSequence } from "./shutdown.js";
 import type { RetrySpawnDeps } from "./spawn-retry.js";
+import {
+  createTelemetryOrgProvider,
+  type TelemetryOrgProvider,
+} from "./telemetry-org-identity.js";
 import type { DesktopShutdownDiagnostics } from "./telemetry-protocol.js";
+import {
+  createTranscriptSyncExecutor,
+  statTranscriptFile,
+} from "./transcript-sync/transcript-sync-executor.js";
+import { TranscriptSyncService } from "./transcript-sync/transcript-sync-service.js";
+import { resolveTrustedClaudeTranscriptPath } from "./transcript-sync/trusted-transcript-path.js";
 import { DesktopTray } from "./tray.js";
 import { DesktopWindow } from "./window.js";
 
 const { autoUpdater } = pkg;
 
-import { BUILD_COMMIT_HASH } from "../shared/build-info.js";
+import { BUILD_APP_VERSION, BUILD_COMMIT_HASH } from "../shared/build-info.js";
 import { BootRecoveryService } from "./boot-recovery.js";
 import {
   configureFakeUpdateFeed,
@@ -231,6 +313,10 @@ import {
   type ManagedPopSigningReadiness,
   prepareLoopCommandForExecution,
 } from "./loop-command-preparer.js";
+import {
+  type LoopCompletedNotice,
+  LoopCompletedNotifier,
+} from "./loop-completed-notifier.js";
 import { LoopSchedulerContext } from "./loop-scheduler-context.js";
 import * as loopSleepRecovery from "./loop-sleep-recovery.js";
 import { LoopTokenStore } from "./loop-token-store.js";
@@ -270,6 +356,17 @@ import {
   resolvePackagedUpdateCheckResult,
   shouldHonorAlwaysAllowRule,
 } from "./update-and-restart-helpers.js";
+import {
+  formatUpdateBlockedBannerMessage,
+  formatUpdateBlockedDialogBody,
+  formatUpdateBlockedManualStepsBody,
+  guardUpdateDownloadPromise,
+  isAppTranslocated,
+  isReadOnlyVolumeUpdateError,
+  UPDATE_BLOCKED_DIALOG_TITLE,
+  UPDATE_BLOCKED_LATER_BUTTON,
+  UPDATE_BLOCKED_MOVE_BUTTON,
+} from "./update-install-blocked.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -374,17 +471,36 @@ function parseClaudeCodeAnalyticsQuery(
   return undefined;
 }
 
+export type DesktopApplicationOptions = {
+  /** Golden launch-mode config (FEA-2648); null/absent for a normal launch. */
+  golden?: GoldenModeConfig | null;
+};
+
 export class DesktopApplication {
+  // FEA-2648: null for a normal launch. When set, isolation is already applied
+  // (userData redirected in startup.ts); consumers thread it to window/tray and
+  // the agent-dashboard runtime + cloud guards.
+  private readonly goldenMode: GoldenModeConfig | null;
   private readonly settingsStore: SettingsStore;
   private readonly apiKeyStore: ApiKeyStore;
   private readonly authorizedCommandKeys: AuthorizedCommandKeyStore;
   private readonly commandSignatureVerifier: CommandSignatureVerifier;
   private readonly pendingCommandKeyNotifier: PendingCommandKeyNotifier;
+  private readonly loopCompletedNotifier: LoopCompletedNotifier;
   private readonly commandKeyReconciler: CommandKeyReconciler;
   private readonly gatewaySigningKeyStore: GatewaySigningKeyStore;
+  private readonly desktopSessionStore: DesktopSessionStore;
+  private readonly desktopSessionManager: DesktopSessionManager;
   private readonly loopTokenStore: LoopTokenStore;
   private readonly nodeUuidStore: NodeUuidStore;
   private readonly appOtelRuntime: DesktopOtelRuntime;
+  private readonly telemetryOrgProvider: TelemetryOrgProvider;
+  private traceCommentIdentity: {
+    keyFingerprint: string;
+    userId: string;
+    organizationId: string;
+  } | null = null;
+  private traceCommentIdentityInFlight: string | null = null;
   private readonly appLifecycleTelemetry: DesktopAppLifecycleTelemetry;
   private readonly tray: DesktopTray;
   private readonly desktopWindow: DesktopWindow;
@@ -395,6 +511,12 @@ export class DesktopApplication {
     null;
   private disabledAgentDashboardDbIpcRegistered = false;
   private readonly agentSessionSync: AgentSessionSyncService;
+  // FEA-2923 (T-16.8/10): auto-install distributions on cloud online transition.
+  private readonly requiredPluginInstaller: RequiredPluginInstaller;
+  // FEA-2715: raw-transcript archive lane. Null unless the desktop feature flag
+  // is on (constructed lazily in the ctor). Entirely separate from the metadata
+  // lane above; a transcript failure never touches agentSessionSync.
+  private readonly transcriptSync: TranscriptSyncService | null;
   private readonly costReconciliation: CostReconciliationService;
   private readonly claudeCodeAnalytics: ClaudeCodeAnalyticsService;
   private readonly activityLog: ActivityLogStore;
@@ -431,6 +553,7 @@ export class DesktopApplication {
   private packagedUpdateState: PackagedUpdateState =
     createInitialPackagedUpdateState();
   private applyingDownloadedUpdate = false;
+  private updateBlockedDialogShown = false;
   private readonly onboardingHandoffPath = getCanonicalOnboardingHandoffPath();
   private bootReadyForOnboarding = false;
   private processingOnboardingHandoff = false;
@@ -443,7 +566,8 @@ export class DesktopApplication {
       QUEUE_STATS_DEBOUNCE_MS
     );
 
-  constructor() {
+  constructor(options?: DesktopApplicationOptions) {
+    this.goldenMode = options?.golden ?? null;
     this.gatewayAuthToken = randomBytes(24).toString("hex");
     this.sessionStore = new LocalSessionStore();
     Observability.init({
@@ -482,6 +606,13 @@ export class DesktopApplication {
       onChanged: () => this.notifyCommandKeysChanged(),
       log: (message) => gatewayLog.debug("command-keys", message),
     });
+    this.loopCompletedNotifier = new LoopCompletedNotifier({
+      createNotification: (options) => new Notification(options),
+      supportsActions: () => process.platform === "darwin",
+      onViewLoop: () => this.desktopWindow.show(),
+      log: (message) =>
+        gatewayLog.debug("loop-completed-notification", message),
+    });
     this.commandKeyReconciler = new CommandKeyReconciler({
       hasApiKey: () => Boolean(this.apiKeyStore.getApiKey()),
       fetchOrganizationKeyClassification: (reason) =>
@@ -503,27 +634,78 @@ export class DesktopApplication {
     this.loopTokenStore = new LoopTokenStore();
     this.nodeUuidStore = new NodeUuidStore();
     this.nodeUuidStore.getOrCreateNodeUuid();
+    // FEA-2199: gate telemetry network egress so only a real packaged install
+    // phones home. Unpackaged dev/E2E/CI launches keep buffering locally but
+    // never ship to the prod relay → Datadog/PostHog (they were flooding the
+    // fleet `version` facet with `0.0`/Electron-version events). An explicit
+    // CLOSEDLOOP_DESKTOP_TELEMETRY_EGRESS override allows deliberate relay testing.
+    const telemetryEgressEnabled = resolveDesktopTelemetryEgressEnabled({
+      isPackaged: app.isPackaged,
+      env: process.env,
+    });
     this.appOtelRuntime = createDesktopOtelRuntime({
-      appVersion: app.getVersion(),
+      // FEA-2199: prefer the build-time-baked version (authoritative for a
+      // packaged release); fall back to the runtime value, and never emit the
+      // Electron `"0.0"` sentinel or the unpackaged Electron-version bleed.
+      appVersion: resolveDesktopServiceVersion({
+        buildVersion: BUILD_APP_VERSION,
+        runtimeVersion: app.getVersion(),
+        electronVersion: process.versions.electron,
+        logWarning: (message) => gatewayLog.warn("otel", message),
+      }),
       env: process.env,
       getAppInstallationId: () => this.getNodeUuidForTelemetry(),
       isPackaged: app.isPackaged,
       // FEA-1993: keyless OTLP egress over the relay (its own isolated socket,
       // independent of CloudSocketService). The runtime owns start/stop; this is
-      // inert when OTEL_SDK_DISABLED is set.
-      telemetryTransport: createRelayTelemetryTransport({
-        getRelayOrigin: () => this.settingsStore.getRelayOrigin(),
-      }),
+      // inert when OTEL_SDK_DISABLED is set. FEA-2199: omitted entirely off-prod
+      // so the always-on local SDK runs without any network egress.
+      telemetryTransport: telemetryEgressEnabled
+        ? createRelayTelemetryTransport({
+            getRelayOrigin: () => this.settingsStore.getRelayOrigin(),
+          })
+        : undefined,
     });
     processExceptionTelemetryBridge.bindRuntime(this.appOtelRuntime);
+    // FEA-1996: resolves the authenticated org id from the API key for
+    // multiplayer telemetry attribution. Gated on key presence, so single-player
+    // lifecycle events can never carry org identity.
+    this.telemetryOrgProvider = createTelemetryOrgProvider({
+      apiKeyStore: this.apiKeyStore,
+      getApiOrigin: () => this.settingsStore.getApiOrigin(),
+    });
     this.appLifecycleTelemetry = createDesktopAppLifecycleTelemetry({
       runtime: this.appOtelRuntime,
       getOperatingMode: () => this.getAppOperatingModeForTelemetry(),
+      getOrganizationId: () => this.telemetryOrgProvider.getOrganizationId(),
       logWarning: (tag, message) => gatewayLog.warn(tag, message),
     });
     this.gatewaySigningKeyStore = new GatewaySigningKeyStore();
-    this.tray = new DesktopTray();
-    this.desktopWindow = new DesktopWindow();
+    this.desktopSessionStore = new DesktopSessionStore();
+    this.desktopSessionManager = new DesktopSessionManager({
+      store: this.desktopSessionStore,
+      popSigner: (request) => this.signDesktopRequest(request),
+      resolveApiOrigin: () =>
+        normalizeAndValidateOrigin(this.settingsStore.getApiOrigin()),
+      resolveGatewayId: () => this.getActiveGatewayId(),
+      browserSignIn: {
+        resolveWebAppOrigin: () =>
+          normalizeWebAppOrigin(this.settingsStore.getWebAppOrigin()),
+        resolveDeviceDescriptor: () => this.resolveDesktopDeviceDescriptor(),
+        // The authorize URL is built by the manager from this exact
+        // webAppOrigin + a fixed path (loopback OAuth), so there is no
+        // server-supplied URL to allowlist before shell.openExternal; the
+        // loopback redirect_uri is a 127.0.0.1 URL the manager owns.
+        openExternal: (url) => shell.openExternal(url),
+        logDiagnostic: (message) => gatewayLog.error("desktop-auth", message),
+      },
+    });
+    this.desktopSessionManager.subscribe((state) =>
+      this.publishDesktopAuthState(state)
+    );
+    const golden = this.goldenMode !== null;
+    this.tray = new DesktopTray({ golden });
+    this.desktopWindow = new DesktopWindow({ golden });
     this.activityLog = new ActivityLogStore();
     this.jobStore = new JobStore();
     this.approvalStore = new ApprovalStore({
@@ -535,9 +717,10 @@ export class DesktopApplication {
         });
         notification.on("click", () => {
           this.desktopWindow.show();
-          this.desktopWindow
-            .getWindow()
-            ?.webContents.send("desktop:navigate-tab", "approvals");
+          this.desktopWindow.sendToRenderer(
+            "desktop:navigate-tab",
+            "approvals"
+          );
         });
         notification.show();
       },
@@ -582,6 +765,7 @@ export class DesktopApplication {
       async () => {
         if (app.isPackaged) {
           const result = await autoUpdater.checkForUpdates();
+          this.guardUpdateDownload(result);
           const remoteVersion = result?.updateInfo?.version;
           return resolvePackagedUpdateCheckResult(
             app.getVersion(),
@@ -625,7 +809,9 @@ export class DesktopApplication {
         this.cloudStatus.state === "online" ? this.cloudStatus.targetId : null,
       (payload) => this.handleSecurityUpgradeCommand(payload),
       () => this.isDesktopSetupComplete(),
-      this.schedulers
+      this.schedulers,
+      (notice) => this.handleLoopCompletedNotification(notice),
+      (branchId) => this.resolveGatewayBranchPrIdentity(branchId)
     );
     this.commandExecutor = new CloudCommandExecutor({
       getGatewayPort: () => this.server.getActivePort(),
@@ -701,6 +887,11 @@ export class DesktopApplication {
           "command-signing",
           `Server support from hello ack: computeTargetId=${event.computeTargetId}, computeTargetSigning=${event.serverCapabilities?.computeTargetSigning === true}`
         );
+        gatewayLog.info(
+          "agent-session-sync",
+          `Server support from hello ack: computeTargetId=${event.computeTargetId}, ` +
+            `agentSessionSync=${this.serverAgentSessionSyncSupported}`
+        );
         if (this.serverCommandSigningSupported) {
           this.commandKeyReconciler.start();
           void this.commandKeyReconciler.reconcileNow("hello_ack");
@@ -726,6 +917,21 @@ export class DesktopApplication {
         this.agentSessionSync.refresh();
       },
       onCommand: (command) => {
+        const githubResyncNudgeMatch =
+          classifyGitHubResyncNudgeCommand(command);
+        if (githubResyncNudgeMatch === "match") {
+          void this.handleGitHubResyncNudgeCommand(command);
+          return;
+        }
+        if (githubResyncNudgeMatch === "mismatch") {
+          this.cloudSocket.sendCommandAck({
+            commandId: command.commandId,
+            accepted: false,
+            state: "failed",
+            reason: "operationId/path mismatch",
+          });
+          return;
+        }
         const keyApprovalRequestMatch =
           classifyBrowserCommandKeyApprovalRequestCommand(command);
         if (keyApprovalRequestMatch === "match") {
@@ -796,6 +1002,17 @@ export class DesktopApplication {
         this.commandExecutor.acknowledge(event);
       },
     });
+    // Gap B (#2570 follow-up): component-inventory sync lane. The session lane
+    // rides the socket (`sendBatch` → `cloudSocket.sendAgentSessions`); the
+    // component inventory endpoint is a plain authenticated HTTP POST, so this
+    // client mirrors the transcript control-plane transport (first-party Bearer
+    // JWT + API origin) and targets the same relay compute target the session
+    // cursor is scoped to.
+    const componentsClient = createDesktopComponentsClient({
+      getAccessToken: () => this.desktopSessionManager.getAccessToken(),
+      getApiOrigin: () => this.settingsStore.getApiOrigin(),
+      getComputeTargetId: () => this.transcriptComputeTargetId(),
+    });
     this.agentSessionSync = new AgentSessionSyncService({
       isAgentMonitorEnabled: () => this.isAgentMonitorEnabled(),
       isRelayReady: () =>
@@ -809,12 +1026,92 @@ export class DesktopApplication {
       // discriminator; null while offline → in-memory only.
       getSyncComputeTargetId: () =>
         this.cloudStatus.state === "online" ? this.cloudStatus.targetId : null,
+      // Gap B (#2570 follow-up): wire the component-inventory sync lane. Without
+      // these three options `syncComponentsOnce` no-ops, so locally-collected
+      // `agent_components` never reached the cloud. `sendComponents` POSTs the
+      // batch over the first-party HTTP transport; the two readers delegate to
+      // the SQLite sync source (null when the db host is not yet ready). The
+      // lane respects the same enable/auth gating as session sync: the client
+      // returns `false` (no cursor advance) when offline / unauthenticated /
+      // no compute target.
+      sendComponents: (payload) => componentsClient.sync(payload),
+      listComponentCursorRows: (since) => {
+        const source = this.agentDashboardDesignSystem?.syncSource ?? null;
+        return Promise.resolve(source?.listComponentCursorRows?.(since) ?? []);
+      },
+      loadComponentRows: (ids) => {
+        const source = this.agentDashboardDesignSystem?.syncSource ?? null;
+        return Promise.resolve(source?.loadComponentRows?.(ids) ?? []);
+      },
       waitForBackgroundSlot: () => this.waitForRendererBackgroundSlot(),
       preparePayloads: createAgentSessionPayloadWorkerPreparer(),
       onBatchOutcome: (event) => {
         Observability.agentSessionSyncBatchFailed(event);
       },
+      // FEA-1995: per-batch sync.* transport-health telemetry → OTel runtime.
+      // Inert until the runtime reaches Started (and when OTEL_SDK_DISABLED).
+      onSyncBatchTelemetry: (event) => {
+        this.appOtelRuntime.emitSyncBatchEvent(event);
+      },
     });
+    // FEA-2923 (T-16.8/10): auto-install required plugin distributions on cloud
+    // online transition. Uses the first-party Desktop session for auth and
+    // the existing streamRun catalog path for installs (unchanged trust model).
+    this.requiredPluginInstaller = new RequiredPluginInstaller({
+      distributionsClient: {
+        getAccessToken: () => this.desktopSessionManager.getAccessToken(),
+        getApiOrigin: () => this.settingsStore.getApiOrigin(),
+      },
+      // runInstall: triggers a vetted catalog-path install via the design-system
+      // runtime's installPack(), which forwards to the same streamRun path the
+      // renderer catalog-install IPC handler uses. Install commands are sourced
+      // ONLY from the local vetted pack_catalog row resolved by packId — cloud
+      // commands and the presigned zip URL are NEVER an install source. Returns
+      // null only while the runtime has not yet booted, so the installer defers
+      // (reports "pending") and retries on the next cloud online transition.
+      runInstall: async (packId, harness) => {
+        const runtime = this.agentDashboardDesignSystem;
+        if (!runtime) {
+          return null;
+        }
+        return runtime.installPack(packId, harness);
+      },
+      // getInstalledVersion: reads the installed pack version from the local
+      // agent_packs inventory via the runtime. Returns null while the runtime is
+      // not ready (same deferral) or when the pack is not installed, which the
+      // installer interprets as "needs install".
+      getInstalledVersion: async (packId) => {
+        const runtime = this.agentDashboardDesignSystem;
+        if (!runtime) {
+          return null;
+        }
+        return runtime.getInstalledPackVersion(packId);
+      },
+      // installCoachingDistribution: coaching packs (batch 5) install via the
+      // coaching-pack path — download the presigned asset zip, extract it, and
+      // copy/activate through installCoachingPackFromDistribution honoring
+      // override precedence (never clobbering a recorded user choice).
+      installCoachingDistribution: (dist) =>
+        this.installCoachingDistribution(dist),
+      onOptInAvailable: (distributions) => {
+        // Surface opt-in distributions to the renderer via IPC. Project each
+        // DTO down to the renderer-safe fields (FEA-3043) — never broadcast the
+        // live presigned `assetDownloadUrl`; the renderer installs by id and
+        // main re-resolves the asset by id, never trusting renderer asset data.
+        const win = this.desktopWindow.getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(
+            "desktop:distributions:opt-in-available",
+            distributions.map(toOptInDistributionDto)
+          );
+        }
+      },
+    });
+    // FEA-2715: raw-transcript archive lane, off unless the desktop feature flag
+    // is on (restart-scoped). Constructed here so it is a hard no-op when off.
+    this.transcriptSync = this.isTranscriptSyncEnabled()
+      ? this.createTranscriptSyncService()
+      : null;
     // FEA-1435/1436: nightly cost reconciliation lives entirely in main. It owns
     // the org-level vendor Admin key stores (safeStorage, never exposed to the
     // renderer) and the reconciliation store, and reconciles the local
@@ -896,6 +1193,9 @@ export class DesktopApplication {
       logWarning: (tag, message) => gatewayLog.warn(tag, message),
     });
     this.appLifecycleTelemetry.start();
+    // Resolve the org up front (when authenticated) so the first heartbeat
+    // carries it rather than waiting for the lazy emit-path resolution.
+    this.telemetryOrgProvider.warm();
     gatewayLog.info(
       "startup",
       `Desktop boot starting version=${app.getVersion()} log=${getMainLogFilePath()}`
@@ -926,6 +1226,17 @@ export class DesktopApplication {
     // renderer, so IPC handlers must exist even when capture is disabled.
     this.registerDisabledAgentDashboardDbIpcHandlers();
     this.desktopWindow.init();
+    // Restore the first-party desktop session (FEA-2219) off the keychain and
+    // refresh once so a revoked/expired session is detected at startup. Fire
+    // and forget — the manager pushes the resolved state to the renderer (which
+    // also pulls the current state on mount), and a network failure keeps the
+    // stored credentials for a later getAccessToken retry. Never blocks boot.
+    void this.desktopSessionManager.restore().catch((error) => {
+      gatewayLog.warn(
+        "desktop-auth",
+        `Session restore failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
     this.bootReadyForOnboarding = true;
     void this.drainQueuedOnboardingHandoffs();
     void this.processCanonicalOnboardingHandoff("cold-start");
@@ -965,7 +1276,12 @@ export class DesktopApplication {
           );
         });
 
-      if (
+      if (this.goldenMode) {
+        this.cloudStatus = {
+          state: "degraded",
+          error: "Golden mode: cloud sync disabled",
+        };
+      } else if (
         this.cloudConnectionEnabled &&
         this.apiKeyStore.getStatus().hasApiKey
       ) {
@@ -981,6 +1297,23 @@ export class DesktopApplication {
         autoUpdater.logger = electronLog;
         autoUpdater.autoDownload = true;
         autoUpdater.autoInstallOnAppQuit = true;
+        // FEA-2349: under macOS App Translocation the bundle runs from a
+        // read-only mount, so Squirrel.Mac staging can only fail. Keep the
+        // update *check* (the user should still learn a new version exists)
+        // but skip download/staging and surface a "move to /Applications"
+        // message instead — see the update-available handler below.
+        const updateInstallBlocked = isAppTranslocated(
+          process.platform,
+          process.execPath
+        );
+        if (updateInstallBlocked) {
+          autoUpdater.autoDownload = false;
+          autoUpdater.autoInstallOnAppQuit = false;
+          gatewayLog.warn(
+            "auto-update",
+            "App is translocated (read-only volume); update install disabled until the app is moved to /Applications"
+          );
+        }
         // FEA-2099 test seam: in an unpackaged e2e run, redirect the updater at
         // its generic provider to a localhost fixture feed so the
         // check→download→ready→handoff lifecycle is exercised without a real
@@ -1011,6 +1344,12 @@ export class DesktopApplication {
         autoUpdater.on("error", (err) => {
           const level = isNetworkError(err.message) ? "debug" : "error";
           gatewayLog[level]("auto-update", `Auto-update error: ${err.message}`);
+          if (isReadOnlyVolumeUpdateError(err.message)) {
+            autoUpdater.autoDownload = false;
+            autoUpdater.autoInstallOnAppQuit = false;
+            this.handleUpdateInstallBlocked(this.packagedUpdateState.version);
+            return;
+          }
           this.setPackagedUpdateState({
             status: "error",
             available: false,
@@ -1029,6 +1368,13 @@ export class DesktopApplication {
           });
         });
         autoUpdater.on("update-available", (info) => {
+          if (updateInstallBlocked && !fakeFeedActive) {
+            // FEA-2349: no download will follow (autoDownload is off), so a
+            // "downloading" banner would mislead. Surface the actionable
+            // error state and tell the user how to self-resolve.
+            this.handleUpdateInstallBlocked(info.version);
+            return;
+          }
           this.setPackagedUpdateState({
             status: "available",
             available: true,
@@ -1042,13 +1388,11 @@ export class DesktopApplication {
             `Update available version=${info.version}; waiting for download`
           );
           this.notifyPackagedUpdateStatus();
-          this.desktopWindow
-            .getWindow()
-            ?.webContents.send("desktop:update-available", {
-              updateAvailable: true,
-              version: info.version,
-              readyToInstall: false,
-            });
+          this.desktopWindow.sendToRenderer("desktop:update-available", {
+            updateAvailable: true,
+            version: info.version,
+            readyToInstall: false,
+          });
           if (fakeFeedActive) {
             // Deterministically advance to "downloaded" so the e2e can drive
             // apply → finishUpdateInstall without a flaky native download.
@@ -1117,40 +1461,46 @@ export class DesktopApplication {
           );
           this.notifyPackagedUpdateStatus();
         });
-        void autoUpdater.checkForUpdates().catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          gatewayLog.error(
-            "auto-update",
-            `Failed to check for updates: ${msg}`
-          );
-          this.setPackagedUpdateState({
-            status: "error",
-            available: false,
-            downloaded: false,
-            error: msg,
-            percent: undefined,
+        void autoUpdater
+          .checkForUpdates()
+          .then((result) => this.guardUpdateDownload(result))
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            gatewayLog.error(
+              "auto-update",
+              `Failed to check for updates: ${msg}`
+            );
+            this.setPackagedUpdateState({
+              status: "error",
+              available: false,
+              downloaded: false,
+              error: msg,
+              percent: undefined,
+            });
+            this.notifyPackagedUpdateStatus();
+            Observability.electronUpdateFailed({
+              trigger: "check-for-updates",
+              status: this.packagedUpdateState.status,
+              version: this.packagedUpdateState.version,
+              error: msg,
+              downloaded: this.packagedUpdateState.downloaded,
+              readyToInstall: this.packagedUpdateState.downloaded,
+            });
           });
-          this.notifyPackagedUpdateStatus();
-          Observability.electronUpdateFailed({
-            trigger: "check-for-updates",
-            status: this.packagedUpdateState.status,
-            version: this.packagedUpdateState.version,
-            error: msg,
-            downloaded: this.packagedUpdateState.downloaded,
-            readyToInstall: this.packagedUpdateState.downloaded,
-          });
-        });
         if (this.updateCheckTimer) {
           clearInterval(this.updateCheckTimer);
         }
         this.updateCheckTimer = setInterval(() => {
-          void autoUpdater.checkForUpdates().catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            gatewayLog.debug(
-              "auto-update",
-              `Failed to check for updates: ${msg}`
-            );
-          });
+          void autoUpdater
+            .checkForUpdates()
+            .then((result) => this.guardUpdateDownload(result))
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              gatewayLog.debug(
+                "auto-update",
+                `Failed to check for updates: ${msg}`
+              );
+            });
         }, UPDATE_CHECK_INTERVAL_MS);
       } else {
         void this.checkForUpdate()
@@ -1407,9 +1757,16 @@ export class DesktopApplication {
       return;
     }
     this.agentSessionSync.start(options);
+    // FEA-2715: the transcript lane shares the local DB (agent-dashboard runtime)
+    // so it starts alongside the metadata lane. Idempotent + a no-op when the
+    // feature flag is off. Its own 5s tick self-heals connectivity changes.
+    this.transcriptSync?.start();
   }
 
   private scheduleCloudSocketStartAfterInitialUi(): void {
+    if (this.goldenMode) {
+      return;
+    }
     void this.waitForInitialUiBeforeCloudSocket()
       .then(async () => {
         await yieldToMainLoop();
@@ -1622,25 +1979,25 @@ export class DesktopApplication {
   private getManagedPopSigningReadiness(): ManagedPopSigningReadiness {
     const provenance = this.apiKeyStore.getApiKeyProvenance() ?? "USER_CREATED";
     switch (this.getConnectionSecurityStatus().mode) {
-      case "enhanced":
+      case ConnectionSecurityMode.Enhanced:
         return {
           provenance: "DESKTOP_MANAGED",
           signingReady: true,
           reason: "ready",
         };
-      case "signing_unavailable":
+      case ConnectionSecurityMode.SigningUnavailable:
         return {
           provenance: "DESKTOP_MANAGED",
           signingReady: false,
           reason: "signing_unavailable",
         };
-      case "unconfigured":
+      case ConnectionSecurityMode.Unconfigured:
         return {
           provenance,
           signingReady: false,
           reason: "missing_signer",
         };
-      case "standard":
+      case ConnectionSecurityMode.Standard:
         return {
           provenance: "USER_CREATED",
           signingReady: false,
@@ -1658,20 +2015,17 @@ export class DesktopApplication {
     return this.settingsStore.getActiveConfig();
   }
 
-  private getConnectionSecurityStatus(): {
-    mode: "enhanced" | "standard" | "unconfigured" | "signing_unavailable";
-    detail: string;
-  } {
+  private getConnectionSecurityStatus(): ConnectionSecurityStatus {
     const apiKeyStatus = this.apiKeyStore.getStatus();
     if (!apiKeyStatus.hasApiKey) {
       return {
-        mode: "unconfigured",
+        mode: ConnectionSecurityMode.Unconfigured,
         detail: "No cloud API key is configured.",
       };
     }
     if (apiKeyStatus.provenance !== "DESKTOP_MANAGED") {
       return {
-        mode: "standard",
+        mode: ConnectionSecurityMode.Standard,
         detail: "Using a manually configured bearer key.",
       };
     }
@@ -1679,13 +2033,13 @@ export class DesktopApplication {
     const keyPair = this.gatewaySigningKeyStore.load(this.getActiveGatewayId());
     if (!keyPair.ok) {
       return {
-        mode: "signing_unavailable",
+        mode: ConnectionSecurityMode.SigningUnavailable,
         detail: "Managed key is present but request signing is unavailable.",
       };
     }
 
     return {
-      mode: "enhanced",
+      mode: ConnectionSecurityMode.Enhanced,
       detail: "Managed key with request signing is configured.",
     };
   }
@@ -1707,6 +2061,140 @@ export class DesktopApplication {
     patch: SavedConfigManagedPatch
   ): void {
     this.settingsStore.updateActiveConfigManagedMetadata(patch);
+  }
+
+  /**
+   * Device descriptor for first-party desktop sign-in (FEA-2219). Reuses the
+   * active gateway's Ed25519 key — the same keypair the PoP signer and the
+   * inline managed-onboarding flow use — so the eventual session credentials
+   * bind to the existing device identity. Throws when the signing key is
+   * unavailable; {@link DesktopSessionManager} treats that as `start_failed`.
+   */
+  private resolveDesktopDeviceDescriptor(): DesktopDeviceDescriptor {
+    const keyPair = this.getOrCreateActiveSigningKey();
+    if (!keyPair.ok) {
+      throw new Error(`Desktop signing key unavailable: ${keyPair.reason}`);
+    }
+    return {
+      gatewayId: keyPair.keyPair.gatewayId,
+      gatewayPublicKeyPem: keyPair.keyPair.publicKeySpkiPem,
+      machineName: os.hostname(),
+      platform: process.platform,
+      desktopVersion: app.getVersion(),
+    };
+  }
+
+  /** Pushes a desktop auth-state transition to the renderer AuthAdapter. */
+  private publishDesktopAuthState(state: DesktopAuthState): void {
+    this.desktopWindow.sendToRenderer(
+      DESKTOP_AUTH_STATE_CHANGED_CHANNEL,
+      state
+    );
+  }
+
+  /**
+   * Trace-comment REST sync can run while the relay socket is reconnecting.
+   * Session comments still need the profile-scoped compute target so the API can
+   * resolve local external session ids to the already-synced cloud artifact.
+   */
+  private getTraceCommentComputeTargetId(): string | null {
+    if (this.cloudStatus.state === "online") {
+      return this.cloudStatus.targetId;
+    }
+    return this.settingsStore.getActiveConfig()?.lastComputeTargetId ?? null;
+  }
+
+  /**
+   * Returns cached API-key user identity for trace-comment ownership checks.
+   * When unresolved, starts a bounded background `/me` request and returns null
+   * so local-first comment mutations never wait on cloud auth.
+   */
+  private getTraceCommentUserIdentity(): {
+    userId: string | null;
+    organizationId: string | null;
+  } | null {
+    const apiKey = this.apiKeyStore.getApiKey();
+    if (!apiKey) {
+      this.traceCommentIdentity = null;
+      this.traceCommentIdentityInFlight = null;
+      return null;
+    }
+
+    const keyFingerprint = createHash("sha256").update(apiKey).digest("hex");
+    if (this.traceCommentIdentity?.keyFingerprint === keyFingerprint) {
+      return {
+        userId: this.traceCommentIdentity.userId,
+        organizationId: this.traceCommentIdentity.organizationId,
+      };
+    }
+
+    this.traceCommentIdentity = null;
+    this.warmTraceCommentUserIdentity(apiKey, keyFingerprint);
+    return null;
+  }
+
+  private warmTraceCommentUserIdentity(
+    apiKey: string,
+    keyFingerprint: string
+  ): void {
+    if (this.traceCommentIdentityInFlight === keyFingerprint) {
+      return;
+    }
+    this.traceCommentIdentityInFlight = keyFingerprint;
+    void this.fetchTraceCommentUserIdentity(apiKey)
+      .then((identity) => {
+        if (!identity) {
+          return;
+        }
+        if (this.traceCommentIdentityInFlight === keyFingerprint) {
+          this.traceCommentIdentity = { keyFingerprint, ...identity };
+        }
+      })
+      .finally(() => {
+        if (this.traceCommentIdentityInFlight === keyFingerprint) {
+          this.traceCommentIdentityInFlight = null;
+        }
+      });
+  }
+
+  private async fetchTraceCommentUserIdentity(apiKey: string): Promise<{
+    userId: string;
+    organizationId: string;
+  } | null> {
+    let url: string;
+    try {
+      url = new URL("/me", this.settingsStore.getApiOrigin()).toString();
+    } catch {
+      return null;
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      return null;
+    }
+    if (!response.ok) {
+      return null;
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return null;
+    }
+    const data = unwrapApiResultData(body);
+    return typeof data.id === "string" &&
+      typeof data.organizationId === "string"
+      ? { userId: data.id, organizationId: data.organizationId }
+      : null;
   }
 
   private persistActiveProfileKey(
@@ -1827,6 +2315,9 @@ export class DesktopApplication {
           }
         : { onboardingCompleted: false }),
     });
+    // Warm after the apiOrigin is committed so org resolution targets the
+    // freshly-configured cloud origin, not the prior one.
+    this.telemetryOrgProvider.warm();
     const activeConfig =
       this.settingsStore.ensureActiveConfigForCurrentOrigins();
     this.apiKeyStore.saveProfileKey(
@@ -1877,16 +2368,79 @@ export class DesktopApplication {
 
   private openBrowserCommandKeysSettings(): void {
     this.desktopWindow.show();
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:navigate-tab", "settings");
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:navigate-settings-tab", "security");
+    this.desktopWindow.sendToRenderer("desktop:navigate-tab", "settings");
+    this.desktopWindow.sendToRenderer(
+      "desktop:navigate-settings-tab",
+      "security"
+    );
+  }
+
+  /**
+   * Live-exit hook from the loop finalizer: raise an OS notification that the
+   * user's loop finished. Gated behind the opt-in Loop Completion Notifications
+   * flag so the default experience is unchanged until the feature is enabled.
+   */
+  private handleLoopCompletedNotification(notice: LoopCompletedNotice): void {
+    if (!this.settingsStore.getLoopCompletedNotificationsEnabled()) {
+      return;
+    }
+    this.loopCompletedNotifier.notifyCompleted(notice);
   }
 
   private isAgentMonitorEnabled(): boolean {
     return this.settingsStore.getAgentMonitorEnabled();
+  }
+
+  private isTranscriptSyncEnabled(): boolean {
+    return this.settingsStore.getTranscriptSyncEnabled();
+  }
+
+  /** The live relay compute target id, or null when the cloud link is offline. */
+  private transcriptComputeTargetId(): string | null {
+    return this.cloudStatus.state === "online"
+      ? this.cloudStatus.targetId
+      : null;
+  }
+
+  // FEA-2715: assemble the transcript archive-lane service. The control-plane
+  // client authenticates with the first-party desktop session JWT (withAnyAuth
+  // Bearer); the executor reads the relay compute-target id for the request
+  // body. The fingerprint store is reached lazily through the agent-dashboard
+  // runtime (null until the db host is ready), so the service self-no-ops until
+  // both the DB and connectivity exist.
+  private createTranscriptSyncService(): TranscriptSyncService {
+    const transcriptsClient = createDesktopTranscriptsClient({
+      getAccessToken: () => this.desktopSessionManager.getAccessToken(),
+      getApiOrigin: () => this.settingsStore.getApiOrigin(),
+    });
+    return new TranscriptSyncService({
+      getStore: () => this.agentDashboardDesignSystem?.transcriptSync ?? null,
+      buildExecutor: (store) =>
+        createTranscriptSyncExecutor({
+          store,
+          client: transcriptsClient,
+          getComputeTargetId: () => this.transcriptComputeTargetId(),
+          now: () => new Date().toISOString(),
+        }),
+      // Lazy import: keeps the collector-backed discovery module (and its
+      // collector imports) off the desktop boot static-import graph, satisfying
+      // the agent-dashboard boundary guard.
+      discover: () =>
+        import("./transcript-sync/transcript-discovery.js").then((module) =>
+          module.discoverTranscriptFiles()
+        ),
+      isEnabled: () => this.isTranscriptSyncEnabled(),
+      // Requires a relay compute target AND first-party auth (the Bearer JWT).
+      isOnline: () =>
+        this.transcriptComputeTargetId() !== null &&
+        this.desktopSessionManager.getState().status ===
+          DesktopAuthStatus.Authenticated,
+      getComputeTargetId: () => this.transcriptComputeTargetId(),
+      resolveTrustedTranscriptPath: (candidate) =>
+        resolveTrustedClaudeTranscriptPath(candidate),
+      statFile: statTranscriptFile,
+      log: (message) => gatewayLog.info("transcript-sync", message),
+    });
   }
 
   private isPlanExtractionEnabled(): boolean {
@@ -1897,6 +2451,78 @@ export class DesktopApplication {
     return this.settingsStore.getFlag(
       DESKTOP_AGENT_COACHING_TIPS_FEATURE_FLAG_KEY
     );
+  }
+
+  private isFirstPartyAuthEnabled(): boolean {
+    return this.settingsStore.getFlag(
+      DESKTOP_FIRST_PARTY_AUTH_FEATURE_FLAG_KEY
+    );
+  }
+
+  // Coaching packs ride on top of coaching tips: the override only applies when
+  // BOTH the tips feature and the packs flag are on. Off → built-in signals.
+  private isCoachingPacksEnabled(): boolean {
+    return (
+      this.isAgentCoachingTipsEnabled() &&
+      this.settingsStore.getFlag(DESKTOP_AGENT_COACHING_PACKS_FEATURE_FLAG_KEY)
+    );
+  }
+
+  // Seed-once guard: bundled coaching packs are copied into userData the first
+  // time the active pack is read this process, then left alone (so a user's
+  // later pack choice is never re-seeded over).
+  private coachingPacksSeeded = false;
+
+  private coachingPacksDir(): string {
+    return path.join(app.getPath("userData"), "coaching-packs");
+  }
+
+  private getActiveCoachingPackSeeded() {
+    const packsDir = this.coachingPacksDir();
+    if (!this.coachingPacksSeeded) {
+      try {
+        seedBundledCoachingPacks(packsDir, resolveBundledCoachingPacksDir());
+      } catch (error) {
+        gatewayLog.warn(
+          "agent-coaching",
+          `coaching pack seeding failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+      this.coachingPacksSeeded = true;
+    }
+    return getActiveCoachingPack(packsDir);
+  }
+
+  /**
+   * Install an org-distributed coaching-pack (FEA-2923 batch 5) via the
+   * distribution/install path. Downloads + extracts the presigned asset zip and
+   * copies/activates it through `installCoachingPackFromDistribution`, honoring
+   * override precedence. Extraction uses adm-zip (loaded lazily so it never
+   * costs anything on the seed/local path).
+   */
+  private async installCoachingDistribution(
+    dist: DistributionDto
+  ): Promise<CoachingInstallOutcome> {
+    if (!this.isCoachingPacksEnabled()) {
+      // Feature-flag off: the device's coaching state did NOT converge, so we
+      // must NOT report "installed" (which `skipped` maps to). Report a distinct
+      // `disabled` outcome that the installer maps to `pending`, matching the
+      // "runtime not ready"/"not wired" precedent — the cloud only sees
+      // "installed" when the pack genuinely landed.
+      return { status: "disabled" };
+    }
+    const { default: AdmZip } = await import("adm-zip");
+    return installCoachingDistribution(dist, {
+      packsDir: this.coachingPacksDir(),
+      coachingPackSlug,
+      shouldHonorDistributionDefault,
+      installCoachingPackFromDistribution,
+      extractZip: (zipBytes, destDir) => {
+        new AdmZip(zipBytes).extractAllTo(destDir, true);
+      },
+    });
   }
 
   private getAgentMonitorUrl(): string | null {
@@ -1951,7 +2577,10 @@ export class DesktopApplication {
         this.agentDashboardDesignSystem =
           await createAgentDashboardDesignSystemRuntime({
             userDataPath: app.getPath("userData"),
+            golden: this.goldenMode,
             getWindow: () => this.desktopWindow.getWindow(),
+            isTrustedSender: (sender) =>
+              this.desktopWindow.isTrustedSender(sender),
             whenInitialWindowShown: () =>
               this.desktopWindow.whenInitiallyShown(),
             whenInitialDashboardDataServed: () =>
@@ -1965,8 +2594,17 @@ export class DesktopApplication {
               this.notifyInitialCollectorImportComplete(),
             getApiKey: () => this.apiKeyStore.getApiKey(),
             getApiOrigin: () => this.settingsStore.getApiOrigin(),
-            // User/org IDs are server-owned. Local-only sessions keep these columns null.
-            getUserIdentity: () => null,
+            getApiKeyProvenance: () => this.apiKeyStore.getApiKeyProvenance(),
+            signDesktopRequest: (request) => this.signDesktopRequest(request),
+            onDesktopPopUnavailable: (surface, reason) =>
+              this.reportDesktopPopUnavailable(surface, reason),
+            getProfileId: () =>
+              this.settingsStore.getActiveConfigId() ?? "legacy",
+            getComputeTargetId: () => this.getTraceCommentComputeTargetId(),
+            getUserIdentity: () => this.getTraceCommentUserIdentity(),
+            // FEA-1997: route IPC perf wide events through the desktop OTel
+            // runtime (sampled spans; no-op when the SDK is disabled/not started).
+            emitIpcPerf: (input) => this.appOtelRuntime.emitIpcPerfEvent(input),
             onTerminalFailure: (reason) => {
               const notification = new Notification({
                 title: "Closedloop Agent Monitor",
@@ -1977,13 +2615,29 @@ export class DesktopApplication {
               this.agentMonitorFailureReason = reason;
               this.refreshTrayState();
             },
+            onSessionTerminal: (notice) => this.notifySessionTerminal(notice),
+            // FEA-2715: forward Claude hook events to the transcript lane so an
+            // active session's transcript flushes on Stop/quiescence (AC4),
+            // ahead of the 30-min discovery sweep. No-op when the flag is off.
+            onTranscriptHookEvent: (hookType, data) =>
+              this.transcriptSync?.enqueueClaudeHook({
+                hookType,
+                sessionId:
+                  typeof data.session_id === "string"
+                    ? data.session_id
+                    : undefined,
+                transcriptPath:
+                  typeof data.transcript_path === "string"
+                    ? data.transcript_path
+                    : undefined,
+              }),
             log: (scope, message) => gatewayLog.info(scope, message),
           });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         // Log the full detail (may include paths, SQL, checksums, migration
         // names); show the user only a stable, sanitized message keyed by the
-        // failure kind (FEA-1791 Phase 2).
+        // failure kind.
         gatewayLog.error(
           "agent-monitor",
           `failed to initialize Agent Monitor runtime: ${reason}`
@@ -2008,6 +2662,13 @@ export class DesktopApplication {
       this.agentDashboardDesignSystem.registerIpcHandlers();
     }
     return this.agentDashboardDesignSystem;
+  }
+
+  private async resolveGatewayBranchPrIdentity(
+    branchId: string
+  ): Promise<BranchPrIdentity | null> {
+    const runtime = await this.ensureAgentDashboardDesignSystemRuntime();
+    return runtime?.resolveBranchPrIdentity(branchId) ?? null;
   }
 
   /**
@@ -2037,7 +2698,11 @@ export class DesktopApplication {
     if (this.shuttingDown) {
       return;
     }
-    syncAgentMonitorHooksOnBoot();
+    if (!this.goldenMode) {
+      // FEA-2648: golden mode must never write hook entries into the real
+      // ~/.claude/settings.json or codex config — live capture stays off.
+      syncAgentMonitorHooksOnBoot();
+    }
     await this.waitForRendererBackgroundSlot();
     if (this.shuttingDown) {
       return;
@@ -2057,6 +2722,7 @@ export class DesktopApplication {
   ): Promise<void> {
     await this.agentDashboardDesignSystem?.stop();
     this.agentSessionSync.stop();
+    this.transcriptSync?.stop();
     if (options.closeDesignSystem && this.agentDashboardDesignSystem) {
       await this.agentDashboardDesignSystem.close();
       this.agentDashboardDesignSystem = null;
@@ -2101,9 +2767,10 @@ export class DesktopApplication {
       return;
     }
 
-    const hooksResult = isAgentMonitorHooksEnabled()
-      ? setAgentMonitorHooksEnabled(false)
-      : { ok: true, enabled: false };
+    const hooksResult =
+      !this.goldenMode && isAgentMonitorHooksEnabled()
+        ? setAgentMonitorHooksEnabled(false)
+        : { ok: true, enabled: false };
     if (!hooksResult.ok) {
       gatewayLog.warn(
         "agent-monitor",
@@ -2112,34 +2779,28 @@ export class DesktopApplication {
     }
 
     await this.stopAgentCapture({ closeDesignSystem: true });
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:navigate-tab", "settings");
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:navigate-settings-tab", "relay-gateway");
+    this.desktopWindow.sendToRenderer("desktop:navigate-tab", "settings");
+    this.desktopWindow.sendToRenderer(
+      "desktop:navigate-settings-tab",
+      "relay-gateway"
+    );
   }
 
   openClaudeDashboard(): void {
     this.desktopWindow.show();
     if (!this.isAgentMonitorEnabled()) {
-      this.desktopWindow
-        .getWindow()
-        ?.webContents.send("desktop:navigate-tab", "settings");
-      this.desktopWindow
-        .getWindow()
-        ?.webContents.send("desktop:navigate-settings-tab", "relay-gateway");
+      this.desktopWindow.sendToRenderer("desktop:navigate-tab", "settings");
+      this.desktopWindow.sendToRenderer(
+        "desktop:navigate-settings-tab",
+        "relay-gateway"
+      );
       return;
     }
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:navigate-tab", "sessions");
+    this.desktopWindow.sendToRenderer("desktop:navigate-tab", "sessions");
   }
 
   private notifyCommandKeysChanged(): void {
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:command-keys-changed");
+    this.desktopWindow.sendToRenderer("desktop:command-keys-changed");
   }
 
   private getActiveCommandKeyTargetContext():
@@ -2184,6 +2845,25 @@ export class DesktopApplication {
       sendCommandEvent: (event) => this.cloudSocket.sendCommandEvent(event),
       onChanged: () => this.notifyCommandKeysChanged(),
       log: (level, message) => gatewayLog[level]("command-keys", message),
+    });
+  }
+
+  private async handleGitHubResyncNudgeCommand(
+    command: DesktopCommandEvent
+  ): Promise<void> {
+    await handleReservedGitHubResyncNudge(command, {
+      getActiveTargetContext: () => this.getActiveCommandKeyTargetContext(),
+      sendCommandAck: (event) => this.cloudSocket.sendCommandAck(event),
+      sendCommandEvent: (event) => this.cloudSocket.sendCommandEvent(event),
+      notifyRendererRefresh: async (body) => {
+        const refresh =
+          await this.agentDashboardDesignSystem?.refreshGitHubBranches(body);
+        this.desktopWindow.sendToRenderer(
+          "desktop:github-resync-nudge",
+          refresh ?? { body, branchIds: [] }
+        );
+      },
+      log: (level, message) => gatewayLog[level]("github-resync", message),
     });
   }
 
@@ -2310,45 +2990,37 @@ export class DesktopApplication {
     const webAppOrigin = normalizeWebAppOrigin(
       webAppOriginInput || this.settingsStore.getWebAppOrigin()
     );
-    const keyPair = this.getOrCreateActiveSigningKey();
-    if (!keyPair.ok) {
-      throw new Error(`Desktop signing key unavailable: ${keyPair.reason}`);
-    }
-    const activeGatewayId = keyPair.keyPair.gatewayId;
+    // Reuse the single device-descriptor construction shared with the
+    // first-party sign-in flow (gateway id + public key + machine info) so the
+    // two call sites can't drift; it throws with the same "signing key
+    // unavailable" message when the key store can't provide the active key.
+    const deviceDescriptor = this.resolveDesktopDeviceDescriptor();
 
     const apiOrigin = normalizeAndValidateOrigin(
       this.settingsStore.getApiOrigin()
     );
-    const startUrl = new URL("/desktop/device-onboarding/start", apiOrigin);
-    const startResponse = await fetch(startUrl.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        webAppOrigin,
-        gatewayId: activeGatewayId,
-        gatewayPublicKeyPem: keyPair.keyPair.publicKeySpkiPem,
-        machineName: os.hostname(),
-        platform: process.platform,
-        desktopVersion: app.getVersion(),
-        desktopSecurityUpgradeProtocolVersion: 1,
-      }),
+    // Shared device-onboarding client (FEA-2219): the same /start + /poll
+    // contract the first-party desktop sign-in flow uses. This managed-API-key
+    // flow differs only in its post-approval step (origin confirmation +
+    // provisioning), so it owns the loop while delegating the HTTP + parsing.
+    const started = await startDeviceOnboarding({
+      apiOrigin,
+      webAppOrigin,
+      ...deviceDescriptor,
     });
-    const startBody = (await startResponse.json().catch(() => null)) as {
-      deviceSessionId?: string;
-      deviceSessionSecret?: string;
-      verificationUrl?: string;
-      expiresAt?: string;
-      pollIntervalSeconds?: number;
-    } | null;
-    if (
-      !(
-        startResponse.ok &&
-        startBody?.deviceSessionId &&
-        startBody.deviceSessionSecret &&
-        startBody.verificationUrl &&
-        startBody.expiresAt
-      )
-    ) {
+    if (!started.ok) {
+      throw new Error("Could not start browser connection");
+    }
+    const start = started.value;
+    // The verification URL arrives from the cloud onboarding response; require
+    // it to live on the exact webAppOrigin we sent to `start` (prod, stage, or a
+    // local dev server) before publishing any onboarding state or handing it to
+    // the OS, so a malicious/MITM'd response cannot launch another host or a
+    // file:/custom-scheme URL via shell.openExternal. Validate here (alongside
+    // the other precondition failures) so a reject surfaces before
+    // managedOnboardingState is set to "provisioning" and leaves the UI stuck on
+    // the approval spinner.
+    if (!isAllowedDesktopVerificationUrl(start.verificationUrl, webAppOrigin)) {
       throw new Error("Could not start browser connection");
     }
 
@@ -2359,55 +3031,34 @@ export class DesktopApplication {
       message: "Waiting for browser approval...",
     };
     this.notifyOnboardingStateChanged();
-    await shell.openExternal(startBody.verificationUrl);
+    await shell.openExternal(start.verificationUrl);
 
-    const pollUrl = new URL("/desktop/device-onboarding/poll", apiOrigin);
-    const pollIntervalMs = Math.max(
-      1000,
-      (startBody.pollIntervalSeconds ?? 5) * 1000
-    );
+    const pollIntervalMs = Math.max(1000, start.pollIntervalSeconds * 1000);
+    const expiresAtMs = Date.parse(start.expiresAt);
     while (
       !this.managedOnboardingRuns.isCancelled(run, this.shuttingDown) &&
-      Date.parse(startBody.expiresAt) > Date.now()
+      expiresAtMs > Date.now()
     ) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      type DeviceOnboardingPollBody = {
-        status?: string;
-        onboardingAttemptId?: string;
-        webAppOrigin?: string;
-        expiresAt?: string;
-      };
-      let pollResponse: Response;
-      let pollBody: DeviceOnboardingPollBody | null = null;
-      try {
-        pollResponse = await fetch(pollUrl.toString(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            deviceSessionId: startBody.deviceSessionId,
-            deviceSessionSecret: startBody.deviceSessionSecret,
-          }),
-        });
-        pollBody = (await pollResponse
-          .json()
-          .catch(() => null)) as DeviceOnboardingPollBody | null;
-      } catch {
+      const polled = await pollDeviceOnboarding({
+        apiOrigin,
+        deviceSessionId: start.deviceSessionId,
+        deviceSessionSecret: start.deviceSessionSecret,
+      });
+      // Preserve the prior semantics: keep polling through any error (network,
+      // 4xx, 5xx, or an unparseable body) until the device session resolves to
+      // a terminal decision or the start window expires.
+      if (!polled.ok) {
         continue;
       }
-      if (!(pollResponse.ok && pollBody?.status)) {
+      const decision = polled.value;
+      if (decision.status === DesktopDeviceSessionStatus.Pending) {
         continue;
       }
-      if (pollBody.status === "pending") {
-        continue;
-      }
-      if (
-        pollBody.status === "approved" &&
-        pollBody.onboardingAttemptId &&
-        pollBody.webAppOrigin
-      ) {
+      if (decision.status === DesktopDeviceSessionStatus.Approved) {
         const confirmed = await this.confirmManagedOnboardingOrigin({
-          onboardingAttemptId: pollBody.onboardingAttemptId,
-          webAppOrigin: pollBody.webAppOrigin,
+          onboardingAttemptId: decision.onboardingAttemptId,
+          webAppOrigin: decision.webAppOrigin,
           createdAt: new Date().toISOString(),
         });
         if (!confirmed) {
@@ -2418,13 +3069,13 @@ export class DesktopApplication {
           );
           return {
             status: "pending",
-            verificationUrl: startBody.verificationUrl,
+            verificationUrl: start.verificationUrl,
           };
         }
         await this.runManagedOnboardingProvisioning(
           {
-            onboardingAttemptId: pollBody.onboardingAttemptId,
-            webAppOrigin: pollBody.webAppOrigin,
+            onboardingAttemptId: decision.onboardingAttemptId,
+            webAppOrigin: decision.webAppOrigin,
             sandboxBaseDirectory: this.settingsStore.getSandboxBaseDirectory(),
             createdAt: new Date().toISOString(),
           },
@@ -2432,15 +3083,16 @@ export class DesktopApplication {
         );
         return {
           status: "approved",
-          verificationUrl: startBody.verificationUrl,
+          verificationUrl: start.verificationUrl,
         };
       }
+      // Denied or expired: a terminal non-approval decision.
       this.setManagedOnboardingFailure(
-        `device_session_${pollBody.status}`,
+        `device_session_${decision.status}`,
         "Browser connection was not approved. Use manual setup or start again.",
         ["use_manual_setup", "retry_automated_onboarding"]
       );
-      return { status: "pending", verificationUrl: startBody.verificationUrl };
+      return { status: "pending", verificationUrl: start.verificationUrl };
     }
 
     this.setManagedOnboardingFailure(
@@ -2448,7 +3100,7 @@ export class DesktopApplication {
       "Browser connection expired. Use manual setup or start again.",
       ["use_manual_setup", "retry_automated_onboarding"]
     );
-    return { status: "pending", verificationUrl: startBody.verificationUrl };
+    return { status: "pending", verificationUrl: start.verificationUrl };
   }
 
   private shouldStopManagedOnboardingRun(
@@ -2494,9 +3146,7 @@ export class DesktopApplication {
   }
 
   private notifyOnboardingStateChanged(): void {
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send("desktop:onboarding-state-changed");
+    this.desktopWindow.sendToRenderer("desktop:onboarding-state-changed");
   }
 
   private async maybeShowOnboardingPopup(): Promise<void> {
@@ -2526,9 +3176,7 @@ export class DesktopApplication {
         Observability.onboardingPopupSuppressedAuto();
         return;
       }
-      this.desktopWindow
-        .getWindow()
-        ?.webContents.send("desktop:show-onboarding-popup");
+      this.desktopWindow.sendToRenderer("desktop:show-onboarding-popup");
       Observability.onboardingPopupShown();
     } catch (error) {
       gatewayLog.warn(
@@ -2550,12 +3198,10 @@ export class DesktopApplication {
   }
 
   private notifyPackagedUpdateStatus(): void {
-    this.desktopWindow
-      .getWindow()
-      ?.webContents.send(
-        "desktop:update-status",
-        this.getPackagedUpdateStatusPayload()
-      );
+    this.desktopWindow.sendToRenderer(
+      "desktop:update-status",
+      this.getPackagedUpdateStatusPayload()
+    );
   }
 
   setQuitting(): void {
@@ -2599,6 +3245,135 @@ export class DesktopApplication {
       "calling quitAndInstall(isSilent=true, isForceRunAfter=true)"
     );
     autoUpdater.quitAndInstall(true, true);
+  }
+
+  /**
+   * FEA-2349: an update exists but cannot install because the app runs from a
+   * read-only volume (App Translocation). Put the update banner into an
+   * actionable error state and tell the user how to self-resolve.
+   */
+  private handleUpdateInstallBlocked(version?: string): void {
+    gatewayLog.warn(
+      "auto-update",
+      `Update install blocked (read-only volume) version=${version ?? "unknown"}`
+    );
+    this.setPackagedUpdateState({
+      status: "error",
+      available: true,
+      downloaded: false,
+      version,
+      percent: undefined,
+      error: formatUpdateBlockedBannerMessage(version),
+      installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+    });
+    this.notifyPackagedUpdateStatus();
+    Observability.electronUpdateFailed({
+      trigger: "install-blocked-read-only-volume",
+      status: this.packagedUpdateState.status,
+      version,
+      error: "app is translocated (read-only volume)",
+      downloaded: false,
+      readyToInstall: false,
+    });
+    this.showUpdateBlockedDialogOnce(version);
+  }
+
+  /**
+   * Native dialog telling the user to move Closedloop.app to /Applications,
+   * with a button that does it for them (app.moveToApplicationsFolder).
+   * Shown at most once per app session — update checks repeat every 5 minutes
+   * and must not stack dialogs.
+   */
+  private showUpdateBlockedDialogOnce(version?: string): void {
+    if (this.updateBlockedDialogShown) {
+      return;
+    }
+    this.updateBlockedDialogShown = true;
+    this.promptToMoveToApplications(version).catch((error: unknown) => {
+      // The dialog flow must never affect the running app.
+      const message = error instanceof Error ? error.message : String(error);
+      gatewayLog.warn(
+        "auto-update",
+        `update-blocked dialog failed: ${message}`
+      );
+    });
+  }
+
+  private async promptToMoveToApplications(version?: string): Promise<void> {
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      title: UPDATE_BLOCKED_DIALOG_TITLE,
+      message: UPDATE_BLOCKED_DIALOG_TITLE,
+      detail: formatUpdateBlockedDialogBody(version),
+      buttons: [UPDATE_BLOCKED_MOVE_BUTTON, UPDATE_BLOCKED_LATER_BUTTON],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response !== 0) {
+      gatewayLog.info(
+        "auto-update",
+        "user deferred moving the app to /Applications"
+      );
+      return;
+    }
+    const moved = this.attemptMoveToApplications();
+    if (moved) {
+      return;
+    }
+    this.showUpdateBlockedManualSteps(version);
+  }
+
+  private canMoveBlockedUpdateToApplications(): boolean {
+    return (
+      this.packagedUpdateState.status === "error" &&
+      this.packagedUpdateState.installBlockedReason ===
+        PackagedUpdateInstallBlockedReason.ReadOnlyVolume
+    );
+  }
+
+  private attemptMoveToApplications(): boolean {
+    try {
+      return this.moveToApplications();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      gatewayLog.warn(
+        "auto-update",
+        `moveToApplicationsFolder failed: ${message}`
+      );
+    }
+    return false;
+  }
+
+  private showUpdateBlockedManualSteps(
+    version = this.packagedUpdateState.version
+  ): void {
+    dialog.showErrorBox(
+      UPDATE_BLOCKED_DIALOG_TITLE,
+      formatUpdateBlockedManualStepsBody(version)
+    );
+  }
+
+  private moveToApplications(): boolean {
+    // On success this quits and relaunches from /Applications, so nothing
+    // after a successful call is guaranteed to run. Overwrite a stale copy
+    // in /Applications, but never one that is currently running.
+    return app.moveToApplicationsFolder({
+      conflictHandler: (conflictType) => conflictType === "exists",
+    });
+  }
+
+  /**
+   * FEA-2349: every checkForUpdates() call site must route the result through
+   * this guard so a download/staging failure can never become a fatal
+   * unhandled rejection. The "error" event remains the state/telemetry
+   * channel; see guardUpdateDownloadPromise for the full story.
+   */
+  private guardUpdateDownload(
+    result: Awaited<ReturnType<typeof autoUpdater.checkForUpdates>>
+  ): void {
+    guardUpdateDownloadPromise(result, (message) =>
+      gatewayLog.debug("auto-update", message)
+    );
   }
 
   reportShutdownFailure(
@@ -2906,6 +3681,9 @@ export class DesktopApplication {
         `Serving on localhost:${this.server.getActivePort()} | cloud: online (${status.targetId})`
       );
       void this.recovery.onCloudOnline();
+      // FEA-2923 (T-16.10): trigger distribution reconciliation on each cloud
+      // online transition so newly assigned distributions get auto-installed.
+      void this.requiredPluginInstaller.reconcile(status.targetId);
       return;
     }
 
@@ -2952,6 +3730,11 @@ export class DesktopApplication {
   }
 
   private setCloudConnectionEnabled(enabled: boolean): void {
+    if (this.goldenMode) {
+      // FEA-2648: golden mode hard-disables cloud egress — the toggle is inert
+      // and must not flip persisted or in-memory state.
+      return;
+    }
     this.cloudConnectionEnabled = enabled;
     this.settingsStore.setCloudConnectionEnabled(enabled);
     if (!enabled) {
@@ -2976,6 +3759,9 @@ export class DesktopApplication {
   }
 
   private restartCloudSocket(): void {
+    if (this.goldenMode) {
+      return;
+    }
     if (this.shuttingDown) {
       return;
     }
@@ -3046,6 +3832,48 @@ export class DesktopApplication {
     };
   }
 
+  /**
+   * Fire a desktop Notification when a live agent session reaches a terminal
+   * status, so users running a long session don't have to keep the window
+   * focused to learn it finished. Gated on the `sessionCompletionNotifications`
+   * flag; clicking deep-links to the session detail. Best-effort and never
+   * throws into the DB-host message pump.
+   */
+  private notifySessionTerminal(notice: {
+    sessionId: string;
+    status: string;
+  }): void {
+    if (!this.settingsStore.getFlag("sessionCompletionNotifications")) {
+      return;
+    }
+    try {
+      const errored = notice.status === "error";
+      const notification = new Notification({
+        title: errored ? "Agent session failed" : "Agent session completed",
+        body: errored
+          ? "Your agent session ended with an error."
+          : "Your agent session finished.",
+      });
+      notification.on("click", () => {
+        this.desktopWindow.show();
+        // Org-relative session-detail href; mirrors the renderer route
+        // table's sessionDetailHref (/sessions/:id), which the main process
+        // can't import. sendToRenderer is best-effort: the click can fire long
+        // after notifySessionTerminal returns, against a torn-down renderer.
+        this.desktopWindow.sendToRenderer(
+          "desktop:navigate-tab",
+          `/sessions/${encodeURIComponent(notice.sessionId)}`
+        );
+      });
+      notification.show();
+    } catch (error) {
+      gatewayLog.warn(
+        "session-completion-notification",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
   private refreshTrayState(explicitDetails?: string): void {
     if (!this.recovery.gatewayHealthy) {
       this.tray.setState(
@@ -3104,7 +3932,12 @@ export class DesktopApplication {
   private async evaluateApproval(
     request: GatewayApprovalRequest
   ): Promise<GatewayApprovalResult> {
-    if (!this.isDesktopSetupComplete()) {
+    if (
+      !(
+        this.isDesktopSetupComplete() ||
+        isSetupIndependentRendererGatewayRead(request)
+      )
+    ) {
       return {
         allow: false,
         statusCode: 403,
@@ -3300,7 +4133,7 @@ export class DesktopApplication {
    * away rather than a passive "available" message.
    */
   private notifyRendererDevUpdateReady(): void {
-    this.desktopWindow.getWindow()?.webContents.send("desktop:update-status", {
+    this.desktopWindow.sendToRenderer("desktop:update-status", {
       status: "downloaded",
       updateAvailable: true,
       readyToInstall: true,
@@ -3463,6 +4296,12 @@ export class DesktopApplication {
         runtime: this.appOtelRuntime,
       })
     );
+    registerMoveToApplicationsIpcHandler(ipcMain, {
+      canMoveToApplications: () => this.canMoveBlockedUpdateToApplications(),
+      isTrustedSender: (sender) =>
+        this.desktopWindow.isTrustedSender(sender as WebContents),
+      moveToApplications: () => this.attemptMoveToApplications(),
+    });
     ipcMain.handle("desktop:get-app-version", () => app.getVersion());
     // Coaching tip generation + artifact install run through the local agent
     // harness (no cloud); see agent-coaching-harness.ts.
@@ -3487,12 +4326,89 @@ export class DesktopApplication {
     ipcMain.handle(
       "desktop:agent-coaching:install",
       // `harness` is renderer-supplied and validated inside the harness module
-      // before any spawn — never trust it as a binary name here.
-      (_event, draft: string, harness?: unknown) => {
+      // before any spawn — never trust it as a binary name here. The `draft`
+      // text is fed straight into the local LLM harness prompt, so sender trust
+      // is the boundary that keeps a compromised/secondary renderer from
+      // injecting coaching prompts that drive host-side tool calls.
+      (event, draft: string, harness?: unknown) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if (!this.isAgentCoachingTipsEnabled()) {
           throw new Error("Agent Coaching Tips is disabled.");
         }
         return installCoachingArtifact(draft, harness);
+      }
+    );
+    // The active coaching pack supplies the best-practice signals that REPLACE
+    // the built-in defaults. Bundled packs are seeded into userData on first
+    // access; the renderer treats null as "use built-in defaults".
+    ipcMain.handle("desktop:agent-coaching:get-pack", () => {
+      // Gate before seeding: when the packs flag is off, nothing touches disk
+      // and the renderer falls back to the built-in signals.
+      if (!this.isCoachingPacksEnabled()) {
+        return null;
+      }
+      return this.getActiveCoachingPackSeeded();
+    });
+    // Desktop-team overlay: the renderer fetches a pack's org-wide analytics
+    // through main (renderers have no cloud REST access), signed with the
+    // device token.
+    registerPackAnalyticsIpc({
+      getAccessToken: () => this.desktopSessionManager.getAccessToken(),
+      getApiOrigin: () => this.settingsStore.getApiOrigin(),
+      isTrustedSender: (sender) => this.desktopWindow.isTrustedSender(sender),
+    });
+    // Install an external coaching pack folder (the "distribution method"):
+    // copy it into the managed store and make it active. User-initiated folder
+    // pick → local copy; the pack is validated before anything lands on disk.
+    ipcMain.handle(
+      "desktop:agent-coaching:install-pack",
+      (event, sourceDir: unknown) => {
+        // Gate before any disk work: the handler copies a renderer-supplied
+        // directory into the managed coaching-packs store and makes it active,
+        // controlling best-practice signals. Path canonicalization and manifest
+        // validation in installCoachingPack are defense-in-depth — sender trust
+        // is the boundary that keeps a compromised/secondary renderer out.
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
+        if (!this.isCoachingPacksEnabled()) {
+          throw new Error("Coaching Packs is disabled.");
+        }
+        if (typeof sourceDir !== "string" || sourceDir.length === 0) {
+          throw new Error("install-pack requires a source directory path.");
+        }
+        return installCoachingPack(sourceDir, this.coachingPacksDir());
+      }
+    );
+    // Renderer-initiated opt-in coaching distribution install (FEA-2923 / §I).
+    // The opt-in banner calls `window.desktopApi.db.coachingInstall(dist.id)`
+    // when the user accepts a coaching-pack distribution. We resolve the
+    // distribution (and its presigned asset) from the authoritative cloud
+    // response by id — never trusting renderer-supplied asset data — then run
+    // the same coaching install path the headless auto-installer uses. Rejects
+    // on any non-installed outcome so the banner surfaces an inline error.
+    ipcMain.handle(
+      "desktop:coaching:install",
+      async (event, distributionId: unknown) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
+        if (!this.isCoachingPacksEnabled()) {
+          throw new Error("Coaching Packs is disabled.");
+        }
+        if (typeof distributionId !== "string" || distributionId.length === 0) {
+          throw new Error("coachingInstall requires a distribution id.");
+        }
+        const computeTargetId = this.getTraceCommentComputeTargetId();
+        if (!computeTargetId) {
+          throw new Error("Not connected — cannot resolve the distribution.");
+        }
+        return this.requiredPluginInstaller.installCoachingDistributionById(
+          computeTargetId,
+          distributionId
+        );
       }
     );
     ipcMain.handle("desktop:get-agent-monitor-url", () => ({
@@ -3503,6 +4419,17 @@ export class DesktopApplication {
       localSessionSourceStatus: this.getLocalSessionSourceStatus(),
     }));
     ipcMain.handle("desktop:get-agent-monitor-ingest-progress", () => null);
+    ipcMain.handle(
+      "desktop:set-agent-monitor-import-paused",
+      (event, paused: boolean) => {
+        // Gate on sender trust like the other desktop:* handlers so a compromised
+        // or untrusted frame cannot stall the historical import/backfill.
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
+        this.agentDashboardDesignSystem?.setImportPaused(paused === true);
+      }
+    );
     ipcMain.handle("desktop:reprocess-agent-logs", async () => {
       if (!this.isAgentMonitorEnabled()) {
         return { ok: false, error: "Agent Dashboard is disabled in Settings." };
@@ -3521,12 +4448,23 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:set-agent-monitor-hooks-enabled",
-      (_event, enabled: boolean) => {
+      (event, enabled: boolean) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if (!this.isAgentMonitorEnabled()) {
           return {
             ok: false,
             enabled: false,
             error: "Agent Dashboard is disabled in Settings.",
+          };
+        }
+        if (this.goldenMode) {
+          // FEA-2648: golden mode never touches the real hook config.
+          return {
+            ok: false,
+            enabled: false,
+            error: "Golden mode: live-capture hooks are disabled.",
           };
         }
         const result = setAgentMonitorHooksEnabled(enabled === true);
@@ -3570,7 +4508,7 @@ export class DesktopApplication {
     ipcMain.handle(
       "desktop:update-settings",
       async (
-        _event,
+        event,
         partial: Partial<Record<FlagKey, boolean>> & {
           sandboxBaseDirectory?: string;
           onboardingCompleted?: boolean;
@@ -3585,6 +4523,9 @@ export class DesktopApplication {
           verboseLogging?: boolean;
         }
       ) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if ("binaryPaths" in partial) {
           throw new Error(
             "binaryPaths must be updated via PATCH /api/gateway/settings/binary-paths"
@@ -3592,6 +4533,12 @@ export class DesktopApplication {
         }
         const currentSettings = this.settingsStore.getAll();
         const nextPartial = { ...partial };
+        if (this.goldenMode) {
+          // FEA-2648: golden mode hard-disables cloud egress — the bulk persist
+          // below must not flip the stored cloud toggle either (both the
+          // settings-store flag loop and the dispatch below skip non-booleans).
+          nextPartial.cloudConnectionEnabled = undefined;
+        }
         // Normalize legacy "auto" tier to "high" (they behave identically)
         if (nextPartial.defaultApprovalTier === "auto") {
           nextPartial.defaultApprovalTier = "high";
@@ -3701,9 +4648,7 @@ export class DesktopApplication {
         }
 
         // Notify renderer of flag changes so the Feature Flags panel can refresh.
-        this.desktopWindow
-          .getWindow()
-          ?.webContents.send("desktop:flags-changed");
+        this.desktopWindow.sendToRenderer("desktop:flags-changed");
 
         this.restartCloudSocket();
         return updated;
@@ -3713,6 +4658,21 @@ export class DesktopApplication {
       registry: FEATURE_FLAGS,
       flags: this.settingsStore.getAllFlags(),
     }));
+    // FEA-2715: per-file transcript archive-lane status for the availability UI
+    // (FEA-2716/2717). Returns a disabled snapshot when the flag is off.
+    ipcMain.handle("desktop:get-transcript-sync-status", async (event) => {
+      // Status includes per-file paths/errors — restrict to the trusted renderer.
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
+      return (
+        (await this.transcriptSync?.getStatusSnapshot()) ?? {
+          enabled: false,
+          online: false,
+          files: [],
+        }
+      );
+    });
     ipcMain.handle("desktop:get-runtime-status", () => ({
       port: this.server.getActivePort(),
       cloudStatus: this.cloudStatus,
@@ -3733,6 +4693,16 @@ export class DesktopApplication {
       // Per-harness first-pass ingest progress for the dashboard FTUE loading
       // treatment (null until the Agent Dashboard runtime is up).
       ingest: this.agentDashboardDesignSystem?.getIngestProgress() ?? null,
+      // FEA-2264: the live post-boot maintenance phase (data-revision rebuild +
+      // artifact-link backfill). The first-launch banner keeps a calm "finishing
+      // up" state visible across this window — the residual freeze the user hit
+      // after the boot import settles but before the dashboard is fully ready.
+      maintenance:
+        this.agentDashboardDesignSystem?.getMaintenanceProgress() ?? null,
+      // FEA-2733: content-blind local→cloud sync progress for the renderer
+      // "syncing your history" indicator (counts only, no ids/content). Drives
+      // the History Sync status in Settings → Connection Status.
+      cloudSync: this.agentSessionSync.getSyncProgress(),
       // Whether the initial collector import has completed, so the sidebar can
       // show the Dashboard nav item as "still preparing" (throbber) until the
       // local-first analytics are ready, then surface a "ready" call-to-action.
@@ -3749,7 +4719,10 @@ export class DesktopApplication {
     ipcMain.handle("desktop:list-authorized-keys", () =>
       this.authorizedCommandKeys.list()
     );
-    ipcMain.handle("desktop:authorize-key", (_event, payload: unknown) => {
+    ipcMain.handle("desktop:authorize-key", (event, payload: unknown) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         throw new Error("public key payload is required");
       }
@@ -3776,7 +4749,10 @@ export class DesktopApplication {
     });
     ipcMain.handle(
       "desktop:remove-authorized-key",
-      (_event, fingerprint: string) => {
+      (event, fingerprint: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if (typeof fingerprint !== "string" || !fingerprint.trim()) {
           throw new Error("fingerprint is required");
         }
@@ -3791,25 +4767,37 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:approve-org-public-key",
-      async (_event, fingerprint: string) => {
+      async (event, fingerprint: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         return this.approveOrganizationCommandPublicKey(fingerprint);
       }
     );
     ipcMain.handle(
       "desktop:reject-org-public-key",
-      (_event, fingerprint: string) => {
+      (event, fingerprint: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         return this.rejectOrganizationCommandPublicKey(fingerprint);
       }
     );
     ipcMain.handle(
       "desktop:authorize-command-signing-key",
-      async (_event, fingerprint: string) => {
+      async (event, fingerprint: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         return this.approveOrganizationCommandPublicKey(fingerprint);
       }
     );
     ipcMain.handle(
       "desktop:revoke-command-signing-key",
-      async (_event, fingerprint: string) => {
+      async (event, fingerprint: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if (typeof fingerprint !== "string" || !fingerprint.trim()) {
           throw new Error("fingerprint is required");
         }
@@ -3896,18 +4884,27 @@ export class DesktopApplication {
     ipcMain.handle("desktop:get-resolved-approvals", () =>
       this.approvalStore.listResolved()
     );
-    ipcMain.handle("desktop:clear-resolved-approvals", () => {
+    ipcMain.handle("desktop:clear-resolved-approvals", (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       this.approvalStore.clearResolved();
       return [];
     });
-    ipcMain.handle("desktop:approve-approval", (_event, approvalId: string) => {
+    ipcMain.handle("desktop:approve-approval", (event, approvalId: string) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       if (typeof approvalId !== "string" || !approvalId.trim()) {
         throw new Error("approvalId is required");
       }
       this.approvalStore.approve(approvalId.trim());
       return this.approvalStore.listPending();
     });
-    ipcMain.handle("desktop:deny-approval", (_event, approvalId: string) => {
+    ipcMain.handle("desktop:deny-approval", (event, approvalId: string) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       if (typeof approvalId !== "string" || !approvalId.trim()) {
         throw new Error("approvalId is required");
       }
@@ -3916,7 +4913,10 @@ export class DesktopApplication {
     });
     ipcMain.handle(
       "desktop:always-allow-approval",
-      (_event, approvalId: string) => {
+      (event, approvalId: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if (typeof approvalId !== "string" || !approvalId.trim()) {
           throw new Error("approvalId is required");
         }
@@ -3937,7 +4937,10 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:remove-always-allow-rule",
-      (_event, ruleId: string) => {
+      (event, ruleId: string) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         if (typeof ruleId !== "string" || !ruleId.trim()) {
           throw new Error("ruleId is required");
         }
@@ -3949,23 +4952,34 @@ export class DesktopApplication {
         return { alwaysAllowRules: updated };
       }
     );
-    ipcMain.handle("desktop:clear-pending-approvals", () => {
+    ipcMain.handle("desktop:clear-pending-approvals", (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       this.approvalStore.clear();
       return this.approvalStore.listPending();
     });
     ipcMain.handle("desktop:get-api-key-status", () =>
       this.apiKeyStore.getStatus()
     );
-    ipcMain.handle("desktop:set-api-key", (_event, apiKey: string) => {
+    ipcMain.handle("desktop:set-api-key", (event, apiKey: string) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       const trimmed = normalizeClosedloopApiKey(apiKey);
       this.cancelManagedOnboardingForUserChange("a manual API key was set");
       this.apiKeyStore.setApiKey(trimmed);
+      this.telemetryOrgProvider.warm();
       this.restartCloudSocket();
       return this.apiKeyStore.getStatus();
     });
-    ipcMain.handle("desktop:clear-api-key", () => {
+    ipcMain.handle("desktop:clear-api-key", (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       this.cancelManagedOnboardingForUserChange("the API key was cleared");
       this.apiKeyStore.clearApiKey();
+      this.telemetryOrgProvider.warm();
       this.restartCloudSocket();
       return this.apiKeyStore.getStatus();
     });
@@ -3977,16 +4991,25 @@ export class DesktopApplication {
     ipcMain.handle("desktop:get-admin-key-statuses", () =>
       this.costReconciliation.getAdminKeyStatuses()
     );
-    ipcMain.handle("desktop:set-admin-key", (_event, payload: unknown) => {
+    ipcMain.handle("desktop:set-admin-key", (event, payload: unknown) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       const { vendor, key } = parseSetAdminKeyPayload(payload);
       return this.costReconciliation.setAdminKey(vendor, key);
     });
-    ipcMain.handle("desktop:clear-admin-key", (_event, vendor: unknown) =>
-      this.costReconciliation.clearAdminKey(parseAdminKeyVendor(vendor))
-    );
-    ipcMain.handle("desktop:run-cost-reconciliation", () =>
-      this.costReconciliation.runReconciliationNow()
-    );
+    ipcMain.handle("desktop:clear-admin-key", (event, vendor: unknown) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
+      return this.costReconciliation.clearAdminKey(parseAdminKeyVendor(vendor));
+    });
+    ipcMain.handle("desktop:run-cost-reconciliation", (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
+      return this.costReconciliation.runReconciliationNow();
+    });
     ipcMain.handle(
       "desktop:list-cost-reconciliation",
       (_event, query: unknown) =>
@@ -4008,7 +5031,10 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:set-cloud-commands-paused",
-      (_event, paused: boolean) => {
+      (event, paused: boolean) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         this.setCloudCommandsPaused(Boolean(paused));
         return { paused: this.cloudCommandsPaused };
       }
@@ -4019,7 +5045,10 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:set-cloud-connection-enabled",
-      (_event, enabled: boolean) => {
+      (event, enabled: boolean) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         this.setCloudConnectionEnabled(Boolean(enabled));
         return { enabled: this.cloudConnectionEnabled };
       }
@@ -4037,7 +5066,7 @@ export class DesktopApplication {
     ipcMain.handle(
       "desktop:complete-onboarding",
       async (
-        _event,
+        event,
         payload: {
           relayOrigin?: string;
           apiOrigin?: string;
@@ -4057,6 +5086,14 @@ export class DesktopApplication {
           };
         }
       ) => {
+        // Bootstraps full gateway configuration in one call — API key, cloud
+        // origins, sandbox base directory, and CLI binary paths. Input
+        // validation below is defense-in-depth; sender trust is the boundary
+        // that keeps a compromised/secondary renderer from bootstrapping
+        // attacker-controlled configuration.
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         const relayOrigin =
           typeof payload.relayOrigin === "string" && payload.relayOrigin.trim()
             ? normalizeAndValidateOrigin(payload.relayOrigin)
@@ -4103,6 +5140,9 @@ export class DesktopApplication {
           sandboxBaseDirectory,
           onboardingCompleted: true,
         });
+        // Warm after the apiOrigin is committed so org resolution targets the
+        // freshly-configured cloud origin. No-op when no key was set.
+        this.telemetryOrgProvider.warm();
 
         if (payload.binaryPaths) {
           const patch: Partial<
@@ -4117,15 +5157,7 @@ export class DesktopApplication {
               string | null
             >
           > = {};
-          for (const key of [
-            "claude",
-            "gh",
-            "codex",
-            "cursor",
-            "opencode",
-            "python3",
-            "git",
-          ] as const) {
+          for (const key of CLI_BINARY_TOOLS) {
             const value = payload.binaryPaths[key];
             if (typeof value === "string" && value.trim()) {
               patch[key] = value.trim();
@@ -4143,12 +5175,19 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:start-device-onboarding",
-      async (_event, payload: { webAppOrigin?: string } | undefined) =>
-        this.startDesktopFirstDeviceOnboarding(payload?.webAppOrigin)
+      async (event, payload: { webAppOrigin?: string } | undefined) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
+        return this.startDesktopFirstDeviceOnboarding(payload?.webAppOrigin);
+      }
     );
     ipcMain.handle(
       "desktop:dismiss-onboarding-popup",
-      (_event, payload: { permanent?: boolean } | undefined) => {
+      (event, payload: { permanent?: boolean } | undefined) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         const permanent = payload?.permanent === true;
         if (permanent) {
           this.settingsStore.setOnboardingPopupDismissedPermanent(true);
@@ -4159,13 +5198,22 @@ export class DesktopApplication {
         return { permanent };
       }
     );
-    ipcMain.handle("desktop:onboarding-popup-cta", async () => {
+    ipcMain.handle("desktop:onboarding-popup-cta", async (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       Observability.onboardingPopupCtaClicked();
       const webAppOrigin = this.settingsStore.getWebAppOrigin();
       const targetUrl = new URL(
         ONBOARDING_WIZARD_PATH,
         webAppOrigin
       ).toString();
+      // webAppOrigin is a mutable setting; route the built URL through the
+      // shared allowlist before openExternal so a tampered origin cannot launch
+      // a non-https / non-allowlisted target via the OS.
+      if (!isAllowedExternalUrl(targetUrl)) {
+        throw new Error("Refusing to open untrusted onboarding URL");
+      }
       await shell.openExternal(targetUrl);
       return { opened: targetUrl };
     });
@@ -4175,7 +5223,7 @@ export class DesktopApplication {
     ipcMain.handle(
       "desktop:patch-binary-paths",
       (
-        _event,
+        event,
         patch: Partial<
           Record<
             | "claude"
@@ -4188,19 +5236,16 @@ export class DesktopApplication {
             string | null
           >
         >
-      ) => this.applyBinaryPathPatchAndInvalidateCaches(patch)
+      ) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
+        return this.applyBinaryPathPatchAndInvalidateCaches(patch);
+      }
     );
     ipcMain.handle("desktop:detect-cli-tools", async () => {
       const overrides = this.settingsStore.getBinaryPaths();
-      const names = [
-        "claude",
-        "gh",
-        "codex",
-        "cursor",
-        "opencode",
-        "python3",
-        "git",
-      ] as const;
+      const names = CLI_BINARY_TOOLS;
       const results = await Promise.all(
         names.map(async (name) => {
           const override = overrides[name];
@@ -4260,7 +5305,10 @@ export class DesktopApplication {
     );
     ipcMain.handle(
       "desktop:set-dangerous-auto-approve",
-      (_event, enabled: boolean) => {
+      (event, enabled: boolean) => {
+        if (!this.desktopWindow.isTrustedSender(event.sender)) {
+          throw new Error("untrusted sender");
+        }
         this.dangerousAutoApprove = Boolean(enabled);
         return this.dangerousAutoApprove;
       }
@@ -4279,7 +5327,10 @@ export class DesktopApplication {
       const session = this.sessionStore.create(boundOrigin);
       return { ...session, origin: boundOrigin };
     });
-    ipcMain.handle("desktop:check-for-update", async () => {
+    ipcMain.handle("desktop:check-for-update", async (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       try {
         // FEA-2099 fake-feed e2e: boot already ran the real check and promoted
         // packagedUpdateState to downloaded; just surface that status payload so
@@ -4289,6 +5340,7 @@ export class DesktopApplication {
         }
         if (app.isPackaged) {
           const result = await autoUpdater.checkForUpdates();
+          this.guardUpdateDownload(result);
           const remoteVersion = result?.updateInfo?.version;
           if (
             remoteVersion != null &&
@@ -4332,7 +5384,10 @@ export class DesktopApplication {
         };
       }
     });
-    ipcMain.handle("desktop:apply-update", async () => {
+    ipcMain.handle("desktop:apply-update", async (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
       // isPackagedUpdateFlowActive() is true for packaged builds and for the
       // FEA-2099 fake-feed e2e seam, so the e2e can drive the real
       // apply → quit → before-quit → finishUpdateInstall handoff (FEA-2026).
@@ -4382,6 +5437,8 @@ export class DesktopApplication {
     });
 
     registerProfileConfigIpcHandlers(ipcMain, {
+      isTrustedSender: (sender) =>
+        this.desktopWindow.isTrustedSender(sender as WebContents),
       settingsStore: this.settingsStore,
       apiKeyStore: this.apiKeyStore,
       getGatewaySnapshot: () => ({
@@ -4413,6 +5470,7 @@ export class DesktopApplication {
         this.cloudStatus = { state: "idle" };
         this.agentSessionSync.refresh();
         this.apiKeyStore.clearApiKey();
+        this.telemetryOrgProvider.warm();
         this.refreshTrayState();
       },
       onConfigDeleted: (config) => {
@@ -4432,6 +5490,44 @@ export class DesktopApplication {
       },
       restartCloudSocket: () => this.restartCloudSocket(),
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+    });
+
+    registerDesktopAuthIpcHandlers(ipcMain, {
+      isTrustedSender: (sender) =>
+        this.desktopWindow.isTrustedSender(sender as WebContents),
+      isFirstPartyAuthEnabled: () => this.isFirstPartyAuthEnabled(),
+      manager: this.desktopSessionManager,
+    });
+    registerGitHubConnectOpenerIpcHandlers(ipcMain, {
+      isTrustedSender: (sender) =>
+        this.desktopWindow.isTrustedSender(sender as WebContents),
+      getWebAppOrigin: () => this.settingsStore.getWebAppOrigin(),
+      openExternal: (url) => shell.openExternal(url),
+    });
+    ipcMain.handle(GitHubIntegrationStatusIpcChannel.Get, (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        return null;
+      }
+      return fetchGitHubIntegrationStatus({
+        getAccessToken: () => this.desktopSessionManager.getAccessToken(),
+        getApiOrigin: () => this.settingsStore.getApiOrigin(),
+      });
+    });
+
+    ipcMain.handle(DesktopIdentityIpcChannel.Get, (event) => {
+      if (!this.desktopWindow.isTrustedSender(event.sender)) {
+        return null;
+      }
+      // Gate the identity capability on the same dark-launch flag as sign-in so
+      // toggling it off disables the flow at the IPC boundary, not just in the
+      // renderer Account tab (FEA-2687).
+      if (!this.isFirstPartyAuthEnabled()) {
+        return null;
+      }
+      return fetchDesktopIdentity({
+        getAccessToken: () => this.desktopSessionManager.getAccessToken(),
+        getApiOrigin: () => this.settingsStore.getApiOrigin(),
+      });
     });
 
     // Verify no channel name collision: grep confirms 'desktop:get-managed-key-hint-state'
@@ -4528,16 +5624,6 @@ export class DesktopApplication {
     python3?: string;
     git?: string;
   } {
-    for (const [key, value] of Object.entries(patch)) {
-      if (value !== null && value !== undefined) {
-        const expanded = value.replace(/^~/, os.homedir());
-        if (!path.isAbsolute(expanded)) {
-          throw new Error(
-            `Binary path for ${key} must be an absolute path: ${value}`
-          );
-        }
-      }
-    }
     const expandedPatch: Partial<
       Record<
         "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
@@ -4545,19 +5631,41 @@ export class DesktopApplication {
       >
     > = {};
     for (const [key, value] of Object.entries(patch)) {
-      expandedPatch[
-        key as
-          | "claude"
-          | "gh"
-          | "codex"
-          | "cursor"
-          | "opencode"
-          | "python3"
-          | "git"
-      ] =
-        value !== null && value !== undefined
-          ? value.replace(/^~/, os.homedir())
-          : value;
+      const typedKey = key as
+        | "claude"
+        | "gh"
+        | "codex"
+        | "cursor"
+        | "opencode"
+        | "python3"
+        | "git";
+      if (value === null || value === undefined) {
+        expandedPatch[typedKey] = value;
+        continue;
+      }
+      const expanded = value.replace(/^~/, os.homedir());
+      if (!path.isAbsolute(expanded)) {
+        throw new Error(
+          `Binary path for ${key} must be an absolute path: ${value}`
+        );
+      }
+      // Resolve symlinks to the canonical target before persisting so a later
+      // swap of an intermediate symlink cannot redirect future spawns, and
+      // reject overrides that do not exist or are not executable. A compromised
+      // renderer must not be able to point claude/gh/codex at a non-executable
+      // or unintended path.
+      let resolved: string;
+      try {
+        resolved = realpathSync(expanded);
+      } catch {
+        throw new Error(`Binary path for ${key} does not exist: ${value}`);
+      }
+      try {
+        accessSync(resolved, fsConstants.X_OK);
+      } catch {
+        throw new Error(`Binary path for ${key} is not executable: ${value}`);
+      }
+      expandedPatch[typedKey] = resolved;
     }
     const updated = this.settingsStore.patchBinaryPaths(
       expandedPatch as Record<string, string | null>
@@ -4730,6 +5838,12 @@ const RENDERER_INPUT_QUIET_WINDOW_MS = 750;
 const RENDERER_BACKGROUND_SLOT_MAX_DEFER_MS = 2000;
 const RENDERER_LIVE_DB_IDLE_FAIL_OPEN_MS = 2000;
 const CLOUD_SOCKET_DASHBOARD_READY_FAIL_OPEN_MS = 2000;
+const SETUP_INDEPENDENT_RENDERER_GATEWAY_READ_PATHS: ReadonlySet<string> =
+  new Set([
+    "/api/gateway/git/pr/file-diff",
+    "/api/gateway/git/pr/files",
+    "/api/gateway/git/pr/reviews",
+  ]);
 
 /**
  * Builds the state to persist when the user dismisses the managed-key hint.
@@ -4764,4 +5878,24 @@ function describeRequestLocation(request: GatewayApprovalRequest): string {
     return request.remoteAddress;
   }
   return "unknown";
+}
+
+/**
+ * Desktop-renderer branch overlays are local, read-only PR lookups. They must
+ * keep working for existing users whose older settings were never marked
+ * onboarded, while cloud/browser commands and mutating gateway operations remain
+ * setup-gated. The source header is main-held for IPC, and the missing browser
+ * Origin/Referer distinguishes the in-process loopback fetch from browser
+ * session-token traffic that can set arbitrary request headers.
+ */
+function isSetupIndependentRendererGatewayRead(
+  request: GatewayApprovalRequest
+): boolean {
+  return (
+    request.source === GATEWAY_DISPATCH_RENDERER_SOURCE &&
+    request.origin === null &&
+    request.referer === null &&
+    request.method.toUpperCase() === "GET" &&
+    SETUP_INDEPENDENT_RENDERER_GATEWAY_READ_PATHS.has(request.path)
+  );
 }

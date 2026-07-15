@@ -166,6 +166,128 @@ describe("TreeGroupRows — root row chevron rendering", () => {
   });
 });
 
+describe("TreeGroupRows — Plan collapse (regression)", () => {
+  // Regression guard: Plans with children were force-expanded and their chevron
+  // was hidden (`showChevron = itemHasChildren && !itemIsPlan`), so users could
+  // never collapse them — unlike PRDs and Features. Plans must now behave like
+  // any other collapsible group in every position: a Plan with nested items
+  // renders a chevron and honors its stored expansion state whether it is a
+  // root or a child.
+  function makePlanRootGroup(): DisplayGroup {
+    const root: DocumentRowItem = {
+      kind: "document",
+      data: makePlanArtifact({ id: "plan-root-1", slug: "PLN-1" }),
+    };
+    return {
+      groupKey: root.data.id,
+      root,
+      children: [makeBranchItem("branch-1")],
+    };
+  }
+
+  it("renders an enabled chevron on a root-level Plan that has children", () => {
+    const { container } = renderTreeGroup(makePlanRootGroup());
+
+    const chevrons = findChevronButtons(container);
+    expect(chevrons).toHaveLength(1);
+    expect(chevrons[0]).toBeEnabled();
+    expect(chevrons[0]?.className).toContain("hover:bg-muted");
+  });
+
+  it("toggles the group when the root Plan chevron is clicked", () => {
+    const toggleGroup = vi.fn();
+    const group = makePlanRootGroup();
+
+    const { container } = renderTreeGroup(group, { toggleGroup });
+
+    const [chevron] = findChevronButtons(container);
+    fireEvent.click(chevron);
+
+    expect(toggleGroup).toHaveBeenCalledTimes(1);
+    expect(toggleGroup).toHaveBeenCalledWith(group.groupKey);
+  });
+
+  it("hides children when the root Plan group is collapsed", () => {
+    // Collapsed by default (isGroupExpanded → false): only the root row shows,
+    // proving the Plan is no longer force-expanded.
+    const { container } = renderTreeGroup(makePlanRootGroup(), {
+      isGroupExpanded: () => false,
+    });
+
+    expect(getRows(container)).toHaveLength(1);
+  });
+
+  it("shows children when the root Plan group is expanded", () => {
+    const { container } = renderTreeGroup(makePlanRootGroup(), {
+      isGroupExpanded: () => true,
+    });
+
+    expect(getRows(container)).toHaveLength(2);
+  });
+
+  function makeNestedPlanGroup(): {
+    group: DisplayGroup;
+    childPlanId: string;
+  } {
+    const prdRoot = makeRootItem("prd-1");
+    const childPlan: DocumentRowItem = {
+      kind: "document",
+      data: makePlanArtifact({ id: "child-plan-1", slug: "PLN-2" }),
+      children: [makeBranchItem("plan-branch-1")],
+    };
+    return {
+      group: {
+        groupKey: prdRoot.data.id,
+        root: prdRoot,
+        children: [childPlan],
+      },
+      childPlanId: childPlan.data.id,
+    };
+  }
+
+  it("renders a chevron on a child Plan that has nested items", () => {
+    const { group } = makeNestedPlanGroup();
+
+    // Expand everything: both the PRD root and the nested Plan render a chevron.
+    const { container } = renderTreeGroup(group, {
+      isGroupExpanded: () => true,
+    });
+
+    expect(findChevronButtons(container)).toHaveLength(2);
+    // Root PRD + child Plan + grandchild branch = 3 rows.
+    expect(getRows(container)).toHaveLength(3);
+  });
+
+  it("collapses a child Plan independently of its parent", () => {
+    const { group, childPlanId } = makeNestedPlanGroup();
+
+    // Root stays open, only the nested Plan is collapsed: its branch disappears,
+    // proving the child Plan is independently collapsible.
+    const { container } = renderTreeGroup(group, {
+      isGroupExpanded: (key) => key !== childPlanId,
+    });
+
+    // Root PRD + child Plan (branch hidden) = 2 rows.
+    expect(getRows(container)).toHaveLength(2);
+  });
+
+  it("toggles a child Plan with its own id when its chevron is clicked", () => {
+    const { group, childPlanId } = makeNestedPlanGroup();
+    const toggleGroup = vi.fn();
+
+    const { container } = renderTreeGroup(group, {
+      isGroupExpanded: () => true,
+      toggleGroup,
+    });
+
+    // Second chevron belongs to the nested Plan (first is the PRD root).
+    const [, childChevron] = findChevronButtons(container);
+    fireEvent.click(childChevron);
+
+    expect(toggleGroup).toHaveBeenCalledWith(childPlanId);
+  });
+});
+
 function makeBranchItem(id: string): DocumentRowItem {
   const data: Artifact = {
     id,
@@ -315,8 +437,10 @@ describe("TreeGroupRows — branch row more menu", () => {
     };
     const handleMoreMenu = vi.fn();
 
-    // Plans are always expanded, so the branch child renders without toggling.
-    const { container } = renderTreeGroup(group, { handleMoreMenu });
+    const { container } = renderTreeGroup(group, {
+      handleMoreMenu,
+      isGroupExpanded: () => true,
+    });
 
     const ellipsisButtons = findEllipsisButtons(container);
     expect(ellipsisButtons).toHaveLength(2);

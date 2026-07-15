@@ -8,6 +8,7 @@ import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import type { BillingMode } from "../shared/billing-mode.js";
 
 // Re-export canonical shared types
+// T-8.8: re-export component sync contract types
 export type {
   ActivityBucket,
   PhaseIterations,
@@ -20,11 +21,23 @@ export type {
   SessionTraceCorrectionSource,
   SessionTracePhaseSource,
   SessionTraceThrottleSource,
+  SyncedAgentSessionAnalytics,
   SyncedAgentSessionAttribution,
+  SyncedAgentSessionTokenEvent,
   SyncedAgentSessionTokenUsage,
+  SyncedComponent,
 } from "@repo/api/src/types/agent-session";
+export type {
+  AgentComponentCursorRow,
+  DesktopAgentComponentsPayload,
+} from "./agent-session-sync-service.js";
 
-export const AGENT_SESSION_SYNC_SCHEMA_VERSION = 1 as const;
+// Desktop mirror of the shared `@repo/api` constant of the same name, kept as a
+// hardcoded copy so the desktop main-process bundle need not import a runtime
+// value from `@repo/api`. It MUST stay in lockstep with the shared constant —
+// FEA-2718 (PLN-1294) bumped both 1 → 2 so the API rejects stale (v1) desktop
+// payloads instead of silently accepting the pre-FEA-2718 shape.
+export const AGENT_SESSION_SYNC_SCHEMA_VERSION = 2 as const;
 
 // Desktop-specific JSON aliases (structurally identical to JsonObject/JsonValue)
 export type SyncJsonObject = JsonObject;
@@ -52,3 +65,7 @@ export type AgentSessionSyncBatch = {
   sessionCount: number;
   sessions: SyncedAgentSession[];
 };
+
+// FEA-2718: the event-fragment transports were retired; a sync payload is now
+// always a whole-session batch.
+export type AgentSessionSyncTransportPayload = AgentSessionSyncBatch;

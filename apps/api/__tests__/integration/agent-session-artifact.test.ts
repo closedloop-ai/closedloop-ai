@@ -34,13 +34,17 @@ const SESSION_STARTED_AT = new Date("2026-06-10T10:00:00.000Z");
 const SESSION_UPDATED_AT = new Date("2026-06-10T11:00:00.000Z");
 const SES_SLUG_PATTERN = /^SES-\d+$/;
 
-function createComputeTarget(organizationId: string, userId: string) {
+function createComputeTarget(
+  organizationId: string,
+  userId: string,
+  machineName = "integration-machine"
+) {
   return withDb((db) =>
     db.computeTarget.create({
       data: {
         organizationId,
         userId,
-        machineName: "integration-machine",
+        machineName,
         platform: "darwin",
       },
       select: { id: true },

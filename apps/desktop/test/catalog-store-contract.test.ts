@@ -1,7 +1,7 @@
 /**
  * @file catalog-store-contract.test.ts
- * @description FEA-1791 Phase 3 — catalog-store is fully on the single
- * DesktopPrisma client. The reads/writes that map cleanly use typed delegates
+ * @description catalog-store is fully on the single DesktopPrisma client. The
+ * reads/writes that map cleanly use typed delegates
  * (`listHistory` findMany, install-runs create/update/findFirst/findMany,
  * `applyFetchResult` updateMany+upsert, `applyContentsFetch` updateMany); only
  * `listCatalog`/`getCatalog` stay on `prisma.client.$queryRawUnsafe` (the

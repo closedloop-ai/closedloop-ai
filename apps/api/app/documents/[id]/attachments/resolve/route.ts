@@ -1,6 +1,9 @@
 import type { ResolveInlineImagesResponse } from "@repo/api/src/types/attachment";
 import { log } from "@repo/observability/log";
-import { attachmentsService } from "@/app/documents/attachments-service";
+import {
+  attachmentsService,
+  DOCUMENT_NOT_FOUND_ERROR,
+} from "@/app/documents/attachments-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
@@ -81,7 +84,10 @@ export const POST = withAnyAuth<
 
       return successResponse(result);
     } catch (error) {
-      if (error instanceof Error && error.message === "Document not found") {
+      if (
+        error instanceof Error &&
+        error.message === DOCUMENT_NOT_FOUND_ERROR
+      ) {
         return notFoundResponse("Document");
       }
       return errorResponse("Failed to resolve inline images", error);

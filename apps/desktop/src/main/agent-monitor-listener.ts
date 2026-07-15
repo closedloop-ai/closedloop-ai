@@ -3,7 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import { AGENT_MONITOR_PORT } from "../shared/contracts.js";
-import type { HookData } from "./agent-dashboard-db-types.js";
+import type { HookData, HookHarness } from "./agent-dashboard-db-types.js";
 
 // CLOSEDLOOP-TICKET FEA-1500: remove legacy HTTP hook listener on 4820 after
 // transport migration (FEA-1497 breaking-change discipline contract #1). The hook
@@ -17,11 +17,10 @@ const HOST = "127.0.0.1";
 const MAX_BODY_BYTES = 8 * 1024 * 1024; // hook payloads (incl. large tool_input) cap
 const CLAUDE_HOOK_EVENT_PATH = "/api/hooks/event";
 const PROVIDER_HINT_FIELD = "__provider";
-// The harness that POSTs hook events; attribution is route-owned, never
-// payload-chosen. Codex hooks were removed (PRD-431) — Claude is the only
-// harness that emits hooks today, so this stays a single-member union to
-// preserve the route-owned narrow typing on `processEvent`.
-export type HookHarness = "claude";
+// `HookHarness` (the route-owned "claude" attribution) is the canonical hook
+// contract; it now lives beside `HookData` in agent-dashboard-db-types.ts so the
+// DB write path can share it without depending on this listener. Codex hooks were
+// removed (PRD-431).
 
 export type AgentHookLifecycle = {
   processEvent(

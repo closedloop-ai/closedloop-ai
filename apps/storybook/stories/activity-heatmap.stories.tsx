@@ -32,3 +32,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
+
+// A cost-metric heatmap: cells carry USD spend, so a custom `valueFormatter`
+// renders each day's tooltip as currency instead of the default "N events".
+export const CurrencyTooltips: Story = {
+  args: {
+    valueFormatter: (count) =>
+      count.toLocaleString("en-US", { style: "currency", currency: "USD" }),
+  },
+};

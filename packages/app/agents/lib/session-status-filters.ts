@@ -1,4 +1,7 @@
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
+import {
+  SESSION_STATUS,
+  type SessionStatus,
+} from "@closedloop-ai/loops-api/session-status";
 
 /**
  * Canonical Agent Sessions status-filter contract (single source of truth for
@@ -21,10 +24,34 @@ export type SessionStatusFilterOption = {
   label: string;
 };
 
+export const SESSION_STATUS_LABELS: Record<SessionStatus, string> = {
+  [SESSION_STATUS.ACTIVE]: "Active",
+  [SESSION_STATUS.WAITING]: "Waiting",
+  [SESSION_STATUS.COMPLETED]: "Completed",
+  [SESSION_STATUS.ERROR]: "Failed",
+  [SESSION_STATUS.ABANDONED]: "Abandoned",
+};
+
 export const SESSION_STATUS_FILTER_OPTIONS: readonly SessionStatusFilterOption[] =
   [
-    { value: SESSION_STATUS.ACTIVE, label: "Active" },
-    { value: SESSION_STATUS.COMPLETED, label: "Completed" },
-    { value: SESSION_STATUS.ERROR, label: "Failed" },
-    { value: SESSION_STATUS.ABANDONED, label: "Abandoned" },
+    {
+      value: SESSION_STATUS.ACTIVE,
+      label: SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE],
+    },
+    {
+      value: SESSION_STATUS.WAITING,
+      label: SESSION_STATUS_LABELS[SESSION_STATUS.WAITING],
+    },
+    {
+      value: SESSION_STATUS.COMPLETED,
+      label: SESSION_STATUS_LABELS[SESSION_STATUS.COMPLETED],
+    },
+    {
+      value: SESSION_STATUS.ERROR,
+      label: SESSION_STATUS_LABELS[SESSION_STATUS.ERROR],
+    },
+    {
+      value: SESSION_STATUS.ABANDONED,
+      label: SESSION_STATUS_LABELS[SESSION_STATUS.ABANDONED],
+    },
   ];

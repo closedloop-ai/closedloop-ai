@@ -1,10 +1,25 @@
 import type { CheckRunEvent } from "@octokit/webhooks-types";
 import { LinkType } from "@repo/api/src/types/artifact";
+import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github";
+import {
+  GitHubDirtyScopeKind,
+  GitHubDirtyTrigger,
+} from "@repo/api/src/types/github-dirty-scope";
+import {
+  GitHubFetchTrigger,
+  GitHubSyncResultReason,
+} from "@repo/api/src/types/github-read-model";
 import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
-import { queryStatusCheckRollup } from "@repo/github";
+import {
+  GitHubProviderResultStatus,
+  queryStatusCheckRollupWithProviderResult,
+} from "@repo/github";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { scheduleCheckRunRetry } from "@/lib/branch-status-check-retry";
 import { persistBranchStatusChecksFromRollup } from "@/lib/branch-status-checks";
+import { githubAppGraphqlFetchProvenance } from "@/lib/github-fetch-provenance";
+import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
 
 /**
  * Handle GitHub check_run webhook events.
@@ -65,6 +80,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
       where: {
         githubRepoId: String(event.repository.id),
         fullName: event.repository.full_name,
+        removedAt: null,
         installation: {
           installationId: String(installationId),
           status: GitHubInstallationStatus.ACTIVE,
@@ -142,6 +158,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     const foundBranch = foundBranchDetail
       ? {
           id: foundBranchDetail.artifactId,
+          repositoryId: foundRepo.id,
           branchName: foundBranchDetail.branchName,
           title: foundBranchDetail.artifact.name,
           htmlUrl: foundBranchDetail.artifact.externalUrl ?? "",
@@ -179,12 +196,26 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   }
 
   // (4) External call - query GitHub GraphQL statusCheckRollup outside any transaction
-  const rollup = await queryStatusCheckRollup(
+  const rollupResult = await queryStatusCheckRollupWithProviderResult(
     String(installationId),
     repo.owner,
     repo.name,
     headSha
   );
+  const rollup =
+    rollupResult.status === GitHubProviderResultStatus.Success
+      ? rollupResult.value
+      : {
+          ok: false as const,
+          reason:
+            rollupResult.status === GitHubProviderResultStatus.ProviderRateLimit
+              ? StatusCheckRollupFailureReason.RateLimited
+              : StatusCheckRollupFailureReason.GraphqlError,
+        };
+  const retryAfterSeconds =
+    rollupResult.status === GitHubProviderResultStatus.ProviderRateLimit
+      ? rollupResult.retryAfterSeconds
+      : null;
 
   const persistResult = await withDb.tx(async (tx) => {
     const result = await persistBranchStatusChecksFromRollup(tx, {
@@ -192,7 +223,32 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
       organizationId: branch.organizationId,
       headSha,
       rollup,
+      fetchProvenance: githubAppGraphqlFetchProvenance({
+        resultReason: rollup.ok
+          ? GitHubSyncResultReason.Success
+          : GitHubSyncResultReason.ProviderUnavailable,
+        trigger: GitHubFetchTrigger.Webhook,
+      }),
     });
+    if (
+      !rollup.ok &&
+      rollup.reason === StatusCheckRollupFailureReason.RateLimited
+    ) {
+      await scheduleCheckRunRetry(
+        tx,
+        {
+          branchArtifactId: branch.id,
+          organizationId: branch.organizationId,
+          repositoryId: branch.repositoryId,
+          headSha,
+          resourceId: String(event.check_run.id),
+          idempotencyKey: buildCheckRunRetryIdempotencyKey(event),
+        },
+        rollup.reason,
+        new Date(),
+        retryAfterSeconds
+      );
+    }
     return result;
   });
 
@@ -214,6 +270,28 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     });
   }
 
+  const organizationId = repo.installation?.organizationId;
+  if (organizationId) {
+    await publishGitHubDirtyScopes({
+      organizationId,
+      repositoryId: branch.repositoryId,
+      repositoryFullName: event.repository.full_name,
+      scopes: [
+        {
+          kind: GitHubDirtyScopeKind.Checks,
+          repositoryId: branch.repositoryId,
+          repositoryFullName: event.repository.full_name,
+          branchName: branch.branchName,
+          ...(branch.currentPullRequest?.number
+            ? { pullRequestNumber: branch.currentPullRequest.number }
+            : {}),
+          checkRunId: String(event.check_run.id),
+        },
+      ],
+      triggers: [GitHubDirtyTrigger.CheckRun],
+    });
+  }
+
   log.info(
     "[handleCheckRun] Successfully processed check_run completed event",
     {
@@ -227,4 +305,13 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     message: "Event processed successfully",
     ok: true,
   });
+}
+
+function buildCheckRunRetryIdempotencyKey(event: CheckRunEvent): string {
+  return [
+    event.repository.id,
+    event.check_run.id,
+    event.check_run.head_sha,
+    event.check_run.completed_at ?? event.action,
+  ].join(":");
 }
