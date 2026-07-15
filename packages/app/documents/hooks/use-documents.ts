@@ -1,10 +1,10 @@
 "use client";
 
 import {
+  type ArtifactStatus,
   type CreateDocumentInput,
   type Document,
   type DocumentDetail,
-  type DocumentStatus,
   type DocumentWithProject,
   type FindDocumentsOptions,
   type GenerationStatus,
@@ -343,7 +343,7 @@ export function useBatchUpdateStatus() {
       status,
     }: {
       documentIds: string[];
-      status: DocumentStatus;
+      status: ArtifactStatus;
     }) =>
       apiClient.post<string[]>("/documents/batch-update-status", {
         documentIds,

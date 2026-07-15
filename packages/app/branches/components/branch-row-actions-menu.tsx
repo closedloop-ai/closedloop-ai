@@ -16,7 +16,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { isGithubPrUrl } from "../lib/branch-pr-url";
-import type { BranchRow } from "../lib/branch-sample-data";
+import type { BranchRow } from "../lib/branch-row";
 
 /** Branch-scoped row actions (Epic B / B5c). No issues/docs/agents links. */
 export const BranchRowAction = {

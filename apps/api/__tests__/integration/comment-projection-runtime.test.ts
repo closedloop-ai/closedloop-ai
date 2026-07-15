@@ -1676,6 +1676,8 @@ async function setupProjectionGraph(): Promise<ProjectionGraph> {
         createdById: user.id,
         branch: {
           create: {
+            organizationId,
+            repositoryFullName,
             repositoryId: repository.id,
             branchName,
             baseBranch: "main",
@@ -1691,6 +1693,7 @@ async function setupProjectionGraph(): Promise<ProjectionGraph> {
         },
         pullRequestDetails: {
           create: {
+            organizationId,
             repositoryId: repository.id,
             githubId: `github-pr-${suffix}`,
             number: prNumber,
@@ -1796,6 +1799,7 @@ async function createHistoricalPullRequestDetail(
   const historical = await withDb((db) =>
     db.pullRequestDetail.create({
       data: {
+        organizationId: graph.organizationId,
         branchArtifactId: graph.branchArtifactId,
         repositoryId: graph.repositoryId,
         githubId: `historical-pr-${suffix}`,

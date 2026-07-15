@@ -423,7 +423,9 @@ export type BranchViewBranch = {
 
 export type BranchViewCurrentPullRequest = {
   id: string;
-  githubId: string;
+  // FEA-2732: nullable for repo-less (non-App) PRs surfaced in Branch View that
+  // have no GitHub node id until App adoption / `gh` enrichment supplies one.
+  githubId: string | null;
   number: number;
   title: string | null;
   htmlUrl: string | null;
@@ -584,4 +586,24 @@ export function getDefaultBranchViewGithubCommentCapabilities(): BranchViewGithu
     [BRANCH_VIEW_GITHUB_COMMENT_CAPABILITIES.canResolve]: false,
     [BRANCH_VIEW_GITHUB_COMMENT_CAPABILITIES.canUnresolve]: false,
   };
+}
+
+/**
+ * Parse a GitHub issue-comment id string into the positive integer the
+ * reply/edit/delete routes expect (`z.number().int().positive()`).
+ *
+ * Not every comment row carries a numeric `githubCommentId` — review comments
+ * and synthetic rows use non-numeric ids — so `Number(...)` can yield `NaN`.
+ * Returns the parsed positive safe integer, or `null` when the id is missing or
+ * non-numeric. Single source of truth for both the client reply-target guard
+ * (`getReplyTargetGithubCommentId`) and the server-side conversation service.
+ */
+export function parseNumericGithubCommentId(
+  githubCommentId: string
+): number | null {
+  const parsed = Number(githubCommentId.trim());
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
 }

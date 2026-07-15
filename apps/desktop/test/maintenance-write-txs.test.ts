@@ -1,17 +1,19 @@
 /**
  * @file maintenance-write-txs.test.ts
- * @description FEA-1791 / PLN-886 Phase 3 — electron-free coverage for the
- * first slice of the write-tx core: the standalone maintenance write
- * transaction `sweepOrphanedSessions`, moved off the raw `db.transaction` onto
+ * @description Electron-free coverage for the standalone maintenance write
+ * transaction `sweepOrphanedSessions`, which runs on
  * `prisma.write((client) => client.$transaction(...))` on the single client.
  * Built over the shared {@link openTestPrisma} harness so it runs locally as
- * well as in CI. (`deleteSessionRow` — the other tx in this slice — is an inline
+ * well as in CI. (`deleteSessionRow` — the other maintenance tx — is an inline
  * db method validated end-to-end, incl. the agents FK cascade, by
- * fea1785-data-revision-rebuild.test.ts test 12.)
+ * data-revision-rebuild.test.ts test 12.)
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sweepOrphanedSessions } from "../src/main/database/session-maintenance.js";
+import {
+  sweepExpiredSessions,
+  sweepOrphanedSessions,
+} from "../src/main/database/session-maintenance.js";
 import { type OpenTestPrisma, openTestPrisma } from "./prisma-test-utils.js";
 
 const NOW = "2026-06-22T12:00:00.000Z";
@@ -117,6 +119,189 @@ test("sweepOrphanedSessions returns 0 and writes nothing when no session is stal
     assert.equal(fresh?.status, "active");
     const freshRunning = await getAgent(store, "fresh-running");
     assert.equal(freshRunning?.status, "running");
+  } finally {
+    await close();
+  }
+});
+
+// Retention sweep: default window is 90 days, so anchor activity timestamps
+// relative to NOW to land clearly inside/outside that window.
+const EXPIRED_ACTIVITY = "2026-01-01T00:00:00.000Z"; // ~176d before NOW → expired
+const RECENT_ACTIVITY = "2026-06-20T00:00:00.000Z"; // ~6d before NOW → retained
+
+async function seedSessionWithActivity(
+  store: Store,
+  id: string,
+  status: string,
+  lastActivityAt: string
+): Promise<void> {
+  await store.query(
+    "INSERT INTO sessions (id, status, last_activity_at, data_revision) VALUES ($1, $2, $3, $4)",
+    [id, status, lastActivityAt, 1]
+  );
+}
+
+async function seedEvent(
+  store: Store,
+  id: string,
+  sessionId: string
+): Promise<void> {
+  await store.query(
+    "INSERT INTO events (id, session_id, event_type, data) VALUES ($1, $2, $3, $4)",
+    [id, sessionId, "UserPromptSubmit", "secret transcript"]
+  );
+}
+
+async function seedTokenUsage(store: Store, sessionId: string): Promise<void> {
+  await store.query(
+    "INSERT INTO token_usage (session_id, model) VALUES ($1, $2)",
+    [sessionId, "claude-opus-4-8"]
+  );
+}
+
+async function seedTokenEvent(store: Store, sessionId: string): Promise<void> {
+  await store.query(
+    "INSERT INTO token_events (session_id, model, created_at) VALUES ($1, $2, $3)",
+    [sessionId, "claude-opus-4-8", EXPIRED_ACTIVITY]
+  );
+}
+
+async function seedSessionAnalytics(
+  store: Store,
+  sessionId: string
+): Promise<void> {
+  await store.query(
+    "INSERT INTO session_analytics (session_id, started_at, est_cost) VALUES ($1, $2, $3)",
+    [sessionId, EXPIRED_ACTIVITY, 1.23]
+  );
+  await store.query(
+    "INSERT INTO session_tool_analytics (session_id, tool_name, invocations) VALUES ($1, $2, $3)",
+    [sessionId, "Bash", 5]
+  );
+}
+
+async function seedTurnBucket(store: Store, sessionId: string): Promise<void> {
+  await store.query(
+    "INSERT INTO session_turn_bucket (session_id, ts, turn_kind, turn_count) VALUES ($1, $2, $3, $4)",
+    [sessionId, EXPIRED_ACTIVITY, "human", 3]
+  );
+}
+
+async function seedPullRequest(
+  store: Store,
+  id: string,
+  sessionId: string
+): Promise<void> {
+  await store.query(
+    "INSERT INTO pull_requests (id, session_id, pr_url, repo_full_name) VALUES ($1, $2, $3, $4)",
+    [id, sessionId, "https://github.com/acme/repo/pull/1", "acme/repo"]
+  );
+  await store.query(
+    "INSERT INTO pr_backfill_seen (session_id, scanned_at) VALUES ($1, $2)",
+    [sessionId, EXPIRED_ACTIVITY]
+  );
+}
+
+async function countBySession(
+  store: Store,
+  table: string,
+  sessionId: string
+): Promise<number> {
+  const result = await store.query<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ${table} WHERE session_id = $1`,
+    [sessionId]
+  );
+  return Number(result.rows[0]?.n ?? 0);
+}
+
+test("sweepExpiredSessions purges terminal sessions past the retention window and their child rows", async () => {
+  const { db: store, prisma, close } = await openTestPrisma();
+  try {
+    // Expired terminal session with a full child fan-out.
+    await seedSessionWithActivity(store, "old", "completed", EXPIRED_ACTIVITY);
+    await seedAgent(store, "old-agent", "old", "completed");
+    await seedEvent(store, "old-event", "old");
+    await seedTokenUsage(store, "old");
+    await seedTokenEvent(store, "old");
+    await seedSessionAnalytics(store, "old");
+    await seedTurnBucket(store, "old");
+    await seedPullRequest(store, "old-pr", "old");
+
+    // Expired but still active → must survive (only terminal sessions purge).
+    await seedSessionWithActivity(
+      store,
+      "old-active",
+      "active",
+      EXPIRED_ACTIVITY
+    );
+    // Terminal but recent → inside the window, must survive.
+    await seedSessionWithActivity(store, "recent", "error", RECENT_ACTIVITY);
+    await seedEvent(store, "recent-event", "recent");
+
+    const purged = await sweepExpiredSessions(prisma, NOW);
+    assert.equal(purged, 1);
+
+    // The expired terminal session and every child row are gone.
+    assert.equal(await getSession(store, "old"), undefined);
+    assert.equal(await getAgent(store, "old-agent"), undefined);
+    assert.equal(await countBySession(store, "events", "old"), 0);
+    assert.equal(await countBySession(store, "token_usage", "old"), 0);
+    assert.equal(await countBySession(store, "token_events", "old"), 0);
+    assert.equal(await countBySession(store, "session_analytics", "old"), 0);
+    assert.equal(
+      await countBySession(store, "session_tool_analytics", "old"),
+      0
+    );
+    assert.equal(await countBySession(store, "session_turn_bucket", "old"), 0);
+    assert.equal(await countBySession(store, "pull_requests", "old"), 0);
+    assert.equal(await countBySession(store, "pr_backfill_seen", "old"), 0);
+
+    // Active-but-old and terminal-but-recent sessions are untouched.
+    assert.equal((await getSession(store, "old-active"))?.status, "active");
+    assert.equal((await getSession(store, "recent"))?.status, "error");
+    assert.equal(await countBySession(store, "events", "recent"), 1);
+  } finally {
+    await close();
+  }
+});
+
+test("sweepExpiredSessions returns 0 and writes nothing when no session is past the window", async () => {
+  const { db: store, prisma, close } = await openTestPrisma();
+  try {
+    await seedSessionWithActivity(
+      store,
+      "recent",
+      "completed",
+      RECENT_ACTIVITY
+    );
+    await seedEvent(store, "recent-event", "recent");
+
+    const purged = await sweepExpiredSessions(prisma, NOW);
+    assert.equal(purged, 0);
+
+    assert.equal((await getSession(store, "recent"))?.status, "completed");
+    assert.equal(await countBySession(store, "events", "recent"), 1);
+  } finally {
+    await close();
+  }
+});
+
+test("sweepExpiredSessions honors a custom retention window", async () => {
+  const { db: store, prisma, close } = await openTestPrisma();
+  try {
+    // ~6 days old: retained at 90d, purged at a 1-day window.
+    await seedSessionWithActivity(
+      store,
+      "recent",
+      "completed",
+      RECENT_ACTIVITY
+    );
+
+    assert.equal(await sweepExpiredSessions(prisma, NOW, 90), 0);
+    assert.equal((await getSession(store, "recent"))?.status, "completed");
+
+    assert.equal(await sweepExpiredSessions(prisma, NOW, 1), 1);
+    assert.equal(await getSession(store, "recent"), undefined);
   } finally {
     await close();
   }

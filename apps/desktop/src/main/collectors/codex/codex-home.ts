@@ -9,7 +9,6 @@
  *
  * Ported from `scripts/agent-monitor-codex/codex-home.js` (logic preserved).
  */
-import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -18,6 +17,7 @@ import {
   getCodexHome as resolveCodexHome,
   getCodexSessionsDir as resolveCodexSessionsDir,
 } from "../../codex-home-paths.js";
+import { collectJsonlFiles } from "../parsing/parser-utils.js";
 
 export function getCodexHome(): string {
   return resolveCodexHome();
@@ -57,37 +57,14 @@ export function sessionIdFromRolloutPath(filePath: string): string {
  * Codex nests by date (`sessions/YYYY/MM/DD/`), but we walk generically so a
  * flat layout or `archived_sessions/` also works. Depth-bounded and
  * error-tolerant — a Codex dir is the user's own local data and a permission
- * or IO error on one branch must not abort discovery.
+ * or IO error on one branch must not abort discovery. Thin pass-through over
+ * the shared {@link collectJsonlFiles} walker.
  */
 export function collectRolloutFiles(
   root: string,
-  { maxDepth = 8 }: { maxDepth?: number } = {}
+  opts: { maxDepth?: number } = {}
 ): string[] {
-  const out: string[] = [];
-  if (!(root && fs.existsSync(root))) {
-    return out;
-  }
-  const walk = (dir: string, depth: number): void => {
-    if (depth > maxDepth) {
-      return;
-    }
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        walk(full, depth + 1);
-      } else if (e.isFile() && e.name.endsWith(".jsonl")) {
-        out.push(full);
-      }
-    }
-  };
-  walk(root, 0);
-  return out;
+  return collectJsonlFiles(root, opts);
 }
 
 /**

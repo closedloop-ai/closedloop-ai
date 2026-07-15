@@ -3,6 +3,7 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { isRecord } from "@/lib/type-guards";
 
 const SYMPHONY_LOOP_OPERATION_ID = "symphony_loop";
@@ -62,15 +63,6 @@ function normalizeDesktopLoopCommandErrorMessage(
   return (
     error?.trim().slice(0, MAX_DESKTOP_LOOP_COMMAND_ERROR_MESSAGE_LENGTH) ||
     DEFAULT_DESKTOP_LOOP_COMMAND_FAILURE_MESSAGE
-  );
-}
-
-function isPrismaUniqueConstraintError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "P2002"
   );
 }
 
@@ -160,7 +152,7 @@ async function addSystemLoopErrorEvent(input: {
       })
     );
   } catch (error) {
-    if (isPrismaUniqueConstraintError(error)) {
+    if (getPrismaErrorCode(error) === "P2002") {
       return;
     }
     throw error;

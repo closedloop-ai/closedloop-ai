@@ -1,3 +1,4 @@
+import { formatDateForInput } from "@repo/app/shared/lib/date-utils";
 import { redactSecrets } from "./agent-coaching-redaction";
 import {
   AGENT_COACHING_DAILY_TIP_LIMIT,
@@ -629,8 +630,10 @@ function truncateExample(value: string): string {
   return `${value.slice(0, MAX_EXAMPLE_CHARS)}... [truncated]`;
 }
 
+// FEA-2430: LOCAL calendar day (was UTC via toISOString) so "today" for tip
+// feedback suppression flips at the user's midnight, not at 00:00 UTC.
 function toDayKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  return formatDateForInput(date);
 }
 
 function slugify(value: string): string {

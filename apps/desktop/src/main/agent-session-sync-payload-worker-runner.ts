@@ -23,7 +23,9 @@ type PayloadWorkerResponse =
       error: string;
     };
 
-export function createAgentSessionPayloadWorkerPreparer(): AgentSessionPayloadPreparer {
+export function createAgentSessionPayloadWorkerPreparer(
+  createWorker: () => Worker = createDefaultPayloadWorker
+): AgentSessionPayloadPreparer {
   let worker: Worker | null = null;
   const pending = new Map<string, PendingRequest>();
 
@@ -50,9 +52,7 @@ export function createAgentSessionPayloadWorkerPreparer(): AgentSessionPayloadPr
       return worker;
     }
 
-    worker = new Worker(
-      new URL("./agent-session-sync-payload-worker.js", import.meta.url)
-    );
+    worker = createWorker();
     worker.unref();
     worker.on("message", handleMessage);
     worker.on("error", (error) => {
@@ -87,4 +87,10 @@ export function createAgentSessionPayloadWorkerPreparer(): AgentSessionPayloadPr
     }
     pending.clear();
   }
+}
+
+function createDefaultPayloadWorker(): Worker {
+  return new Worker(
+    new URL("./agent-session-sync-payload-worker.js", import.meta.url)
+  );
 }

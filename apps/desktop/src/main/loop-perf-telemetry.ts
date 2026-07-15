@@ -31,6 +31,13 @@ const LOOP_PERF_COMMAND_MAX_BYTES = 64;
 const LOOP_PERF_PARSE_FAILURE_RAW_BYTES_MAX_BYTES = 1024;
 const LOOP_PERF_PARSE_FAILURE_ERROR_MESSAGE_MAX_BYTES = 512;
 const LOOP_PERF_PARSE_FAILURE_MAX_EVENTS_PER_CHUNK = 20;
+// Fallback poll interval. fs.watch on a directory does not reliably deliver a
+// child-file creation event on macOS (and the desktop ships on macOS via
+// Electron), so a low-frequency poll guarantees records still stream when
+// perf.jsonl is created or appended after the watcher starts and the OS event
+// never arrives. The tick is idempotent (a no-op when there are no new bytes),
+// so this adds at most one statSync per interval.
+const LOOP_PERF_POLL_INTERVAL_MS = 1000;
 
 // biome-ignore lint/complexity/useRegexLiterals: Control characters (\u001b, \u009b) required for ANSI stripping
 const ANSI_RE = new RegExp(
@@ -761,6 +768,8 @@ export function startLoopPerfTelemetryWatcher(
 
   // Debounce timer handle.
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Fallback poll handle (see LOOP_PERF_POLL_INTERVAL_MS).
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Read from the current HWM to EOF and call `parseAndEmitChunk`.
@@ -876,11 +885,22 @@ export function startLoopPerfTelemetryWatcher(
         }
         watcher = null;
       }
+      if (pollTimer !== null) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     });
 
     // Also trigger an initial tick in case bytes were appended between
     // startOffset capture and watcher startup.
     scheduleTick();
+
+    // Fallback poll: fs.watch directory events are unreliable on macOS for
+    // child-file creation, so flush from HWM to EOF on a low-frequency interval
+    // as well. `tick` is idempotent, and the timer is unref'd so it never keeps
+    // the process alive on its own.
+    pollTimer = setInterval(() => tick(), LOOP_PERF_POLL_INTERVAL_MS);
+    pollTimer.unref();
   } catch (err) {
     try {
       telemetryEmitter.emit({
@@ -920,6 +940,11 @@ export function startLoopPerfTelemetryWatcher(
         if (debounceTimer !== null) {
           clearTimeout(debounceTimer);
           debounceTimer = null;
+        }
+        // Stop the fallback poll.
+        if (pollTimer !== null) {
+          clearInterval(pollTimer);
+          pollTimer = null;
         }
         // Perform one final synchronous tick to flush bytes appended just
         // before stop() was called (e.g. the last lines before process exit).

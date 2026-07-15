@@ -8,6 +8,7 @@ import {
 } from "@repo/api/src/types/agent-session";
 import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { Server, type Socket } from "socket.io";
 import { apiKeysService } from "../app/api-keys/service";
@@ -55,6 +56,7 @@ import {
   toWireCommandFromStore,
 } from "./desktop-gateway-wire";
 import { publishLegacyRelayEvent } from "./desktop-relay-event-bridge";
+import { buildDesktopServerCapabilities } from "./desktop-server-capabilities";
 import { handleTelemetryEvent } from "./desktop-telemetry-handler";
 import { relayEventBus } from "./relay-event-bus";
 import { isTrustedOrigin } from "./trusted-origins";
@@ -153,6 +155,9 @@ async function ingestDesktopCommandEventForSocket(input: {
             sessionId:
               contextsBySocketId.get(socket.id)?.sessionId ?? randomUUID(),
             serverTime: new Date().toISOString(),
+            ...(context.serverCapabilities
+              ? { serverCapabilities: context.serverCapabilities }
+              : {}),
             resumeFromSequence: {
               [payload.commandId]: command.lastSequenceAcked,
             },
@@ -165,6 +170,7 @@ async function ingestDesktopCommandEventForSocket(input: {
       socketId: socket.id,
       commandId: payload.commandId,
       computeTargetId: context.targetId,
+      gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
       error,
     });
   }
@@ -311,6 +317,8 @@ export async function handleSocketHello(
     allowedDirectoriesHash: payload.allowedDirectoriesHash ?? null,
     socketProtocolVersion: PROTOCOL_VERSION,
     pluginVersion: payload.pluginVersion,
+    desktopClientVersion: payload.desktopClientVersion ?? null,
+    gatewayProtocolVersion: payload.gatewayProtocolVersion ?? null,
     desktopSecurityUpgradeProtocolVersion:
       payload.desktopSecurityUpgradeProtocolVersion ?? null,
   };
@@ -358,16 +366,14 @@ export async function handleSocketHello(
       )
         ? "timeout"
         : "failure";
-      log.error(
-        `Desktop gateway hello failed: compute target update ${errorKind === "timeout" ? "timed out" : "failed"}`,
-        {
-          socketId: socket.id,
-          targetId,
-          computeTargetId: targetId,
-          errorKind,
-          error,
-        }
-      );
+      log.error("desktop.gateway.hello.update_failed", {
+        socketId: socket.id,
+        targetId,
+        computeTargetId: targetId,
+        errorKind,
+        detail: `Compute target update ${errorKind === "timeout" ? "timed out" : "failed"}`,
+        error,
+      });
       socket.emit(
         "desktop.hello.nack",
         toEnvelope<DesktopHelloNackPayload>({
@@ -413,14 +419,11 @@ export async function handleSocketHello(
       const errorKind = isTimeoutError(error, "computeTargetsService.register")
         ? "timeout"
         : "failure";
-      log.error(
-        `Desktop gateway hello failed: compute target register ${errorKind === "timeout" ? "timed out" : "failed"}`,
-        {
-          socketId: socket.id,
-          errorKind,
-          error,
-        }
-      );
+      log.error("desktop.gateway.hello.register_failed", {
+        socketId: socket.id,
+        errorKind,
+        error,
+      });
       socket.emit(
         "desktop.hello.nack",
         toEnvelope<DesktopHelloNackPayload>({
@@ -475,6 +478,7 @@ export async function handleSocketHello(
           socketId: socket.id,
           targetId,
           computeTargetId: targetId,
+          gatewaySessionIdHash: redactGatewaySessionId(sessionId),
           organizationId: authContext.organizationId,
           userId: authContext.userId,
           error,
@@ -563,16 +567,14 @@ export async function handleSocketHello(
     )
       ? "timeout"
       : "failure";
-    log.error(
-      `Desktop gateway hello failed: pending commands lookup ${errorKind === "timeout" ? "timed out" : "failed"}`,
-      {
-        socketId: socket.id,
-        targetId,
-        computeTargetId: targetId,
-        errorKind,
-        error: pendingCommandsResult.cause,
-      }
-    );
+    log.error("desktop.gateway.hello.pending_commands_failed", {
+      socketId: socket.id,
+      targetId,
+      computeTargetId: targetId,
+      errorKind,
+      detail: `Pending commands lookup ${errorKind === "timeout" ? "timed out" : "failed"}`,
+      error: pendingCommandsResult.cause,
+    });
     socket.emit(
       "desktop.hello.nack",
       toEnvelope<DesktopHelloNackPayload>({
@@ -588,16 +590,14 @@ export async function handleSocketHello(
     const errorKind = isTimeoutError(onlineStateResult.cause, "setOnlineState")
       ? "timeout"
       : "failure";
-    log.error(
-      `Desktop gateway hello failed: online state update ${errorKind === "timeout" ? "timed out" : "failed"}`,
-      {
-        socketId: socket.id,
-        targetId,
-        computeTargetId: targetId,
-        errorKind,
-        error: onlineStateResult.cause,
-      }
-    );
+    log.error("desktop.gateway.hello.online_state_failed", {
+      socketId: socket.id,
+      targetId,
+      computeTargetId: targetId,
+      errorKind,
+      detail: `Online state update ${errorKind === "timeout" ? "timed out" : "failed"}`,
+      error: onlineStateResult.cause,
+    });
     socket.emit(
       "desktop.hello.nack",
       toEnvelope<DesktopHelloNackPayload>({
@@ -615,6 +615,10 @@ export async function handleSocketHello(
     signingResult.ok &&
     signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
   const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
+  const serverCapabilities = buildDesktopServerCapabilities({
+    agentSessionSyncSupported,
+    commandSigningSupported,
+  });
 
   // Guard: if the socket disconnected during the async work above,
   // compensate by marking the target offline and cleaning up resources.
@@ -636,7 +640,13 @@ export async function handleSocketHello(
       .catch((error) => {
         log.error(
           "Failed to compensate online state after disconnect during hello",
-          { socketId: socket.id, targetId, computeTargetId: targetId, error }
+          {
+            socketId: socket.id,
+            targetId,
+            computeTargetId: targetId,
+            gatewaySessionIdHash: redactGatewaySessionId(sessionId),
+            error,
+          }
         );
       });
     log.info(
@@ -659,6 +669,10 @@ export async function handleSocketHello(
       userId: authContext.userId,
     });
   }
+  const context = contextsBySocketId.get(socket.id);
+  if (context) {
+    context.serverCapabilities = serverCapabilities;
+  }
 
   const resumeFromSequence = Object.fromEntries(
     pendingCommands.map((command) => [
@@ -675,16 +689,7 @@ export async function handleSocketHello(
       computeTargetId: targetId,
       sessionId,
       serverTime: new Date().toISOString(),
-      ...(commandSigningSupported || agentSessionSyncSupported
-        ? {
-            serverCapabilities: {
-              ...(commandSigningSupported
-                ? { computeTargetSigning: true }
-                : {}),
-              ...(agentSessionSyncSupported ? { agentSessionSync: true } : {}),
-            },
-          }
-        : {}),
+      ...(serverCapabilities ? { serverCapabilities } : {}),
       ...(Object.keys(resumeFromSequence).length > 0
         ? { resumeFromSequence }
         : {}),
@@ -708,7 +713,7 @@ export async function handleSocketHello(
     emitCommand(socket, toWireCommandFromStore(command));
   }
 
-  log.info("Desktop gateway hello acknowledged", {
+  log.info("desktop.gateway.hello.acknowledged", {
     socketId: socket.id,
     targetId,
     computeTargetId: targetId,
@@ -720,6 +725,7 @@ export async function handleSocketHello(
       ? ackSentAt - timing.connectStartedAt
       : undefined,
     pendingCommandCount: pendingCommands.length,
+    serverCapabilities,
     timings: stageTimings,
   });
 }
@@ -847,6 +853,7 @@ export function handleSocketConnection(socket: Socket): void {
         socketId: socket.id,
         commandId: payload.commandId,
         computeTargetId: context.targetId,
+        gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
         error,
       });
     });
@@ -891,6 +898,7 @@ export function handleSocketConnection(socket: Socket): void {
         socketId: socket.id,
         targetId: context.targetId,
         computeTargetId: context.targetId,
+        gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
         error,
       });
     }
@@ -926,6 +934,7 @@ export function handleSocketConnection(socket: Socket): void {
             socketId: socket.id,
             targetId: context.targetId,
             computeTargetId: context.targetId,
+            gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
             error,
           });
           ack?.({
@@ -970,6 +979,7 @@ export function handleSocketConnection(socket: Socket): void {
             socketId: socket.id,
             targetId: context.targetId,
             computeTargetId: context.targetId,
+            gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
             error,
           });
           ack?.({
@@ -981,9 +991,12 @@ export function handleSocketConnection(socket: Socket): void {
   );
 
   socket.on("disconnect", () => {
+    // Capture the session id before handleSocketDisconnect deletes the context.
+    const capturedSessionId = contextsBySocketId.get(socket.id)?.sessionId;
     handleSocketDisconnect(socket.id).catch((error) => {
       log.error("Failed handling desktop socket disconnect", {
         socketId: socket.id,
+        gatewaySessionIdHash: redactGatewaySessionId(capturedSessionId),
         error,
       });
     });

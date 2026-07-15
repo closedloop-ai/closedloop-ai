@@ -24,13 +24,14 @@ import {
   countDiffFiles,
   extractErrorMessage,
   isSyntheticModelKey,
+  noteTimestamp,
   pushTurnDuration,
   safeJson,
   toIso,
   truncateText,
-} from "../parser-utils.js";
+} from "../parsing/parser-utils.js";
 import {
-  emptyUsageExtras,
+  createNormalizedSession,
   type NormalizedApiError,
   type NormalizedDiffStats,
   type NormalizedMessage,
@@ -227,6 +228,13 @@ type SessionAccumulator = {
   readonly toolResultErrors: NormalizedToolResultError[];
   readonly messages: NormalizedMessage[];
   readonly tokenSeries: NormalizedTokenRecord[];
+  // FEA-2958: IDs of messages that already contributed a message-level token
+  // entry (pushMessageTokenSeries). OpenCode reports the same usage again on the
+  // message's step-finish parts, so those are skipped for these messages to keep
+  // token_events — and the Dashboard cost analytics that SUM over it — from
+  // double-counting. Session-level token_usage is unaffected (it derives from the
+  // session-row aggregate, not this series).
+  readonly tokenSeriesMessageIds: Set<string>;
 };
 
 /** Per-message context resolved once before role dispatch. */
@@ -235,6 +243,7 @@ type MessageContext = {
   msgModel: string | null;
   msgTokens: NormalizedTokenCounts | null;
   data: Record<string, unknown>;
+  msgId: string | null;
 };
 
 /** Per-part context resolved once before part-type dispatch. */
@@ -244,19 +253,10 @@ type PartContext = {
   part: Record<string, unknown>;
 };
 
-/** Track first/last timestamps on the accumulator, mirroring the old closure. */
-function noteTimestamp(acc: SessionAccumulator, raw: unknown): string | null {
-  const iso = toIso(raw);
-  if (!iso) {
-    return null;
-  }
-  if (!acc.firstTimestamp || iso < acc.firstTimestamp) {
-    acc.firstTimestamp = iso;
-  }
-  if (!acc.lastTimestamp || iso > acc.lastTimestamp) {
-    acc.lastTimestamp = iso;
-  }
-  return iso;
+/** Normalize an opencode row/JSON id (string | number | bigint | null) to a
+ *  stable Set key, or null when absent. */
+function messageIdKey(value: unknown): string | null {
+  return value == null ? null : String(value);
 }
 
 // CR-2: Token series for a message (only when tokens, timestamp, and model are
@@ -274,6 +274,11 @@ function pushMessageTokenSeries(
       cacheRead: ctx.msgTokens.cacheRead,
       cacheWrite: ctx.msgTokens.cacheWrite,
     });
+    // FEA-2958: remember this message contributed a token entry so its
+    // step-finish parts (which repeat the same usage) are not double-counted.
+    if (ctx.msgId) {
+      acc.tokenSeriesMessageIds.add(ctx.msgId);
+    }
   }
 }
 
@@ -424,6 +429,22 @@ function handlePatchPart(acc: SessionAccumulator, ctx: PartContext): void {
 function handleStepFinishPart(acc: SessionAccumulator, ctx: PartContext): void {
   // CR-2: Step-finish parts may contain per-step token data.
   const part = ctx.part;
+  // FEA-2958: skip this step-finish's tokens when the owning message already
+  // contributed a message-level entry (see the tokenSeriesMessageIds field
+  // comment). OpenCode's message-level data.tokens is the cumulative per-message
+  // total — the same usage these step-finish parts break down — so counting both
+  // double-counts token_events. The owning message id lives in the part row's
+  // `message_id` column (the FK that mirrors the message row's `id`, which the
+  // dedup set is keyed on); real OpenCode parts do not repeat it in the JSON
+  // `data` payload, so prefer the column and fall back to the JSON field only
+  // for fixtures/shapes that carry it. When absent, dedup is skipped and
+  // behavior is unchanged from before this fix.
+  const messageId = messageIdKey(
+    ctx.partRow.message_id ?? part.messageID ?? part.message_id
+  );
+  if (messageId && acc.tokenSeriesMessageIds.has(messageId)) {
+    return;
+  }
   const stepData = isObject(part.usage)
     ? part.usage
     : isObject(part.tokens)
@@ -490,7 +511,7 @@ function resolveMessageContext(
   // CR-2: Per-message token counts.
   const msgTokens = extractMessageTokens(data);
 
-  return { iso, msgModel, msgTokens, data };
+  return { iso, msgModel, msgTokens, data, msgId: messageIdKey(row.id) };
 }
 
 /** Drive the message-row loop through the role handler registry. */
@@ -680,6 +701,7 @@ function parseSessionRow(
     toolResultErrors: [],
     messages: [],
     tokenSeries: [],
+    tokenSeriesMessageIds: new Set(),
   };
 
   noteTimestamp(acc, sessionRow.time_created);
@@ -715,23 +737,21 @@ function parseSessionRow(
   const permissionMode =
     typeof sessionRow.permission === "string" ? sessionRow.permission : null;
 
-  return {
+  // Unset fields are filled by createNormalizedSession's defaults.
+  return createNormalizedSession({
     sessionId: `opencode-${sessionIdStr}`,
     name: projectName,
     cwd: acc.cwd,
     model: acc.sessionModel,
     version,
     slug,
-    gitBranch: null,
     startedAt: acc.firstTimestamp,
     endedAt: acc.lastTimestamp || acc.firstTimestamp,
-    teams: [],
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
     tokensByModel,
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
-    compactions: [],
     apiErrors: acc.apiErrors,
     fileModifiedAt: Number(sessionRow.time_updated || 0) || null,
     turnDurations: acc.turnDurations,
@@ -739,14 +759,11 @@ function parseSessionRow(
     permissionMode,
     thinkingBlockCount: acc.thinkingBlockCount,
     toolResultErrors: acc.toolResultErrors,
-    usageExtras: emptyUsageExtras(),
     messages: acc.messages,
     tokenSeries: acc.tokenSeries,
     diffStats,
-    // CR-7: slash commands (OpenCode does not have these; keep empty).
-    slashCommands: [] as Array<{ name: string; timestamp: string }>,
     artifacts,
-  };
+  });
 }
 
 /** Extract text content from a message data object. Handles both string and
@@ -862,7 +879,7 @@ export function loadSessionsFromDb(
       ORDER BY time_created ASC, id ASC
     `);
     const getParts = db.prepare(`
-      SELECT id, time_created, time_updated, data
+      SELECT id, message_id, time_created, time_updated, data
       FROM part
       WHERE session_id = ?
       ORDER BY time_created ASC, id ASC

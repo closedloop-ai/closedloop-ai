@@ -30,6 +30,40 @@ describe("AppTelemetrySchema", () => {
     expect(AppTelemetrySchema.parse({})).toEqual({});
   });
 
+  it("accepts the multiplayer organization id and bounds its length (FEA-1996)", () => {
+    expect(
+      AppTelemetrySchema.parse({
+        [TelemetryAttribute.AppOrganizationId]:
+          "019c24db-a261-738f-8eff-ea275fb27470",
+      })
+    ).toEqual({
+      [TelemetryAttribute.AppOrganizationId]:
+        "019c24db-a261-738f-8eff-ea275fb27470",
+    });
+
+    // Absent in single-player: a payload without the org key parses unchanged.
+    expect(
+      AppTelemetrySchema.parse({
+        [TelemetryAttribute.AppOperatingMode]: "single_player",
+      })
+    ).toEqual({
+      [TelemetryAttribute.AppOperatingMode]: "single_player",
+    });
+
+    for (const invalid of [
+      "", // empty
+      "a".repeat(TelemetryTextMaxLength.AppOrganizationId + 1), // too long
+      "org\nid", // control character
+      123, // wrong primitive
+    ]) {
+      expect(
+        AppTelemetrySchema.safeParse({
+          [TelemetryAttribute.AppOrganizationId]: invalid,
+        }).success
+      ).toBe(false);
+    }
+  });
+
   it("accepts only the closed desktop exception origin values", () => {
     for (const origin of Object.values(AppExceptionOrigin)) {
       expect(

@@ -3,6 +3,12 @@ import {
   BranchViewSyncFailureReason,
 } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+  GitHubSyncResultReason,
+} from "@repo/api/src/types/github-read-model";
 import type * as GitHubModule from "@repo/github";
 import { GitHubProviderResultStatus } from "@repo/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +18,9 @@ const { mockGetSinglePullRequest } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+  GitHubInstallationStatus: {
+    ACTIVE: "ACTIVE",
+  },
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
@@ -35,7 +44,7 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { refreshPullRequestLifecycle } from "./pr-lifecycle-refresh";
 
 const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn> & {
@@ -85,6 +94,9 @@ describe("refreshPullRequestLifecycle", () => {
       headSha: "head-closed",
       baseSha: "base-sha",
       mergeCommitSha: null,
+      additions: 33,
+      deletions: 7,
+      changedFiles: 4,
     });
 
     const result = await refreshPullRequestLifecycle(baseInput());
@@ -107,7 +119,10 @@ describe("refreshPullRequestLifecycle", () => {
     });
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
       where: expectedGuardedPullRequestWhere(),
-      data: { lastRefreshAttemptAt: expect.any(Date) },
+      data: expect.objectContaining({
+        lastRefreshAttemptAt: expect.any(Date),
+        ...expectedRestProvenance(GitHubSyncResultReason.Unknown),
+      }),
     });
     expect(mockTx.artifact.updateMany).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1", organizationId: "org-1" },
@@ -119,6 +134,7 @@ describe("refreshPullRequestLifecycle", () => {
         baseBranch: "main",
         headSha: "head-closed",
         lastPushBeforeSha: null,
+        ...expectedRestProvenance(GitHubSyncResultReason.Success),
       }),
     });
     expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalledWith({
@@ -131,7 +147,11 @@ describe("refreshPullRequestLifecycle", () => {
         closedAt: new Date("2026-05-19T20:41:49Z"),
         mergedAt: null,
         mergeCommitSha: null,
+        additions: 33,
+        deletions: 7,
+        changedFiles: 4,
         lastVerifiedAt: expect.any(Date),
+        ...expectedRestProvenance(GitHubSyncResultReason.Success),
       }),
     });
   });
@@ -203,16 +223,15 @@ describe("refreshPullRequestLifecycle", () => {
   });
 
   it("returns provider_unavailable without defaulting lifecycle state", async () => {
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        branchDetail: {
-          count: vi.fn().mockResolvedValue(1),
-        },
-        pullRequestDetail: {
-          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-      })
-    );
+    const mockDb = {
+      branchDetail: {
+        count: vi.fn().mockResolvedValue(1),
+      },
+      pullRequestDetail: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockWithDb.mockImplementation((callback) => callback(mockDb));
     mockGetSinglePullRequest.mockResolvedValue(null);
 
     const result = await refreshPullRequestLifecycle(baseInput());
@@ -223,6 +242,18 @@ describe("refreshPullRequestLifecycle", () => {
       message: "Failed to refresh pull request lifecycle",
       httpStatus: 502,
       details: { reason: BranchViewSyncFailureReason.GitHubPrUnavailable },
+    });
+    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(1, {
+      where: expectedGuardedPullRequestWhere(),
+      data: expect.objectContaining({
+        ...expectedRestProvenance(GitHubSyncResultReason.Unknown),
+      }),
+    });
+    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(2, {
+      where: expectedGuardedPullRequestWhere(),
+      data: expect.objectContaining({
+        ...expectedRestProvenance(GitHubSyncResultReason.ProviderUnavailable),
+      }),
     });
     expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
@@ -277,7 +308,10 @@ describe("refreshPullRequestLifecycle", () => {
     });
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
       where: expectedGuardedPullRequestWhere(),
-      data: { lastRefreshAttemptAt: expect.any(Date) },
+      data: expect.objectContaining({
+        lastRefreshAttemptAt: expect.any(Date),
+        ...expectedRestProvenance(GitHubSyncResultReason.Unknown),
+      }),
     });
     expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
     expect(mockWithDb.tx).not.toHaveBeenCalled();
@@ -362,7 +396,13 @@ function expectedGuardedBranchWhere() {
     artifactId: "branch-artifact-1",
     repositoryId: "repo-1",
     artifact: { organizationId: "org-1" },
-    repository: { installation: { organizationId: "org-1" } },
+    repository: {
+      removedAt: null,
+      installation: {
+        organizationId: "org-1",
+        status: GitHubInstallationStatus.ACTIVE,
+      },
+    },
     currentPullRequestDetailId: "pr-detail-1",
   };
 }
@@ -373,7 +413,24 @@ function expectedGuardedPullRequestWhere() {
     branchArtifactId: "branch-artifact-1",
     repositoryId: "repo-1",
     branchArtifact: { organizationId: "org-1" },
-    repository: { installation: { organizationId: "org-1" } },
+    repository: {
+      removedAt: null,
+      installation: {
+        organizationId: "org-1",
+        status: GitHubInstallationStatus.ACTIVE,
+      },
+    },
     currentForBranches: { some: expectedGuardedBranchWhere() },
+  };
+}
+
+function expectedRestProvenance(resultReason: GitHubSyncResultReason) {
+  return {
+    fetchCredentialType: GitHubFetchCredentialType.GitHubApp,
+    fetchCredentialOwnerId: null,
+    fetchMechanism: GitHubFetchMechanism.Rest,
+    fetchTrigger: GitHubFetchTrigger.SurfaceOpen,
+    fetchObservedAt: expect.any(Date),
+    fetchResultReason: resultReason,
   };
 }

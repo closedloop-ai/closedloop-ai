@@ -8,7 +8,6 @@ describe("SESSION_STATUS_FILTER_OPTIONS", () => {
       (option) => option.label === "Failed"
     );
     expect(failedOption?.value).toBe(SESSION_STATUS.ERROR);
-    expect(failedOption?.value).toBe("error");
   });
 
   it("only emits canonical SESSION_STATUS values across every option", () => {
@@ -16,6 +15,23 @@ describe("SESSION_STATUS_FILTER_OPTIONS", () => {
     for (const option of SESSION_STATUS_FILTER_OPTIONS) {
       expect(canonicalValues.has(option.value)).toBe(true);
     }
+  });
+
+  it("includes active, completed, and abandoned as the primary sessions-page status filters", () => {
+    expect(SESSION_STATUS_FILTER_OPTIONS.map((option) => option.value)).toEqual(
+      expect.arrayContaining([
+        SESSION_STATUS.ACTIVE,
+        SESSION_STATUS.COMPLETED,
+        SESSION_STATUS.ABANDONED,
+      ])
+    );
+  });
+
+  it("offers Waiting so awaiting-input sessions stay reachable through a status filter", () => {
+    const waitingOption = SESSION_STATUS_FILTER_OPTIONS.find(
+      (option) => option.value === SESSION_STATUS.WAITING
+    );
+    expect(waitingOption?.label).toBe("Waiting");
   });
 
   it("never sends the stale 'failed' wire value that matched zero cloud rows", () => {

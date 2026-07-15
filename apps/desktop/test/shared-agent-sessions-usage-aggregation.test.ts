@@ -38,6 +38,8 @@ type SeedSession = {
   // `parseSessionDate`'s NaN→epoch fallback (FEA-1834 §6 parity).
   startedAt: string | null;
   awaitingInputSince?: string;
+  endedAt?: string | null;
+  userId?: string | null;
 };
 
 type SeedToken = {
@@ -54,15 +56,17 @@ async function insertSession(db: SqliteDb, seed: SeedSession): Promise<void> {
   // null/empty/malformed `started_at` can be seeded without an unrelated cast.
   await db.run(
     `INSERT INTO sessions
-       (id, status, started_at, updated_at, harness, billing_mode, awaiting_input_since)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       (id, status, started_at, updated_at, ended_at, harness, billing_mode, awaiting_input_since, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     seed.id,
     seed.status,
     seed.startedAt,
     "2026-06-01T00:00:00.000Z",
+    seed.endedAt ?? null,
     seed.harness,
     seed.billingMode,
-    seed.awaitingInputSince ?? null
+    seed.awaitingInputSince ?? null,
+    seed.userId ?? null
   );
 }
 
@@ -295,6 +299,9 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
       { status: "running" },
       { status: "waiting" },
       { status: "failed" },
+      { statuses: ["completed", "failed"] },
+      { statuses: ["active", "waiting"] },
+      { status: "completed", statuses: ["active"] },
       { startDate: "2026-03-01T00:00:00.000Z" },
       { endDate: "2026-03-11T23:59:59.000Z" },
       // Multi-condition WHERE: exercises `conditions.join(" AND ")` and
@@ -360,6 +367,77 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
       status: "waiting",
     });
     assert.equal(waiting.totalSessions, 1, "exactly one waiting session");
+
+    const multiStatus = await getSharedAgentSessionUsage(withAggregate, {
+      statuses: ["completed", "failed"],
+    });
+    assert.equal(
+      multiStatus.totalSessions,
+      5,
+      "multi-status aggregate includes completed plus failed sessions"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3149: the Waiting usage facet excludes ended-but-non-terminal awaiting-input sessions (cloud parity)", async () => {
+  const { db, dir } = await openTempDb();
+
+  try {
+    // Live waiting session: non-terminal status + awaiting-input timestamp, not
+    // ended → Waiting on both cloud and desktop.
+    await insertSession(db, {
+      id: "s-waiting-live",
+      harness: "codex",
+      billingMode: "api",
+      status: "running",
+      startedAt: "2026-03-13T10:00:00.000Z",
+      awaitingInputSince: "2026-03-13T12:00:00.000Z",
+      endedAt: null,
+    });
+    // Ended-but-non-terminal awaiting-input session: cloud's projection
+    // (`toAgentSessionState`) reports PendingApproval only while `!sessionEndedAt`
+    // and its facet guards `sessionEndedAt == null`, so this row must NOT count as
+    // Waiting. Before the fix the desktop predicate lacked the `ended_at IS NULL`
+    // guard and double-counted it.
+    await insertSession(db, {
+      id: "s-waiting-ended",
+      harness: "codex",
+      billingMode: "api",
+      status: "running",
+      startedAt: "2026-03-13T11:00:00.000Z",
+      awaitingInputSince: "2026-03-13T12:30:00.000Z",
+      endedAt: "2026-03-13T13:00:00.000Z",
+    });
+
+    const withAggregate = db.syncSource as AgentSessionSyncSource;
+    // Exercise both the SQL aggregate path and the hydrate/buildUsageSummary
+    // reference path so the guard is proven on the aggregate predicate AND the
+    // in-memory `matchesStatusFilter` fallback.
+    const reference: AgentSessionSyncSource = {
+      ...withAggregate,
+      aggregateUsage: undefined,
+    };
+
+    const aggregateWaiting = await getSharedAgentSessionUsage(withAggregate, {
+      status: "waiting",
+    });
+    const hydrateWaiting = await getSharedAgentSessionUsage(reference, {
+      status: "waiting",
+    });
+
+    assert.equal(
+      aggregateWaiting.totalSessions,
+      1,
+      "SQL aggregate Waiting facet excludes the ended awaiting-input session"
+    );
+    assert.equal(
+      hydrateWaiting.totalSessions,
+      1,
+      "hydrate Waiting facet excludes the ended awaiting-input session"
+    );
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -375,6 +453,158 @@ async function openTempDb(): Promise<{ db: SqliteDb; dir: string }> {
   });
   return { db, dir };
 }
+
+test("SQLite usage and analytics aggregates apply user ownership filters", async () => {
+  const { db, dir } = await openTempDb();
+
+  try {
+    await insertSession(db, {
+      id: "alex-one",
+      harness: "claude",
+      billingMode: "api",
+      status: "completed",
+      startedAt: "2026-03-10T10:00:00.000Z",
+      userId: "user-alex",
+    });
+    await insertSession(db, {
+      id: "alex-two",
+      harness: "codex",
+      billingMode: "api",
+      status: "completed",
+      startedAt: "2026-03-11T10:00:00.000Z",
+      userId: "user-alex",
+    });
+    await insertSession(db, {
+      id: "peter-one",
+      harness: "claude",
+      billingMode: "api",
+      status: "completed",
+      startedAt: "2026-03-12T10:00:00.000Z",
+      userId: "user-peter",
+    });
+    await insertSession(db, {
+      id: "legacy-null-owner",
+      harness: "claude",
+      billingMode: "api",
+      status: "completed",
+      startedAt: "2026-03-13T10:00:00.000Z",
+    });
+
+    for (const id of [
+      "alex-one",
+      "alex-two",
+      "peter-one",
+      "legacy-null-owner",
+    ]) {
+      await insertToken(
+        db,
+        {
+          sessionId: id,
+          model: "gpt-5",
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+        "2026-03-10T10:05:00.000Z"
+      );
+      await db.run(
+        `INSERT INTO events (id, session_id, event_type, tool_name, created_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        `${id}-tool`,
+        id,
+        "tool_use",
+        "Bash",
+        "2026-03-10T10:06:00.000Z"
+      );
+      await db.run(
+        `INSERT INTO agents (id, session_id, type, status, started_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `${id}-agent`,
+        id,
+        "main",
+        "completed",
+        "2026-03-10T10:00:00.000Z",
+        "2026-03-10T10:10:00.000Z"
+      );
+    }
+
+    const withAggregate = db.syncSource as AgentSessionSyncSource;
+    const reference: AgentSessionSyncSource = {
+      ...withAggregate,
+      aggregateUsage: undefined,
+      aggregateAnalytics: undefined,
+    };
+
+    for (const filter of [
+      { userId: "user-alex" },
+      { userIds: ["user-alex", "user-peter"] },
+      { userId: "user-missing" },
+      { userId: "user-missing", userIds: ["user-alex"] },
+    ] satisfies SharedAgentSessionsQuery[]) {
+      const viaAggregate = await getSharedAgentSessionUsage(
+        withAggregate,
+        filter
+      );
+      const viaHydrate = await getSharedAgentSessionUsage(reference, filter);
+      assert.deepEqual(
+        normalizeUsage(viaAggregate),
+        normalizeUsage(viaHydrate),
+        `usage mismatch for user filter ${JSON.stringify(filter)}`
+      );
+    }
+
+    const alexUsage = await getSharedAgentSessionUsage(withAggregate, {
+      userId: "user-alex",
+    });
+    assert.equal(alexUsage.totalSessions, 2);
+
+    const multiUsage = await getSharedAgentSessionUsage(withAggregate, {
+      userIds: ["user-alex", "user-peter"],
+    });
+    assert.equal(multiUsage.totalSessions, 3);
+
+    const nullOwnerExplicit = await getSharedAgentSessionUsage(withAggregate, {
+      userId: "legacy-null-owner",
+    });
+    assert.equal(
+      nullOwnerExplicit.totalSessions,
+      0,
+      "explicit user filters exclude NULL sessions.user_id rows"
+    );
+
+    const unfiltered = await getSharedAgentSessionUsage(withAggregate, {});
+    assert.equal(
+      unfiltered.totalSessions,
+      4,
+      "unfiltered totals keep NULL sessions.user_id rows"
+    );
+
+    const analytics = await withAggregate.aggregateAnalytics?.(
+      { userId: "user-alex" },
+      {
+        attributionByCwd: new Map(),
+        launchMetadataRootByCwd: new Map(),
+        repoFullNameByPath: new Map(),
+      }
+    );
+    assert.deepEqual(
+      analytics?.byTool.map((row) => [
+        row.toolName,
+        row.invocationCount,
+        row.sessionCount,
+      ]),
+      [["Bash", 2, 2]]
+    );
+    assert.deepEqual(
+      analytics?.byAgentType.map((row) => [row.agentType, row.count]),
+      [["main", 2]]
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 // FEA-1834 §5/§6: NULL/literal-"unknown" harness rows must fold into a single
 // "unknown" bucket, and NULL/empty/malformed `started_at` must coerce to epoch
@@ -552,9 +782,8 @@ test("SQLite aggregateUsage matches hydrate for mixed harness and malformed star
 });
 
 // FEA-1834 §7: ids and free-text-search usage requests must NOT consult
-// aggregateUsage — the aggregation filters by harness/status/date only, so an
-// ids request would summarize the whole corpus instead of the requested
-// sessions, and a search request would ignore the search entirely. Guards the
+// aggregateUsage: ids are not represented by the aggregate predicate contract,
+// and search would ignore hydrated attribution fields. Guards the
 // `!Object.hasOwn(request, "ids")` and `query.search === null` bypasses.
 test("ids and search usage requests bypass aggregateUsage (FEA-1834 §7)", async () => {
   const { db, dir } = await openTempDb();

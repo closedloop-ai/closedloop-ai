@@ -1,7 +1,13 @@
 "use client";
 
-import { useIsFetching, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  type QueryKey,
+  useIsFetching,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useCallback } from "react";
+import { markBranchQueryForceRefresh } from "../../hooks/branch-force-refresh";
 import { branchesKeys } from "../../hooks/use-branches";
 import { branchesOverlayKeys } from "./overlay-keys";
 
@@ -25,10 +31,24 @@ export function useOverlayRefresh(): UseOverlayRefreshResult {
   const isChecking = useIsFetching({ queryKey: branchesOverlayKeys.all() }) > 0;
 
   const refresh = useCallback(() => {
+    markActiveBranchQueriesForForceRefresh(queryClient, branchesKeys.lists());
+    markActiveBranchQueriesForForceRefresh(queryClient, branchesKeys.details());
     queryClient.invalidateQueries({ queryKey: branchesOverlayKeys.all() });
     queryClient.invalidateQueries({ queryKey: branchesKeys.lists() });
     queryClient.invalidateQueries({ queryKey: branchesKeys.details() });
+    queryClient.invalidateQueries({ queryKey: branchesKeys.commentsRoot() });
   }, [queryClient]);
 
   return { refresh, isChecking };
+}
+
+function markActiveBranchQueriesForForceRefresh(
+  queryClient: QueryClient,
+  queryKey: QueryKey
+): void {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey })) {
+    if (query.getObserversCount() > 0) {
+      markBranchQueryForceRefresh(query.queryKey);
+    }
+  }
 }

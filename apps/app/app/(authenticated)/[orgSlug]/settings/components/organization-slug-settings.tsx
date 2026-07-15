@@ -2,6 +2,10 @@
 
 import { useOrganization } from "@repo/app/organizations/hooks/use-organizations";
 import { useCurrentUser } from "@repo/app/users/hooks/use-users";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Loader2Icon } from "lucide-react";
 import { OrganizationSlugEditor } from "./organization-slug-editor";
 
@@ -63,8 +67,8 @@ function SlugSettingsLoadingState() {
 
 function SlugSettingsErrorState({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive text-sm">
-      {message}
-    </div>
+    <Alert variant="error">
+      <AlertDescription>{message}</AlertDescription>
+    </Alert>
   );
 }

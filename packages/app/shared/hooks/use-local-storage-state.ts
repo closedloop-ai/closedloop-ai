@@ -52,7 +52,12 @@ export function useLocalStorageState<T>(
   }, []);
 
   const getSnapshot = useCallback(() => {
-    const raw = localStorage.getItem(key);
+    let raw: string | null;
+    try {
+      raw = localStorage.getItem(key);
+    } catch {
+      return defaultRef.current;
+    }
     if (raw !== cacheRef.current.raw) {
       cacheRef.current = { raw, parsed: deserialize(raw) };
     }
@@ -65,11 +70,20 @@ export function useLocalStorageState<T>(
 
   const setValue = useCallback(
     (next: T | ((prev: T) => T)) => {
-      const current = deserialize(localStorage.getItem(key));
+      let current: T;
+      try {
+        current = deserialize(localStorage.getItem(key));
+      } catch {
+        current = defaultRef.current;
+      }
       const newValue =
         typeof next === "function" ? (next as (prev: T) => T)(current) : next;
       const serialized = JSON.stringify(newValue);
-      localStorage.setItem(key, serialized);
+      try {
+        localStorage.setItem(key, serialized);
+      } catch {
+        return;
+      }
       const event = new StorageEvent("storage", {
         key,
         newValue: serialized,

@@ -77,6 +77,7 @@ function registerProfileHandlers(
       },
     },
     {
+      isTrustedSender: () => true,
       settingsStore,
       apiKeyStore,
       getGatewaySnapshot: () => ({

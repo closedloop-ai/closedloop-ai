@@ -20,3 +20,20 @@ export const SESSION_STATUS = {
 
 export type SessionStatus =
   (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS];
+
+/**
+ * The subset of {@link SESSION_STATUS} values that are terminal: the run is over
+ * or has failed, so it can never be genuinely "awaiting user input". Hoisted
+ * here (FEA-3038) as the single source of truth so the set isn't re-encoded per
+ * consumer:
+ *   • `apps/api/lib/awaiting-input-transition.ts` — excludes ended runs from the
+ *     awaiting-input notification trigger.
+ *   • `apps/api/app/agent-sessions/service.ts` (`toAgentSessionState`) — a
+ *     terminal status classifies as Completed (COMPLETED) or Blocked
+ *     (ERROR/ABANDONED); only a non-terminal run can be PendingApproval.
+ */
+export const TERMINAL_SESSION_STATUSES: ReadonlySet<string> = new Set([
+  SESSION_STATUS.COMPLETED,
+  SESSION_STATUS.ERROR,
+  SESSION_STATUS.ABANDONED,
+]);

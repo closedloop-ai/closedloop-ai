@@ -215,6 +215,11 @@ export type DesktopSettings = {
   planExtractionEnabled: boolean;
   /** Shows personalized agentic-development coaching tips in the Sessions view. */
   agentCoachingTips: boolean;
+  /**
+   * Lets an installed "coaching pack" override the built-in best-practice
+   * signals that power coaching tips. Off → built-in signals only.
+   */
+  agentCoachingPacks: boolean;
   /** Desktop-local opt-in that requires trusted browser command signatures. */
   commandSigningEnforcementEnabled: boolean;
   defaultApprovalTier: RiskTier;
@@ -234,6 +239,16 @@ export type DesktopSettings = {
   savedConfigs: SavedConfig[];
   activeConfigId: string | null;
   updateAndRestartEnabled: boolean;
+  sessionCompletionNotifications: boolean;
+  /** Opt-in OS notification when a loop you launched reaches terminal success. */
+  loopCompletedNotificationsEnabled: boolean;
+  /** Gates the Settings → Account first-party desktop sign-in UI (FEA-2219). */
+  desktopFirstPartyAuthEnabled: boolean;
+  /**
+   * Gates the main-process TranscriptSyncService raw-transcript archive lane
+   * (FEA-2715). Off by default and restart-scoped pending end-to-end validation.
+   */
+  transcriptSyncEnabled: boolean;
   /**
    * ISO timestamp when the user last dismissed the managed-key revival hint
    * (D5 / AC-010). Null means never dismissed.
@@ -246,6 +261,37 @@ export type DesktopSettings = {
    * Null means the hint has never been dismissed.
    */
   managedKeyHintLastSeenProvenance: "DESKTOP_MANAGED" | "USER_CREATED" | null;
+  /**
+   * Shared web+desktop UI flag (kebab-case, PostHog convention) that gates the
+   * collapsible session-details comments rail (FEA-2479). Default true so the
+   * collapse control ships in packaged builds. Not surfaced as a Labs toggle;
+   * registered here so getFlag/setFlag type casts remain sound.
+   */
+  "session-comments-rail-collapse": boolean;
+  /**
+   * Shared web+desktop UI flag (PostHog key "agents") gating the Agents
+   * workspace sidebar entry (FEA-2923). Off by default; users opt in via the
+   * Labs panel since the packaged desktop renderer has no PostHog wiring.
+   * Registered here so getFlag/setFlag type casts remain sound.
+   */
+  agents: boolean;
+  /**
+   * Shared web+desktop UI flag (PostHog key "read-source-indicator") gating the
+   * FEA-3120 Local/Cloud/Fallback read-source badge on the Sessions and Branches
+   * toolbars. Off by default; users opt in via the Labs panel since the packaged
+   * desktop renderer has no PostHog wiring. Registered here so getFlag/setFlag
+   * type casts remain sound.
+   */
+  "read-source-indicator": boolean;
+  /**
+   * Shared web+desktop UI flag (PostHog key "agents-show-tools-mcps-hooks")
+   * surfacing Tools, MCPs, and Hooks as first-class kinds in the Agents listing
+   * (FEA-3152). Off by default; users opt in via the Labs panel since the
+   * packaged desktop renderer has no PostHog wiring. Observable-only — never
+   * affects promote/catalog/distribution. Registered here so getFlag/setFlag
+   * type casts remain sound.
+   */
+  "agents-show-tools-mcps-hooks": boolean;
 };
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
@@ -260,6 +306,7 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   agentMonitorEnabled: true,
   planExtractionEnabled: false,
   agentCoachingTips: false,
+  agentCoachingPacks: false,
   commandSigningEnforcementEnabled: false,
   defaultApprovalTier: "high",
   relayOrigin: DEFAULT_RELAY_ORIGIN,
@@ -270,6 +317,78 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   savedConfigs: [],
   activeConfigId: null,
   updateAndRestartEnabled: false,
+  sessionCompletionNotifications: false,
+  loopCompletedNotificationsEnabled: false,
+  desktopFirstPartyAuthEnabled: false,
+  transcriptSyncEnabled: false,
   managedKeyHintDismissedAt: null,
   managedKeyHintLastSeenProvenance: null,
+  "session-comments-rail-collapse": true,
+  agents: false,
+  "read-source-indicator": false,
+  "agents-show-tools-mcps-hooks": false,
 };
+
+/**
+ * First-party desktop auth (FEA-2219) wire contract. The main-process
+ * {@link DesktopSessionManager} owns the state machine; the renderer mirrors it
+ * across the IPC boundary. Per AGENTS.md, status/state and failure-reason values
+ * that cross the process boundary live in this one shared module so main and the
+ * renderer can't drift — both `desktop-session-manager.ts` and the renderer
+ * `desktop-api.d.ts` import these instead of re-declaring them.
+ */
+export const DesktopAuthStatus = {
+  /** Initial state before {@link DesktopSessionManager.restore}. */
+  Loading: "loading",
+  /** No durable session — the user must sign in. */
+  SignedOut: "signed_out",
+  /**
+   * Sign-in started: generating PKCE + state, starting the loopback listener,
+   * and launching the system browser to the web authorize URL.
+   */
+  OpeningBrowser: "opening_browser",
+  /** Browser launched; awaiting the loopback redirect carrying the auth code. */
+  AwaitingRedirect: "awaiting_redirect",
+  /** Redirect received; redeeming the code (+ PKCE verifier + PoP) for tokens. */
+  Exchanging: "exchanging",
+  /** A durable session exists; access tokens are minted on demand. */
+  Authenticated: "authenticated",
+  /** Stored credentials became invalid/expired/revoked and were cleared. */
+  RefreshFailed: "refresh_failed",
+} as const;
+export type DesktopAuthStatus =
+  (typeof DesktopAuthStatus)[keyof typeof DesktopAuthStatus];
+
+/** Renderer-facing snapshot of the main-process desktop auth state. */
+export type DesktopAuthState = {
+  status: DesktopAuthStatus;
+  /** Internal user id, for display/bootstrapping only — never authorization. */
+  userId: string | null;
+  organizationId: string | null;
+};
+
+/** Closed set of terminal browser sign-in failure reasons. */
+export type DesktopBrowserSignInFailure =
+  /** Browser sign-in ports were not configured on this manager. */
+  | "unavailable"
+  /** A sign-in is already running, or a session already exists. */
+  | "already_in_progress"
+  /** Pre-open setup failed (device descriptor / PKCE / loopback listener). */
+  | "start_failed"
+  /** The system browser could not be opened. */
+  | "open_failed"
+  /** No loopback callback arrived before the timeout (e.g. user abandoned it). */
+  | "redirect_timeout"
+  /** The callback `state` did not match, or it carried no `code` (mix-up/CSRF). */
+  | "state_mismatch"
+  /** The authorization code was invalid/expired/replayed at redeem. */
+  | "expired"
+  /** Sign-in was cancelled (explicit cancel or sign-out). */
+  | "cancelled"
+  /** The code redeem (token exchange) failed on the network / PoP / server. */
+  | "exchange_failed";
+
+/** Terminal outcome of a browser sign-in request. */
+export type DesktopBrowserSignInResult =
+  | { ok: true }
+  | { ok: false; reason: DesktopBrowserSignInFailure };

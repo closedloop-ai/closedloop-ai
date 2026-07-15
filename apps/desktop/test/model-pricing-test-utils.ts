@@ -7,7 +7,8 @@ export type ExpectedTokenCost = TokenCostInput & {
   costUsd: number;
   inputCostUsd: number;
   outputCostUsd: number;
-  cacheCostUsd: number;
+  cacheReadCostUsd: number;
+  cacheWriteCostUsd: number;
 };
 
 export function computeExpectedTokenCost(
@@ -22,9 +23,7 @@ export function computeExpectedTokenCost(
     costUsd: result.costUsd,
     inputCostUsd: result.inputCostUsd ?? 0,
     outputCostUsd: result.outputCostUsd ?? 0,
-    cacheCostUsd: Math.max(
-      0,
-      result.costUsd - (result.inputCostUsd ?? 0) - (result.outputCostUsd ?? 0)
-    ),
+    cacheReadCostUsd: result.cacheReadCostUsd ?? 0,
+    cacheWriteCostUsd: result.cacheWriteCostUsd ?? 0,
   };
 }

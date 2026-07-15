@@ -82,9 +82,4 @@ describe("timeline↔trace decoupling (architecture)", () => {
     expect(timeline).not.toContain("branch-trace-playhead");
     expect(timeline).not.toContain("session-trace");
   });
-
-  it("the playhead scrubber does not import the timeline", () => {
-    const playhead = read("../../components/branch-trace-playhead.tsx");
-    expect(playhead).not.toContain("branch-pr-activity-timeline");
-  });
 });

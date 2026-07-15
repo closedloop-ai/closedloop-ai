@@ -1,11 +1,11 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import { FilterChip } from "@repo/design-system/components/ui/filter-chip";
+} from "@closedloop-ai/design-system/components/ui/dropdown-menu";
+import { FilterChip } from "@closedloop-ai/design-system/components/ui/filter-chip";
 import { PlusIcon } from "lucide-react";
 import {
   FilterMenuContent,

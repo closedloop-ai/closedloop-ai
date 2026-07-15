@@ -382,6 +382,7 @@ export function ToolCallBlock({ toolUse, toolResult }: ToolCallBlockProps) {
       className={`overflow-hidden rounded-xl border bg-card/70 ${toolResult?.isError ? "border-red-500/25 bg-red-950/10" : style.border}`}
     >
       <button
+        aria-expanded={expanded}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted/35"
         onClick={() => setExpanded((value) => !value)}
         type="button"

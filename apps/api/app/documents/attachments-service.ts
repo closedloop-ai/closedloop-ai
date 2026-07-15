@@ -32,6 +32,7 @@ import { keys as awsKeys } from "@repo/aws/keys";
 import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import type { z } from "zod";
+import { BoundedCache } from "@/lib/bounded-cache";
 import { getPrismaErrorCode } from "@/lib/db-utils";
 
 /**
@@ -80,7 +81,7 @@ async function requireDocument(
   );
 
   if (!artifact) {
-    throw new Error("Document not found");
+    throw new Error(DOCUMENT_NOT_FOUND_ERROR);
   }
   return artifact;
 }
@@ -101,9 +102,11 @@ async function populatePreviewUrls(
   const previewUrls = await Promise.all(
     imageRecords.map(async (r) => ({
       id: r.id,
-      url: await getSignedDownloadUrl(r.key, 3600, r.bucket).catch(
-        () => undefined
-      ),
+      url: await getCachedSignedDownloadUrl(
+        r.key,
+        SIGNED_URL_EXPIRY_SECONDS,
+        r.bucket
+      ).catch(() => undefined),
     }))
   );
   const urlMap = new Map(
@@ -118,16 +121,32 @@ async function populatePreviewUrls(
 }
 
 const SIGNED_URL_EXPIRY_SECONDS = 3600;
-const SIGNED_URL_EXPIRY_MS = SIGNED_URL_EXPIRY_SECONDS * 1000;
-const ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS = 900;
+// Stop reusing a cached presigned URL this long before it actually expires so a
+// URL handed to a browser still has comfortable lifetime remaining.
+const SIGNED_URL_CACHE_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+// Opportunistic upper bound on the per-process signed-URL cache so a long-lived
+// worker that signs many distinct objects cannot grow it without limit.
+const SIGNED_URL_CACHE_MAX_ENTRIES = 10_000;
+export const ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS = 900;
 const ATTACHMENT_UPLOAD_LIMIT_BUCKET = "document_attachment_upload_request";
 const ATTACHMENT_UPLOAD_LIMIT_MAX_REQUESTS = 60;
 const ATTACHMENT_UPLOAD_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 export const INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR =
   "Invalid inline attachment upload";
+export const ATTACHMENT_NOT_FOUND_ERROR = "Attachment not found";
+export const DOCUMENT_NOT_FOUND_ERROR = "Document not found";
 
 /** Maximum number of attachments returned by the signed-URL listing methods. */
 export const ATTACHMENT_SIGNED_URL_MAX_FILES = 20;
+
+/**
+ * Upper bound on attachments returned by the general document listing
+ * (`listByDocument`). Larger than the signed-URL cap because the UI listing has
+ * no pagination and must show a document's full attachment set in normal use,
+ * but still bounded so a document with thousands of bulk-uploaded attachments
+ * cannot return every row to the client.
+ */
+export const ATTACHMENT_LISTING_MAX_FILES = 200;
 
 const signedUrlSelect = {
   id: true,
@@ -235,7 +254,7 @@ function getSafeErrorMessage(error: unknown): string {
 }
 
 function isDocumentNotFoundError(error: unknown): boolean {
-  return error instanceof Error && error.message === "Document not found";
+  return error instanceof Error && error.message === DOCUMENT_NOT_FOUND_ERROR;
 }
 
 function getInlineUploadRejectionReason(
@@ -476,6 +495,75 @@ function assertInlineUploadIsAllowed({
   }
 }
 
+type CachedSignedDownloadUrl = { url: string; expiresAtMs: number };
+
+/**
+ * Per-process, bounded cache of presigned GET URLs keyed by (bucket, expiry,
+ * key). The underlying attachment objects are immutable, so reusing a still-valid
+ * signature across repeated document list/poll calls keeps the browser-facing
+ * previewUrl string stable — the browser can then serve the image bytes from its
+ * own HTTP cache instead of re-downloading them from S3 (per-request egress) on
+ * every refresh. A cached signature is reused only while more than
+ * SIGNED_URL_CACHE_SAFETY_MARGIN_MS of its real lifetime remains, so a URL handed
+ * to a client always has comfortable headroom left.
+ */
+const signedDownloadUrlCache = new BoundedCache<
+  string,
+  CachedSignedDownloadUrl
+>(SIGNED_URL_CACHE_MAX_ENTRIES);
+
+/**
+ * Return a presigned GET URL for an immutable object together with the real
+ * expiry of that signature, reusing a cached signature while it remains
+ * comfortably valid (more than the safety margin from expiry). Callers that
+ * surface the URL's expiry to a client must use this entry's `expiresAtMs`
+ * rather than recomputing `now + lifetime`, because a reused signature expires
+ * earlier than a freshly minted one.
+ */
+async function getCachedSignedDownloadEntry(
+  key: string,
+  expiresInSeconds: number,
+  bucket: string
+): Promise<CachedSignedDownloadUrl> {
+  // Positional JSON encoding so a bucket or key that contains the delimiter
+  // cannot collapse two distinct (bucket, ttl, key) tuples onto one cache
+  // entry, which would serve a presigned URL for the wrong object.
+  const cacheKey = JSON.stringify([bucket, expiresInSeconds, key]);
+  const now = Date.now();
+
+  const cached = signedDownloadUrlCache.get(cacheKey);
+  if (cached && cached.expiresAtMs - SIGNED_URL_CACHE_SAFETY_MARGIN_MS > now) {
+    return cached;
+  }
+
+  const url = await getSignedDownloadUrl(key, expiresInSeconds, bucket);
+  const entry: CachedSignedDownloadUrl = {
+    url,
+    expiresAtMs: now + expiresInSeconds * 1000,
+  };
+  signedDownloadUrlCache.set(cacheKey, entry);
+  return entry;
+}
+
+/**
+ * Return just the presigned GET URL for an immutable object, reusing a cached
+ * signature while it remains comfortably valid. Use
+ * {@link getCachedSignedDownloadEntry} instead when the caller reports the
+ * URL's expiry to a client.
+ */
+async function getCachedSignedDownloadUrl(
+  key: string,
+  expiresInSeconds: number,
+  bucket: string
+): Promise<string> {
+  const entry = await getCachedSignedDownloadEntry(
+    key,
+    expiresInSeconds,
+    bucket
+  );
+  return entry.url;
+}
+
 /**
  * Convert attachment records to ContextPackAttachment entries with presigned download URLs.
  */
@@ -483,20 +571,21 @@ async function toContextPackAttachments(
   records: SignedUrlRecord[]
 ): Promise<ContextPackAttachment[]> {
   const results = await Promise.allSettled(
-    records.map(async (record) => ({
-      id: record.id,
-      filename: record.filename,
-      mimeType: record.mimeType,
-      sizeBytes: record.sizeBytes,
-      signedUrl: await getSignedDownloadUrl(
+    records.map(async (record) => {
+      const signed = await getCachedSignedDownloadEntry(
         record.key,
         SIGNED_URL_EXPIRY_SECONDS,
         record.bucket
-      ),
-      signedUrlExpiresAt: new Date(
-        Date.now() + SIGNED_URL_EXPIRY_MS
-      ).toISOString(),
-    }))
+      );
+      return {
+        id: record.id,
+        filename: record.filename,
+        mimeType: record.mimeType,
+        sizeBytes: record.sizeBytes,
+        signedUrl: signed.url,
+        signedUrlExpiresAt: new Date(signed.expiresAtMs).toISOString(),
+      };
+    })
   );
 
   const attachments: ContextPackAttachment[] = [];
@@ -589,6 +678,7 @@ export const attachmentsService = {
           ...buildPurposeWhere(purpose),
         },
         orderBy: { createdAt: "desc" },
+        take: ATTACHMENT_LISTING_MAX_FILES,
       })
     );
 
@@ -615,7 +705,7 @@ export const attachmentsService = {
     );
 
     if (!attachment) {
-      throw new Error("Attachment not found");
+      throw new Error(ATTACHMENT_NOT_FOUND_ERROR);
     }
 
     const downloadUrl = await getSignedDownloadUrlWithDisposition(
@@ -814,17 +904,21 @@ export const attachmentsService = {
       }
 
       try {
+        // Use the cached signature's real expiry, not `now + lifetime`: a reused
+        // cached URL expires earlier than a freshly minted one, so recomputing
+        // the expiry here would overstate how long the returned URL stays valid.
+        const signed = await getCachedSignedDownloadEntry(
+          record.key,
+          SIGNED_URL_EXPIRY_SECONDS,
+          record.bucket
+        );
         images.push({
           attachmentId,
-          url: await getSignedDownloadUrl(
-            record.key,
-            SIGNED_URL_EXPIRY_SECONDS,
-            record.bucket
-          ),
+          url: signed.url,
           filename: record.filename,
           mimeType: record.mimeType,
           sizeBytes: record.sizeBytes,
-          expiresAt: new Date(Date.now() + SIGNED_URL_EXPIRY_MS).toISOString(),
+          expiresAt: new Date(signed.expiresAtMs).toISOString(),
         });
       } catch (error) {
         log.warn("[attachments-service] Failed to resolve inline image URL", {
@@ -1014,4 +1108,5 @@ export const attachmentServiceInternalsForTesting = {
   ATTACHMENT_UPLOAD_LIMIT_BUCKET,
   ATTACHMENT_UPLOAD_LIMIT_MAX_REQUESTS,
   ATTACHMENT_UPLOAD_LIMIT_WINDOW_MS,
+  clearSignedDownloadUrlCache: () => signedDownloadUrlCache.clear(),
 };

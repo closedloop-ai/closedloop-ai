@@ -2,7 +2,8 @@
 
 import { cn } from "@repo/design-system/lib/utils";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { TraceTextAnchor } from "./trace-comments";
 import { type TraceJumpHandler, TraceMarkdown } from "./trace-markdown";
 
 type TracePart =
@@ -110,6 +111,17 @@ type TraceMessageBodyProps = {
   text: string;
   onJump?: TraceJumpHandler;
   className?: string;
+  traceActor?: TraceTextAnchor["actor"];
+  traceHighlight?:
+    | { kind: "exact"; startOffset: number; endOffset: number }
+    | { kind: "row" }
+    | null;
+  traceRow?: number;
+  traceSelectionEnabled?: boolean;
+  traceSessionId?: string | null;
+  traceText?: string;
+  traceId?: string;
+  traceTurnId?: string;
 };
 
 /**
@@ -122,21 +134,63 @@ export function TraceMessageBody({
   text,
   onJump,
   className,
+  traceActor,
+  traceHighlight,
+  traceRow,
+  traceSelectionEnabled = false,
+  traceSessionId,
+  traceText = text,
+  traceId,
+  traceTurnId,
 }: Readonly<TraceMessageBodyProps>) {
-  const parts = parseTraceParts(text);
+  const parts = useMemo(() => parseTraceParts(text), [text]);
+  const selectionProps = getTraceSelectionProps({
+    actor: traceActor,
+    enabled: traceSelectionEnabled,
+    row: traceRow,
+    sessionId: traceSessionId,
+    text: traceText,
+    traceId,
+    turnId: traceTurnId,
+  });
+  const rowHighlightProps =
+    traceHighlight?.kind === "row" ? { "data-trace-highlight": "row" } : {};
+
+  if (traceHighlight?.kind === "exact") {
+    return (
+      <div
+        {...selectionProps}
+        {...rowHighlightProps}
+        className={cn("st-text", className)}
+      >
+        <TraceHighlightedMarkdown
+          endOffset={traceHighlight.endOffset}
+          onJump={onJump}
+          startOffset={traceHighlight.startOffset}
+          text={text}
+        />
+      </div>
+    );
+  }
 
   if (parts.every((part) => part.kind === "md")) {
     return (
-      <TraceMarkdown
+      <div
+        {...selectionProps}
+        {...rowHighlightProps}
         className={cn("st-text", className)}
-        onJump={onJump}
-        text={text}
-      />
+      >
+        <TraceMarkdown onJump={onJump} text={text} />
+      </div>
     );
   }
 
   return (
-    <div className={cn("st-text", className)}>
+    <div
+      className={cn("st-text", className)}
+      {...selectionProps}
+      {...rowHighlightProps}
+    >
       {parts.map((part) =>
         part.kind === "tag" ? (
           <TraceTagChip
@@ -155,4 +209,127 @@ export function TraceMessageBody({
       )}
     </div>
   );
+}
+
+function TraceHighlightedMarkdown({
+  endOffset,
+  onJump,
+  startOffset,
+  text,
+}: {
+  endOffset: number;
+  onJump?: TraceJumpHandler;
+  startOffset: number;
+  text: string;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: text changes rebuild the markdown DOM; rerun to reapply the selected rendered range after that render.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+    applyRenderedTextHighlight(root, startOffset, endOffset);
+    return () => removeRenderedTextHighlights(root);
+  }, [endOffset, startOffset, text]);
+
+  return (
+    <div ref={rootRef}>
+      <TraceMarkdown className="st-text-fragment" onJump={onJump} text={text} />
+    </div>
+  );
+}
+
+/**
+ * Highlights exact trace anchors in rendered markdown coordinates. This keeps
+ * the markdown tree intact, avoiding raw delimiter leaks when the selected
+ * passage sits inside emphasis, links, or other inline markdown nodes.
+ */
+function applyRenderedTextHighlight(
+  root: HTMLElement,
+  startOffset: number,
+  endOffset: number
+): void {
+  removeRenderedTextHighlights(root);
+  if (startOffset < 0 || endOffset <= startOffset) {
+    return;
+  }
+
+  const textNodes = getRenderedTextNodes(root);
+  let cursor = 0;
+  for (const node of textNodes) {
+    const value = node.textContent ?? "";
+    const nodeStart = cursor;
+    const nodeEnd = cursor + value.length;
+    cursor = nodeEnd;
+
+    const highlightStart = Math.max(startOffset, nodeStart);
+    const highlightEnd = Math.min(endOffset, nodeEnd);
+    if (highlightStart >= highlightEnd) {
+      continue;
+    }
+
+    const range = root.ownerDocument.createRange();
+    range.setStart(node, highlightStart - nodeStart);
+    range.setEnd(node, highlightEnd - nodeStart);
+    const marker = root.ownerDocument.createElement("span");
+    marker.className = "st-selected-passage";
+    marker.dataset.traceSelectedPassage = "true";
+    range.surroundContents(marker);
+  }
+}
+
+function removeRenderedTextHighlights(root: HTMLElement): void {
+  for (const marker of Array.from(
+    root.querySelectorAll<HTMLElement>("[data-trace-selected-passage]")
+  )) {
+    marker.replaceWith(...Array.from(marker.childNodes));
+  }
+  root.normalize();
+}
+
+function getRenderedTextNodes(root: HTMLElement): Text[] {
+  const walker = root.ownerDocument.createTreeWalker(
+    root,
+    NodeFilter.SHOW_TEXT
+  );
+  const nodes: Text[] = [];
+  let next = walker.nextNode();
+  while (next) {
+    nodes.push(next as Text);
+    next = walker.nextNode();
+  }
+  return nodes;
+}
+
+function getTraceSelectionProps({
+  actor,
+  enabled,
+  row,
+  sessionId,
+  text,
+  traceId,
+  turnId,
+}: {
+  actor?: TraceTextAnchor["actor"];
+  enabled: boolean;
+  row?: number;
+  sessionId?: string | null;
+  text: string;
+  traceId?: string;
+  turnId?: string;
+}) {
+  if (!(enabled && row != null)) {
+    return {};
+  }
+  return {
+    "data-trace-actor": actor?.name ?? actor?.human ?? undefined,
+    "data-trace-human": actor?.human ?? undefined,
+    "data-trace-session-id": sessionId ?? undefined,
+    "data-trace-text": text,
+    "data-trace-text-row": String(row),
+    "data-trace-id": traceId,
+    "data-trace-turn-id": turnId,
+  };
 }

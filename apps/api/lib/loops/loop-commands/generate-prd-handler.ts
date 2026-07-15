@@ -47,7 +47,7 @@ export async function ingestGeneratePrdArtifacts(
 
   const { prdContent } = artifacts;
   if (!prdContent) {
-    log.info("[loop-document-ingestion] No PRD content to ingest", {
+    log.info("loop.document_ingestion.prd_content_missing", {
       documentId,
     });
     return;
@@ -87,7 +87,7 @@ export async function ingestGeneratePrdArtifacts(
     );
   }
 
-  log.info("[loop-document-ingestion] PRD content ingested", {
+  log.info("loop.document_ingestion.prd_content_ingested", {
     documentId,
     contentLength: prdContent.length,
   });
@@ -106,10 +106,9 @@ function generatePrdArtifactsFromUpload(
 ): GeneratePrdArtifacts {
   const parsed = generatePrdUploadSchema.safeParse(uploaded);
   if (!parsed.success) {
-    log.warn(
-      "[loop-document-ingestion] Generate PRD upload failed schema validation",
-      { error: parsed.error.message }
-    );
+    log.warn("loop.document_ingestion.generate_prd_upload_schema_invalid", {
+      error: parsed.error.message,
+    });
     return { prdContent: null };
   }
   const prdContent = parsed.data.prd?.content ?? null;

@@ -1,11 +1,13 @@
 import {
   DocumentStatusBadge,
   FeaturePriorityBadge,
+  FeatureStatusBadge,
   LoopCommandBadge,
 } from "@repo/app/shared/components/status-badge";
 import {
   mockDocumentStatusOptions,
   mockFeaturePriorityOptions,
+  mockFeatureStatusOptions,
   mockLoopCommandOptions,
 } from "@repo/design-system/storybook/mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
@@ -19,6 +21,13 @@ const BadgeGallery = () => (
         badge: <DocumentStatusBadge status={value} />,
       }))}
       title="Document statuses"
+    />
+    <BadgeSection
+      items={mockFeatureStatusOptions.map((value) => ({
+        label: value,
+        badge: <FeatureStatusBadge status={value} />,
+      }))}
+      title="Feature statuses"
     />
     <BadgeSection
       items={mockFeaturePriorityOptions.map((value) => ({

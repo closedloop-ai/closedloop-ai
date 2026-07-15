@@ -1,5 +1,8 @@
-import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
-import { ThreadStatus } from "@repo/api/src/types/comment";
+import {
+  type CommentThreadWithComments,
+  DOCUMENT_THREAD_REQUEST_MAX_BYTES,
+  ThreadStatus,
+} from "@repo/api/src/types/comment";
 import { success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -13,9 +16,11 @@ const getThreadsValidator = z.object({
   status: z.enum(ThreadStatus).optional(),
 });
 
+// anchorText present → Liveblocks-anchored thread; absent → unanchored
+// native artifact-level note. An explicit empty string is still rejected.
 const createThreadValidator = z.object({
   body: z.string().min(1),
-  anchorText: z.string().min(1),
+  anchorText: z.string().min(1).optional(),
 });
 
 export const POST = withAnyAuth<
@@ -40,19 +45,28 @@ export const POST = withAnyAuth<
 
     const { body, errorResponse: parseError } = await parseBody(
       request,
-      createThreadValidator
+      createThreadValidator,
+      { maxBytes: DOCUMENT_THREAD_REQUEST_MAX_BYTES }
     );
     if (parseError) {
       return parseError;
     }
 
-    const result = await commentsService.createDocumentThread(
-      user.organizationId,
-      artifact.slug,
-      user.id,
-      body.body,
-      body.anchorText
-    );
+    const result =
+      body.anchorText === undefined
+        ? await commentsService.createUnanchoredDocumentThread(
+            user.organizationId,
+            resolvedId,
+            user.id,
+            body.body
+          )
+        : await commentsService.createDocumentThread(
+            user.organizationId,
+            artifact.slug,
+            user.id,
+            body.body,
+            body.anchorText
+          );
 
     return NextResponse.json(success(result));
   } catch (error) {

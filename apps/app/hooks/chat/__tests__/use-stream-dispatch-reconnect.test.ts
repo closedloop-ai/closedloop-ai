@@ -41,6 +41,17 @@ function makeIncompleteRelayResponse(lines: string[] = []): Response {
   });
 }
 
+/**
+ * An incomplete NDJSON response whose single event carries a `_seq`, so a
+ * reconnect that reads it advances `lastSeq` — i.e. a *productive* reconnect
+ * that delivered new events without terminating the stream.
+ */
+function makeProductiveRelayResponse(seq: number): Response {
+  return makeIncompleteRelayResponse([
+    `{"type":"text","content":"chunk ${seq}","_seq":${seq}}`,
+  ]);
+}
+
 /** A completed NDJSON response (terminal `done`). */
 function makeCompletedResponse(
   lines: string[] = ['{"type":"done"}']
@@ -175,6 +186,177 @@ describe("useStreamDispatch — relay reconnect loop", () => {
         prompt: "hi",
       });
       // Far beyond the worst-case cumulative backoff for 10 capped attempts.
+      await vi.advanceTimersByTimeAsync(600_000);
+      sendResult = await promise;
+    });
+
+    expect(sendResult).toEqual({ ok: false, reason: "stream-read" });
+    expect(result.current.error).toBe(
+      "Stream connection lost. Please try again."
+    );
+    // 1 initial fetch + exactly MAX_RECONNECT_ATTEMPTS reconnect fetches.
+    expect(fetchMock).toHaveBeenCalledTimes(1 + MAX_RECONNECT_ATTEMPTS);
+  });
+
+  test("a productive reconnect resets the budget so a live command survives more than MAX drops", async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    // Initial: incomplete stream with a relay command id -> enters reconnect.
+    fetchMock.mockResolvedValueOnce(makeIncompleteRelayResponse());
+    // 15 successive drops (> MAX_RECONNECT_ATTEMPTS), but every reconnect is
+    // PRODUCTIVE: it delivers a new event (advancing `_seq`) before the stream
+    // ends again, proving the gateway command is still running. With a fixed
+    // cumulative budget the command would be abandoned after 10 drops even
+    // though it keeps making progress; resetting on progress lets it survive.
+    const PRODUCTIVE_DROPS = 15;
+    for (let i = 1; i <= PRODUCTIVE_DROPS; i += 1) {
+      fetchMock.mockResolvedValueOnce(makeProductiveRelayResponse(i));
+    }
+    // Finally the command completes.
+    fetchMock.mockResolvedValueOnce(
+      makeCompletedResponse([`{"type":"done","_seq":${PRODUCTIVE_DROPS + 1}}`])
+    );
+
+    const { result } = renderHook(() => useChatStream());
+
+    let sendResult: unknown;
+    await act(async () => {
+      const promise = result.current.sendMessage("/api/gateway/chat", {
+        prompt: "hi",
+      });
+      // Backoff never climbs past 1s because each productive reconnect resets
+      // `attempts` to 0; advance generously so every scheduled timer fires.
+      await vi.advanceTimersByTimeAsync(120_000);
+      sendResult = await promise;
+    });
+
+    // The command completed rather than being abandoned mid-flight.
+    expect(sendResult).toEqual({ ok: true });
+    expect(result.current.error).toBeNull();
+    // 1 initial + 15 productive reconnects + 1 completion. This exceeds
+    // 1 + MAX_RECONNECT_ATTEMPTS, which is only reachable because the budget
+    // is reset on each productive reconnect.
+    expect(fetchMock).toHaveBeenCalledTimes(1 + PRODUCTIVE_DROPS + 1);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(
+      1 + MAX_RECONNECT_ATTEMPTS
+    );
+
+    // Because the budget keeps resetting, backoff stays pinned at the 1s floor
+    // instead of climbing the exponential curve.
+    const delays = backoffDelaysScheduled();
+    expect(delays.every((d) => d === 1000)).toBe(true);
+  });
+
+  test("mixed productive/unproductive reconnects track budget correctly", async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce(makeIncompleteRelayResponse());
+    // 3 productive reconnects (each delivers new _seq), then 5 unproductive
+    // (no new seq), then 1 productive, then 5 unproductive, then completion.
+    // Budget resets on each productive, drains on unproductive.
+    for (let i = 1; i <= 3; i += 1) {
+      fetchMock.mockResolvedValueOnce(makeProductiveRelayResponse(i));
+    }
+    for (let i = 0; i < 5; i += 1) {
+      fetchMock.mockResolvedValueOnce(makeIncompleteRelayResponse());
+    }
+    fetchMock.mockResolvedValueOnce(makeProductiveRelayResponse(4));
+    for (let i = 0; i < 5; i += 1) {
+      fetchMock.mockResolvedValueOnce(makeIncompleteRelayResponse());
+    }
+    fetchMock.mockResolvedValueOnce(
+      makeCompletedResponse([`{"type":"done","_seq":5}`])
+    );
+
+    const { result } = renderHook(() => useChatStream());
+
+    let sendResult: unknown;
+    await act(async () => {
+      const promise = result.current.sendMessage("/api/gateway/chat", {
+        prompt: "hi",
+      });
+      await vi.advanceTimersByTimeAsync(600_000);
+      sendResult = await promise;
+    });
+
+    expect(sendResult).toEqual({ ok: true });
+    // 1 initial + 3 productive + 5 unproductive + 1 productive + 5 unproductive + 1 completion
+    expect(fetchMock).toHaveBeenCalledTimes(16);
+
+    // The backoff schedule tells the whole story. Each iteration bumps
+    // `attempts`, computes `delay = min(1000 * 2 ** (attempts - 1), 30_000)`,
+    // and a *productive* reconnect (one that advances `_seq`) resets
+    // `attempts` back to 0 so the next delay drops to the 1s floor. Walking
+    // the 15 reconnect fetches in order:
+    //   #1 productive(1)  -> attempts 1 -> 1000, then reset
+    //   #2 productive(2)  -> attempts 1 -> 1000, then reset
+    //   #3 productive(3)  -> attempts 1 -> 1000, then reset
+    //   #4 unproductive   -> attempts 1 -> 1000
+    //   #5 unproductive   -> attempts 2 -> 2000
+    //   #6 unproductive   -> attempts 3 -> 4000
+    //   #7 unproductive   -> attempts 4 -> 8000
+    //   #8 unproductive   -> attempts 5 -> 16_000   (exponential growth here)
+    //   #9 productive(4)  -> attempts 6 -> 30_000 (32_000 clamped), then reset
+    //   #10 unproductive  -> attempts 1 -> 1000
+    //   #11 unproductive  -> attempts 2 -> 2000
+    //   #12 unproductive  -> attempts 3 -> 4000
+    //   #13 unproductive  -> attempts 4 -> 8000
+    //   #14 unproductive  -> attempts 5 -> 16_000  (exponential growth again)
+    //   #15 completion    -> attempts 6 -> 30_000 (32_000 clamped)
+    const delays = backoffDelaysScheduled();
+    expect(delays).toEqual([
+      1000, 1000, 1000, 1000, 2000, 4000, 8000, 16_000, 30_000, 1000, 2000,
+      4000, 8000, 16_000, 30_000,
+    ]);
+
+    // A productive reconnect resets the budget: every delay immediately
+    // following one is pinned back to the 1s floor.
+    expect(delays[0]).toBe(1000); // after initial (no prior productive), floor
+    expect(delays[1]).toBe(1000); // after productive(1)
+    expect(delays[2]).toBe(1000); // after productive(2)
+    expect(delays[3]).toBe(1000); // after productive(3)
+    expect(delays[9]).toBe(1000); // after productive(4)
+
+    // The two consecutive unproductive runs each climb the exponential curve:
+    // every successive unproductive delay in a run is exactly double the last,
+    // proving real backoff (not a flat retry) once progress stalls.
+    const firstUnproductiveRun = delays.slice(3, 9);
+    expect(firstUnproductiveRun).toEqual([
+      1000, 2000, 4000, 8000, 16_000, 30_000,
+    ]);
+    for (let i = 1; i < firstUnproductiveRun.length - 1; i += 1) {
+      // Below the 30s cap the delay strictly doubles each unproductive attempt.
+      expect(firstUnproductiveRun[i]).toBe(firstUnproductiveRun[i - 1] * 2);
+    }
+    const secondUnproductiveRun = delays.slice(9, 15);
+    expect(secondUnproductiveRun).toEqual([
+      1000, 2000, 4000, 8000, 16_000, 30_000,
+    ]);
+    for (let i = 1; i < secondUnproductiveRun.length - 1; i += 1) {
+      expect(secondUnproductiveRun[i]).toBe(secondUnproductiveRun[i - 1] * 2);
+    }
+
+    // Backoff never exceeds the documented 30s cap.
+    expect(Math.max(...delays)).toBe(30_000);
+  });
+
+  test("unproductive reconnects (no new events) still exhaust the budget", async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce(makeIncompleteRelayResponse());
+    // Every reconnect connects (200) but delivers NO new events — the stream
+    // opens and ends immediately without advancing `_seq`. Progress-gated
+    // reset must NOT fire here, so the budget still drains and the loop gives
+    // up (guards against an infinite reconnect loop). A fresh Response per call
+    // is required because a body stream can only be read once.
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(makeIncompleteRelayResponse())
+    );
+
+    const { result } = renderHook(() => useChatStream());
+
+    let sendResult: unknown;
+    await act(async () => {
+      const promise = result.current.sendMessage("/api/gateway/chat", {
+        prompt: "hi",
+      });
       await vi.advanceTimersByTimeAsync(600_000);
       sendResult = await promise;
     });

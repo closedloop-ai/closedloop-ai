@@ -1,7 +1,6 @@
 import {
   type ChildProcess,
   execFileSync,
-  execSync,
   spawn,
   spawnSync,
 } from "node:child_process";
@@ -2028,7 +2027,7 @@ function resolveEffectiveReviewMode(
       return reviewMode;
     }
     const gitBin = getResolvedGitPath();
-    const headSha = execSync(`${gitBin} rev-parse HEAD`, {
+    const headSha = execFileSync(gitBin, ["rev-parse", "HEAD"], {
       cwd: worktreeDir,
       encoding: "utf-8",
       timeout: 10_000,

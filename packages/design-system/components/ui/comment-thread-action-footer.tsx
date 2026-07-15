@@ -1,6 +1,6 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import type { ReactNode } from "react";
 
 export type CommentThreadActionFooterProps = {

@@ -99,6 +99,7 @@ export function DocumentRatingSection({
       {showCommentSection ? (
         <div className="space-y-2">
           <Textarea
+            aria-label="Rating comment"
             className="min-h-[80px]"
             maxLength={500}
             onChange={(event) => onCommentChange?.(event.target.value)}

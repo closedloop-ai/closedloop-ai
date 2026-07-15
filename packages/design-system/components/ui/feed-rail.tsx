@@ -1,6 +1,6 @@
 "use client";
 
-import { useMediaQuery } from "@repo/design-system/hooks/use-media-query";
+import { useMediaQuery } from "@closedloop-ai/design-system/hooks/use-media-query";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";

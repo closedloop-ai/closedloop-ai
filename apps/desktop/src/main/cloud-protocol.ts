@@ -1,4 +1,5 @@
-import type { AgentSessionSyncBatch } from "./agent-session-sync-contract.js";
+import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
+import type { AgentSessionSyncTransportPayload } from "./agent-session-sync-contract.js";
 
 export type CloudSocketStatus =
   | { state: "idle" }
@@ -40,10 +41,7 @@ export interface DesktopHelloAckEvent extends ProtocolEnvelope {
   sessionId: string;
   serverTime: string;
   resumeFromSequence?: Record<string, number>;
-  serverCapabilities?: {
-    computeTargetSigning?: boolean;
-    agentSessionSync?: boolean;
-  };
+  serverCapabilities?: ComputeTargetServerCapabilities;
 }
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -124,6 +122,7 @@ export type DesktopAnalyticsAck =
 export const DesktopAgentSessionsAckReason = {
   AckTimeout: "ack_timeout",
   FeatureDisabled: "feature_disabled",
+  IngestionFailed: "ingestion_failed",
   RateLimited: "rate_limited",
   ValidationFailed: "validation_failed",
 } as const;
@@ -135,9 +134,8 @@ export type DesktopAgentSessionsAck =
   | { accepted: true }
   | { accepted: false; reason: DesktopAgentSessionsAckReason };
 
-export interface DesktopAgentSessionsEvent
-  extends ProtocolEnvelope,
-    AgentSessionSyncBatch {}
+export type DesktopAgentSessionsEvent = ProtocolEnvelope &
+  AgentSessionSyncTransportPayload;
 
 export const DesktopAnalyticsEventName = {
   CommandInitiated: "command_initiated",

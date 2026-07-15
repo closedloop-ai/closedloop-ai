@@ -39,6 +39,8 @@ The `app/documents/` tree is the canonical example of a multi-responsibility spl
 - `evaluation-service.ts` (ratings + judge feedback)
 - Private helpers shared across these modules live in co-located files (`document-utils.ts`, `generation-status-helpers.ts`).
 
+The sibling-file split above is for resources with multiple route-facing service surfaces. When a *single* service surface grows so large that its private internals need decomposition (not new sibling services), those internal modules live in a nested directory named after the composition root: `app/<resource>/service.ts` stays the only export consumed by routes, and its helpers move to `app/<resource>/service/<concern>.ts` (with deeper grouping like `service/artifact-links/` when a concern has multiple lanes). `app/agent-sessions/` is the canonical example (PLN-1305). Internal modules must not import the composition root, and no barrel files.
+
 **Never use `crud-service.ts`** — name the file after the entity instead. Do not place services under `apps/api/lib/services/` (that location has been phased out).
 
 **Named export.** Each service file exports a single named object, e.g. `export const artifactService = { ... }` or `export const documentGenerationService = { ... }`. No default exports, no facades that re-export across modules, no barrel `index.ts` files. Callers import the specific service object they need. When a sibling service needs a helper, export it as a named function from the appropriate service file (e.g. `getCommitterInfo` from `document-service.ts`) — sibling-to-sibling imports are fine; cross-module facades that aggregate everything under one umbrella name are not.
@@ -141,3 +143,5 @@ Background work in API routes follows the serverless-route rule above: await res
 - **[pattern]**: Keep long-running or bulk work out of a single interactive transaction; page large reads and use short per-record transactions for independent writes. (context: transactions|bulk-work|pagination)
 - **[mistake]**: GitHub comment projections must preserve comment kind in IDs, filters, events, deletes, and backfills; raw GitHub comment IDs alone collide across issue and review comments. (context: github-comments|projection|compatibility)
 - **[pattern]**: Expected Prisma conflicts and not-found cases belong in service `Result.err` branches, and route status switches must map every service status explicitly. (context: result|prisma|error-handling)
+- **[mistake]**: When adding a WHERE clause or filter on a column, check `schema.prisma` for index coverage — unindexed filters cause sequential scans on growing tables. Add a migration for the index in the same PR if needed. (context: database|index|performance)
+- **[mistake]**: Verify query scope matches the UI scope — org-wide queries backing user-scoped views, or unwindowed queries backing windowed views, produce incorrect results. (context: scope|query|filtering)

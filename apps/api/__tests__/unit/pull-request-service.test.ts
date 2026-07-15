@@ -90,6 +90,9 @@ describe("pullRequestService", () => {
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce({ id: "detail-1" }),
         },
+        gitHubInstallationRepository: {
+          findUnique: vi.fn().mockResolvedValue({ fullName: "owner/repo" }),
+        },
         branchDetail: {
           findUnique: vi.fn().mockResolvedValue({ headSha: "abc123" }),
           update: vi.fn(),
@@ -163,6 +166,7 @@ describe("pullRequestService", () => {
             branchArtifactId: "art-99",
           }),
           update: vi.fn().mockResolvedValue({ artifactId: "art-99" }),
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
         branchDetail: {
           findUnique: vi.fn().mockResolvedValue({ headSha: "abc123" }),
@@ -212,6 +216,14 @@ describe("pullRequestService", () => {
           mergeCommitSha: "deadbeef",
         }),
       });
+      expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
+        where: {
+          branchArtifactId: "art-99",
+          isCurrent: true,
+          id: { not: "detail-99" },
+        },
+        data: { isCurrent: false },
+      });
       expect(result).toEqual({ ok: true, value: updated });
     });
 
@@ -219,6 +231,9 @@ describe("pullRequestService", () => {
       const mockDb = {
         pullRequestDetail: {
           findUnique: vi.fn().mockResolvedValue(null),
+        },
+        gitHubInstallationRepository: {
+          findUnique: vi.fn().mockResolvedValue({ fullName: "owner/repo" }),
         },
         artifact: {
           create: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),
@@ -243,6 +258,11 @@ describe("pullRequestService", () => {
       const mockDb = {
         pullRequestDetail: {
           findUnique: vi.fn().mockResolvedValue(null),
+        },
+        // D2: createPullRequest resolves the branch's normalized repo full name
+        // from the installation repo before creating the branch row.
+        gitHubInstallationRepository: {
+          findUnique: vi.fn().mockResolvedValue({ fullName: "owner/repo" }),
         },
         artifact: {
           create: vi.fn().mockResolvedValue({ id: "art-1", pullRequest: null }),

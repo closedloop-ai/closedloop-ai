@@ -20,7 +20,7 @@ describe("createAgentCoachingApi", () => {
       }),
     });
 
-    const tips = await api.loadTips();
+    const { tips } = await api.loadTips();
 
     // 2 + 2 + 2 across the bounded rounds, capped at the daily target of 5.
     expect(tips).toHaveLength(5);
@@ -41,7 +41,7 @@ describe("createAgentCoachingApi", () => {
       tipId: "dismissed-tip",
     });
 
-    const tips = await api.loadTips();
+    const { tips } = await api.loadTips();
 
     expect(tips.some((tip) => tip.id === "dismissed-tip")).toBe(false);
     expect(tips.some((tip) => tip.id === "fresh-tip")).toBe(true);
@@ -65,7 +65,7 @@ describe("createAgentCoachingApi", () => {
       tipId: "shell-probe-reusable-skill",
     });
 
-    const tips = await api.loadTips();
+    const { tips } = await api.loadTips();
     const request = requests[0];
 
     expect(tips).toEqual([generatedTip]);
@@ -82,6 +82,54 @@ describe("createAgentCoachingApi", () => {
     expect(request?.bestPracticeSignals.join(" ")).toContain("Codex");
     expect(request?.bestPracticeSignals.join(" ")).toContain("Claude Code");
     expect(request?.bestPracticeSignals.join(" ")).toContain("OpenCode");
+  });
+
+  it("uses the active coaching pack's signals instead of the built-in defaults", async () => {
+    const requests: AgentCoachingLlmRequest[] = [];
+    const desktopApi = makeDesktopApi();
+    desktopApi.getCoachingPack = vi.fn(() =>
+      Promise.resolve({
+        name: "token-coach",
+        displayName: "Token Coach",
+        version: "1.0.0",
+        description: null,
+        signals: ["Cache efficiency is the biggest lever."],
+      })
+    );
+    const api = createAgentCoachingApi(desktopApi, makeStorage(), {
+      generateTips: vi.fn((nextRequest) => {
+        requests.push(nextRequest);
+        return Promise.resolve([makeTip("llm-tip")]);
+      }),
+    });
+
+    const pack = await api.loadActivePack?.();
+    expect(pack?.displayName).toBe("Token Coach");
+
+    // loadTips surfaces the same pack it generated against (badge ↔ signals).
+    const { activePack } = await api.loadTips();
+    expect(activePack?.displayName).toBe("Token Coach");
+    expect(requests[0]?.bestPracticeSignals).toEqual([
+      "Cache efficiency is the biggest lever.",
+    ]);
+    expect(requests[0]?.bestPracticeSignals.join(" ")).not.toContain(
+      "OpenCode"
+    );
+  });
+
+  it("falls back to built-in signals when no coaching pack bridge exists", async () => {
+    const requests: AgentCoachingLlmRequest[] = [];
+    const api = createAgentCoachingApi(makeDesktopApi(), makeStorage(), {
+      generateTips: vi.fn((nextRequest) => {
+        requests.push(nextRequest);
+        return Promise.resolve([makeTip("llm-tip")]);
+      }),
+    });
+
+    expect(await api.loadActivePack?.()).toBeNull();
+    const { activePack } = await api.loadTips();
+    expect(activePack).toBeNull();
+    expect(requests[0]?.bestPracticeSignals.join(" ")).toContain("Claude Code");
   });
 
   it("redacts secrets from event evidence before it reaches the LLM provider", async () => {

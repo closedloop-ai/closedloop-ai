@@ -74,8 +74,12 @@ import {
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import {
+  ATTACHMENT_LISTING_MAX_FILES,
+  ATTACHMENT_NOT_FOUND_ERROR,
+  attachmentServiceInternalsForTesting,
   attachmentsService,
   DeleteAttachmentErrorCode,
+  DOCUMENT_NOT_FOUND_ERROR,
 } from "../attachments-service";
 
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
@@ -753,7 +757,7 @@ describe("attachmentsService.requestUpload", () => {
         "application/pdf",
         4096
       )
-    ).rejects.toThrow("Document not found");
+    ).rejects.toThrow(DOCUMENT_NOT_FOUND_ERROR);
 
     expect(mockWithDbTx).not.toHaveBeenCalled();
     expect(mockGetSignedUploadUrl).not.toHaveBeenCalled();
@@ -988,7 +992,7 @@ describe("attachmentsService.requestUpload", () => {
         "text/plain",
         100
       )
-    ).rejects.toThrow("Document not found");
+    ).rejects.toThrow(DOCUMENT_NOT_FOUND_ERROR);
   });
 });
 
@@ -999,6 +1003,35 @@ describe("attachmentsService.requestUpload", () => {
 describe("attachmentsService.listByDocument", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    attachmentServiceInternalsForTesting.clearSignedDownloadUrlCache();
+  });
+
+  it("reuses a cached preview URL across repeated lists of the same image", async () => {
+    const imageRecord = makeAttachmentRecord({
+      mimeType: "image/png",
+      key: "attachments/org-abc/artifact-123/stable-image",
+      bucket: "stable-bucket",
+    });
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        },
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([imageRecord]),
+        },
+      })
+    );
+    mockGetSignedDownloadUrl.mockResolvedValue(
+      "https://s3.example.com/preview"
+    );
+
+    const first = await attachmentsService.listByDocument(ARTIFACT_ID, ORG_ID);
+    const second = await attachmentsService.listByDocument(ARTIFACT_ID, ORG_ID);
+
+    expect(first[0].previewUrl).toBe("https://s3.example.com/preview");
+    expect(second[0].previewUrl).toBe(first[0].previewUrl);
+    expect(mockGetSignedDownloadUrl).toHaveBeenCalledTimes(1);
   });
 
   it("returns records with createdAt serialized as ISO 8601 strings", async () => {
@@ -1061,6 +1094,7 @@ describe("attachmentsService.listByDocument", () => {
         purpose: AttachmentPurpose.Context,
       },
       orderBy: { createdAt: "desc" },
+      take: ATTACHMENT_LISTING_MAX_FILES,
     });
   });
 
@@ -1149,7 +1183,7 @@ describe("attachmentsService.listByDocument", () => {
 
     await expect(
       attachmentsService.listByDocument("nonexistent-artifact", ORG_ID)
-    ).rejects.toThrow("Document not found");
+    ).rejects.toThrow(DOCUMENT_NOT_FOUND_ERROR);
   });
 });
 
@@ -1579,7 +1613,7 @@ describe("attachmentsService.getDownloadUrl", () => {
         ORG_ID,
         ATTACHMENT_ID
       )
-    ).rejects.toThrow("Document not found");
+    ).rejects.toThrow(DOCUMENT_NOT_FOUND_ERROR);
   });
 
   it("throws 'Attachment not found' when attachment lookup returns null", async () => {
@@ -1605,7 +1639,7 @@ describe("attachmentsService.getDownloadUrl", () => {
         ORG_ID,
         "nonexistent-attach"
       )
-    ).rejects.toThrow("Attachment not found");
+    ).rejects.toThrow(ATTACHMENT_NOT_FOUND_ERROR);
   });
 });
 
@@ -1616,6 +1650,7 @@ describe("attachmentsService.getDownloadUrl", () => {
 describe("attachmentsService.resolveInlineImages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    attachmentServiceInternalsForTesting.clearSignedDownloadUrlCache();
     mockGetSignedDownloadUrl.mockResolvedValue("https://s3.example.com/inline");
   });
 
@@ -1702,6 +1737,93 @@ describe("attachmentsService.resolveInlineImages", () => {
         reason: InlineImageResolveSkipReason.NotFound,
       },
     ]);
+  });
+
+  it("reuses a cached signed URL across repeated renders of the same inline image", async () => {
+    const inlineImage = makeAttachmentRecord({
+      id: "inline-image",
+      filename: "diagram.png",
+      mimeType: "image/png",
+      purpose: AttachmentPurpose.Inline,
+      key: "attachments/org-abc/artifact-123/stable-inline-image",
+      bucket: "stable-bucket",
+    });
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        },
+        fileAttachment: {
+          findMany: vi.fn().mockResolvedValue([inlineImage]),
+        },
+      })
+    );
+
+    const first = await attachmentsService.resolveInlineImages(
+      ARTIFACT_ID,
+      ORG_ID,
+      ["inline-image"]
+    );
+    const second = await attachmentsService.resolveInlineImages(
+      ARTIFACT_ID,
+      ORG_ID,
+      ["inline-image"]
+    );
+
+    expect(first.images[0]?.url).toBe("https://s3.example.com/inline");
+    expect(second.images[0]?.url).toBe(first.images[0]?.url);
+    expect(mockGetSignedDownloadUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the cached signature's real expiry, not a fresh full lifetime, when an inline URL is reused", async () => {
+    vi.useFakeTimers();
+    attachmentServiceInternalsForTesting.clearSignedDownloadUrlCache();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const inlineImage = makeAttachmentRecord({
+        id: "inline-image",
+        filename: "diagram.png",
+        mimeType: "image/png",
+        purpose: AttachmentPurpose.Inline,
+        key: "attachments/org-abc/artifact-123/stable-inline-expiry",
+        bucket: "stable-bucket",
+      });
+      mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+        callback({
+          artifact: {
+            findFirst: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+          },
+          fileAttachment: {
+            findMany: vi.fn().mockResolvedValue([inlineImage]),
+          },
+        })
+      );
+
+      const first = await attachmentsService.resolveInlineImages(
+        ARTIFACT_ID,
+        ORG_ID,
+        ["inline-image"]
+      );
+
+      // Reuse the cached signature 10 minutes later — still inside the reuse
+      // window (beyond the 5-minute safety margin), so no re-sign happens.
+      vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+      const second = await attachmentsService.resolveInlineImages(
+        ARTIFACT_ID,
+        ORG_ID,
+        ["inline-image"]
+      );
+
+      expect(mockGetSignedDownloadUrl).toHaveBeenCalledTimes(1);
+      expect(second.images[0]?.url).toBe(first.images[0]?.url);
+      // The reused URL expires one hour after it was FIRST signed, not one hour
+      // after the second call. Reporting the latter would let a consumer treat
+      // an already-expired URL as still valid.
+      expect(second.images[0]?.expiresAt).toBe(first.images[0]?.expiresAt);
+      expect(second.images[0]?.expiresAt).toBe("2026-01-01T01:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports signing failures per attachment without leaking S3 keys", async () => {
@@ -1844,6 +1966,50 @@ describe("attachmentsService.listWithSignedUrlsByDocument", () => {
       3600,
       "my-bucket"
     );
+  });
+
+  it("reports the cached signature's real expiry, not a fresh full lifetime, when a signed URL is reused", async () => {
+    vi.useFakeTimers();
+    attachmentServiceInternalsForTesting.clearSignedDownloadUrlCache();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const record = makeAttachmentRecord({
+        key: "attachments/org-abc/artifact-123/context-key",
+        bucket: "context-bucket",
+      });
+      mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+        callback({
+          fileAttachment: {
+            findMany: vi.fn().mockResolvedValue([record]),
+          },
+        })
+      );
+      mockGetSignedDownloadUrl.mockResolvedValue("https://s3.example.com/ctx");
+
+      const first = await attachmentsService.listWithSignedUrlsByDocument(
+        ARTIFACT_ID,
+        ORG_ID
+      );
+
+      // Reuse the cached signature 10 minutes later — still inside the reuse
+      // window, beyond the 5-minute safety margin, so no re-sign happens.
+      vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+      const second = await attachmentsService.listWithSignedUrlsByDocument(
+        ARTIFACT_ID,
+        ORG_ID
+      );
+
+      expect(mockGetSignedDownloadUrl).toHaveBeenCalledTimes(1);
+      expect(second[0].signedUrl).toBe(first[0].signedUrl);
+      // The reused URL really expires one hour after it was first signed, NOT
+      // one hour after the second call. Reporting the latter would let a
+      // consumer (e.g. the desktop loop materializer) treat an already-expired
+      // URL as still valid.
+      expect(second[0].signedUrlExpiresAt).toBe(first[0].signedUrlExpiresAt);
+      expect(second[0].signedUrlExpiresAt).toBe("2026-01-01T01:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns empty array and does not call getSignedDownloadUrl when no records exist", async () => {

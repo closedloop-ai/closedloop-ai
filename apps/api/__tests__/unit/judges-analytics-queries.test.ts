@@ -13,6 +13,12 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
@@ -34,6 +40,7 @@ const END = new Date("2026-01-31");
 function makeDb(judgeScoreFindManyResult: unknown[] = []) {
   return {
     prompt: { findMany: vi.fn().mockResolvedValue([]) },
+    $queryRaw: vi.fn().mockResolvedValue([]),
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScoreFindManyResult),
     },

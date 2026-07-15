@@ -1,3 +1,5 @@
+import type { PackagedUpdateInstallBlockedReason } from "../shared/packaged-update-install-blocked-reason.js";
+
 export type PackagedUpdateStatus =
   | "idle"
   | "available"
@@ -13,6 +15,7 @@ export type PackagedUpdateState = {
   version?: string;
   percent?: number;
   error?: string;
+  installBlockedReason?: PackagedUpdateInstallBlockedReason;
 };
 
 export type PackagedUpdateStatusPayload = {
@@ -22,6 +25,7 @@ export type PackagedUpdateStatusPayload = {
   version?: string;
   percent?: number;
   error?: string;
+  installBlockedReason?: PackagedUpdateInstallBlockedReason;
 };
 
 export const PACKAGED_UPDATE_NOT_DOWNLOADED_MESSAGE =
@@ -44,6 +48,8 @@ export function mergePackagedUpdateState(
   return {
     ...current,
     ...patch,
+    installBlockedReason:
+      "installBlockedReason" in patch ? patch.installBlockedReason : undefined,
   };
 }
 
@@ -58,6 +64,9 @@ export function toPackagedUpdateStatusPayload(
     ...(state.version !== undefined && { version: state.version }),
     ...(state.percent !== undefined && { percent: state.percent }),
     ...(state.error !== undefined && { error: state.error }),
+    ...(state.installBlockedReason !== undefined && {
+      installBlockedReason: state.installBlockedReason,
+    }),
   };
 }
 

@@ -1,5 +1,4 @@
-import figma from "@figma/code-connect";
-import { Button } from "@repo/design-system/components/ui/button";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Sheet,
   SheetContent,
@@ -8,7 +7,8 @@ import {
   SheetHeader,
   SheetTitle,
   SheetTrigger,
-} from "@repo/design-system/components/ui/sheet";
+} from "@closedloop-ai/design-system/components/ui/sheet";
+import figma from "@figma/code-connect";
 
 const FIGMA_URL =
   "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/Closedloop-Design-System?node-id=2785-10044";

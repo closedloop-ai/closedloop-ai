@@ -8,6 +8,7 @@ import {
   CommentThreadCard,
 } from "@repo/design-system/components/ui/comment-thread";
 import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
+import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
 import { LinkIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCommentPermalink } from "../comment-permalink-context";
@@ -69,16 +70,14 @@ export function LiveblocksCommentCard({
     setComposerOpen(true);
   }, [composerOpen, onCommentClick]);
 
-  const onKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (composerOpen) {
-        return;
-      }
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
+  const onKeyDown = useMemo(
+    () =>
+      activateOnEnterOrSpace<HTMLDivElement>(() => {
+        if (composerOpen) {
+          return;
+        }
         setComposerOpen(true);
-      }
-    },
+      }),
     [composerOpen]
   );
 

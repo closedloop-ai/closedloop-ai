@@ -1,5 +1,6 @@
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { type RelayResultEvent, relayEventBus } from "@/lib/relay-event-bus";
+import { parseSequenceCursor } from "@/lib/route-utils";
 import {
   createSseResponse,
   createSseStream,
@@ -9,6 +10,19 @@ import { computeTargetsService } from "../../../../service";
 
 function isTerminal(event: RelayResultEvent): boolean {
   return event.done === true || event.result !== undefined;
+}
+
+/**
+ * Resolve the reconnect cursor. Prefers an explicit `?afterSequence` query
+ * param, falling back to the `Last-Event-ID` header set automatically by a
+ * native EventSource on auto-reconnect. Mirrors the `afterSequence` cursor of
+ * the sibling `commands/:commandId/events` route.
+ */
+function resolveAfterSequence(request: Request, url: URL): number | undefined {
+  return parseSequenceCursor(
+    url.searchParams.get("afterSequence") ??
+      request.headers.get("last-event-id")
+  );
 }
 
 /**
@@ -35,14 +49,28 @@ export async function GET(
     return new Response("Forbidden", { status: 403 });
   }
 
+  const url = new URL(request.url);
+  const afterSequence = resolveAfterSequence(request, url);
+
   const stream = createSseStream(
     ({ send, close }) =>
-      relayEventBus.subscribeResults(operationId, (event) => {
-        send(encodeSseData(event));
-        if (isTerminal(event)) {
-          close();
-        }
-      }),
+      relayEventBus.subscribeResults(
+        operationId,
+        (event) => {
+          send(
+            encodeSseData(
+              event,
+              typeof event.sequence === "number"
+                ? { id: event.sequence }
+                : undefined
+            )
+          );
+          if (isTerminal(event)) {
+            close();
+          }
+        },
+        { afterSequence }
+      ),
     { logContext: { targetId, operationId } }
   );
 

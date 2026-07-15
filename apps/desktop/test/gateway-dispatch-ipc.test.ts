@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, mock, test } from "node:test";
+import { LOCAL_REPO_SENTINEL } from "@repo/api/src/types/branch.js";
 import {
   createGatewayDispatchHandler,
   GATEWAY_DISPATCH_ALLOWED_PATHS,
@@ -8,6 +9,8 @@ import {
 
 const MAIN_TOKEN = "main-gateway-token-abc123";
 const PORT = 19_432;
+const SCOPED_BRANCH_ID = "o%2Fr::main";
+const LOCAL_SCOPED_BRANCH_ID = `${LOCAL_REPO_SENTINEL}::main`;
 
 type Overrides = {
   isTrustedSender?: (sender: unknown) => boolean;
@@ -40,7 +43,15 @@ function makeDeps(overrides: Overrides = {}) {
   };
 }
 
-const trustedEvent = { sender: { id: "trusted" } };
+const trustedEvent = {
+  sender: {
+    getURL: () =>
+      `app://desktop/index.html#/branches/${encodeURIComponent(
+        SCOPED_BRANCH_ID
+      )}`,
+    id: "trusted",
+  },
+};
 
 function noneBody() {
   return { kind: "none" } as const;
@@ -55,9 +66,23 @@ function filesPayload(query = "?owner=o&repo=r&number=1") {
   };
 }
 
+function fileDiffPayload(
+  query = `?owner=o&repo=r&number=1&branchId=${encodeURIComponent(
+    SCOPED_BRANCH_ID
+  )}&path=src%2Fa.ts`
+) {
+  return {
+    method: "GET",
+    path: `/api/gateway/git/pr/file-diff${query}`,
+    headers: {},
+    body: noneBody(),
+  };
+}
+
 describe("gateway-dispatch-ipc handler", () => {
-  test("allowlist contains exactly the two v1 PR overlay routes", () => {
+  test("allowlist contains exactly the v1 PR overlay routes", () => {
     assert.deepEqual([...GATEWAY_DISPATCH_ALLOWED_PATHS].sort(), [
+      "/api/gateway/git/pr/file-diff",
       "/api/gateway/git/pr/files",
       "/api/gateway/git/pr/reviews",
     ]);
@@ -259,6 +284,100 @@ describe("gateway-dispatch-ipc handler", () => {
     assert.equal(
       String(call.arguments[0]),
       `http://127.0.0.1:${PORT}/api/gateway/git/pr/files?owner=o&repo=r&number=1`
+    );
+  });
+
+  test("happy path: valid /pr/file-diff returns the gateway envelope", async () => {
+    const deps = makeDeps({
+      fetchImpl: mock.fn(
+        async () =>
+          new Response(JSON.stringify({ path: "src/a.ts" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+      ) as unknown as typeof fetch,
+    });
+    const handler = createGatewayDispatchHandler(deps);
+    const result = await handler(trustedEvent, fileDiffPayload());
+    assert.equal(result.status, 200);
+    assert.deepEqual(JSON.parse(String(result.body)), { path: "src/a.ts" });
+    const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
+    assert.equal(
+      String(call.arguments[0]),
+      `http://127.0.0.1:${PORT}/api/gateway/git/pr/file-diff?owner=o&repo=r&number=1&branchId=o%252Fr%3A%3Amain&path=src%2Fa.ts`
+    );
+  });
+
+  test("file-diff dispatch allows the current repo-less branch for server resolver validation", async () => {
+    const deps = makeDeps({
+      fetchImpl: mock.fn(
+        async () =>
+          new Response(JSON.stringify({ path: "src/a.ts" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+      ) as unknown as typeof fetch,
+    });
+    const handler = createGatewayDispatchHandler(deps);
+    const result = await handler(
+      {
+        sender: {
+          getURL: () =>
+            `app://desktop/index.html#/branches/${encodeURIComponent(
+              LOCAL_SCOPED_BRANCH_ID
+            )}`,
+        },
+      },
+      fileDiffPayload(
+        `?owner=o&repo=r&number=1&branchId=${encodeURIComponent(
+          LOCAL_SCOPED_BRANCH_ID
+        )}&path=src%2Fa.ts`
+      )
+    );
+
+    assert.equal(result.status, 200);
+    const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
+    assert.equal(
+      String(call.arguments[0]),
+      `http://127.0.0.1:${PORT}/api/gateway/git/pr/file-diff?owner=o&repo=r&number=1&branchId=local%3A%3Amain&path=src%2Fa.ts`
+    );
+  });
+
+  test("file-diff dispatch requires the current branch route scope", async () => {
+    const deps = makeDeps();
+    const handler = createGatewayDispatchHandler(deps);
+
+    const missingScope = await handler(
+      trustedEvent,
+      fileDiffPayload("?owner=o&repo=r&number=1&path=src%2Fa.ts")
+    );
+    assert.equal(missingScope.status, 403);
+
+    const wrongRoute = await handler(
+      {
+        sender: {
+          getURL: () =>
+            `app://desktop/index.html#/branches/${encodeURIComponent(
+              "other%2Fr::main"
+            )}`,
+        },
+      },
+      fileDiffPayload()
+    );
+    assert.equal(wrongRoute.status, 403);
+
+    const wrongRepo = await handler(
+      trustedEvent,
+      fileDiffPayload(
+        `?owner=o&repo=other&number=1&branchId=${encodeURIComponent(
+          SCOPED_BRANCH_ID
+        )}&path=src%2Fa.ts`
+      )
+    );
+    assert.equal(wrongRepo.status, 403);
+    assert.equal(
+      (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls.length,
+      0
     );
   });
 });

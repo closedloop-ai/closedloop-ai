@@ -1,19 +1,24 @@
 "use client";
 
-import type { DocumentStatus } from "@repo/api/src/types/document";
+import type {
+  ArtifactStatus,
+  DocumentStatus,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
 import {
   DOCUMENT_STATUS_OPTIONS,
+  DocumentType,
+  FEATURE_STATUS_OPTIONS,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
+import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
+import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
 import { TruncatedTitle } from "@repo/app/documents/components/table/cells/cell-tooltip";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { RowEditContext } from "@repo/app/documents/components/table/row-edit-context";
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
-import {
-  DOCUMENT_STATUS_LABELS,
-  DOCUMENT_STATUS_TO_ICON,
-} from "@repo/app/projects/lib/project-constants";
+import { ARTIFACT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -33,7 +38,7 @@ import { Link } from "@repo/navigation/link";
 import { ChevronRightIcon } from "lucide-react";
 import { useContext } from "react";
 
-export function TypeIcon({ item }: { item: DocumentRowItem }) {
+function TypeIcon({ item }: { item: DocumentRowItem }) {
   const config = getRowTypeConfig(item);
   if (!config) {
     return null;
@@ -202,8 +207,6 @@ function DocumentNameCell({
   item: Extract<DocumentRowItem, { kind: "document" }>;
 }) {
   const { onUpdateStatus } = useContext(RowEditContext);
-  const statusIcon =
-    DOCUMENT_STATUS_TO_ICON[item.data.status as DocumentStatus];
   const thinking =
     item.data.generationStatus != null &&
     isActiveGenerationStatus(item.data.generationStatus.status);
@@ -233,7 +236,6 @@ function DocumentNameCell({
       <DocumentStatusControl
         item={item}
         onUpdateStatus={onUpdateStatus}
-        statusIcon={statusIcon}
         thinking={thinking}
       />
       <NameLink href={href} text={item.data.title} />
@@ -241,36 +243,70 @@ function DocumentNameCell({
   );
 }
 
+/**
+ * Status icon for one status of a document row, in that row's vocabulary
+ * (Documents and Features carry disjoint status sets — PRD-495).
+ */
+function RowStatusIcon({
+  isFeature,
+  status,
+  thinking,
+}: {
+  isFeature: boolean;
+  status: ArtifactStatus;
+  thinking?: boolean;
+}) {
+  return isFeature ? (
+    <FeatureStatusIcon
+      size={16}
+      status={status as FeatureStatus}
+      thinking={thinking}
+    />
+  ) : (
+    <DocumentStatusIcon
+      size={16}
+      status={status as DocumentStatus}
+      thinking={thinking}
+    />
+  );
+}
+
 /** Status icon for a document row: an edit dropdown when editable, else a tooltip. */
 function DocumentStatusControl({
   item,
   onUpdateStatus,
-  statusIcon,
   thinking,
 }: {
   item: Extract<DocumentRowItem, { kind: "document" }>;
-  onUpdateStatus?: (id: string, status: DocumentStatus) => void;
-  statusIcon: React.ComponentProps<typeof StatusIcon>["status"];
+  onUpdateStatus?: (id: string, status: ArtifactStatus) => void;
   thinking: boolean;
 }) {
+  const isFeature = item.data.type === DocumentType.Feature;
+
   if (!onUpdateStatus) {
     return (
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-            <StatusIcon size={16} status={statusIcon} thinking={thinking} />
+            <RowStatusIcon
+              isFeature={isFeature}
+              status={item.data.status}
+              thinking={thinking}
+            />
           </div>
         </TooltipTrigger>
         <TooltipContent>
-          {
-            DOCUMENT_STATUS_LABELS[
-              item.data.status as keyof typeof DOCUMENT_STATUS_LABELS
-            ]
-          }
+          {ARTIFACT_STATUS_LABELS[item.data.status]}
         </TooltipContent>
       </Tooltip>
     );
   }
+  // Offer the vocabulary that matches this row's artifact kind (PRD-495).
+  // Features expose the full set including TRIAGE — humans may move a row to any
+  // status; TRIAGE is only excluded as the human-create default, not as an option.
+  const statusOptions = isFeature
+    ? FEATURE_STATUS_OPTIONS
+    : DOCUMENT_STATUS_OPTIONS;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -278,30 +314,23 @@ function DocumentStatusControl({
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
           type="button"
         >
-          <StatusIcon size={16} status={statusIcon} thinking={thinking} />
+          <RowStatusIcon
+            isFeature={isFeature}
+            status={item.data.status}
+            thinking={thinking}
+          />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        {DOCUMENT_STATUS_OPTIONS.map((value) => (
+        {statusOptions.map((value) => (
           <DropdownMenuItem
             key={value}
             onClick={() => {
               onUpdateStatus(item.data.id, value);
             }}
           >
-            <StatusIcon
-              size={16}
-              status={
-                DOCUMENT_STATUS_TO_ICON[
-                  value as keyof typeof DOCUMENT_STATUS_TO_ICON
-                ]
-              }
-            />
-            {
-              DOCUMENT_STATUS_LABELS[
-                value as keyof typeof DOCUMENT_STATUS_LABELS
-              ]
-            }
+            <RowStatusIcon isFeature={isFeature} status={value} />
+            {ARTIFACT_STATUS_LABELS[value]}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -332,7 +361,9 @@ function ArtifactNameCell({
 }) {
   const className =
     "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-2";
-  const statusIcon = getRowTypeConfig(item)?.statusIcon ?? "in-progress";
+  const rowTypeConfig = getRowTypeConfig(item);
+  const statusIcon = rowTypeConfig?.statusIcon ?? "in-progress";
+  const statusLabel = rowTypeConfig?.statusLabel;
 
   return (
     <div className={className}>
@@ -349,9 +380,15 @@ function ArtifactNameCell({
       <span className="mr-1.5 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
         {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
       </span>
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-        <StatusIcon size={16} status={statusIcon} />
-      </div>
+      <ArtifactStatusTooltip label={statusLabel}>
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+          <StatusIcon
+            {...(statusLabel ? { "aria-label": statusLabel } : {})}
+            size={16}
+            status={statusIcon}
+          />
+        </div>
+      </ArtifactStatusTooltip>
       {href ? (
         <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
           <TruncatedTitle text={item.data.name} />
@@ -362,6 +399,24 @@ function ArtifactNameCell({
         </div>
       )}
     </div>
+  );
+}
+
+function ArtifactStatusTooltip({
+  children,
+  label,
+}: {
+  children: React.ReactElement;
+  label?: string;
+}) {
+  if (!label) {
+    return children;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 

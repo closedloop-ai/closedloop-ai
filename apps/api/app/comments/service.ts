@@ -1,5 +1,9 @@
 import type { CommentThreadWithComments } from "@repo/api/src/types/comment";
-import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
+import {
+  ThreadSource,
+  ThreadStatus,
+  TRACE_COMMENT_METADATA_KIND,
+} from "@repo/api/src/types/comment";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/server/room-management";
 import type {
@@ -10,7 +14,7 @@ import {
   generateDocumentRoomId,
   parseDocumentRoomId,
 } from "@repo/collaboration/shared/room-utils";
-import { Prisma, withDb } from "@repo/database";
+import { Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { parseJsonObject } from "@/lib/json-schema";
@@ -25,7 +29,7 @@ export const GitHubReviewThreadResolutionAttributionKind = {
 export type GitHubReviewThreadResolutionAttributionKind =
   (typeof GitHubReviewThreadResolutionAttributionKind)[keyof typeof GitHubReviewThreadResolutionAttributionKind];
 
-export const GITHUB_REVIEW_THREAD_RESOLUTION_ATTRIBUTION_KEY =
+const GITHUB_REVIEW_THREAD_RESOLUTION_ATTRIBUTION_KEY =
   "githubReviewThreadResolutionAttribution";
 
 export type GitHubReviewThreadResolutionAttribution = {
@@ -53,18 +57,18 @@ const githubReviewThreadResolutionAttributionSchema: z.ZodType<GitHubReviewThrea
     recordedAt: z.string(),
   });
 
-export type GitHubReviewThreadResolutionInput = {
+type GitHubReviewThreadResolutionInput = {
   resolvedAt: Date;
   resolvedById?: string | null;
   attribution: GitHubReviewThreadResolutionAttribution;
 };
 
-export type CommentThreadResolutionMutationKind =
+type CommentThreadResolutionMutationKind =
   | "transition"
   | "metadata_repair"
   | "noop";
 
-export type CommentThreadResolutionMutationResult = {
+type CommentThreadResolutionMutationResult = {
   kind: CommentThreadResolutionMutationKind;
   thread: {
     id: string;
@@ -268,9 +272,11 @@ export const commentsService = {
     resolvedAt: Date,
     options?: Omit<GitHubReviewThreadResolutionInput, "resolvedAt">
   ): Promise<CommentThreadResolutionMutationResult> {
-    // Read-mutate-write in a single transaction so concurrent resolve calls
-    // can't lost-update each other's metadata mutation.
+    // Read-mutate-write in a single transaction, locking the row up front with
+    // SELECT ... FOR UPDATE so concurrent resolve calls can't lost-update each
+    // other's metadata mutation under READ COMMITTED.
     return withDb.tx(async (tx) => {
+      await lockCommentThreadRow(tx, organizationId, threadExternalId);
       const existing = await tx.commentThread.findUnique({
         where: {
           organizationId_externalId: {
@@ -365,9 +371,11 @@ export const commentsService = {
     organizationId: string,
     threadExternalId: string
   ): Promise<CommentThreadResolutionMutationResult> {
-    // Read-mutate-write in a single transaction so concurrent unresolve calls
-    // can't lost-update each other's metadata mutation.
+    // Read-mutate-write in a single transaction, locking the row up front with
+    // SELECT ... FOR UPDATE so concurrent unresolve calls can't lost-update
+    // each other's metadata mutation under READ COMMITTED.
     return withDb.tx(async (tx) => {
+      await lockCommentThreadRow(tx, organizationId, threadExternalId);
       const existing = await tx.commentThread.findUnique({
         where: {
           organizationId_externalId: {
@@ -499,12 +507,77 @@ export const commentsService = {
         },
         orderBy: { createdAt: "desc" },
       });
-      return rows.map(toCommentThreadWithComments);
+      return rows
+        .filter((row) => !isTraceCommentThreadMetadata(row.metadata))
+        .map(toCommentThreadWithComments);
     });
   },
 
   createDocumentThread,
+  createUnanchoredDocumentThread,
 };
+
+/**
+ * Minimal ProseMirror-style doc for a plain-text native comment body. Native
+ * comment rows set `plainText` directly rather than relying on
+ * `extractPlainText`, which only understands the Liveblocks CommentBody
+ * format.
+ */
+export function textBody(text: string): Prisma.InputJsonObject {
+  const paragraph = {
+    type: "paragraph",
+    content: text ? [{ type: "text", text }] : [],
+  } satisfies Prisma.InputJsonObject;
+
+  return {
+    type: "doc",
+    content: [paragraph],
+  } satisfies Prisma.InputJsonObject;
+}
+
+/**
+ * Create an unanchored artifact-level note: a NATIVE thread plus root comment
+ * written directly to the DB, with no Liveblocks room, externalId, or anchor
+ * metadata. The single nested create keeps thread+comment atomic.
+ */
+function createUnanchoredDocumentThread(
+  organizationId: string,
+  artifactId: string,
+  userId: string,
+  bodyText: string
+): Promise<{ threadId: string; commentId: string }> {
+  return withDb(async (db) => {
+    const artifact = await db.artifact.findFirst({
+      where: { id: artifactId, organizationId },
+      select: { id: true },
+    });
+    if (!artifact) {
+      throw new Error("Artifact not found in this organization");
+    }
+    const thread = await db.commentThread.create({
+      data: {
+        organizationId,
+        artifactId,
+        source: ThreadSource.Native,
+        status: ThreadStatus.Open,
+        createdById: userId,
+        comments: {
+          create: {
+            authorId: userId,
+            body: textBody(bodyText),
+            plainText: bodyText,
+          },
+        },
+      },
+      select: { id: true, comments: { select: { id: true } } },
+    });
+    const commentId = thread.comments[0]?.id;
+    if (!commentId) {
+      throw new Error("Thread created but returned no comment");
+    }
+    return { threadId: thread.id, commentId };
+  });
+}
 
 /**
  * Create a Liveblocks thread on an artifact and persist to DB (best-effort).
@@ -561,6 +634,38 @@ async function createDocumentThread(
 
 function commentThreadMetadataObject(metadata: unknown): JsonObject {
   return metadata === Prisma.JsonNull ? {} : (parseJsonObject(metadata) ?? {});
+}
+
+function isTraceCommentThreadMetadata(metadata: unknown): boolean {
+  return (
+    commentThreadMetadataObject(metadata).kind === TRACE_COMMENT_METADATA_KIND
+  );
+}
+
+/**
+ * Acquire a row-level lock on the `comment_threads` row for this
+ * organization + externalId so a read-modify-write of `metadata` inside a
+ * `withDb.tx` transaction can't lost-update a concurrent mutation. Under the
+ * default READ COMMITTED isolation a plain read-then-`update` does NOT prevent
+ * lost updates: two concurrent resolves can both read `metadata: {}` and the
+ * second `update` silently overwrites the first's attribution. `SELECT ... FOR
+ * UPDATE` serializes them — the second transaction blocks until the first
+ * commits, then re-reads the now-committed metadata. The lock is released when
+ * the surrounding transaction commits or rolls back. A no-op when the row does
+ * not exist (the subsequent `findUnique` returns null and the caller bails).
+ */
+async function lockCommentThreadRow(
+  tx: TransactionClient,
+  organizationId: string,
+  externalId: string
+): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT id
+    FROM comment_threads
+    WHERE organization_id = ${organizationId}::uuid
+      AND external_id = ${externalId}
+    FOR UPDATE
+  `);
 }
 
 function getResolutionAttribution(

@@ -28,15 +28,21 @@ import {
   resolveExecutablesOnPathSync,
 } from "../../server/shell-path.js";
 import type { CatalogEntry } from "../../shared/agent-db-contract.js";
-import type { DesktopPrisma } from "../database/prisma-client.js";
+import type { DbHostAgentDatabase } from "../database/sqlite.js";
 import { stripAnsi } from "../diagnostics-helpers.js";
 import { gatewayLog } from "../gateway-logger.js";
-import {
-  getCatalog,
-  inFlightInstallRun,
-  recordInstallRunEnd,
-  recordInstallRunStart,
-} from "./catalog-store.js";
+import { sendToRendererWindow } from "../renderer-ipc.js";
+import { getCatalog, inFlightInstallRun } from "./catalog-store.js";
+
+// streamRun runs in the MAIN process, so it takes the proxied agentDatabase
+// (NOT the raw `prisma`): clone-safe `prisma.client` reads plus the clone-safe
+// pack-install-run writes, all of which forward to the db host (FEA-2252).
+// DbHostAgentDatabase narrows `prisma` so `prisma.read`/`prisma.write` are a
+// compile error here rather than a runtime DataCloneError.
+type StreamRunDb = Pick<
+  DbHostAgentDatabase,
+  "prisma" | "recordPackInstallRunStart" | "recordPackInstallRunEnd"
+>;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -107,12 +113,8 @@ function sendIpc(
   type: InstallOutputChunk["type"],
   data: unknown
 ): void {
-  const win = getWindow();
-  if (!win || win.isDestroyed()) {
-    return;
-  }
   const chunk: InstallOutputChunk = { runId, type, data };
-  win.webContents.send("desktop:pack:install-output", chunk);
+  sendToRendererWindow(getWindow(), "desktop:pack:install-output", chunk);
 }
 
 // ---------------------------------------------------------------------------
@@ -364,12 +366,14 @@ export function pickSingleInstallCommand(
  * Run an install (or uninstall) command for a catalog pack and stream output
  * to the renderer via Electron IPC.
  *
- * @param prisma   — the single DesktopPrisma client (catalog-store reads/writes)
- * @param opts     — see StreamRunOptions
+ * @param db    the agentDatabase facade (catalog-store reads via `db.prisma`;
+ *              install-run writes via the clone-safe `recordPackInstallRun*`
+ *              methods, which execute in the db host)
+ * @param opts  see StreamRunOptions
  * @returns A result indicating whether the run was started or rejected
  */
 export async function streamRun(
-  prisma: DesktopPrisma,
+  db: StreamRunDb,
   opts: StreamRunOptions
 ): Promise<StreamRunResult> {
   const { pack_id, harness, action, getWindow, onComplete } = opts;
@@ -379,7 +383,7 @@ export async function streamRun(
   // Placeholder runId for error events sent before a DB row exists
   const errorRunId = -1;
 
-  const entry = await getCatalog(prisma, pack_id);
+  const entry = await getCatalog(db.prisma, pack_id);
   if (!entry) {
     sendIpc(getWindow, errorRunId, "error", {
       message: `pack_id not in catalog: ${pack_id}`,
@@ -465,7 +469,7 @@ export async function streamRun(
   }
 
   // Concurrency guard
-  const inFlight = await inFlightInstallRun(prisma, pack_id);
+  const inFlight = await inFlightInstallRun(db.prisma, pack_id);
   if (inFlight) {
     const msg = `another run for ${pack_id} is already in-flight (started ${inFlight.started_at})`;
     sendIpc(getWindow, errorRunId, "error", {
@@ -501,7 +505,7 @@ export async function streamRun(
   }
 
   // Record the run and start streaming
-  const runId = await recordInstallRunStart(prisma, {
+  const runId = await db.recordPackInstallRunStart({
     pack_id,
     harness,
     action,
@@ -577,7 +581,7 @@ export async function streamRun(
   child.on("close", (code: number | null, signal: string | null) => {
     clearTimeout(timer);
     const exitCode = code ?? -1;
-    void recordInstallRunEnd(prisma, runId, {
+    void db.recordPackInstallRunEnd(runId, {
       exit_code: killed ? -1 : exitCode,
       stdout_tail: tailBytes(stdoutBuf),
       stderr_tail: tailBytes(stderrBuf),

@@ -17,6 +17,10 @@ import { useApiAdapter } from "./provider";
 import { reviveWithDates } from "./revive-with-dates";
 
 type ResolveOrigin = () => string;
+type GetToken = () => Promise<string | null>;
+
+const AUTH_TOKEN_RETRY_DELAY_MS = 100;
+const AUTH_TOKEN_MAX_ATTEMPTS = 20;
 
 /**
  * This hook provides an HTTP client for interacting with the REST API.
@@ -30,7 +34,7 @@ type ResolveOrigin = () => string;
  * natively via its error state and global error handlers.
  */
 export function useApiClient() {
-  const { getToken, orgId } = useAuthSnapshot();
+  const { getToken, orgId, userId } = useAuthSnapshot();
   const waitForAuthLoaded = useWaitForAuthLoaded();
   const {
     resolveApiOrigin,
@@ -43,11 +47,12 @@ export function useApiClient() {
     () => ({
       get: async <T>(path: string, options?: RequestInit) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetch<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           options
@@ -56,11 +61,12 @@ export function useApiClient() {
 
       post: async <T>(path: string, data: unknown) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetch<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           { method: "POST", body: JSON.stringify(data) }
@@ -69,11 +75,12 @@ export function useApiClient() {
 
       put: async <T>(path: string, data: unknown) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetch<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           { method: "PUT", body: JSON.stringify(data) }
@@ -82,11 +89,12 @@ export function useApiClient() {
 
       patch: async <T>(path: string, data: unknown) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetch<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           { method: "PATCH", body: JSON.stringify(data) }
@@ -95,11 +103,12 @@ export function useApiClient() {
 
       delete: async <T>(path: string) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetch<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           { method: "DELETE" }
@@ -108,11 +117,12 @@ export function useApiClient() {
 
       getRaw: async <T>(path: string, options?: RequestInit) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetchRaw<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           options
@@ -121,11 +131,12 @@ export function useApiClient() {
 
       postRaw: async <T>(path: string, data: unknown) => {
         await waitForAuthLoaded();
+        const token = await resolveLoadedAuthToken(getToken, userId);
         return apiFetchRaw<T>(
           resolveApiOrigin,
           doFetch,
           path,
-          await getToken(),
+          token,
           orgId,
           deploymentId,
           { method: "POST", body: JSON.stringify(data) }
@@ -134,6 +145,7 @@ export function useApiClient() {
     }),
     [
       getToken,
+      userId,
       orgId,
       deploymentId,
       waitForAuthLoaded,
@@ -141,6 +153,37 @@ export function useApiClient() {
       doFetch,
     ]
   );
+}
+
+/**
+ * Clerk can briefly report a loaded signed-in user before `getToken()` returns
+ * a bearer token. Authenticated API calls wait through that short gap so polling
+ * queries do not cache a transient 401 immediately after page load.
+ */
+async function resolveLoadedAuthToken(
+  getToken: GetToken,
+  userId: string | null
+): Promise<string | null> {
+  let token = await getToken();
+  if (token || !userId) {
+    return token;
+  }
+
+  for (let attempt = 1; attempt < AUTH_TOKEN_MAX_ATTEMPTS; attempt += 1) {
+    await delay(AUTH_TOKEN_RETRY_DELAY_MS);
+    token = await getToken();
+    if (token) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
 }
 
 async function apiFetch<T>(

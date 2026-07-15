@@ -8,13 +8,12 @@
 
 import type {
   CodeEvaluationContext,
+  ContextPackAgent,
   ContextPackAttachment,
+  ContextPackRepoConfig,
 } from "@closedloop-ai/loops-api/context-pack";
 import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
-import type {
-  ContextPackAgent,
-  ContextPackRepoConfig,
-} from "@repo/api/src/types/agent";
+import { AGENTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
@@ -22,7 +21,7 @@ import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { agentsService } from "@/app/agents/service";
+import { listAgentsForContextPack } from "@/app/catalog/service";
 import {
   ATTACHMENT_SIGNED_URL_MAX_FILES,
   attachmentsService,
@@ -33,11 +32,7 @@ import { documentVersionService } from "@/app/documents/document-version-service
 import { loopsService } from "@/app/loops/service";
 import { documentTemplatesService } from "@/app/templates/service";
 import { getCommandHandler } from "./loop-commands";
-import {
-  type ContextPack,
-  downloadMetadata,
-  uploadContextPack,
-} from "./loop-state";
+import { type ContextPack, downloadMetadata } from "./loop-state";
 import {
   shouldWrapLoopArtifactContent,
   wrapUntrustedLoopArtifactContent,
@@ -663,8 +658,6 @@ function applyAttachmentLimits(
   return result;
 }
 
-const AGENTS_FEATURE_FLAG_KEY = "agents";
-
 function emptyAgentData(): {
   agents: ContextPackAgent[];
   repoConfigs: ContextPackRepoConfig[];
@@ -727,7 +720,7 @@ async function fetchAgentsForContextPack(
     }
   }
 
-  return agentsService.getContextPackData(
+  return listAgentsForContextPack(
     organizationId,
     repoFullNames.length > 0 ? repoFullNames : undefined
   );
@@ -810,34 +803,4 @@ export async function buildContextPackInMemory(
     repoConfigs:
       agentData.repoConfigs.length > 0 ? agentData.repoConfigs : undefined,
   };
-}
-
-/**
- * Build and upload a ContextPack for the given loop.
- *
- * Assembles:
- * - The loop's command and prompt
- * - Primary artifact content (if artifactId is set)
- * - Prior loop summary (if parentLoopId is set)
- * - Repository info from the loop record
- *
- * Returns the S3 key where the context pack was stored.
- */
-export async function buildContextPack(
-  loop: LoopForContextPack,
-  organizationId: string,
-  stateKeyPrefix: string,
-  secrets?: { anthropicApiKey?: string; githubToken?: string },
-  committer?: { name: string; email: string },
-  additionalRepos?: AdditionalRepoRefWithToken[]
-): Promise<string> {
-  const contextPack = await buildContextPackInMemory(
-    loop,
-    organizationId,
-    secrets,
-    committer,
-    additionalRepos
-  );
-
-  return uploadContextPack(stateKeyPrefix, contextPack);
 }

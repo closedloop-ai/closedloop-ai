@@ -7,6 +7,11 @@ import {
   FileChangeStatus,
   GitHubDiffSide,
 } from "@repo/api/src/types/branch-view";
+import { branchDiffViewerStyles } from "@repo/app/branches/components/diff/branch-diff-viewer-theme";
+import {
+  BranchFileDiffViewer,
+  type BranchFileDiffViewerProps,
+} from "@repo/app/branches/components/diff/branch-file-diff-viewer";
 import {
   useBranchViewFileDiff,
   useCreateBranchViewInlineComment,
@@ -19,8 +24,8 @@ import { CommentAvatar } from "@repo/app/shared/components/comment-avatar";
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
-import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
 import { cn } from "@repo/design-system/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -30,7 +35,6 @@ import {
   Loader2,
   MessageSquare,
 } from "lucide-react";
-import { useTheme } from "next-themes";
 import {
   type MouseEvent,
   type ReactNode,
@@ -40,15 +44,12 @@ import {
   useRef,
   useState,
 } from "react";
-import ReactDiffViewer, {
-  DiffMethod,
-  LineNumberPrefix,
-  type ReactDiffViewerProps,
-} from "react-diff-viewer-continued";
-import { branchDiffViewerStyles } from "@/lib/diff-viewer-theme";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { CommentMarkdown } from "@/lib/markdown";
-import { getReviewThreadActionId } from "../comment-resolution";
+import {
+  getReplyTargetGithubCommentId,
+  getReviewThreadActionId,
+} from "../comment-resolution";
 import { fetchBranchLocalDiff } from "../local-branch-changes";
 import {
   type BranchViewFileDiff,
@@ -94,6 +95,7 @@ import { buildCommentThreads, type CommentThread } from "./comment-threads";
 import { WhyThisChangePopover } from "./why-this-change-popover";
 
 const MAX_TARGET_NAVIGATION_FRAMES = 60;
+const LEFT_DIFF_PREFIX = "L";
 // Branch target navigation uses GitHub-like attention colors instead of the
 // shared neutral diff highlight, which reads as an ambiguous transient grey.
 const branchTargetDiffViewerStyles = {
@@ -335,7 +337,6 @@ type BranchDiffContentProps = {
   inlineComposerAnchor: RenderedDiffLineAnchor | null;
   inlineThreads: CommentThread[];
   inlineFindings: ClassifiedBranchReviewFinding[];
-  isDark: boolean;
   isDiffLoading: boolean;
   isReplyPending: boolean;
   onSelectRenderedLine: (
@@ -350,6 +351,12 @@ type BranchDiffContentProps = {
   targetLine: number | null;
   unplacedFindings: ClassifiedBranchReviewFinding[];
 };
+
+type BranchFileDiffViewerRenderGutterData = Parameters<
+  NonNullable<
+    NonNullable<BranchFileDiffViewerProps["viewerProps"]>["renderGutter"]
+  >
+>[0];
 
 type ClassifiedBranchReviewFinding = {
   classification: BranchReviewFindingAnchorClassification;
@@ -456,7 +463,6 @@ function BranchDiffContent({
   inlineComposerAnchor,
   inlineThreads,
   inlineFindings,
-  isDark,
   isDiffLoading,
   isReplyPending,
   onReplyInlineThread,
@@ -508,11 +514,9 @@ function BranchDiffContent({
     );
   }
 
-  function renderInlineGutter(
-    data: Parameters<NonNullable<ReactDiffViewerProps["renderGutter"]>>[0]
-  ) {
+  function renderInlineGutter(data: BranchFileDiffViewerRenderGutterData) {
     const side =
-      data.prefix === LineNumberPrefix.LEFT
+      data.prefix === LEFT_DIFF_PREFIX
         ? GitHubDiffSide.Left
         : GitHubDiffSide.Right;
     const line = data.lineNumber;
@@ -549,28 +553,42 @@ function BranchDiffContent({
   }
 
   return (
-    <ScrollArea className="h-full">
-      <div className="min-w-0">
-        {unplacedFindings.length > 0 ? (
+    <BranchFileDiffViewer
+      binaryFallback={
+        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+          Binary file not shown
+        </div>
+      }
+      diffData={diffData}
+      diffError={diffError}
+      errorFallback={
+        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
+          Failed to load diff
+        </div>
+      }
+      isDiffLoading={isDiffLoading}
+      leadingContent={
+        unplacedFindings.length > 0 ? (
           <UnplacedReviewFindings findings={unplacedFindings} />
-        ) : null}
-        <ReactDiffViewer
-          alwaysShowLines={
-            targetLine == null ? [] : [getRightLineHighlightId(targetLine)]
-          }
-          compareMethod={DiffMethod.WORDS}
-          hideLineNumbers={false}
-          highlightLines={selectedLineHighlightIds}
-          newValue={diffData?.newContent ?? ""}
-          oldValue={diffData?.oldContent ?? ""}
-          onLineNumberClick={onSelectRenderedLine}
-          renderGutter={renderInlineGutter}
-          splitView={true}
-          styles={branchTargetDiffViewerStyles}
-          useDarkTheme={isDark}
-        />
-      </div>
-    </ScrollArea>
+        ) : null
+      }
+      loadingFallback={
+        <div className="flex h-full items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      }
+      scrollAreaClassName="h-full"
+      viewerProps={{
+        alwaysShowLines:
+          targetLine == null ? [] : [getRightLineHighlightId(targetLine)],
+        hideLineNumbers: false,
+        highlightLines: selectedLineHighlightIds,
+        onLineNumberClick: onSelectRenderedLine,
+        renderGutter: renderInlineGutter,
+        splitView: true,
+        styles: branchTargetDiffViewerStyles,
+      }}
+    />
   );
 }
 
@@ -764,6 +782,7 @@ function InlineCommentThread({
       {canReply ? (
         <div className="border-border/70 border-t bg-muted/30 px-3 py-2.5">
           <Textarea
+            aria-label="Reply to comment"
             className="min-h-[60px] resize-y bg-background text-sm"
             disabled={isReplyPending}
             onChange={(event) => setReplyDraft(event.target.value)}
@@ -1074,6 +1093,7 @@ function InlineCommentComposer({
         {inlineComposerLineLabel(selection)}
       </div>
       <Textarea
+        aria-label="Inline comment"
         className="min-h-[84px] resize-y bg-background text-sm"
         disabled={isPending}
         onChange={(event) => onChangeDraft(event.target.value)}
@@ -1250,7 +1270,6 @@ function BranchDiffViewStateful({
   producedByPlanSlug = null,
   producedByPlanTitle = null,
 }: Readonly<BranchDiffViewProps>) {
-  const { resolvedTheme } = useTheme();
   const diffRootRef = useRef<HTMLDivElement | null>(null);
   const [selectedLineHighlightIds, setSelectedLineHighlightIds] = useState<
     string[]
@@ -1263,6 +1282,7 @@ function BranchDiffViewStateful({
   const [expandedFindingId, setExpandedFindingId] = useState<string | null>(
     null
   );
+  const [pathCopied, copyPath] = useCopyToClipboard();
   const [inlineDraft, setInlineDraft] = useState("");
   const identityPrompts = useBranchViewCommentIdentityBlockers();
   const createInlineMutation = useCreateBranchViewInlineComment(externalLinkId);
@@ -1271,7 +1291,6 @@ function BranchDiffViewStateful({
     useResolveBranchViewReviewThread(externalLinkId);
   const unresolveReviewThreadMutation =
     useUnresolveBranchViewReviewThread(externalLinkId);
-  const isDark = resolvedTheme === "dark";
   const {
     currentEntry,
     hasNext,
@@ -1441,11 +1460,11 @@ function BranchDiffViewStateful({
     setSelectedLineHighlightIds(nextHighlightIds);
   }
 
-  function handleCopyPath() {
+  async function handleCopyPath() {
     if (!currentEntry) {
       return;
     }
-    navigator.clipboard.writeText(currentEntry.file.path).catch(() => {});
+    await copyPath(currentEntry.file.path);
   }
 
   function submitInlineComment(): void {
@@ -1524,8 +1543,12 @@ function BranchDiffViewStateful({
     if (!(root.canReply === true && body.trim().length > 0)) {
       return;
     }
+    const commentGithubId = getReplyTargetGithubCommentId(root);
+    if (commentGithubId === null) {
+      return;
+    }
     replyMutation.mutate(
-      { body: body.trim(), commentGithubId: Number(root.githubCommentId) },
+      { body: body.trim(), commentGithubId },
       {
         onError: (error) => {
           recordBranchViewCommentIdentityBlocker({
@@ -1657,18 +1680,11 @@ function BranchDiffViewStateful({
         />
         <Button
           className="bg-transparent dark:bg-transparent"
-          size="sm"
-          variant="outline"
-        >
-          View Raw
-        </Button>
-        <Button
-          className="bg-transparent dark:bg-transparent"
           onClick={handleCopyPath}
           size="sm"
           variant="outline"
         >
-          Copy Path
+          {pathCopied ? "Copied" : "Copy Path"}
         </Button>
       </div>
       {canCreateInlineComment ? null : (
@@ -1690,7 +1706,6 @@ function BranchDiffViewStateful({
           }
           inlineFindings={inlineFindings}
           inlineThreads={inlineThreads}
-          isDark={isDark}
           isDiffLoading={isDiffLoading}
           isReplyPending={replyMutation.isPending}
           onReplyInlineThread={replyToInlineThread}

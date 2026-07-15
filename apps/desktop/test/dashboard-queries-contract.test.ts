@@ -6,15 +6,13 @@ import test from "node:test";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 /**
- * FEA-1791 Phase 3 contract test for `createSqliteDashboardQueries` after the
- * dashboard read surface moved off the raw `SqliteExecutor` handle onto the
- * single `DesktopPrisma` client. Like the session/agent/event store contract
- * tests, this runs through `openSqliteAgentDatabase` (the runtime + electron
- * load), so it is a CI guard — the dev sandbox does not download the electron
- * binary. The `sqlite-conversion-golden` suite already pins `getTokenAnalytics`
- * byte-for-byte, and `sqlite-agent-dashboard-database` exercises
- * `getWorkflowData` / `getCoreFeatures` / large-sum coercion; this test fills
- * the conversion-specific gaps those leave:
+ * Contract test for `createSqliteDashboardQueries` on the single `DesktopPrisma`
+ * client. Like the session/agent/event store contract tests, this runs through
+ * `openSqliteAgentDatabase` (the runtime + electron load), so it is a CI guard —
+ * the dev sandbox does not download the electron binary. The
+ * `sqlite-conversion-golden` suite already pins `getTokenAnalytics` byte-for-byte,
+ * and `sqlite-agent-dashboard-database` exercises `getWorkflowData` /
+ * `getCoreFeatures` / large-sum coercion; this test fills the gaps those leave:
  *
  * - the TYPED counts/aggregate in `getSummary` (total/active session counts via
  *   `session.count` + the terminal-status `notIn` filter, COUNT(DISTINCT
@@ -29,7 +27,14 @@ import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
  *   event whose session row is absent — the outer join's NULL semantics.
  */
 
-const NOW = "2026-06-22T00:00:00.000Z";
+// FEA-2430: getTokenAnalytics/getAnalytics bucket display days in the
+// process-local timezone (strftime 'localtime') and window token analytics
+// over local calendar days — pin a fixed non-UTC zone so the conversion is
+// actively exercised and deterministic across machines/CI (golden-test
+// pattern). Runs at module evaluation, before any test opens a DB.
+process.env.TZ = "America/Chicago";
+
+const NOW = "2026-06-22T00:00:00.000Z"; // = June 21 19:00 CDT
 const T1 = "2026-06-20T10:00:00.000Z";
 const T2 = "2026-06-20T11:00:00.000Z";
 const T3 = "2026-06-20T12:00:00.000Z";
@@ -132,10 +137,17 @@ test("FEA-1791: dashboard queries run on the single Prisma client against real l
     }
 
     await db.run(
-      `INSERT INTO token_usage (session_id, model, input_tokens, output_tokens)
-       VALUES ($1, $2, 300, 100)`,
+      `INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cost_usd_estimated)
+       VALUES ($1, $2, 300, 100, 3.5)`,
       "s1",
       "claude-sonnet-4-5"
+    );
+    await db.run(
+      `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+       VALUES ($1, $2, $3, 300, 100, 0, 0, 3.5)`,
+      "s1",
+      "claude-sonnet-4-5",
+      T1
     );
 
     // --- getSummary: typed counts / aggregate / findMany --------------------
@@ -157,7 +169,7 @@ test("FEA-1791: dashboard queries run on the single Prisma client against real l
     );
 
     // --- getAnalytics: typed groupBy rollups with DESC ordering -------------
-    const analytics = await db.dashboard.getAnalytics();
+    const analytics = await db.dashboard.getAnalytics(new Date(NOW));
     assert.deepEqual(
       analytics.eventsByType.map((r) => [r.eventType, r.count]),
       [
@@ -189,6 +201,12 @@ test("FEA-1791: dashboard queries run on the single Prisma client against real l
     assert.equal(analytics.totalEvents, 5);
     assert.equal(analytics.tokens.totalInputTokens, 300);
     assert.equal(typeof analytics.tokens.totalInputTokens, "number");
+    // FEA-2331: byModel also surfaces per-model estimated spend (USD) from
+    // cost_usd_estimated, rounded to cents.
+    assert.deepEqual(
+      analytics.tokens.byModel.map((r) => [r.model, r.estimatedCostUsd]),
+      [["claude-sonnet-4-5", 3.5]]
+    );
 
     // --- getSkills: typed two-read keeps the LEFT-JOIN null harness ---------
     const skills = await db.dashboard.getSkills();
@@ -277,6 +295,227 @@ test("orchestration dashboard success rate excludes running agents and agrees he
     );
     // Headline and per-type share one definition, so they agree exactly.
     assert.equal(workflow.stats.successRate, worker.successRate);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2345: getTokenAnalytics sources all facets from token_events over a 30-calendar-day window", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "token-analytics-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const REF = "2026-06-22T00:00:00.000Z";
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => REF,
+  });
+  try {
+    await db.run(
+      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
+       VALUES ($1, $2, $3, $4, $4, $5)`,
+      "s1",
+      "Session one",
+      "completed",
+      "2026-06-20T10:00:00.000Z",
+      "claude"
+    );
+
+    await db.run(
+      `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+       VALUES ($1, $2, $3, 1000, 500, 200, 50, 1.25)`,
+      "s1",
+      "claude-sonnet-4-5",
+      "2026-06-20T10:00:00.000Z"
+    );
+    await db.run(
+      `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+       VALUES ($1, $2, $3, 2000, 1000, 300, 100, 2.50)`,
+      "s1",
+      "claude-sonnet-4-5",
+      "2026-06-21T14:00:00.000Z"
+    );
+    await db.run(
+      `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+       VALUES ($1, $2, $3, 9999, 9999, 9999, 9999, 99.99)`,
+      "s1",
+      "claude-sonnet-4-5",
+      "2026-05-01T10:00:00.000Z"
+    );
+
+    const ta = await db.dashboard.getTokenAnalytics(new Date(REF));
+
+    const byDayInputSum = ta.byDay.reduce((s, d) => s + d.inputTokens, 0);
+    const byDayOutputSum = ta.byDay.reduce((s, d) => s + d.outputTokens, 0);
+    assert.equal(byDayInputSum, ta.totalInputTokens);
+    assert.equal(byDayOutputSum, ta.totalOutputTokens);
+
+    assert.equal(ta.totalInputTokens, 3000);
+    assert.equal(ta.totalOutputTokens, 1500);
+    assert.equal(ta.totalCacheReadTokens, 500);
+    assert.equal(ta.totalCacheWriteTokens, 150);
+    assert.equal(ta.windowDays, 30);
+
+    assert.equal(ta.byDay.length, 2);
+    assert.equal(ta.byDay[0]?.day, "2026-06-20");
+    assert.equal(ta.byDay[1]?.day, "2026-06-21");
+
+    assert.equal(ta.byModel.length, 1);
+    assert.equal(ta.byModel[0]?.model, "claude-sonnet-4-5");
+    assert.equal(ta.byModel[0]?.inputTokens, 3000);
+    assert.equal(ta.byModel[0]?.sessions, 1);
+    assert.equal(ta.byModel[0]?.estimatedCostUsd, 3.75);
+
+    const farFuture = new Date("2026-12-01T00:00:00.000Z");
+    const taEmpty = await db.dashboard.getTokenAnalytics(farFuture);
+    assert.equal(taEmpty.totalInputTokens, 0);
+    assert.equal(taEmpty.totalOutputTokens, 0);
+    assert.equal(taEmpty.byDay.length, 0);
+    assert.equal(taEmpty.byModel.length, 0);
+    assert.equal(taEmpty.windowDays, 30);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2430: token analytics bucket and window by LOCAL calendar days (cross-midnight + both edges)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "token-analytics-tz-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const REF = "2026-06-22T00:00:00.000Z"; // June 21 19:00 CDT
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => REF,
+  });
+  try {
+    await db.run(
+      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
+       VALUES ($1, $2, $3, $4, $4, $5)`,
+      "s-tz",
+      "TZ session",
+      "completed",
+      "2026-06-20T10:00:00.000Z",
+      "claude"
+    );
+    // Local 30-day window for REF: [May 23 00:00 CDT, June 21 23:59:59.999 CDT]
+    // = [2026-05-23T05:00:00.000Z, 2026-06-22T04:59:59.999Z].
+    const seeds: [string, number][] = [
+      // Cross-midnight: June 21 03:00Z = June 20 22:00 CDT → LOCAL day June 20.
+      ["2026-06-21T03:00:00.000Z", 100],
+      // Lower edge: May 23 12:00Z = May 23 07:00 CDT — inside the LOCAL window
+      // (a UTC-day window starting 2026-05-24 would wrongly exclude it).
+      ["2026-05-23T12:00:00.000Z", 40],
+      // Upper edge: June 22 05:30Z = June 22 00:30 CDT — AFTER local end-of-
+      // today (a UTC-day window ending 2026-06-22T23:59:59 would include it).
+      ["2026-06-22T05:30:00.000Z", 7777],
+    ];
+    for (const [ts, input] of seeds) {
+      await db.run(
+        `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+         VALUES ($1, $2, $3, $4, 0, 0, 0, 0)`,
+        "s-tz",
+        "claude-sonnet-4-5",
+        ts,
+        input
+      );
+    }
+    // dailyEvents (getAnalytics) shares the localtime day contract: the same
+    // cross-midnight instant must land on the LOCAL day June 20.
+    await db.run(
+      `INSERT INTO events (id, session_id, event_type, created_at)
+       VALUES ($1, $2, $3, $4)`,
+      "ev-tz",
+      "s-tz",
+      "PostToolUse",
+      "2026-06-21T03:00:00.000Z"
+    );
+
+    const ta = await db.dashboard.getTokenAnalytics(new Date(REF));
+    const days = new Map(ta.byDay.map((d) => [d.day, d.inputTokens]));
+    // Cross-midnight event buckets to its local day, not the UTC day.
+    assert.equal(days.get("2026-06-20"), 100);
+    assert.equal(days.has("2026-06-21"), false);
+    // Lower-edge event is inside the local window on its local day.
+    assert.equal(days.get("2026-05-23"), 40);
+    // Upper-edge event (local tomorrow) is excluded from window AND totals.
+    assert.equal(days.has("2026-06-22"), false);
+    assert.equal(ta.totalInputTokens, 140);
+
+    const analytics = await db.dashboard.getAnalytics(new Date(REF));
+    const daily = new Map(analytics.dailyEvents.map((d) => [d.date, d.count]));
+    assert.equal(daily.get("2026-06-20"), 1);
+    assert.equal(daily.has("2026-06-21"), false);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2345: runTokenParityCheck compares stores and excludes OTel rows", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "token-parity-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => NOW,
+  });
+  try {
+    await db.run(
+      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
+       VALUES ($1, $2, $3, $4, $4, $5)`,
+      "s1",
+      "S1",
+      "completed",
+      T1,
+      "claude"
+    );
+    await db.run(
+      `INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+       VALUES ($1, $2, 300, 100, 50, 10)`,
+      "s1",
+      "claude-sonnet-4-5"
+    );
+    await db.run(
+      `INSERT INTO token_events (session_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+       VALUES ($1, $2, $3, 300, 100, 50, 10)`,
+      "s1",
+      "claude-sonnet-4-5",
+      T1
+    );
+
+    const agreeing = await db.runTokenParityCheck();
+    assert.equal(agreeing.usageInput, agreeing.eventsInput);
+    assert.equal(agreeing.divergentSessionCount, 0);
+
+    await db.run(
+      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
+       VALUES ($1, $2, $3, $4, $4, $5)`,
+      "s-div",
+      "Divergent",
+      "completed",
+      T2,
+      "claude"
+    );
+    await db.run(
+      `INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+       VALUES ($1, $2, 500, 200, 0, 0)`,
+      "s-div",
+      "claude-sonnet-4-5"
+    );
+
+    const divergent = await db.runTokenParityCheck();
+    assert.ok(divergent.usageInput > divergent.eventsInput);
+    assert.ok(divergent.divergentSessionCount > 0);
+
+    await db.run(
+      `INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, usage_source)
+       VALUES ($1, $2, 9999, 9999, 0, 0, 'otel_log_payload')`,
+      "s-otel",
+      "claude-sonnet-4-5"
+    );
+    const afterOtel = await db.runTokenParityCheck();
+    assert.equal(afterOtel.usageInput, divergent.usageInput);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

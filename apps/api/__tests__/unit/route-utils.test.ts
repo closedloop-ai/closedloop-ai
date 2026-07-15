@@ -11,12 +11,30 @@ import {
   notFoundResponse,
   parseBody,
   parseQueryParams,
+  parseSequenceCursor,
   successResponse,
   unauthorizedResponse,
 } from "@/lib/route-utils";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("parseSequenceCursor", () => {
+  it("returns undefined when the raw value is absent", () => {
+    expect(parseSequenceCursor(null)).toBeUndefined();
+  });
+
+  it("parses a non-negative integer cursor", () => {
+    expect(parseSequenceCursor("0")).toBe(0);
+    expect(parseSequenceCursor("42")).toBe(42);
+  });
+
+  it("rejects negative, fractional, or non-numeric values", () => {
+    expect(parseSequenceCursor("-1")).toBeUndefined();
+    expect(parseSequenceCursor("3.5")).toBeUndefined();
+    expect(parseSequenceCursor("abc")).toBeUndefined();
+  });
 });
 
 describe("parseBody", () => {
@@ -68,6 +86,25 @@ describe("parseBody", () => {
       const json = await result.errorResponse.json();
       expect(json.success).toBe(false);
       expect(json.error).toBe("Invalid JSON body");
+    }
+  });
+
+  it("returns errorResponse when body exceeds maxBytes", async () => {
+    const request = new Request("http://localhost", {
+      method: "POST",
+      body: JSON.stringify({ name: "Oversized", age: 25 }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const result = await parseBody(request, testSchema, { maxBytes: 8 });
+    expect(result.body).toBeNull();
+    expect(result.errorResponse).not.toBeNull();
+
+    if (result.errorResponse) {
+      const json = await result.errorResponse.json();
+      expect(result.errorResponse.status).toBe(413);
+      expect(json.success).toBe(false);
+      expect(json.error).toBe("Request body too large");
     }
   });
 });

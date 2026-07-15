@@ -1,5 +1,6 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
+import { shortContentHash } from "@repo/observability/content-hash";
 import { log } from "@repo/observability/log";
 import { documentService } from "@/app/documents/document-service";
 import { WHITESPACE_REGEX } from "./webhook-utils";
@@ -101,7 +102,9 @@ export async function handleCreateIdea(
   log.info("[slack/handlers] handleCreateIdea", {
     teamId: payload.team_id,
     userId: payload.user_id,
-    text: payload.text,
+    // The raw command text is user-authored idea content (title/body); log only
+    // its length to avoid shipping forbidden content to server logs.
+    textLength: payload.text.length,
   });
 
   // Step 1 & 2: Resolve org and user
@@ -188,10 +191,14 @@ export async function handleCreateIdea(
 export async function handleGetStatus(
   payload: SlackSlashCommandPayload
 ): Promise<SlackResponse> {
+  // The slash-command text is user-typed free text (an identifier/title
+  // fragment), so log only a length and stable hash — never the raw content —
+  // to keep it out of the Datadog-shipped logs.
   log.info("[slack/handlers] handleGetStatus", {
     teamId: payload.team_id,
     userId: payload.user_id,
-    text: payload.text,
+    textLength: payload.text.length,
+    textHash: shortContentHash(payload.text),
   });
 
   // Resolve org and user

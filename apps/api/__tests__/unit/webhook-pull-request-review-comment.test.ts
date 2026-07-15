@@ -202,6 +202,7 @@ describe("handlePullRequestReviewComment", () => {
           where: {
             installationId: "installation-uuid-99",
             githubRepoId: "789",
+            removedAt: null,
           },
           select: { id: true },
           take: 2,

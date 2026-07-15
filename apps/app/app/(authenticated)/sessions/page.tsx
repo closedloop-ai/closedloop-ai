@@ -210,8 +210,8 @@ export default function SessionsPage() {
 
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between gap-4">
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="min-w-0">
                   <CardTitle className="flex items-center gap-2">
                     <HistoryIcon className="h-4 w-4" />
                     Session History
@@ -221,7 +221,7 @@ export default function SessionsPage() {
                     sessions.
                   </CardDescription>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Button
                     disabled={effectivePageIndex === 0}
                     onClick={() =>

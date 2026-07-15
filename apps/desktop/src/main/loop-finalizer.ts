@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import { LoopEventType } from "@closedloop-ai/loops-api/events";
@@ -98,7 +99,26 @@ export type LoopFinalizerDeps = {
    * owns the timers for teardown to take effect.
    */
   schedulers?: LoopSchedulerContext;
+  /**
+   * Best-effort re-engagement hook fired exactly once on the live-exit edge
+   * when a loop reaches terminal success (persisted status COMPLETED). Only the
+   * live-exit caller wires this — recovery/replay paths omit it so a completion
+   * the user already moved past never raises a stale notification.
+   */
+  onLoopCompleted?: LoopCompletedHook;
 };
+
+/**
+ * Canonical signature (SSOT) for the live-exit "loop reached COMPLETED" hook.
+ * Threaded from the gateway router through symphony-loop into the finalizer so
+ * the Electron main process can raise an OS notification without coupling the
+ * finalizer to the notifier implementation.
+ */
+export type LoopCompletedHook = (notice: {
+  loopId: string;
+  command: string;
+  artifactSlug?: string;
+}) => void;
 
 export type LoopFinalizationReason =
   | "live-exit"
@@ -916,13 +936,15 @@ async function collectSupportUploadCandidates(
   return { candidates, skippedReasons };
 }
 
+type SupportUploadUrl = { url: string; gzip: boolean };
+
 async function requestSupportUploadUrls(
   apiBaseUrl: string,
   loopId: string,
   getToken: () => string | null,
   keys: string[]
 ): Promise<
-  | { success: true; urlsByKey: Map<string, string> }
+  | { success: true; urlsByKey: Map<string, SupportUploadUrl> }
   | { success: false; reason: SupportUploadReason; error: string }
 > {
   const token = getToken();
@@ -941,7 +963,11 @@ async function requestSupportUploadUrls(
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ keys }),
+      // Support files are highly compressible JSONL, so every one is uploaded
+      // gzip-compressed (see putSupportFile). Declaring them as gzipKeys makes
+      // the backend sign each presigned PUT URL with Content-Encoding: gzip so
+      // the stored object is served back decompressed to readers.
+      body: JSON.stringify({ keys, gzipKeys: keys }),
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
@@ -976,7 +1002,7 @@ async function requestSupportUploadUrls(
         error: "malformed upload-url envelope",
       };
     }
-    const urlsByKey = new Map<string, string>();
+    const urlsByKey = new Map<string, SupportUploadUrl>();
     for (const entry of envelope.data.urls) {
       if (
         entry &&
@@ -984,10 +1010,14 @@ async function requestSupportUploadUrls(
         typeof (entry as { key?: unknown }).key === "string" &&
         typeof (entry as { url?: unknown }).url === "string"
       ) {
-        urlsByKey.set(
-          (entry as { key: string }).key,
-          (entry as { url: string }).url
-        );
+        // Only compress when the backend echoes the gzip encoding it actually
+        // signed the URL for. An older backend omits contentEncoding, so the
+        // body is uploaded uncompressed (safe fallback, no read-path breakage).
+        urlsByKey.set((entry as { key: string }).key, {
+          url: (entry as { url: string }).url,
+          gzip:
+            (entry as { contentEncoding?: unknown }).contentEncoding === "gzip",
+        });
       }
     }
     for (const key of keys) {
@@ -1011,7 +1041,7 @@ async function requestSupportUploadUrls(
 
 async function putSupportFile(
   candidate: SupportUploadCandidate,
-  url: string
+  { url, gzip }: SupportUploadUrl
 ): Promise<
   | { success: true }
   | { success: false; reason: SupportUploadReason; error: string }
@@ -1029,10 +1059,18 @@ async function putSupportFile(
     };
   }
   try {
-    const body = await fs.readFile(candidate.path);
+    // Support files are highly compressible JSONL. When the backend signed the
+    // URL for gzip (see requestSupportUploadUrls), compress the body before PUT
+    // to cut storage and egress; S3 stores the matching Content-Encoding: gzip
+    // metadata so readers (browser presigned GET, SDK getObject) transparently
+    // decompress — the object's logical name and content are unchanged. If the
+    // backend did not confirm gzip, upload the raw bytes unchanged.
+    const raw = await fs.readFile(candidate.path);
+    const body = gzip ? gzipSync(raw) : raw;
     const response = await fetch(url, {
       method: "PUT",
       body,
+      ...(gzip ? { headers: { "Content-Encoding": "gzip" } } : {}),
       redirect: "error",
     });
     if (!response.ok) {
@@ -1591,6 +1629,26 @@ export async function finalizeLoopFromRuntime(
     telemetry,
     jobStore
   );
+
+  // Re-engagement: notify on the real-time success edge only. Recovery/replay
+  // callers omit `onLoopCompleted`, so a completion finalized after an app
+  // restart never raises a stale "loop complete" notification.
+  if (reason === "live-exit" && isSuccessStatus) {
+    try {
+      deps.onLoopCompleted?.({
+        loopId: resolvedJob.loopId,
+        command,
+        artifactSlug: resolvedJob.artifactSlug,
+      });
+    } catch (error) {
+      gatewayLog.warn(
+        "loop-finalizer",
+        `onLoopCompleted hook failed for loopId=${resolvedJob.loopId}: ${
+          error instanceof Error ? error.message : error
+        }`
+      );
+    }
+  }
 
   if (cloudFinalized || !retryableFailure) {
     deps.schedulers?.teardownLoop(resolvedJob.loopId);

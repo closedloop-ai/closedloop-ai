@@ -12,9 +12,10 @@
  * Ported from the vendor `scripts/agent-monitor-cursor/cursor-home.js`; logic
  * preserved exactly (env precedence, path resolution, depth-bounded walk).
  */
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+import { collectJsonlFiles } from "../parsing/parser-utils.js";
 
 export function getCursorHome(): string {
   const raw = process.env.CURSOR_HOME;
@@ -42,37 +43,14 @@ export function sessionIdFromTranscriptPath(filePath: string): string {
 /**
  * Recursively collect every `*.jsonl` transcript file under the projects root.
  * Cursor nests by project → agent-transcripts → session-id, but we walk
- * generically. Depth-bounded and error-tolerant.
+ * generically. Depth-bounded and error-tolerant. Thin pass-through over the
+ * shared {@link collectJsonlFiles} walker.
  */
 export function collectTranscriptFiles(
   root: string,
-  { maxDepth = 8 }: { maxDepth?: number } = {}
+  opts: { maxDepth?: number } = {}
 ): string[] {
-  const out: string[] = [];
-  if (!(root && fs.existsSync(root))) {
-    return out;
-  }
-  const walk = (dir: string, depth: number): void => {
-    if (depth > maxDepth) {
-      return;
-    }
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        walk(full, depth + 1);
-      } else if (e.isFile() && e.name.endsWith(".jsonl")) {
-        out.push(full);
-      }
-    }
-  };
-  walk(root, 0);
-  return out;
+  return collectJsonlFiles(root, opts);
 }
 
 /**

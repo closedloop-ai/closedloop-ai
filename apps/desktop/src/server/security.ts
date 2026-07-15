@@ -58,7 +58,7 @@ export function assertPathAllowed(
   }
 }
 
-function canonicalizePathForPolicy(inputPath: string): string {
+export function canonicalizePathForPolicy(inputPath: string): string {
   const absolutePath = path.resolve(expandHomePath(inputPath));
   return resolveWithNearestRealpath(absolutePath);
 }

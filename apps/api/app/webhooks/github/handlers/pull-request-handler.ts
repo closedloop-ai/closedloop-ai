@@ -11,10 +11,16 @@ import type {
 import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
+  BranchPushSource,
   LinkType,
 } from "@repo/api/src/types/artifact";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import type { Document } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  GitHubDirtyScopeKind,
+  GitHubDirtyTrigger,
+} from "@repo/api/src/types/github-dirty-scope";
 import type { TransactionClient } from "@repo/database";
 import {
   ArtifactType,
@@ -26,11 +32,19 @@ import { parseArtifactReferences } from "@repo/github/artifact-reference-parser"
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import {
-  branchService,
   bumpBranchActivity,
-} from "@/app/branches/branch-service";
+  stampBranchFirstPush,
+} from "@/app/branches/branch-push-state";
+import { branchService } from "@/app/branches/branch-service";
+import {
+  adoptRepolessPullRequestByRepoIdentity,
+  BranchProjectionMode,
+  writeExistingBranchPullRequestProjection,
+} from "@/app/branches/github-projection-writer";
 import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
+import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { pickPrimaryArtifactReference } from "./artifact-reference";
+import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
 
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
@@ -129,9 +143,12 @@ export async function handlePullRequest(
     installationId,
   });
 
-  await withDb.tx((tx) =>
+  const publication = await withDb.tx((tx) =>
     processPullRequestTransaction(tx, event, installationId)
   );
+  if (publication) {
+    await publishGitHubDirtyScopes(publication);
+  }
 
   log.info("[handlePullRequest] Successfully processed pull_request event", {
     action,
@@ -149,7 +166,7 @@ async function processPullRequestTransaction(
   tx: TransactionClient,
   event: HandledPullRequestEvent,
   installationId: number
-) {
+): Promise<PullRequestDirtyScopePublication | null> {
   const { action, pull_request, repository } = event;
   const repo = await findActivePullRequestRepository(
     tx,
@@ -163,19 +180,75 @@ async function processPullRequestTransaction(
       action,
       prNumber: pull_request.number,
     });
-    return;
+    return null;
   }
 
-  const prDetail = await findPullRequestDetail(
-    tx,
-    repo.id,
-    pull_request.number
-  );
+  let prDetail = await findPullRequestDetail(tx, repo.id, pull_request.number);
+  if (!prDetail && repo.installation.organizationId) {
+    // FEA-2732: no App-owned row for this (repo, PR#) yet — adopt a desktop-
+    // produced repo-less row if one exists (fills repositoryId + githubId, and
+    // the branch's repositoryId), so a webhook arriving AFTER the App install
+    // reuses it instead of dropping state or inserting a duplicate. The githubId
+    // stamp is required before the githubId-keyed action updates below.
+    const adopted = await adoptRepolessPullRequestByRepoIdentity(tx, {
+      organizationId: repo.installation.organizationId,
+      repositoryFullName: normalizeRepoFullName(repo.fullName),
+      number: pull_request.number,
+      repositoryId: repo.id,
+      githubId: String(pull_request.id),
+    });
+    if (adopted) {
+      prDetail = await findPullRequestDetail(tx, repo.id, pull_request.number);
+    }
+  }
+  // FEA-2732: a desktop-synced row can already occupy this (repo, PR#) with
+  // repositoryId set but githubId still null — the session referenced an
+  // existing PR before any webhook fired for it. findPullRequestDetail matches
+  // that row, so the repo-less adopt above is skipped and the githubId is never
+  // stamped. Left null, the githubId-keyed updates in applyPrAction throw P2025
+  // ("record to update not found"), rolling back the entire webhook tx
+  // (including the ensureCurrentPullRequestForExistingBranch write). Adopt the
+  // row in place by stamping its githubId here. Safe: githubId is GitHub's
+  // globally-unique PR id, and (repositoryId, number) is unique, so no other
+  // row can already hold this githubId.
+  if (prDetail && prDetail.githubId === null) {
+    await tx.pullRequestDetail.update({
+      where: { id: prDetail.id },
+      data: { githubId: String(pull_request.id) },
+    });
+    prDetail = { ...prDetail, githubId: String(pull_request.id) };
+  }
   const existingPr = prDetail
     ? buildExistingPr(prDetail)
     : await findExistingBranchPr(tx, repo.id, pull_request.head.ref);
 
-  await processExistingPullRequest(tx, event, repo, existingPr);
+  const wroteProjection = await processExistingPullRequest(
+    tx,
+    event,
+    repo,
+    existingPr
+  );
+  if (!wroteProjection) {
+    return null;
+  }
+  if (!repo.installation.organizationId) {
+    return null;
+  }
+  return {
+    organizationId: repo.installation.organizationId,
+    repositoryId: repo.id,
+    repositoryFullName: repo.fullName,
+    scopes: [
+      {
+        kind: GitHubDirtyScopeKind.PullRequest,
+        repositoryId: repo.id,
+        repositoryFullName: repo.fullName,
+        branchName: pull_request.head.ref,
+        pullRequestNumber: pull_request.number,
+      },
+    ],
+    triggers: [GitHubDirtyTrigger.PullRequest],
+  };
 }
 
 function findActivePullRequestRepository(
@@ -187,6 +260,7 @@ function findActivePullRequestRepository(
     where: {
       githubRepoId: String(repository.id),
       fullName: repository.full_name,
+      removedAt: null,
       installation: {
         installationId: String(installationId),
         status: GitHubInstallationStatus.ACTIVE,
@@ -274,12 +348,11 @@ async function processExistingPullRequest(
   event: HandledPullRequestEvent,
   repo: RepoWithInstallation,
   existingPr: ExistingPr | null
-) {
+): Promise<boolean> {
   const { action, pull_request } = event;
 
   if (!existingPr) {
-    await processMissingPullRequest(tx, action, pull_request, repo);
-    return;
+    return processMissingPullRequest(tx, action, pull_request, repo);
   }
 
   const lifecycleSubject = getLifecycleSubject(
@@ -304,7 +377,7 @@ async function processExistingPullRequest(
         : lifecycleDecision.reason,
       prNumber: pull_request.number,
     });
-    return;
+    return false;
   }
 
   if (!lifecycleDecision.apply) {
@@ -314,7 +387,7 @@ async function processExistingPullRequest(
       branchArtifactId: existingPr.id,
       reason: lifecycleDecision.reason,
     });
-    return;
+    return false;
   }
 
   if (existingPr.hasBranchArtifact) {
@@ -334,6 +407,7 @@ async function processExistingPullRequest(
   }
 
   await applyPrAction(tx, action, event, existingPr, pull_request);
+  return true;
 }
 
 async function processMissingPullRequest(
@@ -341,10 +415,10 @@ async function processMissingPullRequest(
   action: string,
   pullRequest: PullRequest,
   repo: RepoWithInstallation
-) {
+): Promise<boolean> {
   if (LINKAGE_ACTIONS.has(action)) {
     await attemptArtifactLinkage(tx, pullRequest, repo, null);
-    return;
+    return true;
   }
 
   log.warn("[handlePullRequest] Pull request not found in database", {
@@ -353,6 +427,7 @@ async function processMissingPullRequest(
     action,
     reason: "PR may have been created outside Symphony workflow",
   });
+  return false;
 }
 
 function getLifecycleSubject(
@@ -385,7 +460,7 @@ type ExistingPr = {
   organizationId: string;
   documentId: string | null;
   githubId: string | null;
-  checksStatus: string;
+  checksStatus: ChecksStatus;
   prState: GitHubPRState | null;
   isDraft: boolean | null;
   closedAt: Date | null;
@@ -399,7 +474,8 @@ type ExistingPrDetail = {
   artifactId: string | null;
   branchArtifactId: string | null;
   id: string;
-  githubId: string;
+  // FEA-2732: nullable for desktop-produced PRs with no GitHub node id yet.
+  githubId: string | null;
   prState: GitHubPRState;
   isDraft: boolean;
   closedAt: Date | null;
@@ -412,7 +488,7 @@ type ExistingPrOwnerArtifact = {
   projectId: string | null;
   organizationId: string;
   branch?: {
-    checksStatus: string;
+    checksStatus: ChecksStatus;
     currentPullRequestDetailId: string | null;
     headSha: string | null;
   } | null;
@@ -447,17 +523,32 @@ function buildExistingPr(prDetail: ExistingPrDetail): ExistingPr | null {
   };
 }
 
+type PullRequestDirtyScopePublication = {
+  organizationId: string;
+  repositoryId: string;
+  repositoryFullName: string;
+  scopes: Array<{
+    kind: typeof GitHubDirtyScopeKind.PullRequest;
+    repositoryId: string;
+    repositoryFullName: string;
+    branchName: string;
+    pullRequestNumber: number;
+  }>;
+  triggers: (typeof GitHubDirtyTrigger.PullRequest)[];
+};
+
 async function findExistingBranchPr(
   tx: TransactionClient,
   repositoryId: string,
   branchName: string
 ): Promise<ExistingPr | null> {
-  const branch = await tx.branchDetail.findUnique({
+  // D2: (repository_id, branch_name) is no longer unique, but the webhook
+  // (App-repo) path always has repositoryId (1:1 with a repo full name), so
+  // findFirst by it resolves the same single row as the old findUnique.
+  const branch = await tx.branchDetail.findFirst({
     where: {
-      repositoryId_branchName: {
-        repositoryId,
-        branchName,
-      },
+      repositoryId,
+      branchName,
     },
     select: {
       artifactId: true,
@@ -751,59 +842,41 @@ async function ensureCurrentPullRequestForExistingBranch(
   pullRequest: HandledPullRequestEvent["pull_request"],
   action: string
 ): Promise<void> {
-  const githubId = String(pullRequest.id);
-  const detail = await tx.pullRequestDetail.upsert({
-    where: { githubId },
-    create: {
+  await writeExistingBranchPullRequestProjection(
+    tx,
+    {
       branchArtifactId: existingPr.id,
+      branchProjectionMode:
+        action === "synchronize"
+          ? BranchProjectionMode.PointerOnly
+          : BranchProjectionMode.Full,
+      currentHeadSha: existingPr.headSha,
+      pullRequestDetailId: existingPr.pullRequestDetailId,
+    },
+    {
+      organizationId: existingPr.organizationId,
       repositoryId: repo.id,
-      githubId,
+      githubId: String(pullRequest.id),
       number: pullRequest.number,
       title: pullRequest.title,
-      htmlUrl: pullRequest.html_url,
       body: pullRequest.body ?? null,
-      isCurrent: true,
-    },
-    update: {
-      branchArtifactId: existingPr.id,
-      repositoryId: repo.id,
-      title: pullRequest.title,
       htmlUrl: pullRequest.html_url,
-      body: pullRequest.body ?? null,
-      isCurrent: true,
-    },
-    select: { id: true },
-  });
-
-  await tx.pullRequestDetail.updateMany({
-    where: {
-      branchArtifactId: existingPr.id,
-      isCurrent: true,
-      githubId: { not: githubId },
-    },
-    data: { isCurrent: false },
-  });
-
-  const branchData =
-    action === "synchronize"
-      ? { currentPullRequestDetailId: detail.id }
-      : {
-          baseBranch: pullRequest.base.ref,
-          baseBranchSource: BranchBaseBranchSource.PullRequestBase,
-          headSha: pullRequest.head.sha,
-          headShaSource: BranchHeadShaSource.PullRequestWebhook,
-          headShaObservedAt: new Date(),
-          lastPushBeforeSha: null,
-          currentPullRequestDetailId: detail.id,
-        };
-
-  await tx.branchDetail.update({
-    where: { artifactId: existingPr.id },
-    data: branchData,
-  });
-  if (action !== "synchronize" && existingPr.headSha !== pullRequest.head.sha) {
-    await invalidateBranchStatusChecksForHeadChange(tx, existingPr.id);
-  }
+      headBranch: pullRequest.head.ref,
+      baseBranch: pullRequest.base.ref,
+      headSha: pullRequest.head.sha,
+      prState: pullRequestState(pullRequest),
+      isDraft: pullRequest.draft ?? false,
+      additions: pullRequest.additions,
+      deletions: pullRequest.deletions,
+      changedFiles: pullRequest.changed_files,
+      checksStatus:
+        action === "synchronize" ? undefined : existingPr.checksStatus,
+      closedAt: pullRequest.closed_at ? new Date(pullRequest.closed_at) : null,
+      mergedAt: pullRequest.merged_at ? new Date(pullRequest.merged_at) : null,
+      mergeCommitSha: pullRequest.merge_commit_sha ?? null,
+      fetchProvenance: githubAppWebhookFetchProvenance(),
+    }
+  );
 }
 
 /**
@@ -846,6 +919,7 @@ async function createAndLinkPr(
     headShaSource: BranchHeadShaSource.PullRequestWebhook,
     headShaObservedAt: new Date(),
     sourceArtifactId: artifact.id,
+    fetchProvenance: githubAppWebhookFetchProvenance(),
     pullRequest: {
       githubId: String(pullRequest.id),
       number: pullRequest.number,
@@ -854,6 +928,9 @@ async function createAndLinkPr(
       htmlUrl: pullRequest.html_url,
       state,
       isDraft: pullRequest.draft ?? false,
+      additions: pullRequest.additions,
+      deletions: pullRequest.deletions,
+      changedFiles: pullRequest.changed_files,
       closedAt: pullRequest.closed_at ? new Date(pullRequest.closed_at) : null,
       mergedAt: pullRequest.merged_at ? new Date(pullRequest.merged_at) : null,
       mergeCommitSha: pullRequest.merge_commit_sha ?? null,
@@ -1039,6 +1116,15 @@ async function applyPrAction(
       ) {
         await invalidateBranchStatusChecksForHeadChange(tx, existingPr.id);
       }
+      // PRD-510 FR2 / PLN-1099 Phase 2: a `synchronize` is new commits pushed to
+      // the PR head — genuine push evidence. Stamp it set-once/earliest-wins
+      // (`existingPr.id` is the branch artifact); a no-op once already pushed.
+      await stampBranchFirstPush(
+        tx,
+        existingPr.id,
+        parseDateOrNow(pullRequest.updated_at),
+        BranchPushSource.Webhook
+      );
 
       log.info("[handlePullRequest] PR synchronized", {
         prNumber: pullRequest.number,
@@ -1116,6 +1202,9 @@ function pullRequestToDetailUpdate(pullRequest: PullRequest) {
     body: pullRequest.body ?? null,
     prState: pullRequestState(pullRequest),
     isDraft: pullRequest.draft ?? false,
+    additions: pullRequest.additions,
+    deletions: pullRequest.deletions,
+    changedFiles: pullRequest.changed_files,
     closedAt: pullRequest.closed_at ? new Date(pullRequest.closed_at) : null,
     mergedAt: pullRequest.merged_at ? new Date(pullRequest.merged_at) : null,
     mergeCommitSha: pullRequest.merge_commit_sha ?? null,

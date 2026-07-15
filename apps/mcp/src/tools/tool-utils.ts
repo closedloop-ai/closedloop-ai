@@ -1,3 +1,4 @@
+import type { JsonObject } from "@repo/api/src/types/common.js";
 import { getRoutePrefixForType } from "@repo/api/src/types/document.js";
 import { resolveFriendlyError } from "@repo/api/src/types/friendly-error.js";
 import { McpApiError } from "../api-error.js";
@@ -55,14 +56,37 @@ function formatToolError(error: unknown): string {
     parts.push("", "Remediation:");
     parts.push(...friendly.remediation.map((step) => `- ${step}`));
   }
-  if (Object.keys(friendly.technicalDetails).length > 0) {
+  const technicalDetails = sanitizeTechnicalDetails(friendly.technicalDetails);
+  if (Object.keys(technicalDetails).length > 0) {
     parts.push(
       "",
       "Technical details:",
-      JSON.stringify(friendly.technicalDetails, null, 2)
+      JSON.stringify(technicalDetails, null, 2)
     );
   }
   return parts.join("\n");
+}
+
+/**
+ * Keys of `technicalDetails` allowed into the client-visible MCP error text.
+ * The upstream API error `details`/`result` payloads are deliberately excluded:
+ * they are arbitrary nested objects that echo raw server-side data — internal
+ * paths, SQL fragments, or other sensitive information (FEA-2550). Only the
+ * scalar identifier fields are surfaced, and the allowlist redacts any future
+ * field by default. `message` is retained because it is the primary actionable
+ * error signal for the client; callers that build `message` from raw upstream
+ * bodies (see api-client.ts) remain responsible for not embedding secrets there.
+ */
+const SAFE_TECHNICAL_DETAIL_KEYS = new Set(["code", "message", "timestamp"]);
+
+function sanitizeTechnicalDetails(technicalDetails: JsonObject): JsonObject {
+  const sanitized: JsonObject = {};
+  for (const [key, value] of Object.entries(technicalDetails)) {
+    if (SAFE_TECHNICAL_DETAIL_KEYS.has(key)) {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
 }
 
 /**
@@ -82,6 +106,23 @@ export function asRecord(value: unknown): Record<string, unknown> {
 
 export function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/**
+ * Copy only the defined entries, so optional tool inputs are forwarded to the
+ * API exactly when the caller supplied them (null is a meaningful value, e.g.
+ * unassign).
+ */
+export function pickDefined(
+  fields: Record<string, unknown>
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 export function readNumber(value: unknown): number | null {
@@ -163,6 +204,23 @@ export function describeIdOrSlug(
   return `${entityLabel} UUID or user-facing slug (e.g. ${exampleText}). Pass the user's slug verbatim — the API resolves it server-side.`;
 }
 
+/**
+ * Build an API query object from optional filter fields, dropping any that are
+ * `undefined`. Shared by list-style tools so each doesn't re-derive the same
+ * undefined-filtering logic.
+ */
+export function buildQuery(
+  fields: Record<string, string | undefined>
+): Record<string, string> {
+  const query: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) {
+      query[key] = value;
+    }
+  }
+  return query;
+}
+
 export function buildPaginatedPayload<T>(
   itemsOrPayload: unknown,
   options: {
@@ -199,6 +257,64 @@ export function buildPaginatedPayload<T>(
   };
 }
 
+const RECEIVED_PAYLOAD_SAMPLE_MAX_CHARS = 200;
+const RECEIVED_PAYLOAD_SAMPLE_MAX_ARRAY_ITEMS = 5;
+
+// Only ever called on the non-array payloads that reach extractArrayItems'
+// error path (arrays are handled before it), so no array branch is needed.
+function describeReceivedType(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  return typeof value;
+}
+
+/**
+ * JSON-stringify a value for an error sample without walking large collections:
+ * arrays are capped to a small prefix at every depth, so a shape-drift payload
+ * like `{ items: [...thousands...] }` can't allocate and traverse the whole
+ * collection just to build a diagnostic string.
+ */
+function boundedStringifyForSample(value: unknown): string {
+  const seen = new WeakSet<object>();
+  try {
+    return (
+      JSON.stringify(value, (_key, val) => {
+        if (typeof val === "object" && val !== null) {
+          if (seen.has(val)) {
+            return "[Circular]";
+          }
+          seen.add(val);
+          if (
+            Array.isArray(val) &&
+            val.length > RECEIVED_PAYLOAD_SAMPLE_MAX_ARRAY_ITEMS
+          ) {
+            return [
+              ...val.slice(0, RECEIVED_PAYLOAD_SAMPLE_MAX_ARRAY_ITEMS),
+              `…(+${val.length - RECEIVED_PAYLOAD_SAMPLE_MAX_ARRAY_ITEMS} more)`,
+            ];
+          }
+        }
+        return val;
+      }) ?? String(value)
+    );
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * Render a compact, safe description of an unexpected payload for error
+ * messages: its runtime type plus a truncated JSON sample, so the calling
+ * agent can see what actually came back instead of a shape-only complaint.
+ */
+function describeReceivedPayload(value: unknown): string {
+  return `type "${describeReceivedType(value)}" (sample: ${truncateString(
+    boundedStringifyForSample(value),
+    RECEIVED_PAYLOAD_SAMPLE_MAX_CHARS
+  )})`;
+}
+
 export function extractArrayItems<T>(payload: unknown): T[] {
   if (Array.isArray(payload)) {
     return payload as T[];
@@ -207,7 +323,11 @@ export function extractArrayItems<T>(payload: unknown): T[] {
   if (Array.isArray(record.data)) {
     return record.data as T[];
   }
-  throw new Error("Expected array response or { data: [] } response");
+  throw new Error(
+    `Expected array response or { data: [] } response, but received ${describeReceivedPayload(
+      payload
+    )}`
+  );
 }
 
 export const WEBAPP_URL =

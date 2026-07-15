@@ -37,6 +37,13 @@ export type DesktopAppLifecycleTimerHandle = {
 export type CreateDesktopAppLifecycleTelemetryOptions = {
   runtime: DesktopOtelRuntime;
   getOperatingMode: () => DesktopAppOperatingMode;
+  /**
+   * Resolves the authenticated organization id for multiplayer org attribution
+   * (FEA-1996). Returns `undefined` in single-player, so lifecycle events emit
+   * no org identity unless authenticated. Optional: when omitted, no org is
+   * attached.
+   */
+  getOrganizationId?: () => string | undefined;
   heartbeatIntervalMs?: number;
   setIntervalFn?: (
     callback: () => void,
@@ -77,6 +84,7 @@ export async function shutdownDesktopOtelRuntime({
 export function createDesktopAppLifecycleTelemetry({
   runtime,
   getOperatingMode,
+  getOrganizationId,
   heartbeatIntervalMs = APP_LIFECYCLE_HEARTBEAT_INTERVAL_MS,
   setIntervalFn = setDesktopAppLifecycleInterval,
   clearIntervalFn = clearDesktopAppLifecycleInterval,
@@ -123,6 +131,7 @@ export function createDesktopAppLifecycleTelemetry({
       runtime.emitAppLifecycleEvent({
         event,
         operatingMode: getOperatingMode(),
+        organizationId: getOrganizationId?.(),
       });
     } catch (error) {
       logWarning("otel", formatDesktopAppLifecycleWarning(event, error));

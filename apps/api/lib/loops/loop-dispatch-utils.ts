@@ -67,7 +67,10 @@ export async function dispatchAndClassify(
     const launchError = classifyLaunchFailure(error);
     log.error(`[${logPrefix}] Failed to launch loop`, {
       loopId,
-      error: error instanceof Error ? error.message : String(error),
+      // Pass the raw error so jsonReplacer preserves name/message/stack for
+      // Datadog; loop launch is a critical dispatch step and the stack tells
+      // an operator which downstream call actually threw.
+      error,
       dispatchReason:
         isDispatchError(error) && error.dispatchReason
           ? error.dispatchReason

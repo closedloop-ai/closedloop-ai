@@ -86,6 +86,7 @@ export const Reply: Story = {
 
 export const InlineEdit: Story = {
   args: {
+    ariaLabel: "Edit comment",
     defaultValue:
       "The error handling still needs a user-facing fallback for timeout cases.",
     onCancel: () => undefined,

@@ -1,9 +1,11 @@
 "use client";
 
+import { CHAT_MODEL_OPTIONS } from "@repo/app/chat/lib/default-models";
 import { cn } from "@repo/design-system/lib/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { PrCommentContext } from "@/app/(authenticated)/[orgSlug]/build/[id]/comment-context";
+import { ChatModelSelect } from "@/components/chat/ChatModelSelect";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useChatSession } from "@/hooks/chat/use-chat-session";
 
@@ -129,6 +131,10 @@ export function ChatDrawerPanel({
   fillParent = false,
 }: Readonly<ChatDrawerPanelProps>) {
   const { width, handleResizeStart } = useResizableWidth();
+  // Model the next message will be sent with. Provider stays pinned per chat;
+  // this only switches model *within* the bound provider. `undefined` lets the
+  // hook fall back to DEFAULT_CHAT_MODELS[provider].
+  const [selectedModel, setSelectedModel] = useState<string | undefined>();
 
   const handleProviderMismatch = useCallback((boundProvider: string) => {
     toast.error(
@@ -140,11 +146,27 @@ export function ChatDrawerPanel({
     chatKey,
     context,
     provider,
+    model: selectedModel,
     cwd,
     onProviderMismatch: handleProviderMismatch,
     contextSelection,
     onContextConsumed,
   });
+
+  // Once history loads, adopt the chat's persisted model as the initial picker
+  // selection (only if it's one of this provider's offered options) so the
+  // control reflects — and keeps sending — the model the chat is bound to,
+  // until the user explicitly picks a different one.
+  const { currentModel } = chat;
+  useEffect(() => {
+    if (
+      selectedModel === undefined &&
+      currentModel !== null &&
+      CHAT_MODEL_OPTIONS[provider].some((o) => o.value === currentModel)
+    ) {
+      setSelectedModel(currentModel);
+    }
+  }, [currentModel, provider, selectedModel]);
 
   return (
     <div
@@ -169,6 +191,14 @@ export function ChatDrawerPanel({
         currentModel={chat.currentModel}
         currentProvider={chat.currentProvider}
         error={chat.error}
+        inputFooter={
+          <ChatModelSelect
+            disabled={chat.isStreaming}
+            onChange={setSelectedModel}
+            provider={provider}
+            value={selectedModel}
+          />
+        }
         inputValue={chat.inputValue}
         isLoading={chat.isLoading}
         isStreaming={chat.isStreaming}

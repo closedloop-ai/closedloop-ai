@@ -8,7 +8,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createAgentCoachingApi } from "./agent-coaching-api";
 import { buildActionDraft } from "./agent-coaching-drafts";
 import type {
@@ -16,6 +16,7 @@ import type {
   AgentCoachingApi,
   AgentCoachingFeedbackEvent,
   AgentCoachingTip,
+  CoachingPackInfo,
 } from "./agent-coaching-types";
 
 type AgentCoachingTipsProps = {
@@ -36,13 +37,19 @@ function formatInstallError(error: unknown): string {
     : "Install failed.";
 }
 
-/** Append generated tips not already shown; reports whether any were new. */
+/**
+ * Append generated tips not already shown or cleared this session; reports
+ * whether any were new.
+ */
 function appendFreshTips(
   current: AgentCoachingTip[],
-  loaded: AgentCoachingTip[]
+  loaded: AgentCoachingTip[],
+  cleared: ReadonlySet<string>
 ): { next: AgentCoachingTip[]; added: boolean } {
   const known = new Set(current.map((tip) => tip.id));
-  const fresh = loaded.filter((tip) => !known.has(tip.id));
+  const fresh = loaded.filter(
+    (tip) => !(known.has(tip.id) || cleared.has(tip.id))
+  );
   return { next: [...current, ...fresh], added: fresh.length > 0 };
 }
 
@@ -52,12 +59,22 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
     [api]
   );
   const [tips, setTips] = useState<AgentCoachingTip[]>([]);
+  const [activePack, setActivePack] = useState<CoachingPackInfo | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fetchingMore, setFetchingMore] = useState(false);
   const [noNewNotice, setNoNewNotice] = useState(false);
   const [lastAction, setLastAction] = useState<string | null>(null);
+  // Tips the user cleared this session (dismissed or acted on). Held in a ref
+  // (it is never rendered) and mutated synchronously the moment a tip is
+  // cleared, so getMoreTips' async setTips updater reads the set as of
+  // promise-resolution time, not button-click time: a tip cleared while
+  // loadTips() is in flight must still be suppressed. recordFeedback is
+  // best-effort, so if it fails the model can re-serve a cleared tip on the next
+  // load; excluding these ids from appended results keeps a telemetry failure
+  // from resurrecting a tip the user already cleared this session.
+  const clearedIdsRef = useRef<Set<string>>(new Set());
   const installer = useDraftInstaller(coachingApi);
 
   // Load the day's batch on mount (i.e. every login). The model already drops
@@ -66,17 +83,22 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
   // not auto-refetch.
   useEffect(() => {
     let mounted = true;
+    // A single load pass returns the day's tips and the pack that powered them.
+    // The pack drives the "Powered by …" badge; null / failure just means the
+    // built-in signals are in effect, so the badge renders nothing.
     coachingApi
       .loadTips()
-      .then((loadedTips) => {
+      .then(({ tips: loadedTips, activePack: pack }) => {
         if (mounted) {
           setTips(loadedTips);
+          setActivePack(pack);
           setSelectedIndex(0);
         }
       })
       .catch(() => {
         if (mounted) {
           setTips([]);
+          setActivePack(null);
         }
       })
       .finally(() => {
@@ -122,6 +144,7 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
       return;
     }
     const clearedId = selectedTip.id;
+    clearedIdsRef.current.add(clearedId);
     setTips((current) => {
       const next = current.filter((tip) => tip.id !== clearedId);
       setSelectedIndex((index) =>
@@ -133,7 +156,13 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
   };
 
   const dismissTip = async () => {
-    await recordFeedback("dismissed");
+    // recordFeedback is best-effort telemetry; a rejection must never strand the
+    // tip in the UI. Clear it regardless of whether the feedback was recorded.
+    try {
+      await recordFeedback("dismissed");
+    } catch {
+      // Ignore — the tip is still cleared below so the user can dismiss it.
+    }
     setLastAction(null);
     clearSelectedTip();
   };
@@ -141,7 +170,13 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
   const openDetails = async () => {
     if (!expanded) {
       setExpanded(true);
-      await recordFeedback("details_opened");
+      // recordFeedback is best-effort telemetry; a rejection must not surface
+      // as an unhandled rejection. The panel is already expanded above.
+      try {
+        await recordFeedback("details_opened");
+      } catch {
+        // Ignore — the details are open regardless of feedback recording.
+      }
     }
   };
 
@@ -151,10 +186,6 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
       return;
     }
     await openDetails();
-  };
-
-  const handleTipDoubleClick = () => {
-    openDetails().catch(() => undefined);
   };
 
   const handleAction = async (action: AgentCoachingAction) => {
@@ -174,7 +205,14 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
       setLastAction(`${action.label}: review the draft below, then install`);
       return;
     }
-    await recordFeedback("action_clicked", action.id);
+    // recordFeedback is best-effort telemetry; a rejection must not strand the
+    // status message or surface as an unhandled rejection. The draft was
+    // already produced above.
+    try {
+      await recordFeedback("action_clicked", action.id);
+    } catch {
+      // Ignore — the draft is ready regardless of feedback recording.
+    }
     setLastAction(`${action.label}: drafted & copied to clipboard`);
   };
 
@@ -183,7 +221,13 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
     if (!(action && selectedTip)) {
       return;
     }
-    await recordFeedback("action_clicked", action.id);
+    // recordFeedback is best-effort telemetry; a rejection must not block the
+    // install (which clears the tip on success).
+    try {
+      await recordFeedback("action_clicked", action.id);
+    } catch {
+      // Ignore — proceed to install regardless of feedback recording.
+    }
     await installer.install(clearSelectedTip);
   };
 
@@ -209,9 +253,15 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
     installer.reset();
     coachingApi
       .loadTips()
-      .then((loadedTips) => {
+      .then(({ tips: loadedTips, activePack: pack }) => {
+        // Keep the badge in sync with the signals this pass actually used.
+        setActivePack(pack);
         setTips((current) => {
-          const { next, added } = appendFreshTips(current, loadedTips);
+          const { next, added } = appendFreshTips(
+            current,
+            loadedTips,
+            clearedIdsRef.current
+          );
           if (!added) {
             setNoNewNotice(true);
             return current;
@@ -239,6 +289,16 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
             <Lightbulb className="size-4" />
           </span>
           Coaching
+          {activePack ? (
+            <Badge
+              title={`Coaching signals supplied by the ${activePack.displayName} pack${
+                activePack.version ? ` v${activePack.version}` : ""
+              }`}
+              variant="secondary"
+            >
+              Powered by {activePack.displayName}
+            </Badge>
+          ) : null}
         </div>
         <Button
           disabled={fetchingMore}
@@ -255,11 +315,7 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
       {selectedTip ? (
         <div className="mt-3">
           <div className="flex items-start gap-3">
-            <button
-              className="min-w-0 flex-1 text-left"
-              onDoubleClick={handleTipDoubleClick}
-              type="button"
-            >
+            <div className="min-w-0 flex-1 text-left">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="accent">
                   {CATEGORY_LABELS[selectedTip.category]}
@@ -274,7 +330,7 @@ export function AgentCoachingTips({ api }: AgentCoachingTipsProps) {
               <p className="mt-1 text-[var(--muted-foreground)] text-sm">
                 {selectedTip.body}
               </p>
-            </button>
+            </div>
             <Button
               aria-label="Dismiss coaching tip"
               onClick={dismissTip}

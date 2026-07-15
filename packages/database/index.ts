@@ -6,6 +6,11 @@ import { PrismaClient } from "./generated/client";
 import type { TransactionClient } from "./generated/internal/prismaNamespace";
 import { keys } from "./keys";
 import { formatSearchPath, resolveSchemaName } from "./schema-utils";
+import {
+  classifyDatabaseTransport,
+  isLocalhostUrl,
+  resolveSslOption,
+} from "./scripts/db-utils";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting Prisma client types
 export * from "./generated/client";
@@ -45,6 +50,16 @@ export async function withDb<T>(
 
   const db = await getDatabase();
   return fn(db);
+}
+
+export function getDatabaseTransportPosture() {
+  return classifyDatabaseTransport({
+    databaseUrl: process.env.DATABASE_URL,
+    pgHost: process.env.PGHOST,
+    pgDatabase: process.env.PGDATABASE,
+    pgUser: process.env.PGUSER,
+    allowInsecureSsl: process.env.ALLOW_INSECURE_SSL === "1",
+  });
 }
 
 /**
@@ -192,15 +207,28 @@ async function getPool(): Promise<pg.Pool> {
   if (env.DATABASE_URL) {
     // Password auth via DATABASE_URL (local dev or remote ECS tasks)
     const url = new URL(env.DATABASE_URL);
-    const isLocalhost =
-      url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    // Strip sslmode from connection string — we provide explicit ssl config
-    // to the Pool. Keeping both can cause driver/adapter conflicts.
+    const isLocalhost = isLocalhostUrl(url);
+    // Read sslmode before stripping it from the connection string — we provide
+    // explicit ssl config to the Pool, and keeping sslmode on the URL too can
+    // cause driver/adapter conflicts. Delegate to the shared SSL policy so the
+    // runtime pool honors the caller's sslmode (e.g. `?sslmode=disable` opts
+    // out of TLS) and defaults to verified TLS for non-localhost hosts, matching
+    // the seed scripts. Verification trusts the system roots plus the bundled
+    // RDS CA (`VERIFIED_SSL_CA`), so both publicly-trusted hosts (e.g. Neon) and
+    // RDS endpoints verify. `ALLOW_INSECURE_SSL=1` is the same deploy-free escape
+    // hatch the IAM path and seed scripts honor — it restores unverified (but
+    // still encrypted) TLS for any endpoint not covered by the bundle, preferable
+    // to the only other URL-side opt-out (`?sslmode=disable`, which drops TLS).
+    const sslmode = url.searchParams.get("sslmode");
     url.searchParams.delete("sslmode");
 
     globalForPrisma.pool = new pg.Pool({
       connectionString: url.toString(),
-      ssl: isLocalhost ? false : { rejectUnauthorized: false },
+      ssl: resolveSslOption({
+        isLocalhost,
+        sslmode,
+        allowInsecure: process.env.ALLOW_INSECURE_SSL === "1",
+      }),
       ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
     });
   } else {
@@ -216,7 +244,20 @@ async function getPool(): Promise<pg.Pool> {
       user: env.PGUSER,
       // pg.Pool calls this function for each new connection, ensuring fresh tokens
       password: async () => signer.getAuthToken(),
-      ssl: { rejectUnauthorized: false },
+      // Verified TLS against the RDS endpoint via the shared SSL policy. The IAM
+      // host is never localhost and carries no sslmode, so this resolves to
+      // `{ rejectUnauthorized: true, ca: [...system roots, RDS CA bundle] }` —
+      // short-lived IAM tokens and queries are sent over TLS whose server cert
+      // is verified. The RDS CA is supplied explicitly (`VERIFIED_SSL_CA` in
+      // db-utils.ts) because it is NOT in the Vercel runtime's default trust
+      // store; relying on system CAs alone produced `SELF_SIGNED_CERT_IN_CHAIN`
+      // and took prod down. `ALLOW_INSECURE_SSL=1` remains a deploy-free escape
+      // hatch that drops verification for any endpoint not covered by the bundle.
+      ssl: resolveSslOption({
+        isLocalhost: false,
+        sslmode: null,
+        allowInsecure: process.env.ALLOW_INSECURE_SSL === "1",
+      }),
       max: 20,
       // How long to wait for connection handshake (network timeout)
       connectionTimeoutMillis: 30_000,

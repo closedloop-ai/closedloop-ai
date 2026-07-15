@@ -20,9 +20,35 @@ describe("TraceMessageBody", () => {
       <TraceMessageBody text="Just some **normal** prose." />
     );
 
+    expect(container.querySelector("span div")).toBeNull();
     expect(container.querySelector(".st-tag")).toBeNull();
     expect(queryByRole("button")).toBeNull();
     expect(container.querySelector("strong")?.textContent).toBe("normal");
+  });
+
+  it("keeps markdown selection metadata on valid block wrappers", () => {
+    const { container } = render(
+      <TraceMessageBody
+        text="Just some **normal** prose."
+        traceHighlight={{ kind: "exact", startOffset: 10, endOffset: 16 }}
+        traceId="trace:s1:1"
+        traceRow={1}
+        traceSelectionEnabled
+        traceSessionId="s1"
+        traceTurnId="turn:stable"
+      />
+    );
+
+    const selectionRoot = container.querySelector("[data-trace-text-row]");
+    expect(selectionRoot?.tagName).toBe("DIV");
+    expect(selectionRoot?.getAttribute("data-trace-id")).toBe("trace:s1:1");
+    expect(selectionRoot?.getAttribute("data-trace-turn-id")).toBe(
+      "turn:stable"
+    );
+    expect(
+      container.querySelector("[data-trace-selected-passage]")?.textContent
+    ).toBe("normal");
+    expect(container.querySelector("span div")).toBeNull();
   });
 
   it("collapses a harness wrapper tag into an expandable chip", () => {

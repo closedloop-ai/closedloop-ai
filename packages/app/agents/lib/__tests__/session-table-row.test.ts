@@ -1,4 +1,7 @@
-import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
+import {
+  type AgentSessionListItem,
+  SessionPrLifecycleStatus,
+} from "@repo/api/src/types/agent-session";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentSessionListItemFixture } from "../../components/sessions/session-list-fixtures";
 import {
@@ -101,6 +104,71 @@ describe("agentSessionToSessionTableRow", () => {
     expect(row.lastActivityLabel).toBe("—");
     expect(row.durationLabel).toBe("-");
   });
+
+  it("maps session pull requests into compact PR and merge display fields", () => {
+    const row = agentSessionToSessionTableRow(
+      sessionListItem({
+        prs: [
+          {
+            num: 17,
+            title: "Add session PR columns",
+            status: SessionPrLifecycleStatus.Open,
+          },
+          {
+            num: 18,
+            title: "Merge session sync",
+            status: SessionPrLifecycleStatus.Merged,
+          },
+        ],
+        prsMerged: 1,
+      }),
+      "owner/repo"
+    );
+
+    expect(row.pullRequestSummaryLabel).toBe("2 PRs");
+    expect(row.pullRequests).toEqual([
+      {
+        numberLabel: "#17",
+        statusLabel: SessionPrLifecycleStatus.Open,
+        title: "Add session PR columns",
+        label: "#17 open",
+      },
+      {
+        numberLabel: "#18",
+        statusLabel: SessionPrLifecycleStatus.Merged,
+        title: "Merge session sync",
+        label: "#18 merged",
+      },
+    ]);
+    expect(row.mergeStatusLabel).toBe("1/2 merged");
+  });
+
+  it("renders all-unknown PR lifecycle as unknown merge state", () => {
+    const row = agentSessionToSessionTableRow(
+      sessionListItem({
+        prs: [
+          {
+            num: 17,
+            title: "Legacy merged claim",
+            status: SessionPrLifecycleStatus.Unknown,
+          },
+        ],
+        prsMerged: 0,
+      }),
+      "owner/repo"
+    );
+
+    expect(row.pullRequestSummaryLabel).toBe("#17 unknown");
+    expect(row.mergeStatusLabel).toBe("Unknown");
+  });
+
+  it("renders empty PR fields when a session has no pull requests", () => {
+    const row = agentSessionToSessionTableRow(sessionListItem(), "owner/repo");
+
+    expect(row.pullRequests).toEqual([]);
+    expect(row.pullRequestSummaryLabel).toBeNull();
+    expect(row.mergeStatusLabel).toBeNull();
+  });
 });
 
 function sessionListItem(
@@ -132,7 +200,6 @@ function sessionListItem(
     agentCount: 1,
     toolUseCount: 0,
     errorCount: 0,
-    issueId: null,
     baseBranch: null,
     sourceArtifactId: null,
     sourceLoopId: null,

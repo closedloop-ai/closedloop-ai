@@ -53,6 +53,32 @@ describe("usePreferredBranchLoc", () => {
     expect(result.current.netLoc).toBe(16);
   });
 
+  it("uses the linked PR URL for live totals when repo identity is missing", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          files: [{ filename: "a.ts", additions: 2, deletions: 3 }],
+        }),
+    } as Response);
+    const detail = makeBranchDetail({
+      repoFullName: null,
+      prUrl: "https://github.com/octo/repo/pull/42",
+      prNumber: 42,
+    });
+
+    const { result } = renderHook(() => usePreferredBranchLoc(detail), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.source).toBe("github"));
+    expect(result.current.netLoc).toBe(5);
+    const url = String(fetchSpy.mock.calls[0]?.[0]);
+    expect(url).toContain("owner=octo");
+    expect(url).toContain("repo=repo");
+  });
+
   it("falls back to enrichment when there is no connected PR (source: local)", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const detail = makeBranchDetail({

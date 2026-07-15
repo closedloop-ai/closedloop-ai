@@ -6,6 +6,7 @@ import {
   type DocumentWithProject,
   type GenerationStatus,
 } from "@repo/api/src/types/document";
+import { PRD_REQUEST_CHANGES_FEATURE_FLAG_KEY } from "@repo/api/src/types/loop";
 import { FavoriteButton } from "@repo/app/documents/components/favorite-button";
 import { isCommandDisabled } from "@repo/app/documents/lib/generation-status-utils";
 import { DOCUMENT_TYPE_ICONS } from "@repo/app/projects/lib/project-constants";
@@ -82,7 +83,9 @@ export function PRDEditorHeader({
   isPending = false,
 }: Readonly<PRDEditorHeaderProps>) {
   const orgSlug = useOrgSlug();
-  const requestChangesFlag = useFeatureFlag("prd-request-changes");
+  const requestChangesFlag = useFeatureFlag(
+    PRD_REQUEST_CHANGES_FEATURE_FLAG_KEY
+  );
 
   const breadcrumbs: BreadcrumbEntry[] = prd.project?.teams?.[0]?.id
     ? [

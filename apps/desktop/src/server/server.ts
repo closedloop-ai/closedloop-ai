@@ -8,6 +8,7 @@ import type { DesktopPopUnavailableReporter } from "../main/desktop-pop-sign-uti
 import { gatewayLog } from "../main/gateway-logger.js";
 import type { JobStore } from "../main/job-store.js";
 import type { LocalSessionStore } from "../main/local-session-store.js";
+import type { LoopCompletedHook } from "../main/loop-finalizer.js";
 import { LoopSchedulerContext } from "../main/loop-scheduler-context.js";
 import type { LoopTokenStore } from "../main/loop-token-store.js";
 import {
@@ -21,6 +22,7 @@ import {
   FALLBACK_GATEWAY_PORTS,
   type HealthResponse,
 } from "../shared/contracts.js";
+import type { BranchPrIdentityResolver } from "./operations/git-pr.js";
 import type { WorktreeProvider } from "./operations/symphony-loop.js";
 import {
   type DesktopSecurityUpgradePayload,
@@ -69,6 +71,8 @@ export type DesktopGatewayServerOptions = {
    * Production passes the app-level singleton so its lifetime matches app boot.
    */
   schedulers?: LoopSchedulerContext;
+  /** Fired on the live-exit edge when a loop reaches terminal success. */
+  onLoopCompleted?: LoopCompletedHook;
   getGatewayId?: () => string;
   getComputeTargetId?: () => string | null;
   handleSecurityUpgrade?: (
@@ -105,6 +109,8 @@ export type DesktopGatewayServerOptions = {
   }>;
   applyUpdate?: () => Promise<void>;
   isUpdateAndRestartEnabled?: () => boolean;
+  enableLegacyGithubDataRoutes?: boolean;
+  resolveBranchPrIdentity?: BranchPrIdentityResolver;
 };
 
 export class DesktopGatewayServer {
@@ -156,6 +162,7 @@ export class DesktopGatewayServer {
       worktreeProvider: this.options.worktreeProvider,
       loopTokenStore: this.options.loopTokenStore,
       schedulers: this.schedulers,
+      onLoopCompleted: this.options.onLoopCompleted,
       retrySpawnDeps: this.options.retrySpawnDeps,
       getClaudeCodeOtelReceiverStatus:
         this.options.getClaudeCodeOtelReceiverStatus,
@@ -167,6 +174,8 @@ export class DesktopGatewayServer {
       checkForUpdate: this.options.checkForUpdate,
       applyUpdate: this.options.applyUpdate,
       isUpdateAndRestartEnabled: this.options.isUpdateAndRestartEnabled,
+      enableLegacyGithubDataRoutes: this.options.enableLegacyGithubDataRoutes,
+      resolveBranchPrIdentity: this.options.resolveBranchPrIdentity,
     });
   }
 
@@ -231,7 +240,9 @@ export class DesktopGatewayServer {
       payload: DesktopSecurityUpgradePayload
     ) => Promise<DesktopSecurityUpgradeResult> | DesktopSecurityUpgradeResult,
     getOnboardingCompleted?: () => boolean,
-    schedulers?: LoopSchedulerContext
+    schedulers?: LoopSchedulerContext,
+    onLoopCompleted?: LoopCompletedHook,
+    resolveBranchPrIdentity?: BranchPrIdentityResolver
   ): DesktopGatewayServer {
     return new DesktopGatewayServer({
       host: "127.0.0.1",
@@ -271,6 +282,8 @@ export class DesktopGatewayServer {
       applyUpdate,
       isUpdateAndRestartEnabled,
       schedulers,
+      onLoopCompleted,
+      resolveBranchPrIdentity,
     });
   }
 

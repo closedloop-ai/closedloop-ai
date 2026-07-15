@@ -9,8 +9,8 @@
     "dev": "turbo dev",
     "typecheck": "turbo typecheck",
     "figma:typecheck": "pnpm --filter @closedloop-ai/design-system figma:typecheck",
-    "lint": "pnpm exec ultracite check",
-    "lint:fix": "pnpm exec ultracite fix",
+    "lint": "biome check --no-errors-on-unmatched ./",
+    "lint:fix": "biome check --write --no-errors-on-unmatched ./",
     "test": "turbo test",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
@@ -40,7 +40,7 @@
     "check-deps": "npx check-dependency-version-consistency"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.13",
+    "@biomejs/biome": "2.5.2",
     "@clerk/testing": "^2.0.25",
     "@playwright/test": "^1.58.2",
     "@repo/typescript-config": "workspace:*",
@@ -56,7 +56,8 @@
     "turbo": "^2.9.14",
     "typescript": "^5.9.3",
     "ultracite": "7.1.1",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
   },
   "engines": {
     "node": ">=24"

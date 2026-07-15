@@ -1,7 +1,7 @@
 "use client";
 
-import { TableHead } from "@repo/design-system/components/ui/table";
-import { cn } from "@repo/design-system/lib/utils";
+import { TableHead } from "@closedloop-ai/design-system/components/ui/table";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 
 export type SortDirection = "asc" | "desc";

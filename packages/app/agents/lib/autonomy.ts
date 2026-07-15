@@ -1,25 +1,23 @@
 /**
  * Autonomy is an integer `0–100` synced from the desktop app describing how much
- * of a session ran without human steering. The threshold boundaries live here so
- * every surface that classifies the score — the session-detail Properties panel
- * and the sessions-list "Autonomy" column — stays in sync (FEA-2094 SSOT).
+ * of a session ran without human steering. The threshold boundaries and the
+ * classifier are the runtime-agnostic SSOT in `@repo/api/src/agent-session-filters`
+ * (FEA-2094) so every surface that classifies the score — the session-detail
+ * Properties panel, the sessions-list "Autonomy" column, and the Autonomy filter
+ * facet — stays in sync. This module re-exports the UI-facing label helpers.
  */
-export type AutonomyTier = "high" | "mixed" | "guided" | "unknown";
+import {
+  type AutonomyTier,
+  classifyAutonomyTier,
+} from "@repo/api/src/agent-session-filters";
+
+export type { AutonomyTier } from "@repo/api/src/agent-session-filters";
 
 /** Single source of truth for the autonomy threshold boundaries. */
 export function getAutonomyTier(
   value: number | null | undefined
 ): AutonomyTier {
-  if (value == null) {
-    return "unknown";
-  }
-  if (value >= 80) {
-    return "high";
-  }
-  if (value >= 50) {
-    return "mixed";
-  }
-  return "guided";
+  return classifyAutonomyTier(value);
 }
 
 const AUTONOMY_TIER_WORD: Record<AutonomyTier, string> = {

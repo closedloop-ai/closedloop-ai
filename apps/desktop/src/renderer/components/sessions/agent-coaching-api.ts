@@ -19,6 +19,7 @@ import {
   type AgentCoachingInput,
   type AgentCoachingLlmProvider,
   type AgentCoachingTip,
+  type CoachingPackInfo,
 } from "./agent-coaching-types";
 
 type CreateAgentCoachingApiOptions = {
@@ -39,7 +40,8 @@ const MAX_GENERATION_ROUNDS = 3;
 async function collectGeneratedTips(
   generateTips: AgentCoachingLlmProvider,
   input: AgentCoachingInput,
-  seedTips: AgentCoachingTip[]
+  seedTips: AgentCoachingTip[],
+  bestPracticeSignals: string[] | undefined
 ): Promise<AgentCoachingTip[]> {
   const excludedTipIds = excludedCoachingTipIds(
     input.feedback,
@@ -53,7 +55,9 @@ async function collectGeneratedTips(
     }
     let batch: AgentCoachingTip[];
     try {
-      batch = await generateTips(buildAgentCoachingLlmRequest(input, seedTips));
+      batch = await generateTips(
+        buildAgentCoachingLlmRequest(input, seedTips, bestPracticeSignals)
+      );
     } catch {
       break;
     }
@@ -88,14 +92,22 @@ export function createAgentCoachingApi(
       );
       return parseGeneratedTips(output);
     });
+  // Resolve the active coaching pack once per call. A pack's signals REPLACE
+  // the built-in defaults; absent (no pack, old bridge, or error) we pass
+  // undefined so buildAgentCoachingLlmRequest uses AGENTIC_DEVELOPMENT_SIGNALS.
+  const loadActivePack = (): Promise<CoachingPackInfo | null> =>
+    desktopApi.getCoachingPack?.().catch(() => null) ?? Promise.resolve(null);
   return {
+    loadActivePack,
     loadTips: async () => {
-      const [analytics, workflow, recentEvents, skills] = await Promise.all([
-        desktopApi.db.getAnalytics().catch(() => null),
-        desktopApi.db.getWorkflowData().catch(() => null),
-        desktopApi.db.getEventFeed().catch(() => []),
-        desktopApi.db.getAllSkills().catch(() => []),
-      ]);
+      const [analytics, workflow, recentEvents, skills, activePack] =
+        await Promise.all([
+          desktopApi.db.getAnalytics().catch(() => null),
+          desktopApi.db.getWorkflowData().catch(() => null),
+          desktopApi.db.getEventFeed().catch(() => []),
+          desktopApi.db.getAllSkills().catch(() => []),
+          loadActivePack(),
+        ]);
       const input = {
         analytics,
         feedback: loadAgentCoachingFeedback(storage),
@@ -108,13 +120,17 @@ export function createAgentCoachingApi(
       const collected = await collectGeneratedTips(
         generateTips,
         input,
-        seedTips
+        seedTips,
+        activePack?.signals
       );
       // The harness is the source of truth when it produces tips; the local
-      // heuristic seed is the fallback when it returns nothing or errors.
-      return collected.length > 0
-        ? collected.slice(0, AGENT_COACHING_DAILY_TIP_LIMIT)
-        : seedTips;
+      // heuristic seed is the fallback when it returns nothing or errors. The
+      // pack is returned alongside so the badge matches the signals just used.
+      const tips =
+        collected.length > 0
+          ? collected.slice(0, AGENT_COACHING_DAILY_TIP_LIMIT)
+          : seedTips;
+      return { tips, activePack };
     },
     recordFeedback: (event: AgentCoachingFeedbackEvent) => {
       appendAgentCoachingFeedback(event, storage);

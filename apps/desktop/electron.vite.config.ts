@@ -19,22 +19,40 @@ import { defineConfig } from "electron-vite";
 //     `@repo/api/src/...js` specifier resolves to a nonexistent file. It also
 //     needs resolve.alias to point the bare specifier at the package source dir
 //     (Vite then resolves `.../foo.js` → `.../foo.ts`).
-//   - @repo/shared-platform (= @closedloop-ai/shared-platform) — a transitive
-//     dep of @repo/api, also reached directly via
-//     `@repo/shared-platform/relay-request-model`. It HAS an `exports` map, so
-//     it needs no alias (exports resolution finds it); excluding it just forces
-//     it to inline rather than externalize. Bundling it keeps it out of the
-//     packaged runtime closure (packaging-workspace-deps.mjs), consistent with
-//     it being absent from node_modules.
-// Workspace packages that keep an `exports` map AND stay external, such as
-// @closedloop-ai/loops-api and @closedloop-ai/telemetry-contract, ship through
-// the staged runtime closure. Native modules (electron, @libsql/client,
-// better-sqlite3, electron-store, electron-updater, …) are externalized by
-// default (they are `dependencies`) and ship in node_modules.
-const WORKSPACE_INLINE = ["@repo/api", "@repo/shared-platform"];
+//   - @repo/shared-platform — a transitive dep of @repo/api, also reached
+//     directly via `@repo/shared-platform/relay-request-model`. Its `exports`
+//     map resolves to `.ts` source, so it needs no alias (exports resolution
+//     finds it); excluding it just forces it to inline rather than externalize.
+//     Bundling it keeps it out of the packaged runtime closure
+//     (packaging-workspace-deps.mjs), consistent with it being absent from
+//     node_modules.
+//   - @closedloop-ai/loops-api — same shape as @closedloop-ai/shared-platform: its `exports` now
+//     resolve to `.ts` source (it is no longer published/pre-built), so it must
+//     be inlined too — an external `.ts`-source package cannot be resolved by
+//     the packaged main process (plain Node, no tsx). No alias needed.
+//   - @repo/lib — surface-agnostic business logic (no React), same `.ts`-only
+//     no-`exports` shape as @repo/api, so it needs identical inline + alias
+//     treatment for the main process to bundle it from source. This is the
+//     package the main process CAN import (unlike the React-heavy @repo/app):
+//     it stays a pure leaf by construction (see packages/lib/AGENTS.md). The
+//     collectors deep-import its harness parser cores as `@repo/lib/harness/...`
+//     (FEA-2717), the same runtime specifier shape that made the inline+alias
+//     mandatory here, or a packaged-app boot hits `ERR_MODULE_NOT_FOUND`.
+// Workspace packages that keep a pre-built `dist` AND stay external, namely
+// @closedloop-ai/telemetry-contract (still published), ship through the staged
+// runtime closure. Native modules (electron, @libsql/client, better-sqlite3,
+// electron-store, electron-updater, …) are externalized by default (they are
+// `dependencies`) and ship in node_modules.
+const WORKSPACE_INLINE = [
+  "@repo/api",
+  "@repo/lib",
+  "@repo/shared-platform",
+  "@closedloop-ai/loops-api",
+];
 
 const workspaceAlias: Record<string, string> = {
   "@repo/api": resolve("../../packages/api"),
+  "@repo/lib": resolve("../../packages/lib"),
 };
 
 // Separately-spawned Node entry points. Each is loaded at runtime by PATH —
@@ -55,7 +73,7 @@ const MAIN_WORKER_ENTRIES: Record<string, string> = {
     "src/main/agent-session-sync-payload-worker.ts"
   ),
   "historical-parse-worker": resolve(
-    "src/main/collectors/historical-parse-worker.ts"
+    "src/main/collectors/engine/historical-parse-worker.ts"
   ),
 };
 

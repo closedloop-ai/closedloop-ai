@@ -16,7 +16,7 @@
  * file still imports.
  */
 import path from "node:path";
-import type { HarnessCollector, NormalizedSession } from "../types.js";
+import type { FileHarnessCollector, NormalizedSession } from "../types.js";
 import {
   getCopilotCliSessionStateDir,
   getVscodeWorkspaceStorageDir,
@@ -24,7 +24,10 @@ import {
   listCliEventFiles,
   readWorkspacePathFromHashDir,
 } from "./copilot-home.js";
-import { parseChatSessionFile, parseCliEventFile } from "./copilot-parser.js";
+import {
+  parseChatSessionFileGated,
+  parseCliEventFile,
+} from "./copilot-parser.js";
 
 /**
  * Re-derive a chat session's workspacePath from its file path when the file is
@@ -47,7 +50,7 @@ function sessionIdFromCliFilePath(filePath: string): string {
   return path.basename(path.dirname(filePath));
 }
 
-export function createCopilotCollector(): HarnessCollector {
+export function createCopilotCollector(): FileHarnessCollector {
   return {
     key: "copilot",
     cacheName: "copilot",
@@ -76,7 +79,10 @@ export function createCopilotCollector(): HarnessCollector {
 
       const chatMatch = chatFiles.find((f) => f.filePath === filePath);
       if (chatMatch) {
-        const session = parseChatSessionFile(filePath, chatMatch.workspacePath);
+        const session = await parseChatSessionFileGated(
+          filePath,
+          chatMatch.workspacePath
+        );
         return session ? [session] : [];
       }
 
@@ -90,7 +96,10 @@ export function createCopilotCollector(): HarnessCollector {
       // newly-written file still imports.
       if (filePath.endsWith(".json")) {
         const workspacePath = workspacePathFromChatFilePath(filePath);
-        const session = parseChatSessionFile(filePath, workspacePath);
+        const session = await parseChatSessionFileGated(
+          filePath,
+          workspacePath
+        );
         return session ? [session] : [];
       }
       if (filePath.endsWith(".jsonl")) {

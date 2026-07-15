@@ -7,6 +7,7 @@ import { GlobalSidebar } from "../sidebar";
 // Mock dependencies
 const mockQueryClientClear = vi.fn();
 const mockUseOrganization = vi.fn();
+const AGENT_SESSIONS_DASHBOARD_LINK_RE = /agent sessions dashboard/i;
 
 const flagResult = (flag: string, enabled: boolean) => ({
   key: flag,
@@ -22,6 +23,9 @@ const mockUseFeatureFlag = vi.fn((flag: string) => flagResult(flag, true));
 // Mock @repo/auth/client
 vi.mock("@repo/auth/client", () => ({
   useOrganization: () => mockUseOrganization(),
+  // GlobalSidebar renders useOrgSlug, which reads isSignedIn to gate its
+  // dev-only throw; the tests supply an org slug so the throw is never reached.
+  useAuth: () => ({ isSignedIn: true }),
 }));
 
 vi.mock("@repo/analytics/client", () => ({
@@ -65,17 +69,19 @@ vi.mock("@repo/design-system/components/ui/sidebar", () => ({
     <div data-testid="sidebar-menu">{children}</div>
   ),
   SidebarNavLinkItem: ({
+    href,
     title,
     icon,
     trailing,
   }: {
+    href?: string;
     title: React.ReactNode;
     icon?: React.ReactNode;
     trailing?: React.ReactNode;
   }) => (
     <div data-testid="sidebar-nav-link-item">
       {icon}
-      <span>{title}</span>
+      {href ? <a href={href}>{title}</a> : <span>{title}</span>}
       {trailing}
     </div>
   ),
@@ -244,6 +250,125 @@ describe("GlobalSidebar - Feature Flag Hydration", () => {
 
     expect(markup).not.toContain("Agent Management");
     expect(markup).toContain("Teams");
+  });
+
+  test("uses canonical browser QA routes for insights and agent sessions", () => {
+    const { getByRole, queryByRole } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(getByRole("link", { name: "Insights" })).toHaveAttribute(
+      "href",
+      "/test-org/insights"
+    );
+    expect(getByRole("link", { name: "Sessions" })).toHaveAttribute(
+      "href",
+      "/test-org/sessions"
+    );
+    expect(getByRole("link", { name: "Agent Monitoring" })).toHaveAttribute(
+      "href",
+      "/test-org/loops/monitoring"
+    );
+    expect(
+      document.querySelector('a[href="/test-org/agent-sessions/dashboard"]')
+    ).toBeNull();
+    expect(
+      queryByRole("link", { name: AGENT_SESSIONS_DASHBOARD_LINK_RE })
+    ).toBeNull();
+  });
+});
+
+describe("GlobalSidebar - Agents nav (insights + admin catalog)", () => {
+  afterEach(() => {
+    cleanup();
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, true)
+    );
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Only the Agents artifact flag is enabled so the assertions isolate the
+    // Agents-related nav items from the other artifact links.
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, flag === "agents")
+    );
+  });
+
+  test("no longer renders an Agent Insights link (folded into Agent Monitoring)", () => {
+    mockUseOrganization.mockReturnValue({
+      organization: createMockOrganization(),
+      membership: { role: "org:member" },
+      isLoaded: true,
+    });
+
+    const { queryByRole } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(queryByRole("link", { name: "Agent Insights" })).toBeNull();
+  });
+
+  test("shows the Packs link for a non-admin member", () => {
+    mockUseOrganization.mockReturnValue({
+      organization: createMockOrganization(),
+      membership: { role: "org:member" },
+      isLoaded: true,
+    });
+
+    const { getByRole } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(getByRole("link", { name: "Packs" })).toHaveAttribute(
+      "href",
+      "/test-org/admin/catalog"
+    );
+  });
+
+  test("shows the Packs link for an org admin", () => {
+    mockUseOrganization.mockReturnValue({
+      organization: createMockOrganization(),
+      membership: { role: "org:admin" },
+      isLoaded: true,
+    });
+
+    const { getByRole } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(getByRole("link", { name: "Packs" })).toHaveAttribute(
+      "href",
+      "/test-org/admin/catalog"
+    );
+  });
+
+  test("hides the Packs link when the Agents flag is off, even for admins", () => {
+    mockUseFeatureFlag.mockImplementation((flag: string) =>
+      flagResult(flag, false)
+    );
+    mockUseOrganization.mockReturnValue({
+      organization: createMockOrganization(),
+      membership: { role: "org:admin" },
+      isLoaded: true,
+    });
+
+    const { queryByRole } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(queryByRole("link", { name: "Packs" })).toBeNull();
+    expect(queryByRole("link", { name: "Agent Insights" })).toBeNull();
   });
 });
 

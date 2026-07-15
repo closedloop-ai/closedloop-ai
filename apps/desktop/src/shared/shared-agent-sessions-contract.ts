@@ -45,6 +45,14 @@ export type SharedAgentSessionsQuery = {
   statuses?: readonly string[];
   userIds?: readonly string[];
   repositories?: readonly string[];
+  /** Harness/model multi-select facets + autonomy-tier / cost-bucket id facets. */
+  harnesses?: readonly string[];
+  models?: readonly string[];
+  autonomyTiers?: readonly string[];
+  costBuckets?: readonly string[];
+  /** Change-presence id facet ("has_changes"/"no_changes") + PR-association id facet ("has_pr"/"no_pr"). */
+  changePresence?: readonly string[];
+  prAssociation?: readonly string[];
   limit?: number;
   offset?: number;
   /** Column-header sort: column id + direction. */

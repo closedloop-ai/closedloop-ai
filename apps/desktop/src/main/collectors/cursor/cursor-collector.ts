@@ -5,7 +5,7 @@
  * `home` (path/env resolution via cursor-home) + `parser` (transcript JSONL →
  * NormalizedSession via cursor-parser) + this small descriptor.
  */
-import type { HarnessCollector, NormalizedSession } from "../types.js";
+import type { FileHarnessCollector, NormalizedSession } from "../types.js";
 import {
   getCursorProjectsDir,
   listAllTranscriptFiles,
@@ -13,7 +13,7 @@ import {
 } from "./cursor-home.js";
 import { parseTranscriptFile } from "./cursor-parser.js";
 
-export function createCursorCollector(): HarnessCollector {
+export function createCursorCollector(): FileHarnessCollector {
   return {
     key: "cursor",
     cacheName: "cursor",

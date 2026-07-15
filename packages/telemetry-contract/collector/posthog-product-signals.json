@@ -1,0 +1,7 @@
+{
+  "$generatedBy": "packages/telemetry-contract/scripts/generate-collector-posthog-routing.ts",
+  "$doNotEdit": "Generated from CollectorProductSignalAttributeKeys; run `pnpm --filter @closedloop-ai/telemetry-contract generate:collector-posthog-routing` to regenerate (FEA-1991).",
+  "markerKeys": [
+    "gen_ai.request.model"
+  ]
+}

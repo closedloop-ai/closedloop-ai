@@ -5,6 +5,7 @@ import type {
 } from "@repo/api/src/types/desktop-analytics";
 import {
   DESKTOP_ANALYTICS_SOCKET_EVENT as API_DESKTOP_ANALYTICS_SOCKET_EVENT,
+  DESKTOP_ANALYTICS_STRING_MAX_LENGTH as API_DESKTOP_ANALYTICS_STRING_MAX_LENGTH,
   DESKTOP_SERVER_ANALYTICS_RELAY_FLAG as API_DESKTOP_SERVER_ANALYTICS_RELAY_FLAG,
   DesktopAnalyticsAckReason as ApiDesktopAnalyticsAckReason,
   DesktopAnalyticsEventName as ApiDesktopAnalyticsEventName,
@@ -24,7 +25,8 @@ export const DESKTOP_SERVER_ANALYTICS_RELAY_FLAG =
 export const DesktopAnalyticsAckReason = ApiDesktopAnalyticsAckReason;
 
 export const DESKTOP_ANALYTICS_PROPERTY_MAX_BYTES = 8 * 1024;
-export const DESKTOP_ANALYTICS_STRING_MAX_LENGTH = 512;
+export const DESKTOP_ANALYTICS_STRING_MAX_LENGTH =
+  API_DESKTOP_ANALYTICS_STRING_MAX_LENGTH;
 
 const DESKTOP_ANALYTICS_EVENT_NAME_VALUES = Object.values(
   ApiDesktopAnalyticsEventName
@@ -62,7 +64,7 @@ const ALLOWED_PROPERTY_KEY_VALUES = [
 ] as const;
 const allowedPropertyKeySchema = z.enum(ALLOWED_PROPERTY_KEY_VALUES);
 
-const FORBIDDEN_IDENTITY_PROPERTY_KEY_VALUES = [
+export const FORBIDDEN_IDENTITY_PROPERTY_KEY_VALUES = [
   "distinctId",
   "distinct_id",
   "clerkUserId",

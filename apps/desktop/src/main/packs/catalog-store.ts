@@ -5,7 +5,7 @@
  * `pack_catalog_history` (append-only star/fork samples for the sparkline),
  * `pack_install_runs` (audit log for install/uninstall subprocess executions).
  *
- * FEA-1791 Phase 3: the whole module runs on the single `DesktopPrisma` client.
+ * The whole module runs on the single `DesktopPrisma` client.
  * Writes (`upsertCatalogSeed`/`applyFetchResult`/`applyContentsFetch`/
  * `recordInstallRunStart`/`recordInstallRunEnd`) use typed delegates inside
  * `prisma.write(...)` so they serialize on libSQL's single connection; the
@@ -30,7 +30,7 @@ import type {
   InstallRunRecord,
 } from "../../shared/agent-db-contract.js";
 import { Prisma } from "../database/generated/client.js";
-import type { DesktopPrisma } from "../database/prisma-client.js";
+import type { DbHostPrisma, DesktopPrisma } from "../database/prisma-client.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -283,13 +283,11 @@ function jsonOrDbNull(
  *
  * Live fields (stars, forks, description_live, last_fetched_at) are NEVER
  * touched by this function — they're owned by the fetcher; the `update` block
- * below lists only the seed-owned columns, exactly mirroring the prior raw
- * `ON CONFLICT DO UPDATE SET`.
+ * below lists only the seed-owned columns.
  *
- * FEA-1791 Phase 3: this is the first store converted to the typed Prisma
- * client. Writes go through `prisma.write(...)` so they serialize with the raw
- * store path on PGlite's single connection; JSON columns are passed as objects
- * (Prisma stores them as jsonb — no manual JSON.stringify).
+ * Writes go through `prisma.write(...)` so they serialize on libSQL's single
+ * connection; JSON columns are passed as objects (Prisma stores them as jsonb —
+ * no manual JSON.stringify).
  */
 export async function upsertCatalogSeed(
   prisma: DesktopPrisma,
@@ -374,7 +372,7 @@ export async function upsertCatalogSeed(
  * `skills`.
  */
 export async function listCatalog(
-  prisma: DesktopPrisma
+  prisma: DbHostPrisma
 ): Promise<CatalogEntry[]> {
   const rows = await prisma.client.$queryRawUnsafe<CatalogRow[]>(
     `SELECT
@@ -412,7 +410,7 @@ export async function listCatalog(
 
 /** Get one catalog entry by pack_id, with installed status + recent history. */
 export async function getCatalog(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   packId: string,
   { historyDays = 30 }: { historyDays?: number } = {}
 ): Promise<CatalogEntry | null> {
@@ -453,7 +451,7 @@ export async function getCatalog(
 // ---------------------------------------------------------------------------
 
 export async function listHistory(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   packId: string,
   days = 30
 ): Promise<CatalogEntry["history"]> {
@@ -559,14 +557,24 @@ export async function applyContentsFetch(
 // Install runs (audit log)
 // ---------------------------------------------------------------------------
 
+/** Audit-log input for the start of a pack install/uninstall run. */
+export type PackInstallRunStartInput = {
+  pack_id: string;
+  harness: string;
+  action: string;
+  command: string;
+};
+
+/** Audit-log input for the end of a pack install/uninstall run. */
+export type PackInstallRunEndInput = {
+  exit_code?: number | null;
+  stdout_tail?: string | null;
+  stderr_tail?: string | null;
+};
+
 export async function recordInstallRunStart(
   prisma: DesktopPrisma,
-  {
-    pack_id,
-    harness,
-    action,
-    command,
-  }: { pack_id: string; harness: string; action: string; command: string }
+  { pack_id, harness, action, command }: PackInstallRunStartInput
 ): Promise<number> {
   const ts = nowIso();
   const run = await prisma.write((client) =>
@@ -581,15 +589,7 @@ export async function recordInstallRunStart(
 export async function recordInstallRunEnd(
   prisma: DesktopPrisma,
   id: number,
-  {
-    exit_code,
-    stdout_tail,
-    stderr_tail,
-  }: {
-    exit_code?: number | null;
-    stdout_tail?: string | null;
-    stderr_tail?: string | null;
-  }
+  { exit_code, stdout_tail, stderr_tail }: PackInstallRunEndInput
 ): Promise<void> {
   await prisma.write((client) =>
     client.packInstallRun.updateMany({
@@ -612,7 +612,7 @@ interface InFlightRow extends Record<string, unknown> {
 }
 
 export async function inFlightInstallRun(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   packId: string
 ): Promise<InFlightRow | null> {
   const run = await prisma.client.packInstallRun.findFirst({
@@ -631,7 +631,7 @@ export async function inFlightInstallRun(
 }
 
 export async function listInstallRuns(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   {
     pack_id = null,
     limit = 50,

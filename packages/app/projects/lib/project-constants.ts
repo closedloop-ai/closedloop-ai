@@ -1,5 +1,12 @@
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
-import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  DocumentStatus,
+  DocumentType,
+  FeatureStatus,
+} from "@repo/api/src/types/document";
+import {
+  GITHUB_PR_STATE_LABELS,
+  GitHubPRState,
+} from "@repo/api/src/types/github";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
 import { BoxIcon, FileIcon, FileTextIcon, ListCheckIcon } from "lucide-react";
@@ -8,37 +15,53 @@ import type * as React from "react";
 // Priority display constants moved to @repo/app/shared/lib/priority-constants
 // (unified across all entities, keyed by the shared Priority enum).
 
-// Artifact status configuration (uses API status directly — no display mapping)
+// ---------------------------------------------------------------------------
+// Status display config (PRD-495). Documents (PRD/IMPLEMENTATION_PLAN/TEMPLATE)
+// and Features (FEATURE) carry disjoint status vocabularies. Single-artifact
+// editors and per-type pickers use the per-vocabulary maps; the mixed
+// documents table (which renders both kinds) uses the combined ARTIFACT_STATUS_LABELS
+// map for lookup since the two sets overlap only on IN_REVIEW (identically).
+// ---------------------------------------------------------------------------
+
 export const DOCUMENT_STATUS_LABELS: Record<DocumentStatus, string> = {
   [DocumentStatus.Draft]: "Draft",
-  [DocumentStatus.InProgress]: "In Progress",
   [DocumentStatus.InReview]: "In Review",
+  [DocumentStatus.ChangesRequested]: "Changes Requested",
   [DocumentStatus.Approved]: "Approved",
   [DocumentStatus.Executed]: "Executed",
-  [DocumentStatus.Done]: "Done",
   [DocumentStatus.Obsolete]: "Obsolete",
 };
 
-export const DOCUMENT_STATUS_COLORS: Record<DocumentStatus, string> = {
-  [DocumentStatus.Draft]: "text-muted-foreground",
-  [DocumentStatus.InProgress]: "text-blue-600 dark:text-blue-400",
-  [DocumentStatus.InReview]: "text-blue-600 dark:text-blue-400",
-  [DocumentStatus.Approved]: "text-blue-600 dark:text-blue-400",
-  [DocumentStatus.Executed]: "text-blue-600 dark:text-blue-400",
-  [DocumentStatus.Done]: "text-green-600 dark:text-green-400",
-  [DocumentStatus.Obsolete]: "text-muted-foreground",
+// Document/Feature status → icon mapping now lives in the dedicated
+// DocumentStatusIcon / FeatureStatusIcon components (each owns its own glyph per
+// status). For status-grouped or mixed surfaces where the artifact type is not
+// singular, use ArtifactStatusIcon. See
+// @repo/app/documents/components/{document,feature,artifact}-status-icon.
+
+export const FEATURE_STATUS_LABELS: Record<FeatureStatus, string> = {
+  [FeatureStatus.Triage]: "Triage",
+  [FeatureStatus.Backlog]: "Backlog",
+  [FeatureStatus.Todo]: "Todo",
+  [FeatureStatus.InProgress]: "In Progress",
+  [FeatureStatus.InReview]: "In Review",
+  [FeatureStatus.Blocked]: "Blocked",
+  [FeatureStatus.Done]: "Done",
+  [FeatureStatus.Canceled]: "Canceled",
 };
 
-export const DOCUMENT_STATUS_TO_ICON: Record<DocumentStatus, StatusIconStatus> =
-  {
-    [DocumentStatus.Draft]: "todo",
-    [DocumentStatus.InProgress]: "started",
-    [DocumentStatus.InReview]: "in-progress",
-    [DocumentStatus.Approved]: "in-review",
-    [DocumentStatus.Executed]: "executed",
-    [DocumentStatus.Done]: "complete",
-    [DocumentStatus.Obsolete]: "wont-do",
-  };
+/**
+ * Combined label lookup map for the mixed documents table, which renders
+ * Documents and Features in one list. The two vocabularies overlap only on
+ * `IN_REVIEW` (identical label), so a flat status-keyed lookup is unambiguous.
+ * Use this for read-only display by status string; use the per-vocabulary maps
+ * above wherever the artifact type is known and options must be scoped.
+ * Status *icons* are rendered by ArtifactStatusIcon (or the per-type
+ * DocumentStatusIcon / FeatureStatusIcon), not a map.
+ */
+export const ARTIFACT_STATUS_LABELS: Record<string, string> = {
+  ...DOCUMENT_STATUS_LABELS,
+  ...FEATURE_STATUS_LABELS,
+};
 
 // Artifact type icons
 export const DOCUMENT_TYPE_ICONS: Record<DocumentType, React.ElementType> = {
@@ -97,7 +120,10 @@ export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   [ProjectStatus.Archived]: "Archived",
 };
 
-// Branch (Pull Request) artifact status icons
+// Branch (Pull Request) artifact status labels/icons.
+export const BRANCH_STATUS_LABELS: Record<GitHubPRState, string> =
+  GITHUB_PR_STATE_LABELS;
+
 export const BRANCH_STATUS_TO_ICON: Record<GitHubPRState, StatusIconStatus> = {
   [GitHubPRState.Open]: "in-progress",
   [GitHubPRState.Merged]: "complete",

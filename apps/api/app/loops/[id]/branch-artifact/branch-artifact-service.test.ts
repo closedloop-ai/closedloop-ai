@@ -25,7 +25,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import { LoopBranchMaterializationRole } from "@repo/api/src/types/loop-body";
 import { Result, Status } from "@repo/api/src/types/result";
-import { LoopStatus } from "@repo/database";
+import { GitHubInstallationStatus, LoopStatus } from "@repo/database";
 import {
   branchService,
   SourceArtifactTargetRepoAuthorizationProvenance,
@@ -256,6 +256,40 @@ describe("createLoopBranchArtifact", () => {
     expect(result).toEqual(Result.err(Status.Forbidden));
     expect(branchService.upsertBranchArtifact).not.toHaveBeenCalled();
     expect(mockWithDb).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects tombstoned installation repositories before mutation", async () => {
+    const repositoryDb = {
+      gitHubInstallationRepository: {
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+    };
+    mockWithDb.mockReset();
+    mockWithDb
+      .mockResolvedValueOnce(loopRow)
+      .mockImplementationOnce((callback) => callback(repositoryDb));
+
+    const result = await createLoopBranchArtifact({
+      loopId: LOOP_ID,
+      organizationId: ORG_ID,
+      body: body(),
+    });
+
+    expect(result).toEqual(Result.err(Status.Forbidden));
+    expect(
+      repositoryDb.gitHubInstallationRepository.findFirst
+    ).toHaveBeenCalledWith({
+      where: {
+        fullName: "closedloop-ai/symphony-alpha",
+        removedAt: null,
+        installation: {
+          organizationId: ORG_ID,
+          status: GitHubInstallationStatus.ACTIVE,
+        },
+      },
+      select: { id: true, fullName: true },
+    });
+    expect(branchService.upsertBranchArtifact).not.toHaveBeenCalled();
   });
 
   it("falls back to the legacy branch callback path when stored branch materialization is absent", async () => {

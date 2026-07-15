@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import {
+  AgentSessionSyncMode,
+  type SyncedComponent,
+  type TokenEventCostPoint,
+} from "@repo/api/src/types/agent-session";
 import {
   resolveRepoFullName,
   resolveRepoFullNameAsync,
@@ -17,6 +21,7 @@ import { estimateTokenCost } from "../shared/token-cost.js";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   type AgentSessionSyncBatch,
+  type AgentSessionSyncTransportPayload,
   type SyncedAgentSession,
   type SyncedAgentSessionAttribution,
   type SyncJsonObject,
@@ -28,6 +33,7 @@ import {
   maxSessionPayloadBytesForBatch,
   prepareAgentSessionPayload,
 } from "./agent-session-sync-payload.js";
+import type { DesktopSyncBatchEventInput } from "./app-otel-runtime.js";
 import { resolveBillingMode } from "./billing-mode-detector.js";
 import type { DesktopAgentSessionsAck } from "./cloud-protocol.js";
 import { DesktopAgentSessionsAckReason } from "./cloud-protocol.js";
@@ -53,12 +59,6 @@ const INCREMENTAL_SESSION_BATCH_SIZE = 10;
 // proportionally larger peak, which is the wrong trade for the OOM-prone host.
 export const BACKFILL_SESSION_BATCH_SIZE = 3;
 
-// FEA-2038: a few enormous agent transcripts (tens of MB of raw tool I/O in
-// event `data`) fatally crash the db-host (exit code 5) when hydrated for cloud
-// sync. Dead-letter any session whose raw event `data` exceeds this cap BEFORE
-// hydration so one giant session can't crash-loop the sync. Local data is
-// untouched (the dashboard reads it directly); only cloud sync skips it. Tunable.
-export const MAX_SYNC_HYDRATION_EVENT_DATA_BYTES = 10 * 1024 * 1024;
 // Maximum serialized JSON payload size per batch (256 KiB).
 export const SESSION_PAYLOAD_BYTE_CAP = 262_144;
 const SESSION_PAYLOAD_CONTENT_BYTE_CAP = maxSessionPayloadBytesForBatch(
@@ -73,11 +73,15 @@ export const MAX_CONSECUTIVE_TIMEOUTS = 3;
 // be throttling a burst), but still bounded so a persistently-rejected
 // session cannot infinite-loop the sync queue + log spam.
 export const MAX_CONSECUTIVE_RATE_LIMITED = 5;
+// Server-side ingestion failures are payload rejections too. Keep them bounded
+// so one bad batch cannot retry forever.
+export const MAX_CONSECUTIVE_INGESTION_FAILED = 5;
 // FEA-1461: after a `rate_limited` rejection, defer re-attempting the same
 // session for this long. Prevents the 5-second sync tick from re-chunking and
 // re-sending the same oversized session every cycle (the original symptom).
 // Other queued sessions continue to flow through `pickReadyCandidates`.
 export const RATE_LIMIT_BACKOFF_MS = 30_000;
+export const INGESTION_FAILED_BACKOFF_MS = RATE_LIMIT_BACKOFF_MS;
 
 export type SessionCursorRow = {
   id: string;
@@ -96,9 +100,9 @@ export type SessionListCursorPageRequest = {
   offset: number;
   sortBy: SessionListCursorSortKey;
   sortDir: "asc" | "desc";
-  /** Inclusive lower bound for the session start time, applied before paging. */
+  /** Inclusive lower bound for the session activity window, applied before paging. */
   startDate?: Date;
-  /** Inclusive upper bound for the session start time, applied before paging. */
+  /** Inclusive upper bound for the session activity window, applied before paging. */
   endDate?: Date;
   /**
    * Free-text list search applied before paging. Implementations should mirror
@@ -156,6 +160,20 @@ export type SessionAttributionResolverCache = {
 export type AgentSessionUsageAggregateFilters = {
   harness?: string;
   status?: string;
+  /**
+   * Multi-status session filter. Takes precedence over `status`, matching the
+   * shared list matcher and preventing aggregate endpoints from hydrating the
+   * desktop session corpus just to honor multi-select status filters.
+   */
+  statuses?: string[];
+  /**
+   * Desktop-local session ownership filter. Explicit user filters match the
+   * stored `sessions.user_id`; rows with NULL ownership remain in unfiltered
+   * totals and are excluded from explicit user-scoped reads.
+   */
+  userId?: string;
+  /** Multi-user ownership filter. Takes precedence over `userId`. */
+  userIds?: string[];
   startDate?: Date;
   endDate?: Date;
 };
@@ -256,6 +274,9 @@ export type AgentSessionAnalyticsAggregate = {
 // service, the sqlite helpers, and tests never re-spell the literal.
 export const AGENT_SESSION_SYNC_SOURCE_KIND = "agent_sessions" as const;
 
+// T-8.7: the sync kind prefix for the component inventory sync lane.
+export const AGENT_COMPONENT_SYNC_SOURCE_KIND = "agent_components" as const;
+
 /**
  * FEA-1962: the persisted durable cursor for one source key. `observedTopUpdatedAt`
  * is the highest CONTIGUOUS-ACCEPTED watermark (never a discovery-only candidate);
@@ -282,6 +303,36 @@ export function buildAgentSessionSyncSourceKey(
 ): string {
   return `${AGENT_SESSION_SYNC_SOURCE_KIND}:${computeTargetId}`;
 }
+
+/**
+ * T-8.7: build the durable cursor key for the component inventory sync lane.
+ * Uses a separate source-kind prefix so its cursor never collides with the
+ * session sync cursor for the same compute target.
+ */
+export function buildAgentComponentSyncSourceKey(
+  computeTargetId: string
+): string {
+  return `${AGENT_COMPONENT_SYNC_SOURCE_KIND}:${computeTargetId}`;
+}
+
+/**
+ * T-8.7: payload for `POST /desktop/components/sync`. Mirrors the Zod schema
+ * in `apps/api/lib/desktop-agent-sessions-schema.ts`; re-exported from the
+ * contract file by T-8.8.
+ */
+export type DesktopAgentComponentsPayload = {
+  schemaVersion: 1;
+  batchId: string;
+  syncMode: AgentSessionSyncMode;
+  componentCount: number;
+  components: SyncedComponent[];
+};
+
+/** Schema version constant for the component inventory sync payload. */
+export const AGENT_COMPONENT_SYNC_SCHEMA_VERSION = 1 as const;
+
+/** Maximum number of components packed per batch sent to the cloud. */
+export const AGENT_COMPONENT_BATCH_SIZE = 200 as const;
 
 /**
  * FEA-1962: defensive parse of the JSONB `observed_ids_at_top_updated_at`
@@ -320,9 +371,16 @@ export type AgentSessionSyncSource = {
     // FEA-2038 OOM fix: when `omitEventData` is set the loader skips the heavy
     // per-event `data` JSON blob (events still carry `toolName`/`eventType`).
     // The full-corpus list/analytics reads pass it because they never read
-    // `event.data`; the detail/branch/sync-payload callers omit it and keep
-    // full event data. Optional so fake test sources keep their current shape.
-    options?: { omitEventData?: boolean }
+    // `event.data`; the detail/branch callers omit it and keep full event data.
+    //
+    // FEA-2718: the cloud-sync payload build now ALSO passes `omitEventData`
+    // (synced events no longer carry turn text, so hydrating it is pure waste)
+    // together with `includeComponentUsage: true` — because component usage
+    // (T-8.6) is still emitted on the sync payload and used to be gated on
+    // `!omitEventData`. `includeComponentUsage` defaults to `!omitEventData`, so
+    // every other caller keeps its current behavior unchanged. Optional so fake
+    // test sources keep their current shape.
+    options?: { omitEventData?: boolean; includeComponentUsage?: boolean }
   ): SyncedAgentSession[] | Promise<SyncedAgentSession[]>;
   /**
    * Optional lightweight proof that selected sessions cannot fit the existing
@@ -331,20 +389,6 @@ export type AgentSessionSyncSource = {
    * it; unknown or borderline sessions should be omitted and hydrated normally.
    */
   findLocallyOversizedSessions?(
-    ids: string[],
-    maxBytes: number
-  ):
-    | { id: string; payloadBytes: number }[]
-    | Promise<{ id: string; payloadBytes: number }[]>;
-  /**
-   * FEA-2038: cheap measure of a session's RAW event `data` bytes (the hydration
-   * cost). Returns ids whose event `data` exceeds `maxBytes` — sessions so large
-   * that hydrating them for cloud sync fatally crashes the db-host (exit code 5).
-   * The sync layer dead-letters them BEFORE the heavy `loadSyncedSessions`. Local
-   * data is untouched (the dashboard reads it directly); only cloud sync skips
-   * them. Distinct from findLocallyOversizedSessions (post-sanitize payload).
-   */
-  findLocallyUnhydratableSessions?(
     ids: string[],
     maxBytes: number
   ):
@@ -397,6 +441,25 @@ export type AgentSessionSyncSource = {
     sourceKey: string,
     state: PersistedSyncState
   ): void | Promise<void>;
+  loadSessionTokenEvents?(
+    sessionId: string
+  ): TokenEventCostPoint[] | Promise<TokenEventCostPoint[]>;
+  /**
+   * T-8.6/Gap B: cursor reader for the component inventory sync lane. Returns
+   * rows from `agent_components` ordered by (last_seen_at, id) where
+   * last_seen_at >= `since` (or all rows for the initial backfill). Includes
+   * tombstoned rows. Optional so fake test sources without it behave like today.
+   */
+  listComponentCursorRows?(
+    since: string
+  ): AgentComponentCursorRow[] | Promise<AgentComponentCursorRow[]>;
+  /**
+   * T-8.6/Gap B: full-row loader for component inventory sync. Returns the
+   * `SyncedComponent`-shaped rows for the given component ids.
+   */
+  loadComponentRows?(
+    ids: string[]
+  ): SyncedComponent[] | Promise<SyncedComponent[]>;
   close?: () => void | Promise<void>;
 };
 
@@ -411,7 +474,9 @@ export type AgentSessionSyncTelemetryEvent = {
 export type AgentSessionSyncServiceOptions = {
   isAgentMonitorEnabled: () => boolean;
   isRelayReady: () => boolean;
-  sendBatch: (batch: AgentSessionSyncBatch) => Promise<DesktopAgentSessionsAck>;
+  sendBatch: (
+    batch: AgentSessionSyncTransportPayload
+  ) => Promise<DesktopAgentSessionsAck>;
   /** Live dashboard source for SQLite. */
   getSource?: () => AgentSessionSyncSource | null;
   /**
@@ -428,6 +493,16 @@ export type AgentSessionSyncServiceOptions = {
   preparePayloads?: AgentSessionPayloadPreparer;
   onBatchOutcome?: (event: AgentSessionSyncTelemetryEvent) => void;
   /**
+   * FEA-1995: per-batch transport-health telemetry sink for the `sync.*`
+   * contract schema. Fires on every batch outcome — `success`, `failure`
+   * (including a thrown transport error), and `dead_letter` — distinct from
+   * `onBatchOutcome`, which is a failure-only product-analytics signal. Routed
+   * to the desktop OTel runtime, which owns the `DesktopSyncBatchEventInput`
+   * shape (transport health only: counts, bytes, latency, outcome — never
+   * session ids or content, per the PRD-468/FEA-1981 guardrail).
+   */
+  onSyncBatchTelemetry?: (event: DesktopSyncBatchEventInput) => void;
+  /**
    * FEA-1962: the authenticated compute target the cursor is scoped to. Returns
    * `null` when none is known yet (offline / pre-hello-ack) → the service runs
    * in-memory-only (full-backfill-on-restart, today's behavior). When the target
@@ -435,6 +510,36 @@ export type AgentSessionSyncServiceOptions = {
    * never inherits another's persisted watermark.
    */
   getSyncComputeTargetId?: () => string | null;
+  /**
+   * T-8.7: optional transport for the component inventory sync lane. When
+   * provided, each 5s tick also batch-reads updated `agent_components` from the
+   * local SQLite store and POSTs them to `POST /desktop/components/sync`.
+   * Returns `true` on a successful (2xx) response; `false` on failure (the
+   * cursor is NOT advanced on failure so the batch is retried next tick).
+   */
+  sendComponents?: (payload: DesktopAgentComponentsPayload) => Promise<boolean>;
+  /**
+   * T-8.7: cursor reader for the component inventory sync lane. Returns rows
+   * from `agent_components` ordered by (last_seen_at, id) where last_seen_at
+   * >= `since` (or all rows for the initial backfill). Includes tombstoned rows.
+   */
+  listComponentCursorRows?: (
+    since: string
+  ) => Promise<AgentComponentCursorRow[]>;
+  /**
+   * T-8.7: full-row loader for component inventory sync. Returns the
+   * `SyncedComponent`-shaped rows for the given component ids.
+   */
+  loadComponentRows?: (ids: string[]) => Promise<SyncedComponent[]>;
+};
+
+/**
+ * T-8.7: lightweight cursor row for the component inventory sync lane.
+ * Mirrors `SqliteAgentComponentCursorRow` without the database dependency.
+ */
+export type AgentComponentCursorRow = {
+  id: string;
+  last_seen_at: string | null;
 };
 
 export type AgentSessionSyncStartOptions = {
@@ -446,10 +551,41 @@ export type AgentSessionSyncStartOptions = {
   historicalBackfill?: boolean;
 };
 
+/**
+ * FEA-2733: a content-blind snapshot of local→cloud sync progress for the
+ * renderer "syncing your history" indicator. Counts only — never session ids or
+ * content — mirroring the service's telemetry-only outward contract. Read via
+ * `getSyncProgress()` and folded into the desktop runtime-status payload.
+ */
+export type AgentSessionSyncProgress = {
+  /** The service is running for an authenticated compute-target identity. */
+  identified: boolean;
+  /** Historical sessions still queued for the first-connect backfill walk. */
+  pendingBackfillSessions: number;
+  /** Recently-changed sessions still queued for incremental sync. */
+  pendingIncrementalSessions: number;
+  /** A bulk historical backfill is currently draining. */
+  backfilling: boolean;
+  /**
+   * The initial cursor enumeration has run for the current identity AND every
+   * session-sync queue is drained with no pending parts. Scoped to the session
+   * backfill/incremental lanes only: it does NOT reflect the separately-cursored
+   * component-inventory lane, and it can be true while `deadLetteredSessions > 0`
+   * (sessions dropped after exhausting retries — the renderer surfaces that as
+   * "synced with issues" rather than a clean "up to date"). Stays false until the
+   * first backfill pass runs, so the indicator never flashes "up to date" before
+   * the walk begins.
+   */
+  caughtUp: boolean;
+  /** Sessions dropped after exceeding retry thresholds (surfaced as a warning). */
+  deadLetteredSessions: number;
+};
+
 export class AgentSessionSyncService {
   private readonly options: AgentSessionSyncServiceOptions;
   private readonly preparePayloads: AgentSessionPayloadPreparer;
   private timer: NodeJS.Timeout | null = null;
+  private pendingPartDrainTimer: NodeJS.Timeout | null = null;
   private started = false;
   private syncing = false;
   private historicalBackfillEnabled = true;
@@ -457,6 +593,13 @@ export class AgentSessionSyncService {
   private sourceStateGeneration = 0;
   private observedTopUpdatedAt: string | null = null;
   private observedIdsAtTopUpdatedAt = new Set<string>();
+  /**
+   * FEA-2733: whether the initial cursor enumeration has run for the current
+   * identity. Distinguishes "not yet started the first-connect walk" (queues
+   * transiently empty before the first tick, or an empty local store) from
+   * "fully caught up" in `getSyncProgress()`. Reset on identity change.
+   */
+  private initialBackfillPassRun = false;
   /**
    * FEA-1962: the source key the in-memory cursor was last hydrated for. `null`
    * means "not yet hydrated" (or hydrated for an unknown identity). When the
@@ -484,12 +627,14 @@ export class AgentSessionSyncService {
    * threshold and the new rate-limit threshold do not contaminate each other.
    */
   private readonly rateLimitedCountById = new Map<string, number>();
+  /** Consecutive `ingestion_failed` count per session ID. */
+  private readonly ingestionFailedCountById = new Map<string, number>();
   /**
    * FEA-1461: per-session deferred-retry deadline (ms since epoch). While the
    * deadline is in the future, `pickReadyCandidates` skips the session.
    */
   private readonly nextRetryAfterMs = new Map<string, number>();
-  /** Session IDs removed from the queue after exceeding MAX_CONSECUTIVE_TIMEOUTS or MAX_CONSECUTIVE_RATE_LIMITED. */
+  /** Session IDs removed from the queue after exceeding a retry threshold. */
   private readonly deadLetteredIds = new Set<string>();
   /** Remaining chunks for an oversized session being sent in parts. */
   private pendingChunks: {
@@ -497,6 +642,19 @@ export class AgentSessionSyncService {
     syncMode: AgentSessionSyncMode;
     chunks: SyncedAgentSession[];
   } | null = null;
+
+  // T-8.7: component inventory sync lane state — own cursor, separate from
+  // the session sync cursor so the two lanes advance independently.
+  /**
+   * Cursor watermark for the component inventory sync lane. `null` means not
+   * yet initialized; on the first tick all components are read (full backfill).
+   */
+  private componentSyncWatermark: string | null = null;
+  /**
+   * The source key the component sync cursor was last loaded for. Follows the
+   * same identity-change pattern as `hydratedSourceKey` for sessions.
+   */
+  private componentSyncHydratedSourceKey: string | null = null;
 
   constructor(options: AgentSessionSyncServiceOptions) {
     this.options = options;
@@ -522,11 +680,48 @@ export class AgentSessionSyncService {
   stop(): void {
     this.started = false;
     this.clearTimer();
+    this.clearPendingPartDrainTimer();
     const disposeResult = this.preparePayloads.dispose?.();
     if (disposeResult instanceof Promise) {
       disposeResult.catch(() => undefined);
     }
     this.resetSourceState();
+  }
+
+  /**
+   * FEA-2733: content-blind snapshot of local→cloud sync progress for the
+   * renderer "syncing your history" indicator. Reads in-memory queue state only
+   * (no DB access, no ids) so it is cheap to poll on the runtime-status cadence.
+   * `caughtUp` is gated on `initialBackfillPassRun` so it never reports "up to
+   * date" before the first-connect walk has enumerated local history.
+   */
+  getSyncProgress(): AgentSessionSyncProgress {
+    const pendingBackfillSessions = this.backfillQueue.length;
+    const pendingIncrementalSessions = this.incrementalQueue.length;
+    const hasPendingParts = this.pendingChunks !== null;
+    const sourceKey = this.resolveSyncSourceKey();
+    const identified = sourceKey !== null;
+    // FEA-2733: the in-memory queue/flag state belongs to `hydratedSourceKey`.
+    // Between a compute-target (account) switch and the next sync tick that
+    // re-hydrates, the current source key differs from the hydrated one, so the
+    // drained queues actually describe the PRIOR identity. Gate `caughtUp` on
+    // the keys matching so a freshly-switched target never inherits the old
+    // account's "up to date" before its own walk has run.
+    const sourceMatchesHydrated =
+      identified && sourceKey === this.hydratedSourceKey;
+    const queuesDrained =
+      pendingBackfillSessions === 0 &&
+      pendingIncrementalSessions === 0 &&
+      !hasPendingParts;
+    return {
+      identified,
+      pendingBackfillSessions,
+      pendingIncrementalSessions,
+      backfilling: pendingBackfillSessions > 0,
+      caughtUp:
+        sourceMatchesHydrated && this.initialBackfillPassRun && queuesDrained,
+      deadLetteredSessions: this.deadLetteredIds.size,
+    };
   }
 
   /**
@@ -555,6 +750,7 @@ export class AgentSessionSyncService {
   private clearSourceDerivedState(): void {
     this.observedTopUpdatedAt = null;
     this.observedIdsAtTopUpdatedAt = new Set<string>();
+    this.initialBackfillPassRun = false;
     this.lastIncrementalBatchAttemptedAtMs = 0;
     this.incrementalQueue = [];
     this.incrementalQueuedIds.clear();
@@ -565,9 +761,15 @@ export class AgentSessionSyncService {
     this.attributionCache.repoFullNameByPath.clear();
     this.timeoutCountById.clear();
     this.rateLimitedCountById.clear();
+    this.ingestionFailedCountById.clear();
     this.nextRetryAfterMs.clear();
     this.deadLetteredIds.clear();
     this.pendingChunks = null;
+    this.clearPendingPartDrainTimer();
+    // T-8.7: reset component sync cursor so the next tick re-hydrates from
+    // the persisted watermark (or performs a full backfill if absent).
+    this.componentSyncWatermark = null;
+    this.componentSyncHydratedSourceKey = null;
   }
 
   refresh(): void {
@@ -618,10 +820,137 @@ export class AgentSessionSyncService {
     this.timer = null;
   }
 
+  private schedulePendingPartDrain(): void {
+    if (this.pendingPartDrainTimer || !this.started) {
+      return;
+    }
+    this.pendingPartDrainTimer = setTimeout(() => {
+      this.pendingPartDrainTimer = null;
+      void this.syncOnce();
+    }, 0);
+  }
+
+  private clearPendingPartDrainTimer(): void {
+    if (!this.pendingPartDrainTimer) {
+      return;
+    }
+    clearTimeout(this.pendingPartDrainTimer);
+    this.pendingPartDrainTimer = null;
+  }
+
+  /**
+   * T-8.7: component inventory sync tick. Runs independently from the session
+   * sync on the same 5s interval. Batch-reads updated `agent_components` rows
+   * (since the last watermark), packs them into a `DesktopAgentComponentsPayload`,
+   * POSTs to `/desktop/components/sync` via `sendComponents`, and advances the
+   * persisted cursor on success. Tombstoned rows are included so the cloud
+   * receives uninstall signals. Requires `sendComponents`, `listComponentCursorRows`,
+   * and `loadComponentRows` to be wired; otherwise this is a no-op.
+   */
+  private async syncComponentsOnce(): Promise<void> {
+    const { sendComponents, listComponentCursorRows, loadComponentRows } =
+      this.options;
+    if (!(sendComponents && listComponentCursorRows && loadComponentRows)) {
+      return;
+    }
+    const source = this.options.getSource?.() ?? null;
+    const computeTargetId = this.options.getSyncComputeTargetId?.() ?? null;
+    if (!computeTargetId) {
+      return;
+    }
+    const sourceKey = buildAgentComponentSyncSourceKey(computeTargetId);
+
+    // Hydrate persisted cursor on identity change or first run.
+    if (sourceKey !== this.componentSyncHydratedSourceKey) {
+      this.componentSyncWatermark = null;
+      this.componentSyncHydratedSourceKey = null;
+      if (source?.loadSyncState) {
+        const persisted = await source.loadSyncState(sourceKey);
+        if (persisted?.observedTopUpdatedAt) {
+          this.componentSyncWatermark = persisted.observedTopUpdatedAt;
+        }
+      }
+      this.componentSyncHydratedSourceKey = sourceKey;
+    }
+
+    // Epoch string → read all rows on first run (full backfill).
+    const since = this.componentSyncWatermark ?? "1970-01-01T00:00:00.000Z";
+    let cursorRows: AgentComponentCursorRow[];
+    try {
+      cursorRows = await listComponentCursorRows(since);
+    } catch {
+      // DB read failure — skip this tick, retry next interval.
+      return;
+    }
+    if (cursorRows.length === 0) {
+      return;
+    }
+
+    // Cap the batch to AGENT_COMPONENT_BATCH_SIZE.
+    const batchRows = cursorRows.slice(0, AGENT_COMPONENT_BATCH_SIZE);
+    const batchIds = batchRows.map((r) => r.id);
+    let components: SyncedComponent[];
+    try {
+      components = await loadComponentRows(batchIds);
+    } catch {
+      return;
+    }
+    if (components.length === 0) {
+      return;
+    }
+
+    const payload: DesktopAgentComponentsPayload = {
+      schemaVersion: AGENT_COMPONENT_SYNC_SCHEMA_VERSION,
+      batchId: randomUUID(),
+      syncMode: AgentSessionSyncMode.Incremental,
+      componentCount: components.length,
+      components,
+    };
+
+    let accepted = false;
+    try {
+      accepted = await sendComponents(payload);
+    } catch {
+      // Transport error — skip cursor advance, retry next tick.
+      return;
+    }
+    if (!accepted) {
+      return;
+    }
+
+    // Advance cursor to the latest last_seen_at in this batch.
+    const newWatermark = batchRows.reduce<string | null>((max, row) => {
+      const ts = row.last_seen_at;
+      if (!ts) {
+        return max;
+      }
+      return max === null || ts > max ? ts : max;
+    }, this.componentSyncWatermark);
+
+    if (newWatermark && newWatermark !== this.componentSyncWatermark) {
+      this.componentSyncWatermark = newWatermark;
+      if (source?.advanceSyncState) {
+        void Promise.resolve(
+          source.advanceSyncState(sourceKey, {
+            observedTopUpdatedAt: newWatermark,
+            observedIdsAtTopUpdatedAt: [],
+          })
+        ).catch(() => undefined);
+      }
+    }
+
+    gatewayLog.info(
+      TAG,
+      `synced ${components.length} agent component(s) to cloud inventory`
+    );
+  }
+
   private async syncOnce(): Promise<void> {
     if (this.syncing || !this.shouldRun()) {
       return;
     }
+    // T-8.7: run component inventory sync in parallel with the session sync tick.
+    void this.syncComponentsOnce();
     const syncToken = Symbol("agent-session-sync");
     const sourceStateGeneration = this.sourceStateGeneration;
     this.activeSyncToken = syncToken;
@@ -648,9 +977,9 @@ export class AgentSessionSyncService {
       let batch: AgentSessionSyncBatch | null = null;
       let accumulatedBytes = 0;
 
-      // If there are pending chunks from a previous oversized session split,
-      // send the next chunk without touching the DB or queues.
       if (this.pendingChunks && this.pendingChunks.chunks.length > 0) {
+        // If there are pending chunks from a previous oversized session split,
+        // send the next chunk without touching the DB or queues.
         const { sessionId, syncMode: chunkMode, chunks } = this.pendingChunks;
         const chunk = chunks.shift()!;
         const isLast = chunks.length === 0;
@@ -741,12 +1070,18 @@ export class AgentSessionSyncService {
           // then accumulate into the batch until adding the next session would
           // exceed the 256 KiB cap.
           // Sessions that individually exceed the cap are split into chunks.
-          // `let` (not `const`) so the full-data hydration can be released for
-          // GC the moment payload preparation no longer needs it (see below).
+          // FEA-2718: hydrate WITHOUT event `data` — the sync payload no longer
+          // carries turn text, so loading it only for `sanitizeSessionForSync` to
+          // discard it is pure waste and needlessly re-pays the FEA-2038
+          // hydration cost. `includeComponentUsage: true` keeps the T-8.6
+          // component-usage lane, which previously rode on `!omitEventData`.
+          // `let` (not `const`) so this hydration is released for GC once payload
+          // preparation no longer needs it (see below).
           let candidateSessions: SyncedAgentSession[] =
             await source.loadSyncedSessions(
               hydratableCandidateIds,
-              this.attributionCache
+              this.attributionCache,
+              { omitEventData: true, includeComponentUsage: true }
             );
           if (!isCurrentSourceState()) {
             return;
@@ -774,14 +1109,13 @@ export class AgentSessionSyncService {
             candidateSessions,
             SESSION_PAYLOAD_CONTENT_BYTE_CAP
           );
-          // The prepared payloads are sanitized/stripped copies (event `data`
-          // content removed by `sanitizeSessionForSync`); the original
-          // full-data hydration is no longer needed. Drop the only reference to
-          // it now so the multi-MB raw transcripts are eligible for GC during
-          // the accumulation loop and the subsequent `sendBatch` network
-          // round-trip, instead of being pinned until `syncOnce` returns. This
-          // keeps the cycle's peak retained memory at the stripped payloads, not
-          // "full batch + stripped batch" simultaneously.
+          // The prepared payloads are the sanitized copies actually sent; the
+          // source hydration is no longer needed. Drop the only reference to it
+          // now so it is eligible for GC during the accumulation loop and the
+          // subsequent `sendBatch` network round-trip rather than being pinned
+          // until `syncOnce` returns. (Since FEA-2718 hydrates without event
+          // `data`, this hydration is already slim — the drop still trims the
+          // cycle's peak retained memory to just the stripped payloads.)
           candidateSessions = [];
           for (const prepared of preparedPayloads) {
             if (prepared.kind === "dead-letter") {
@@ -850,7 +1184,9 @@ export class AgentSessionSyncService {
             syncIds.push(prepared.session.externalSessionId);
             accumulatedBytes = candidateBatchBytes;
           }
-          batch = buildBatch(sessions);
+          if (!batch) {
+            batch = buildBatch(sessions);
+          }
         } finally {
           await source.close?.();
         }
@@ -867,7 +1203,28 @@ export class AgentSessionSyncService {
         return;
       }
 
-      const ack = await this.options.sendBatch(batch);
+      const sendStartedMs = Date.now();
+      let ack: DesktopAgentSessionsAck;
+      try {
+        ack = await this.options.sendBatch(batch);
+      } catch (sendError) {
+        // A thrown transport error (socket drop, serialization failure) is
+        // itself a batch failure. Emit it so the dashboard counts it instead of
+        // silently undercounting — the outer catch only logs. Rethrow so the
+        // existing "sync failed" log and finally-block cleanup still run.
+        this.options.onSyncBatchTelemetry?.({
+          outcome: "failure",
+          payloadBytes: accumulatedBytes,
+          latencyMs: Math.max(0, Date.now() - sendStartedMs),
+        });
+        throw sendError;
+      }
+      // Clamp at 0: a backward wall-clock step (NTP correction, sleep/resume)
+      // during the awaited round-trip would otherwise yield a negative latency,
+      // which the contract's `sync.latency_ms` (z.number().min(0)) rejects —
+      // throwing inside emitSyncBatchEvent and dropping the event. Mirrors the
+      // existing Math.max(0, …) duration guard elsewhere in the desktop main.
+      const latencyMs = Math.max(0, Date.now() - sendStartedMs);
       if (
         this.activeSyncToken !== syncToken ||
         this.sourceStateGeneration !== sourceStateGeneration ||
@@ -884,7 +1241,8 @@ export class AgentSessionSyncService {
         syncIds,
         batch.sessionCount,
         accumulatedBytes,
-        ack
+        ack,
+        latencyMs
       );
     } catch (error) {
       gatewayLog.warn(
@@ -899,28 +1257,28 @@ export class AgentSessionSyncService {
     }
   }
 
+  // Drop candidates whose SLIM (post-sanitize) payload still can't fit the sync
+  // cap; those genuinely can't be synced and are dead-lettered. FEA-2718 removed
+  // the separate raw-event-`data` "unhydratable" gate: now that the sync path
+  // hydrates with `omitEventData` (never loading event `data`), a session with
+  // large local event data but small metadata no longer risks a hydration crash
+  // and must NOT be skipped — its slim metadata syncs fine.
   private async selectHydratableCandidateIds(
     source: AgentSessionSyncSource,
     syncMode: AgentSessionSyncMode,
     candidateIds: string[]
   ): Promise<string[]> {
-    const [oversizedRows, unhydratableRows] = await Promise.all([
-      source.findLocallyOversizedSessions?.(
+    const oversizedRows =
+      (await source.findLocallyOversizedSessions?.(
         candidateIds,
         SESSION_PAYLOAD_CONTENT_BYTE_CAP
-      ) ?? [],
-      source.findLocallyUnhydratableSessions?.(
-        candidateIds,
-        MAX_SYNC_HYDRATION_EVENT_DATA_BYTES
-      ) ?? [],
-    ]);
-    const allOversizedRows = [...oversizedRows, ...unhydratableRows];
-    if (allOversizedRows.length === 0) {
+      )) ?? [];
+    if (oversizedRows.length === 0) {
       return candidateIds;
     }
 
     const oversizedById = new Map(
-      allOversizedRows.map((row) => [row.id, row.payloadBytes])
+      oversizedRows.map((row) => [row.id, row.payloadBytes])
     );
     const hydratableIds: string[] = [];
     for (const id of candidateIds) {
@@ -941,10 +1299,21 @@ export class AgentSessionSyncService {
     source: AgentSessionSyncSource
   ): Promise<void> {
     if (this.observedTopUpdatedAt !== null) {
+      // FEA-2733: a cursor is already established for this identity — either a
+      // prior tick's walk (which set the flag below) or a persisted cursor that
+      // `hydratePersistedCursorIfNeeded` just resumed on an already-synced
+      // restart (it sets `observedTopUpdatedAt` and skips this walk). Mark the
+      // initial pass complete so a resumed session settles to "up to date"
+      // instead of latching on "checking" forever.
+      this.initialBackfillPassRun = true;
       return;
     }
 
     const rows = await this.listInitialCursorRows(source);
+    // FEA-2733: the initial enumeration has now run for this identity — even on
+    // an empty store (no rows) — so `getSyncProgress()` can report "caught up"
+    // rather than latching on a pre-walk "checking" state.
+    this.initialBackfillPassRun = true;
     if (rows.length === 0) {
       return;
     }
@@ -1154,7 +1523,8 @@ export class AgentSessionSyncService {
     ids: string[],
     sessionCount: number,
     payloadBytes: number,
-    ack: DesktopAgentSessionsAck
+    ack: DesktopAgentSessionsAck,
+    latencyMs: number
   ): void {
     if (ack.accepted) {
       this.firstAckReceived = true;
@@ -1170,6 +1540,7 @@ export class AgentSessionSyncService {
           // clears any deferred-retry deadline for this session, so a future
           // rate-limited rejection starts the count over at 1.
           this.rateLimitedCountById.delete(id);
+          this.ingestionFailedCountById.delete(id);
           this.nextRetryAfterMs.delete(id);
         }
         this.dequeue(syncMode, ids);
@@ -1189,6 +1560,14 @@ export class AgentSessionSyncService {
         TAG,
         `synced ${sessionCount} agent sessions (${syncMode})${chunkSuffix}; remaining incremental=${this.incrementalQueue.length} backfill=${this.backfillQueue.length}${deadLetterSuffix}`
       );
+      if (hasMoreChunks) {
+        this.schedulePendingPartDrain();
+      }
+      this.options.onSyncBatchTelemetry?.({
+        outcome: "success",
+        payloadBytes,
+        latencyMs,
+      });
       return;
     }
 
@@ -1211,6 +1590,13 @@ export class AgentSessionSyncService {
       this.pendingChunks = null;
     }
 
+    // FEA-1995: a batch is a `dead_letter` for sync.* telemetry when this ack
+    // permanently removes one or more sessions — validation_failed drops,
+    // ack-timeout trips, and rate-limit trips all grow `deadLetteredIds`.
+    // Transient outcomes (retryable timeout, deferred rate-limit, feature
+    // disabled, unknown reason) leave the set unchanged and report `failure`.
+    const deadLetteredCountBefore = this.deadLetteredIds.size;
+
     if (ack.reason === DesktopAgentSessionsAckReason.ValidationFailed) {
       gatewayLog.warn(
         TAG,
@@ -1224,6 +1610,10 @@ export class AgentSessionSyncService {
       // observedIdsAtTopUpdatedAt so it is not re-enqueued this session (the
       // existing validation-stall guard), and a cold start re-backfills it.
       for (const id of ids) {
+        this.timeoutCountById.delete(id);
+        this.rateLimitedCountById.delete(id);
+        this.ingestionFailedCountById.delete(id);
+        this.nextRetryAfterMs.delete(id);
         this.deadLetteredIds.add(id);
       }
     } else if (ack.reason === DesktopAgentSessionsAckReason.FeatureDisabled) {
@@ -1243,6 +1633,7 @@ export class AgentSessionSyncService {
           // FEA-1461: also clear any orphaned rate-limit state for this
           // session so a dead-lettered id leaves no Map entries behind.
           this.rateLimitedCountById.delete(id);
+          this.ingestionFailedCountById.delete(id);
           this.nextRetryAfterMs.delete(id);
           this.deadLetteredIds.add(id);
         } else {
@@ -1297,6 +1688,7 @@ export class AgentSessionSyncService {
           // FEA-1461: also clear any orphaned timeout state for this
           // session so a dead-lettered id leaves no Map entries behind.
           this.timeoutCountById.delete(id);
+          this.ingestionFailedCountById.delete(id);
           this.deadLetteredIds.add(id);
         } else {
           if (relayHealthy) {
@@ -1326,6 +1718,44 @@ export class AgentSessionSyncService {
             `(attempt ${attempt}/${MAX_CONSECUTIVE_RATE_LIMITED}); batch left queued for retry`
         );
       }
+    } else if (ack.reason === DesktopAgentSessionsAckReason.IngestionFailed) {
+      const deadLettered: string[] = [];
+      const deferred: string[] = [];
+      const retryDeadline = Date.now() + INGESTION_FAILED_BACKOFF_MS;
+      for (const id of ids) {
+        const count = (this.ingestionFailedCountById.get(id) ?? 0) + 1;
+        if (count >= MAX_CONSECUTIVE_INGESTION_FAILED) {
+          deadLettered.push(id);
+          this.ingestionFailedCountById.delete(id);
+          this.nextRetryAfterMs.delete(id);
+          this.timeoutCountById.delete(id);
+          this.rateLimitedCountById.delete(id);
+          this.deadLetteredIds.add(id);
+        } else {
+          this.ingestionFailedCountById.set(id, count);
+          this.nextRetryAfterMs.set(id, retryDeadline);
+          deferred.push(id);
+        }
+      }
+      if (deadLettered.length > 0) {
+        this.dequeue(syncMode, deadLettered);
+        gatewayLog.warn(
+          TAG,
+          `dead-lettered ${deadLettered.length} agent session(s) after ${MAX_CONSECUTIVE_INGESTION_FAILED} consecutive ingestion_failed rejections ` +
+            `(payload ~${formatBytes(payloadBytes)}); ids: ${deadLettered.join(", ")}; ` +
+            `remaining incremental=${this.incrementalQueue.length} backfill=${this.backfillQueue.length} deadLettered=${this.deadLetteredIds.size}`
+        );
+      }
+      if (deferred.length > 0) {
+        const sampleId = deferred[0];
+        const attempt = this.ingestionFailedCountById.get(sampleId) ?? 0;
+        gatewayLog.info(
+          TAG,
+          `agent-session batch (${syncMode}, ~${formatBytes(payloadBytes)}) ingestion_failed; ` +
+            `deferring ${deferred.length} session(s) for ${Math.round(INGESTION_FAILED_BACKOFF_MS / 1000)}s ` +
+            `(attempt ${attempt}/${MAX_CONSECUTIVE_INGESTION_FAILED}); batch left queued for retry`
+        );
+      }
     } else {
       gatewayLog.debug(
         TAG,
@@ -1340,6 +1770,21 @@ export class AgentSessionSyncService {
       sessionCount,
       payloadBytes,
     });
+    this.options.onSyncBatchTelemetry?.({
+      outcome:
+        this.deadLetteredIds.size > deadLetteredCountBefore
+          ? "dead_letter"
+          : "failure",
+      payloadBytes,
+      latencyMs,
+    });
+  }
+
+  private clearFailureStateForId(id: string): void {
+    this.timeoutCountById.delete(id);
+    this.rateLimitedCountById.delete(id);
+    this.ingestionFailedCountById.delete(id);
+    this.nextRetryAfterMs.delete(id);
   }
 
   private deadLetterOversizedLocalSession(
@@ -1347,9 +1792,7 @@ export class AgentSessionSyncService {
     sessionId: string,
     payloadBytes: number
   ): void {
-    this.timeoutCountById.delete(sessionId);
-    this.rateLimitedCountById.delete(sessionId);
-    this.nextRetryAfterMs.delete(sessionId);
+    this.clearFailureStateForId(sessionId);
     this.deadLetteredIds.add(sessionId);
     this.dequeue(syncMode, [sessionId]);
     gatewayLog.warn(
@@ -1359,6 +1802,12 @@ export class AgentSessionSyncService {
         `ids: ${sessionId}; remaining incremental=${this.incrementalQueue.length} backfill=${this.backfillQueue.length} ` +
         `deadLettered=${this.deadLetteredIds.size}`
     );
+    // FEA-1995: the >256 KiB permanent-stall wedge the PRD-482 dashboard exists
+    // to surface. No `latencyMs` — the session is dropped before any send.
+    this.options.onSyncBatchTelemetry?.({
+      outcome: "dead_letter",
+      payloadBytes,
+    });
   }
 
   private dequeue(syncMode: AgentSessionSyncMode, ids: string[]): void {
@@ -1525,7 +1974,6 @@ function buildAttribution(
     worktreePath,
     sourceArtifactId: launchMetadata?.artifactId ?? null,
     sourceLoopId: launchMetadata?.loopId ?? null,
-    issueId: launchMetadata?.issueId ?? null,
     baseBranch: launchMetadata?.baseBranch ?? null,
   };
 

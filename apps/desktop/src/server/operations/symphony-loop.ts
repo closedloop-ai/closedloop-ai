@@ -49,6 +49,7 @@ import {
   finalizeLoopFromRuntime,
   isExecuteNoWorkCompletion,
   isRetryableFinalizationError,
+  type LoopCompletedHook,
   type LoopFinalizerDeps,
   makeHeartbeatFinalizeFn,
   tryUploadArtifacts,
@@ -5029,7 +5030,8 @@ export async function handleProcessCompletion(
   loopPerfWatcherHandle?: LoopPerfTelemetryWatcherHandle,
   schedulers?: LoopSchedulerContext,
   nativeObservability?: NativeLoopObservabilitySession,
-  getClaudeShellEnv: ClaudeCodeShellEnvProvider = getClaudeCodeShellEnv
+  getClaudeShellEnv: ClaudeCodeShellEnvProvider = getClaudeCodeShellEnv,
+  onLoopCompleted?: LoopCompletedHook
 ): Promise<void> {
   const { loopId, command, closedLoopAuthToken, committer } = body;
   // Temp-dir commands (DECOMPOSE, EVALUATE_*) need the entire temp tree removed on cleanup.
@@ -5845,6 +5847,7 @@ export async function handleProcessCompletion(
         getAllowedDirectories,
         loopTokenStore,
         schedulers,
+        onLoopCompleted,
       };
       const outcome = await finalizeLoopFromRuntime(
         existingJob,
@@ -6449,7 +6452,8 @@ async function handleLoopRequest(
   loopTokenStore?: LoopTokenStore,
   getSymphonyDir?: () => string,
   popDeps?: LoopPopDeps,
-  getClaudeShellEnv: ClaudeCodeShellEnvProvider = getClaudeCodeShellEnv
+  getClaudeShellEnv: ClaudeCodeShellEnvProvider = getClaudeCodeShellEnv,
+  onLoopCompleted?: LoopCompletedHook
 ): Promise<void> {
   const wt = worktreeProvider ?? defaultWorktreeProvider;
   // Derive the callback URL from the gateway's trusted configuration.
@@ -8391,7 +8395,8 @@ async function handleLoopRequest(
           loopPerfWatcherHandle,
           schedulers,
           nativeObservability,
-          getClaudeShellEnv
+          getClaudeShellEnv,
+          onLoopCompleted
         ).catch((err) => {
           loopError(body.loopId, "Completion handler error:", err);
           gatewayLog.error(
@@ -8758,7 +8763,8 @@ export function registerSymphonyLoopRoutes(
   getSymphonyDir?: () => string,
   getBinaryPaths?: BinaryPathsResolver,
   popDeps?: LoopPopDeps,
-  getClaudeShellEnv: ClaudeCodeShellEnvProvider = getClaudeCodeShellEnv
+  getClaudeShellEnv: ClaudeCodeShellEnvProvider = getClaudeCodeShellEnv,
+  onLoopCompleted?: LoopCompletedHook
 ): void {
   dispatcher.register("POST", "/api/gateway/symphony/loop", async (context) => {
     const run = () =>
@@ -8773,7 +8779,8 @@ export function registerSymphonyLoopRoutes(
         loopTokenStore,
         getSymphonyDir,
         popDeps,
-        getClaudeShellEnv
+        getClaudeShellEnv,
+        onLoopCompleted
       );
 
     if (getBinaryPaths) {

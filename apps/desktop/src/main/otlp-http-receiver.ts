@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import http from "node:http";
 import type { AddressInfo, Socket } from "node:net";
+import { asRecord } from "./api-response-utils.js";
 import {
   getOtlpRequestType,
   getOtlpResponseType,
@@ -667,12 +668,6 @@ function asArray(value: unknown): Record<string, unknown>[] {
           typeof item === "object" && item !== null
       )
     : [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function stringValue(value: unknown): string | undefined {

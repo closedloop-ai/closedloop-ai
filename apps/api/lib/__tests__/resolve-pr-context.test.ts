@@ -73,7 +73,6 @@ vi.mock("@repo/observability/log", () => ({
 import {
   BranchViewContextCredentialMode,
   BranchViewContextCredentialSource,
-  matchesParsedPullRequestIdentity,
   resolvePrContext,
 } from "@/lib/resolve-pr-context";
 
@@ -232,22 +231,6 @@ describe("resolvePrContext", () => {
     });
     mockInstallationRepositoryFindMany.mockResolvedValue([]);
     mockGitHubInstallationFindMany.mockResolvedValue([]);
-  });
-
-  it("matches repository identity case-insensitively", () => {
-    expect(
-      matchesParsedPullRequestIdentity(
-        { owner: "Acme", repo: "Repo", pullNumber: 42 },
-        { repositoryFullName: "acme/repo", pullNumber: 42 }
-      )
-    ).toBe(true);
-
-    expect(
-      matchesParsedPullRequestIdentity(
-        { owner: "acme", repo: "repo", pullNumber: 42 },
-        { repositoryFullName: "acme/other-repo", pullNumber: 42 }
-      )
-    ).toBe(false);
   });
 
   it("returns null for branch artifacts that lack branch detail", async () => {

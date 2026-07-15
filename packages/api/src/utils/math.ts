@@ -11,6 +11,22 @@ export function computeMean(values: number[]): number {
 }
 
 /**
+ * Median of a numeric array. Returns `null` for an empty input so callers can
+ * distinguish "no data" from a real zero; callers that want 0-on-empty use
+ * `median(values) ?? 0`. Does not mutate the input.
+ */
+export function median(values: readonly number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+/**
  * Checks whether a number can be represented with at most N decimal places.
  * Uses an epsilon tolerance to account for IEEE-754 floating-point arithmetic.
  */

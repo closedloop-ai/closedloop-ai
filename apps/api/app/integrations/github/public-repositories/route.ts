@@ -5,10 +5,12 @@ import type {
 import { Status } from "@repo/api/src/types/result";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isPublicGithubReposEnabled } from "@/lib/public-github-repos-feature";
 import {
   badRequestResponse,
   conflictResponse,
   errorResponse,
+  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
@@ -28,7 +30,11 @@ const addPublicRepositoryValidator = z.object({
 export const POST = withAnyAuth<
   PublicRepositoryResponse,
   "/integrations/github/public-repositories"
->(async ({ user }, request) => {
+>(async ({ clerkUserId, user }, request) => {
+  if (!(await isPublicGithubReposEnabled({ clerkUserId, userId: user.id }))) {
+    return forbiddenResponse();
+  }
+
   const { body, errorResponse: parseError } = await parseBody(
     request,
     addPublicRepositoryValidator
@@ -80,7 +86,11 @@ export const POST = withAnyAuth<
 export const DELETE = withAnyAuth<
   DeletePublicRepositoryResponse,
   "/integrations/github/public-repositories"
->(async ({ user }, request) => {
+>(async ({ clerkUserId, user }, request) => {
+  if (!(await isPublicGithubReposEnabled({ clerkUserId, userId: user.id }))) {
+    return forbiddenResponse();
+  }
+
   const id = request.nextUrl.searchParams.get("id");
   if (!id) {
     return badRequestResponse("id query parameter is required");

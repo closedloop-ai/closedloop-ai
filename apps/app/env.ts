@@ -30,6 +30,7 @@ export const env = createEnv({
   server: {
     INTERNAL_API_SECRET: z.string().min(1).optional(),
     RUM_VALIDATION_ROUTE_ENABLED: z.enum(["true", "false"]).optional(),
+    SERVER_API_URL: z.string().url().optional(),
   },
   client: {
     NEXT_PUBLIC_APP_ENVIRONMENT: z
@@ -53,5 +54,6 @@ export const env = createEnv({
     NEXT_PUBLIC_DATADOG_RUM_SITE: process.env.NEXT_PUBLIC_DATADOG_RUM_SITE,
     NEXT_PUBLIC_MCP_SERVER_URL: process.env.NEXT_PUBLIC_MCP_SERVER_URL,
     RUM_VALIDATION_ROUTE_ENABLED: process.env.RUM_VALIDATION_ROUTE_ENABLED,
+    SERVER_API_URL: process.env.SERVER_API_URL,
   },
 });

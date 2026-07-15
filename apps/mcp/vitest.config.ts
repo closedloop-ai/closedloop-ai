@@ -8,6 +8,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@": path.resolve(import.meta.dirname, "../api"),
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../../packages/loops-api/src"

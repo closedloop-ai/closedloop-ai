@@ -23,6 +23,12 @@ const MULTI_PR_COST_RE = /attributed per phase/i;
 const TWO_PRS_RE = /2 linked pull requests/;
 const PR_LIST_RE = /#42, #43/;
 const PROPERTIES_RE = /properties/i;
+const LONG_BRANCH_NAME =
+  "feature/narrow-responsive-properties-panel-with-a-very-long-branch-name";
+const LONG_REPOSITORY_NAME =
+  "closedloop-ai/repository-with-a-very-long-name-for-responsive-panels";
+const LONG_PR_TITLE =
+  "Keep the properties panel readable when pull request titles are unusually long";
 
 function kpi(over: Partial<BranchKpi> = {}): BranchKpi {
   return {
@@ -167,7 +173,7 @@ describe("BranchPropertiesPanel (D8)", () => {
   it("expands to the grid showing only the wired fields", async () => {
     const user = userEvent.setup();
     render(<BranchPropertiesPanel detail={detail()} />);
-    await user.click(screen.getByRole("button", { name: PROPERTIES_RE }));
+    await user.click(getBranchPropertiesToggle());
     // Wired fields render; Reviewer keeps its explicit empty state.
     expect(screen.getByText("Repository")).toBeInTheDocument();
     expect(screen.getByText("Reviewer")).toBeInTheDocument();
@@ -185,4 +191,61 @@ describe("BranchPropertiesPanel (D8)", () => {
       expect(screen.queryByText(removed)).not.toBeInTheDocument();
     }
   });
+
+  it("exposes the expanded state to assistive tech via aria-expanded", async () => {
+    const user = userEvent.setup();
+    render(<BranchPropertiesPanel detail={detail()} />);
+    const toggle = screen.getByRole("button", { name: PROPERTIES_RE });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("keeps long branch and pull request values inside shrinkable text nodes", async () => {
+    const user = userEvent.setup();
+    render(
+      <BranchPropertiesPanel
+        detail={detail({
+          branchName: LONG_BRANCH_NAME,
+          prNumber: 1234,
+          prTitle: LONG_PR_TITLE,
+          repoFullName: LONG_REPOSITORY_NAME,
+        })}
+      />
+    );
+
+    const previewBranch = screen.getByText(LONG_BRANCH_NAME);
+    expect(previewBranch).toHaveClass("truncate");
+    expect(previewBranch.closest(".sd3-pp")).toHaveAttribute(
+      "title",
+      LONG_BRANCH_NAME
+    );
+
+    await user.click(getBranchPropertiesToggle());
+
+    expect(screen.getByText(LONG_BRANCH_NAME)).toHaveAttribute(
+      "title",
+      LONG_BRANCH_NAME
+    );
+    expect(screen.getByText(LONG_REPOSITORY_NAME)).toHaveAttribute(
+      "title",
+      LONG_REPOSITORY_NAME
+    );
+    const prTitle = screen.getByText(LONG_PR_TITLE);
+    expect(prTitle).toHaveClass("truncate");
+    expect(prTitle.closest(".sd3-pp")).toHaveAttribute(
+      "title",
+      `#1234 ${LONG_PR_TITLE}`
+    );
+  });
 });
+
+function getBranchPropertiesToggle() {
+  const propertiesToggle = screen
+    .getAllByRole("button", { name: PROPERTIES_RE })
+    .find((element) => element.classList.contains("prd-props-header"));
+  if (!propertiesToggle) {
+    throw new Error("Branch properties header toggle was not rendered");
+  }
+  return propertiesToggle;
+}

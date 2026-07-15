@@ -1,3 +1,11 @@
+import { SessionPrLifecycleStatus } from "@repo/api/src/types/agent-session";
+import { expectCriticalAxeClean } from "@repo/app/test/a11y/axe";
+import {
+  A11yTheme,
+  expectElementContrast,
+  themeBackground,
+} from "@repo/app/test/a11y/contrast";
+import { A11yThemeRoot } from "@repo/app/test/a11y/react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
   cloneElement,
@@ -17,10 +25,13 @@ import { SyncedSessionsTable } from "../synced-sessions-table";
 
 const REPOSITORY_HEADER_NAME_REGEX = /Repository/i;
 const GRID_EMPTY_VALUE_TEXT_REGEX = /^—$/;
+const MULTI_OPEN_PR_TOOLTIP_REGEX = /#19 open · Wire PR list/;
+const MULTI_MERGED_PR_TOOLTIP_REGEX = /#20 merged · Merge trusted lifecycle/;
 // Grid children: lead (Session Name), status, autonomy, repo, branch, …
 const BRANCH_COLUMN_CHILD_INDEX = 4;
 const LONG_BRANCH_NAME =
   "kaiticarp/feature/some-very-long-descriptive-branch-name";
+const A11Y_THEMES = [A11yTheme.Light, A11yTheme.Dark] as const;
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -165,6 +176,76 @@ describe("SyncedSessionsTable", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    A11yTheme.Light,
+    A11yTheme.Dark,
+  ])("keeps shared sessions table critical a11y and contrast clean in %s theme", async (theme) => {
+    const { container } = render(
+      <A11yThemeRoot theme={theme}>
+        <SyncedSessionsTable
+          getSessionHref={(item) => `/sessions/${item.id}`}
+          items={mixedAgentSessionListFixtures}
+        />
+      </A11yThemeRoot>
+    );
+
+    await expectCriticalAxeClean(container);
+    expectElementContrast(screen.getByText("Session Name"), {
+      background: themeBackground(theme),
+      label: `sessions row label ${theme}`,
+    });
+  });
+
+  it.each([
+    [
+      "loading",
+      () => (
+        <AgentSessionsListContent
+          getSessionHref={(item) => `/sessions/${item.id}`}
+          isLoading
+          items={[]}
+        />
+      ),
+      () => document.querySelector(".animate-pulse"),
+    ],
+    [
+      "filtered-empty",
+      () => (
+        <AgentSessionsListContent
+          getSessionHref={(item) => `/sessions/${item.id}`}
+          isLoading={false}
+          items={[]}
+        />
+      ),
+      () => screen.getByText("No sessions found"),
+    ],
+    [
+      "status-chip-row",
+      () => (
+        <SyncedSessionsTable
+          getSessionHref={(item) => `/sessions/${item.id}`}
+          items={mixedAgentSessionListFixtures}
+        />
+      ),
+      () => screen.getByText("Awaiting input"),
+    ],
+  ])("keeps shared sessions %s state a11y and contrast clean", async (_state, renderElement, getTarget) => {
+    for (const theme of A11Y_THEMES) {
+      const { container, unmount } = render(
+        <A11yThemeRoot theme={theme}>{renderElement()}</A11yThemeRoot>
+      );
+
+      const target = getTarget();
+      expect(target).toBeInstanceOf(Element);
+      await expectCriticalAxeClean(container);
+      expectElementContrast(target as Element, {
+        background: themeBackground(theme),
+        label: `shared sessions ${_state} ${theme}`,
+      });
+      unmount();
+    }
+  });
+
   it("keeps the Branch column visible by default, hideable, and non-sortable", () => {
     const onSort = vi.fn();
     const { rerender } = render(
@@ -211,6 +292,110 @@ describe("SyncedSessionsTable", () => {
     expect(screen.queryByText("fea-2036")).not.toBeInTheDocument();
   });
 
+  it("renders PR and Merge columns for empty, open, merged, and multiple PR states", () => {
+    render(
+      <SyncedSessionsTable
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        items={[
+          createAgentSessionListItemFixture({
+            id: "no-pr-session",
+            name: "No PR session",
+            prs: [],
+            prsMerged: 0,
+          }),
+          createAgentSessionListItemFixture({
+            id: "open-pr-session",
+            name: "Open PR session",
+            prs: [
+              {
+                num: 17,
+                title: "Add PR column",
+                status: SessionPrLifecycleStatus.Open,
+              },
+            ],
+            prsMerged: 0,
+          }),
+          createAgentSessionListItemFixture({
+            id: "merged-pr-session",
+            name: "Merged PR session",
+            prs: [
+              {
+                num: 18,
+                title: "Merge session projection",
+                status: SessionPrLifecycleStatus.Merged,
+              },
+            ],
+            prsMerged: 1,
+          }),
+          createAgentSessionListItemFixture({
+            id: "unknown-pr-session",
+            name: "Unknown PR session",
+            prs: [
+              {
+                num: 21,
+                title: "Legacy merged claim",
+                status: SessionPrLifecycleStatus.Unknown,
+              },
+            ],
+            prsMerged: 0,
+          }),
+          createAgentSessionListItemFixture({
+            id: "multi-pr-session",
+            name: "Multiple PR session",
+            prs: [
+              {
+                num: 19,
+                title: "Wire PR list",
+                status: SessionPrLifecycleStatus.Open,
+              },
+              {
+                num: 20,
+                title: "Merge trusted lifecycle",
+                status: SessionPrLifecycleStatus.Merged,
+              },
+            ],
+            prsMerged: 1,
+          }),
+        ]}
+      />
+    );
+
+    expect(screen.getByText("PR")).toBeInTheDocument();
+    expect(screen.getByText("Merge")).toBeInTheDocument();
+    expect(getPrCellForSessionName("No PR session")).toHaveTextContent(
+      GRID_EMPTY_VALUE_TEXT_REGEX
+    );
+    expect(getMergeCellForSessionName("No PR session")).toHaveTextContent(
+      GRID_EMPTY_VALUE_TEXT_REGEX
+    );
+    expect(getPrCellForSessionName("Open PR session")).toHaveTextContent(
+      "#17 open"
+    );
+    expect(getMergeCellForSessionName("Open PR session")).toHaveTextContent(
+      "Not merged"
+    );
+    expect(getPrCellForSessionName("Merged PR session")).toHaveTextContent(
+      "#18 merged"
+    );
+    expect(getMergeCellForSessionName("Merged PR session")).toHaveTextContent(
+      "Merged"
+    );
+    expect(getPrCellForSessionName("Unknown PR session")).toHaveTextContent(
+      "#21 unknown"
+    );
+    expect(getMergeCellForSessionName("Unknown PR session")).toHaveTextContent(
+      "Unknown"
+    );
+    expect(getPrCellForSessionName("Multiple PR session")).toHaveTextContent(
+      "2 PRs"
+    );
+    expect(getMergeCellForSessionName("Multiple PR session")).toHaveTextContent(
+      "1/2 merged"
+    );
+    expect(screen.getByText(MULTI_OPEN_PR_TOOLTIP_REGEX)).toBeInTheDocument();
+    expect(screen.getByText(MULTI_MERGED_PR_TOOLTIP_REGEX)).toBeInTheDocument();
+  });
+
   it("shows full branch tooltip content and keeps the branch chip keyboard-focusable", () => {
     render(
       <SyncedSessionsTable
@@ -220,6 +405,8 @@ describe("SyncedSessionsTable", () => {
             branch: LONG_BRANCH_NAME,
             id: "long-branch-session",
             name: "Long branch session",
+            prs: [],
+            prsMerged: 0,
           }),
         ]}
       />
@@ -250,11 +437,15 @@ describe("SyncedSessionsTable", () => {
             branch: null,
             id: "null-branch-session",
             name: "Null branch session",
+            prs: [],
+            prsMerged: 0,
           }),
           createAgentSessionListItemFixture({
             branch: "",
             id: "empty-branch-session",
             name: "Empty branch session",
+            prs: [],
+            prsMerged: 0,
           }),
         ]}
       />
@@ -281,6 +472,73 @@ describe("SyncedSessionsTable", () => {
     expect(firstLink).not.toBeNull();
     expect(firstLink).toHaveAttribute("href", "/org-a/sessions/session-name");
   });
+
+  it("exposes a labelled overflow-menu trigger on every data row when enabled (FEA-2507)", () => {
+    render(
+      <SyncedSessionsTable
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        items={mixedAgentSessionListFixtures}
+        showRowActions
+      />
+    );
+
+    expect(
+      screen.getAllByRole("button", { name: "Session actions" })
+    ).toHaveLength(mixedAgentSessionListFixtures.length);
+  });
+
+  it("omits the overflow menu by default so embedding surfaces opt in (FEA-2507)", () => {
+    render(
+      <SyncedSessionsTable
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        items={mixedAgentSessionListFixtures}
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Session actions" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the overflow menu by default on the primary sessions list body (FEA-2507)", () => {
+    render(
+      <AgentSessionsListContent
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        isLoading={false}
+        items={mixedAgentSessionListFixtures}
+      />
+    );
+
+    expect(
+      screen.getAllByRole("button", { name: "Session actions" })
+    ).toHaveLength(mixedAgentSessionListFixtures.length);
+  });
+
+  it("renders no overflow-menu trigger in the loading or empty states", () => {
+    const { rerender } = render(
+      <AgentSessionsListContent
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        isLoading
+        items={[]}
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Session actions" })
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <AgentSessionsListContent
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        isLoading={false}
+        items={[]}
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Session actions" })
+    ).not.toBeInTheDocument();
+  });
 });
 
 function HookBackedListProbe() {
@@ -296,13 +554,28 @@ function HookBackedListProbe() {
 }
 
 function getBranchCellForSessionName(sessionName: string): HTMLElement {
+  return getGridCellForSessionName(sessionName, BRANCH_COLUMN_CHILD_INDEX);
+}
+
+function getPrCellForSessionName(sessionName: string): HTMLElement {
+  return getGridCellForSessionName(sessionName, 5);
+}
+
+function getMergeCellForSessionName(sessionName: string): HTMLElement {
+  return getGridCellForSessionName(sessionName, 6);
+}
+
+function getGridCellForSessionName(
+  sessionName: string,
+  childIndex: number
+): HTMLElement {
   const row = screen.getByText(sessionName).closest(".group.grid");
   if (!(row instanceof HTMLElement)) {
     throw new Error(`Could not find sessions table row for ${sessionName}`);
   }
-  const branchCell = row.children[BRANCH_COLUMN_CHILD_INDEX];
-  if (!(branchCell instanceof HTMLElement)) {
-    throw new Error(`Could not find Branch cell for ${sessionName}`);
+  const cell = row.children[childIndex];
+  if (!(cell instanceof HTMLElement)) {
+    throw new Error(`Could not find cell ${childIndex} for ${sessionName}`);
   }
-  return branchCell;
+  return cell;
 }

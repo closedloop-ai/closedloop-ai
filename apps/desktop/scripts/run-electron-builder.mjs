@@ -17,23 +17,23 @@ await stat(stageRoot).catch(() => {
 
 // Defensive guard for the missing-signing-secret failure mode.
 //
-// Signed/notarized release builds set all five Apple signing + notarization env
-// vars. If they are referenced but not actually provided, the vars arrive
-// DEFINED-BUT-EMPTY (""). Two distinct failure modes follow, both of which we
-// fail fast on here rather than producing a broken release:
+// The release workflow sets all five Apple signing + notarization env vars from
+// org-level secrets. If those org secrets are not shared with this repository,
+// the vars arrive DEFINED-BUT-EMPTY (a referenced-but-unset GitHub secret
+// expands to ""). Two distinct failure modes follow, both of which we fail fast
+// on here rather than producing a broken release:
 //   - empty CSC_LINK: electron-builder treats it as a certificate file path,
 //     resolves it to the project directory, and dies with the cryptic
 //     `⨯ <projectDir> not a file`.
-//   - empty APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID: when
-//     notarization is enabled, electron-builder silently SKIPS notarization (it
-//     only warns) and ships a signed-but-un-notarized DMG that Gatekeeper
-//     blocks on install — a green build that yields an unusable artifact.
+//   - empty APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID: with
+//     `notarize: true`, electron-builder silently SKIPS notarization (it only
+//     warns) and ships a signed-but-un-notarized DMG that Gatekeeper blocks on
+//     install — a green CI run that yields an unusable build.
 // So all five must be present together for the release signing path.
 //
 // Unset (not just empty) vars are intentionally allowed: that is the local /
 // ad-hoc build path (electron-builder ad-hoc-signs, notarization is skipped by
-// design), so we must not require signing there. This is the default for
-// community/local builds — no Apple credentials needed.
+// design), so we must not require signing there.
 const emptyDefinedSigningVars = [
   "CSC_LINK",
   "CSC_KEY_PASSWORD",
@@ -47,8 +47,12 @@ if (emptyDefinedSigningVars.length > 0) {
   throw new Error(
     [
       `macOS signing/notarization env var(s) defined but empty: ${emptyDefinedSigningVars.join(", ")}.`,
-      "For a signed + notarized release, provide all five: CSC_LINK,",
-      "CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID.",
+      "This usually means the org-level Apple signing secrets are not shared with this",
+      "repository, so the workflow's secrets.APPLE_* references expand to empty",
+      "strings. Ask an org admin to add this repo to the repository access of the",
+      "closedloop-ai org secrets: APPLE_CSC_LINK, APPLE_CSC_KEY_PASSWORD, APPLE_ID,",
+      "APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID (Org → Settings → Secrets and",
+      "variables → Actions → Organization secrets).",
       "",
       "To build locally WITHOUT signing, unset CSC_LINK/CSC_KEY_PASSWORD entirely",
       "(leave them undefined) so electron-builder ad-hoc-signs the app.",

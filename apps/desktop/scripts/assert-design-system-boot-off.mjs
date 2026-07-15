@@ -315,6 +315,13 @@ function createElectronCjsStub(state) {
 
     setAboutPanelOptions() {}
 
+    requestSingleInstanceLock() {
+      // The boot probe runs as the sole instance under a fresh temp userData,
+      // so it always owns the FEA-3132 single-instance lock. Returning true
+      // lets startup.ts proceed past the guard instead of quitting the launch.
+      return true;
+    }
+
     getPath(name) {
       if (name === "userData") {
         return state.userDataPath;
@@ -444,6 +451,13 @@ function createElectronCjsStub(state) {
       encryptString: (text) => Buffer.from(text, "utf8"),
       decryptString: (buffer) => Buffer.from(buffer).toString("utf8"),
     },
+    session: {
+      defaultSession: {
+        webRequest: {
+          onHeadersReceived: () => undefined,
+        },
+      },
+    },
     powerMonitor: new EventEmitter(),
   };
 }
@@ -471,6 +485,7 @@ function stubSource(kind) {
       export const dialog = cjs.dialog;
       export const shell = cjs.shell;
       export const safeStorage = cjs.safeStorage;
+      export const session = cjs.session;
       export const powerMonitor = cjs.powerMonitor;
       export default cjs;
     `;

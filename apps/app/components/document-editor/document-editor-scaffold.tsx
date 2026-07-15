@@ -26,6 +26,7 @@ import { useEditorChrome } from "@repo/app/documents/hooks/use-editor-chrome";
 import { useEditorSession } from "@repo/app/documents/hooks/use-editor-session";
 import { useInlineEditMode } from "@repo/app/documents/hooks/use-inline-edit-mode";
 import { DeleteConfirmationDialog } from "@repo/app/shared/components/delete-confirmation-dialog";
+import { useCurrentUser } from "@repo/app/users/hooks/use-users";
 import { OptionalDocumentRoom } from "@repo/collaboration/client/optional-document-room";
 import { InlinePresence } from "@repo/collaboration/client/presence";
 import { scrollToAnchor } from "@repo/collaboration/client/scroll-to-anchor";
@@ -122,6 +123,16 @@ export function DocumentEditorScaffold({
   floatingChildren,
 }: Readonly<DocumentEditorScaffoldProps>) {
   const orgSlug = useOrgSlug();
+  // Gate the Liveblocks room connection on the user/org context being ready
+  // (FEA-2404). The parent CollaborationProviderWrapper mounts a *minimal*
+  // LiveblocksProvider while `/me` is still loading; if a document's room
+  // connects during that window, its auth callback fires before Clerk/org has
+  // hydrated and can exhaust Liveblocks' hardcoded 10s auth timeout, surfacing
+  // as a real-prod "Authentication failed: Timed out during auth" RUM error.
+  // Deferring the room until `currentUser` resolves means the room connects
+  // exactly once, under the full provider, with context ready. `useCurrentUser`
+  // is already fetched by the wrapper, so TanStack Query dedupes this call.
+  const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
   const searchParams = useSearchParamsValue();
   const commentThreadId = searchParams?.get("thread") ?? undefined;
   const chatFlag = useFeatureFlag("interactive-chat");
@@ -144,6 +155,23 @@ export function DocumentEditorScaffold({
     artifact: document,
     currentVersion,
   });
+  // Only connect the collaborative room once the user/org context is ready.
+  // Until then treat the document as room-less — an already-supported state
+  // that OptionalDocumentRoom renders without a RoomProvider — so no auth call
+  // races page mount (FEA-2404). Extracted to a pure helper for unit testing.
+  const activeRoomId = resolveActiveRoomId({
+    liveblocksRoomId: session.liveblocksRoomId,
+    isUserLoading,
+    hasCurrentUser: Boolean(currentUser),
+  });
+  // The editor only reads content from the Liveblocks Y.Doc (and renders
+  // presence) when the room is actually connected. Derive this from
+  // `activeRoomId`, not the raw `session` flag, so descendants that call
+  // Liveblocks room hooks (RichTextEditorHost's Liveblocks variant,
+  // InlinePresence) never mount before the RoomProvider does during the
+  // currentUser-loading window (FEA-2404).
+  const editorUsesLiveblocksContent =
+    session.editorUsesLiveblocksContent && Boolean(activeRoomId);
   const contentController = useDocumentContent({
     artifact: document,
     isLatestVersion: currentVersion === document.latestVersion,
@@ -294,9 +322,9 @@ export function DocumentEditorScaffold({
           <div className="flex h-full overflow-hidden bg-background">
             <OptionalDocumentRoom
               readOnly={session.isViewingHistorical}
-              roomId={session.liveblocksRoomId}
+              roomId={activeRoomId}
             >
-              {session.liveblocksRoomId ? (
+              {activeRoomId ? (
                 <DocumentRoomEventListener
                   documentId={document.id}
                   onRemoteVersionPublished={handleRemoteVersionPublished}
@@ -330,16 +358,14 @@ export function DocumentEditorScaffold({
                           <RichTextToolbar
                             className="border-0 bg-transparent p-0"
                             editor={session.editor}
-                            hasLiveblocksExtension={
-                              session.editorUsesLiveblocksContent
-                            }
+                            hasLiveblocksExtension={editorUsesLiveblocksContent}
                             onPasteMarkdown={session.setEditorContent}
                             readOnly={!editMode.isEditing}
                           />
                         }
                         rightContent={
                           <>
-                            {session.editorUsesLiveblocksContent && (
+                            {editorUsesLiveblocksContent && (
                               <Suspense fallback={null}>
                                 <InlinePresence />
                               </Suspense>
@@ -378,9 +404,7 @@ export function DocumentEditorScaffold({
                     <CollaborativeEditorBody
                       currentVersion={currentVersion}
                       documentId={document.id}
-                      editorUsesLiveblocksContent={
-                        session.editorUsesLiveblocksContent
-                      }
+                      editorUsesLiveblocksContent={editorUsesLiveblocksContent}
                       externalToolbar
                       hasFeedSidebar={feedEnabled}
                       headerContent={
@@ -403,7 +427,7 @@ export function DocumentEditorScaffold({
                         </div>
                       }
                       key={currentVersion}
-                      liveblocksRoomId={session.liveblocksRoomId}
+                      liveblocksRoomId={activeRoomId}
                       onBodyClick={editMode.enterEditMode}
                       onChange={contentController.updateContent}
                       onContentReady={session.handleEditorReady}
@@ -432,7 +456,7 @@ export function DocumentEditorScaffold({
                   artifactType={feedArtifactType}
                   chatPanel={chatEnabled ? renderChatTab?.(ctx) : undefined}
                   currentVersion={currentVersion}
-                  enabled={feedEnabled && !!session.liveblocksRoomId}
+                  enabled={feedEnabled && !!activeRoomId}
                   isViewingHistorical={session.isViewingHistorical}
                   latestVersion={document.latestVersion}
                   onClose={chrome.toggleMetadataPanel}
@@ -495,4 +519,26 @@ export function getLatestContentForAttachmentWarnings({
   }
 
   return document.latestVersionContent ?? "";
+}
+
+/**
+ * Resolves the Liveblocks room id the editor should actually connect to
+ * (FEA-2404). The room is only joined once the user/org context is ready
+ * (`/me` resolved), so its auth callback never races page mount and exhausts
+ * Liveblocks' 10s auth timeout. Until ready, returns `null` — the already
+ * supported room-less state — regardless of the artifact's room id. Passing
+ * `null` also keeps the editor body / feed out of room-hook mode while there
+ * is no RoomProvider.
+ */
+export function resolveActiveRoomId({
+  liveblocksRoomId,
+  isUserLoading,
+  hasCurrentUser,
+}: {
+  liveblocksRoomId: string | null;
+  isUserLoading: boolean;
+  hasCurrentUser: boolean;
+}): string | null {
+  const collaborationReady = !isUserLoading && hasCurrentUser;
+  return collaborationReady ? liveblocksRoomId : null;
 }

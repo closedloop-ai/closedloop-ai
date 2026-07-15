@@ -3,10 +3,10 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import {
-  DOCUMENT_STATUS_OPTIONS,
-  DocumentStatus,
   DocumentType,
   type DocumentWithProject,
+  FEATURE_STATUS_OPTIONS,
+  FeatureStatus,
 } from "@repo/api/src/types/document";
 import { useCreateArtifactLink } from "@repo/app/documents/hooks/use-artifact-links";
 import {
@@ -21,6 +21,10 @@ import {
 } from "@repo/app/shared/components/status-badge";
 import { transformApiUserToSelectUser } from "@repo/app/shared/lib/user-utils";
 import { useTeamMembers } from "@repo/app/teams/hooks/use-teams";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -92,7 +96,8 @@ export function CreateFeatureModal({
   >([]);
   const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
   const [priority, setPriority] = useState<Priority>(Priority.Medium);
-  const [status, setStatus] = useState<DocumentStatus>(DocumentStatus.Draft);
+  // Human-created Features default to BACKLOG (PRD-495).
+  const [status, setStatus] = useState<FeatureStatus>(FeatureStatus.Backlog);
   const [error, setError] = useState<string | null>(null);
   const [relationshipsOpen, setRelationshipsOpen] = useState(false);
 
@@ -142,7 +147,7 @@ export function CreateFeatureModal({
     setSelectedArtifacts([]);
     setSelectedAssignee(null);
     setPriority(Priority.Medium);
-    setStatus(DocumentStatus.Draft);
+    setStatus(FeatureStatus.Backlog);
     setError(null);
     setRelationshipsOpen(false);
     if (showProjectSelector) {
@@ -226,9 +231,9 @@ export function CreateFeatureModal({
 
         <div className="space-y-4 py-6">
           {error ? (
-            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
-              {error}
-            </div>
+            <Alert variant="error">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           ) : null}
 
           {showProjectSelector ? (
@@ -388,14 +393,14 @@ export function CreateFeatureModal({
               Status
             </Label>
             <Select
-              onValueChange={(v: DocumentStatus) => setStatus(v)}
+              onValueChange={(v: FeatureStatus) => setStatus(v)}
               value={status}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {DOCUMENT_STATUS_OPTIONS.map((s) => (
+                {FEATURE_STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>
                     {featureStatusLabels[s]}
                   </SelectItem>

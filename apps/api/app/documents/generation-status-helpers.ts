@@ -69,6 +69,11 @@ async function fetchLoopStatus(
     db.loop.findMany({
       where: { artifactId: documentId },
       orderBy: { createdAt: "desc" },
+      // Cap the scan: a frequently re-run document can accumulate loops
+      // unboundedly. Active loops are always recent, so they fall within the
+      // newest 100; if the most recent 100 are all terminal, older terminal
+      // loops cannot change the `pickBestStatus` outcome.
+      take: 100,
       select: {
         id: true,
         status: true,
@@ -194,6 +199,12 @@ export async function mergeLoopStatuses(
     db.loop.findMany({
       where: { artifactId: { in: documentIds } },
       orderBy: { createdAt: "desc" },
+      // Cap the scan: across N documents each accumulating loops unboundedly,
+      // this can otherwise return tens of thousands of rows on every list load.
+      // Active loops are always recent, so the newest 1000 are a generous
+      // ceiling for the dashboard view; older terminal loops cannot change the
+      // `pickBestStatus` outcome.
+      take: 1000,
       select: {
         id: true,
         artifactId: true,

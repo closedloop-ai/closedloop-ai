@@ -7,6 +7,7 @@ import { gatewayLog } from "../main/gateway-logger.js";
 import type { JobStore } from "../main/job-store.js";
 import { verifyChallenge } from "../main/local-auth-verifier.js";
 import type { LocalSessionStore } from "../main/local-session-store.js";
+import type { LoopCompletedHook } from "../main/loop-finalizer.js";
 import type { LoopSchedulerContext } from "../main/loop-scheduler-context.js";
 import type { LoopTokenStore } from "../main/loop-token-store.js";
 import type { RetrySpawnDeps } from "../main/spawn-retry.js";
@@ -32,7 +33,10 @@ import { registerGitBranchWorktreeRoutes } from "./operations/git-branch-worktre
 import { registerGitBranchesRoutes } from "./operations/git-branches.js";
 import { registerGitDiffRoutes } from "./operations/git-diff.js";
 import { registerGitLocalChangesRoutes } from "./operations/git-local-changes.js";
-import { registerGitPrRoutes } from "./operations/git-pr.js";
+import {
+  type BranchPrIdentityResolver,
+  registerGitPrRoutes,
+} from "./operations/git-pr.js";
 import { registerGitRepoPathRoutes } from "./operations/git-repo-path.js";
 import { registerGitWorktreeRoutes } from "./operations/git-worktree.js";
 import { registerHealthCheckRoutes } from "./operations/health-check.js";
@@ -97,6 +101,8 @@ export type GatewayRouterOptions = {
   loopTokenStore?: LoopTokenStore;
   /** Per-loop heartbeat/refresh/sleep timer container owned by the gateway. */
   schedulers: LoopSchedulerContext;
+  /** Fired on the live-exit edge when a loop reaches terminal success. */
+  onLoopCompleted?: LoopCompletedHook;
   retrySpawnDeps?: RetrySpawnDeps;
   getClaudeCodeOtelReceiverStatus?: () => unknown;
   getGatewayId: () => string;
@@ -135,6 +141,8 @@ export type GatewayRouterOptions = {
   }>;
   applyUpdate?: () => Promise<void>;
   isUpdateAndRestartEnabled?: () => boolean;
+  enableLegacyGithubDataRoutes?: boolean;
+  resolveBranchPrIdentity?: BranchPrIdentityResolver;
 };
 
 export type GatewayActivityEvent = {
@@ -284,7 +292,12 @@ export class GatewayRouter {
     );
     registerGitPrRoutes(
       this.operationDispatcher,
-      this.options.getAllowedDirectories
+      this.options.getAllowedDirectories,
+      this.options.resolveBranchPrIdentity,
+      {
+        enableGithubDataRoutes:
+          this.options.enableLegacyGithubDataRoutes ?? true,
+      }
     );
     registerGitRepoPathRoutes(this.operationDispatcher, getSymphonyDir);
     registerGitWorktreeRoutes(
@@ -363,7 +376,8 @@ export class GatewayRouter {
         signDesktopRequest: this.options.signDesktopRequest,
         onDesktopPopUnavailable: this.options.onDesktopPopUnavailable,
       },
-      getClaudeCodeShellEnv
+      getClaudeCodeShellEnv,
+      this.options.onLoopCompleted
     );
     registerSymphonyLogsRoutes(
       this.operationDispatcher,

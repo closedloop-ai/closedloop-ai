@@ -716,6 +716,58 @@ describe("MCP document parent artifact shaping", () => {
     ]);
   });
 
+  it("logs image-fetch failures with document context without leaking the presigned signature", async () => {
+    const attachmentId = "00000000-0000-4000-8000-000000000001";
+    const content = `![missing](attachment://${attachmentId})`;
+    const signedUrl =
+      "https://s3.example.com/attachments/missing.png?X-Amz-Signature=deadbeefsecret&X-Amz-Expires=600";
+    const apiClient = {
+      get: vi.fn().mockResolvedValueOnce({
+        ...detailRow,
+        version: {
+          ...detailRow.version,
+          content,
+        },
+      }),
+      post: vi.fn().mockResolvedValueOnce({
+        images: [
+          {
+            attachmentId,
+            url: signedUrl,
+            filename: "missing.png",
+            mimeType: "image/png",
+            sizeBytes: 1024,
+            expiresAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+        skipped: [],
+      }),
+    } as unknown as ApiClient;
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+    } as unknown as Response);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handler = createToolHarness(registerGetDocument, apiClient);
+
+    await handler({
+      documentId: "FEA-1031",
+      includeContent: true,
+      includeImages: true,
+      includeParentArtifact: false,
+    });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = String(warnSpy.mock.calls[0]?.[0]);
+    expect(message).toContain(attachmentId);
+    expect(message).toContain("FEA-1031");
+    expect(message).toContain("HTTP 403 Forbidden");
+    expect(message).toContain("https://s3.example.com/attachments/missing.png");
+    expect(message).not.toContain("deadbeefsecret");
+    expect(message).not.toContain("X-Amz-Signature");
+  });
+
   it("reports includeImages count cap skips in the text payload", async () => {
     const attachmentIds = Array.from(
       { length: 11 },

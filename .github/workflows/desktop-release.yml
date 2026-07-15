@@ -1,0 +1,111 @@
+# Community-edition desktop release.
+#
+# Adapted from upstream (symphony-alpha) desktop-release.yml, rewritten to be
+# self-contained for the public repo. Removed from the upstream version:
+#   - the `desktop-packaging/validated` commit-status gate + tag-minting +
+#     precheck/preflight (internal FEA-1935/1936 machinery and scripts/deploy/*.ts
+#     that are not part of the community edition),
+#   - Turbo remote cache (TURBO_TOKEN / TURBO_TEAM),
+#   - Slack notifications (symphony-slack-notify action + SLACK_* secrets).
+# Apple signing/notarization is OPTIONAL: builds run unsigned/ad-hoc by default,
+# and sign only when the APPLE_* / CSC_* repo secrets are configured.
+#
+# Cut a release by dispatching this workflow (it reads the version from
+# apps/desktop/package.json) or by pushing a `desktop-v*` tag.
+name: Release Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the GitHub Release + upload assets
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Version comes from apps/desktop/package.json (the community edition does
+      # not mint version tags the way upstream does). On a desktop-v* tag push
+      # the tag should match; on manual dispatch the package.json value wins.
+      - name: Resolve release version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=desktop-v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing desktop v$VERSION"
+
+      - name: Package Desktop (.dmg + .zip)
+        run: pnpm desktop:package
+        env:
+          # Optional Apple code signing + notarization. When these repo secrets
+          # are unset they resolve to empty strings and electron-builder produces
+          # an unsigned/ad-hoc build — no Apple account required to cut a release.
+          CSC_LINK: ${{ secrets.APPLE_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Verify build artifacts
+        run: |
+          ls -la apps/desktop/dist-dmg
+          test -n "$(find apps/desktop/dist-dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$(find apps/desktop/dist-dmg -maxdepth 1 -name '*-mac.zip' -print -quit)"
+          test -f apps/desktop/dist-dmg/latest-mac.yml
+
+      - name: Create GitHub Release
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading/overwriting assets."
+            gh release upload "$TAG" \
+              apps/desktop/dist-dmg/*.dmg \
+              apps/desktop/dist-dmg/*-mac.zip \
+              apps/desktop/dist-dmg/latest-mac.yml \
+              --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$TAG" \
+              apps/desktop/dist-dmg/*.dmg \
+              apps/desktop/dist-dmg/*-mac.zip \
+              apps/desktop/dist-dmg/latest-mac.yml \
+              --repo "${{ github.repository }}" \
+              --title "ClosedLoop Desktop ${{ steps.version.outputs.version }}" \
+              --notes "ClosedLoop Desktop ${{ steps.version.outputs.version }}" \
+              --latest=false
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload DMG as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClosedLoop-Desktop-macOS-${{ steps.version.outputs.version }}
+          path: apps/desktop/dist-dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

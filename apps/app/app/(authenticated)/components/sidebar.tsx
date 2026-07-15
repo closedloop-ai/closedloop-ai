@@ -10,6 +10,7 @@ import {
   JUDGES_FEATURE_FLAG_KEY,
   SESSIONS_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
+import { isAdminRole } from "@repo/app/shared/lib/role-utils";
 import { useOrganization } from "@repo/auth/client";
 import {
   Sidebar,
@@ -35,6 +36,7 @@ import {
   HistoryIcon,
   InboxIcon,
   LayoutDashboardIcon,
+  PackageIcon,
   RotateCcwIcon,
   SquareCheckIcon,
 } from "lucide-react";
@@ -57,6 +59,8 @@ type NavItem = {
   icon: LucideIcon;
   disabled: boolean;
   featureFlag?: string;
+  /** When true, the item is only rendered for org admins/owners. */
+  adminOnly?: boolean;
 };
 
 // Per-item feature flags for the Artifacts nav section. Every item is gated
@@ -160,6 +164,13 @@ function buildNavData(orgSlug: string) {
       disabled: false,
       featureFlag: JUDGES_FEATURE_FLAG_KEY,
     },
+    {
+      title: "Packs",
+      url: `/${orgSlug}/admin/catalog`,
+      icon: PackageIcon,
+      disabled: false,
+      featureFlag: AGENTS_FEATURE_FLAG_KEY,
+    },
   ];
 
   return {
@@ -179,10 +190,14 @@ export function GlobalSidebar({
 }: GlobalSidebarProperties) {
   const pathname = usePath();
   const orgSlug = useOrgSlug();
-  const { organization } = useOrganization();
+  const { organization, membership } = useOrganization();
+  const isAdmin = isAdminRole(membership?.role);
   const queryClient = useQueryClient();
   const prevOrgIdRef = useRef<string | undefined>(undefined);
   const data = buildNavData(orgSlug);
+  // Some Labs items may be admin-only; hide those from non-admins rather than
+  // surface a bouncing link.
+  const labsItems = data.labs.filter((item) => !item.adminOnly || isAdmin);
   const { ref: scrollRef, showTopFade, showBottomFade } = useScrollFade();
 
   // Clear cache when organization changes
@@ -245,6 +260,7 @@ export function GlobalSidebar({
             </SidebarGroup>
 
             <ArtifactsNavSection
+              isAdmin={isAdmin}
               items={data.artifacts}
               pathname={pathname ?? ""}
             />
@@ -256,7 +272,7 @@ export function GlobalSidebar({
               title="Labs"
             >
               <SidebarMenu className="gap-0">
-                {data.labs.map((item) =>
+                {labsItems.map((item) =>
                   maybeFeatureFlagged(
                     item,
                     <SidebarNavLinkItem
@@ -333,9 +349,11 @@ function maybeFeatureFlagged(item: NavItem, children: ReactNode): ReactNode {
 function ArtifactsNavSection({
   items,
   pathname,
+  isAdmin,
 }: {
   items: NavItem[];
   pathname: string;
+  isAdmin: boolean;
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -368,9 +386,12 @@ function ArtifactsNavSection({
     [ArtifactNavFlag.Agents]: agentsEnabled,
   };
 
-  const visibleItems = items.filter(
-    (item) => item.featureFlag === undefined || enabledByFlag[item.featureFlag]
-  );
+  const visibleItems = items.filter((item) => {
+    if (item.adminOnly && !isAdmin) {
+      return false;
+    }
+    return item.featureFlag === undefined || enabledByFlag[item.featureFlag];
+  });
 
   if (visibleItems.length === 0) {
     return null;

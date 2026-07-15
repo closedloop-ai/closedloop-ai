@@ -4,7 +4,7 @@
  * Surface-neutral, framework-agnostic constants + Zod schemas + pure
  * validation helpers for the unauthenticated, telemetry-only relay session.
  * Produced by the relay (C1) and consumed by the desktop keyless exporter
- * (C5 / FEA-1993) — so it lives in the published `@closedloop-ai/shared-platform`
+ * (C5 / FEA-1993) — so it lives in the workspace-only `@closedloop-ai/shared-platform`
  * package, never depends on `@repo/api`, and carries no Node/Next/browser
  * globals.
  *

@@ -42,6 +42,16 @@ describe("encodeSseData", () => {
       'data: {"a":1,"b":"two"}\n\n'
     );
   });
+
+  it("prepends an id field when an id is provided", () => {
+    expect(decode(encodeSseData({ a: 1 }, { id: 7 }))).toBe(
+      'id: 7\ndata: {"a":1}\n\n'
+    );
+  });
+
+  it("omits the id field when no id is provided", () => {
+    expect(decode(encodeSseData({ a: 1 }, {}))).toBe('data: {"a":1}\n\n');
+  });
 });
 
 describe("createSseResponse", () => {

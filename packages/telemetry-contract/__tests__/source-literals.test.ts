@@ -51,6 +51,7 @@ describe("canonical attribute literals", () => {
       GenAi: "gen_ai",
       Sync: "sync",
       Permission: "permission",
+      Ipc: "ipc",
     });
     expect(TelemetryEmitMetadataKey).toEqual({
       SchemaName: "telemetry.schema_name",

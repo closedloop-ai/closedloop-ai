@@ -285,9 +285,9 @@ function parseJsonField(value: unknown): ContentsJson | null {
   if (!value) {
     return null;
   }
-  // Prisma-typed reads (the converted runCatalogFetch) return the `contents`
-  // Json column already parsed; the legacy raw path yielded a TEXT string.
-  // Handle both so the marketplace-sub-plugin detection is engine-agnostic.
+  // The `contents` Json column may come back already parsed (an object) or as a
+  // JSON-encoded TEXT string. Handle both so the marketplace-sub-plugin detection
+  // is robust to either shape.
   if (typeof value === "object" && !Array.isArray(value)) {
     return value as ContentsJson;
   }

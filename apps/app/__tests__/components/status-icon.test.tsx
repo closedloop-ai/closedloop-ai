@@ -23,9 +23,9 @@ describe("StatusIcon", () => {
   });
 
   it("renders without crashing when status is an unknown string", () => {
-    // This happens at runtime when DOCUMENT_STATUS_TO_ICON[status] is undefined
-    // and the ?? "decorative" fallback is missing. The default case in
-    // getStatusConfig must handle this gracefully.
+    // A caller can pass an unrecognized status string at runtime; the default
+    // case in getStatusConfig must handle this gracefully rather than render an
+    // empty/broken icon.
     const { container } = render(
       <StatusIcon
         size={16}

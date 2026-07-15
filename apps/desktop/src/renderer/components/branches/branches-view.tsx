@@ -1,5 +1,9 @@
 import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
 import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
+import {
+  BranchCloudHydrationStatus,
+  type BranchRow as WireBranchRow,
+} from "@repo/api/src/types/branch";
 import { BranchesSummaryCards } from "@repo/app/branches/components/branches-summary-cards";
 import { BranchesTable } from "@repo/app/branches/components/branches-table";
 import { BranchesToolbar } from "@repo/app/branches/components/branches-toolbar";
@@ -11,22 +15,25 @@ import { useBranchFilterState } from "@repo/app/branches/hooks/use-branch-filter
 import { useBranchViewState } from "@repo/app/branches/hooks/use-branch-view-state";
 import { useBranches } from "@repo/app/branches/hooks/use-branches";
 import { resolveBranchListBanner } from "@repo/app/branches/lib/branch-list-banner";
+import type { BranchRow as RenderBranchRow } from "@repo/app/branches/lib/branch-row";
 import { adaptBranchRows } from "@repo/app/branches/lib/branch-row-adapter";
-import type { BranchRow as RenderBranchRow } from "@repo/app/branches/lib/branch-sample-data";
 import {
   type BranchSortDir,
   type BranchSortKey,
   filterBranchRowsByWindow,
   sortBranchRows,
 } from "@repo/app/branches/lib/branch-sort-group";
+import { useSharedDateRange } from "@repo/app/shared/hooks/use-shared-date-range";
 import {
   type DateRange,
   getStartDateForRange,
 } from "@repo/app/shared/lib/format-utils";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { desktopBranchDetailHashHref } from "../../shared-branches/branch-hrefs";
+import { DesktopConnectStatus } from "../../shared-branches/desktop-connect-status";
 import { createLocalBranchesDataSource } from "../../shared-branches/local-branches-data-source";
 import { DASHBOARD_METRIC_CARD_CLASS_NAME } from "../layout/page-shell";
+import { useDesktopGitHubConnect } from "./use-desktop-github-connect";
 
 /**
  * Branches view — desktop counterpart of the web `/branches` page, rendering
@@ -44,9 +51,18 @@ import { DASHBOARD_METRIC_CARD_CLASS_NAME } from "../layout/page-shell";
  */
 
 // Five summary cards (vs the Sessions view's four), so a five-column top end
-// instead of DASHBOARD_GRID_CLASS_NAME's four.
+// instead of DASHBOARD_GRID_CLASS_NAME's four. Five is odd, so a two-column
+// tier reflows to 2+2+1 and orphans the last card (Median PR size) at half
+// width with an empty cell beside it (FEA-2935). Skip two columns entirely:
+// stack in one column, then jump straight to three (5 → 3+2) and finally five,
+// so every tier lays the row out cleanly and in-bounds. The three-column tier
+// is gated at `lg`, not `md`: the desktop sidebar is a 16rem `md:block` column,
+// so just above 768px the content area is only ~512px — too narrow for three
+// ~160px cards. `lg` is the first breakpoint with room for the 3-col layout
+// once the sidebar is accounted for.
 const CARDS_GRID_CLASS_NAME =
-  "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5";
+  "grid grid-cols-1 gap-3 lg:grid-cols-3 xl:grid-cols-5";
+const DESKTOP_BRANCHES_LIST_STALE_TIME_MS = 90_000;
 
 export function BranchesView({
   dataSource,
@@ -69,30 +85,33 @@ export function BranchesView({
 }
 
 function BranchesViewContent() {
-  const { data, isPending, isError } = useBranches();
+  const { connectState, connectGitHub: handleConnectGitHub } =
+    useDesktopGitHubConnect("/branches");
+  const { data, isPending, isError } = useBranches(
+    {},
+    {
+      refetchOnWindowFocus: true,
+      staleTime: DESKTOP_BRANCHES_LIST_STALE_TIME_MS,
+    }
+  );
   const rows = useMemo(() => adaptBranchRows(data?.items ?? []), [data]);
 
   // Every row links into the branch-detail route (`#/branches/:id`).
   const getBranchHref = desktopBranchDetailHashHref;
 
-  const {
-    sortKey,
-    sortDir,
-    dateRange,
-    visibleColumns,
-    setSort,
-    setDateRange,
-    toggleColumn,
-  } = useBranchViewState("desktop");
+  const { dateRange, setDateRange } = useSharedDateRange("desktop");
+  const { sortKey, sortDir, visibleColumns, setSort, toggleColumn } =
+    useBranchViewState("desktop");
 
   // Column-header clicks set both the sort key and direction.
   const handleSort = (column: string, direction: SortDirection) =>
     setSort(column as BranchSortKey, direction as BranchSortDir);
 
-  // The local branches source does not yet apply time windows server-side, so
-  // the table is windowed client-side on the raw activity timestamp. Rows with
-  // no timestamp (hand-built fixtures) pass through. The analytics query carries
-  // `startDate` too, so the cards follow once the source honors it.
+  // The local branches LIST op does not yet window server-side, so the table is
+  // windowed client-side on the raw activity timestamp. Rows with no timestamp
+  // (hand-built fixtures) pass through. The analytics/usage ops DO honor the
+  // window server-side now (FEA-2155), so the summary cards — fed the same
+  // `startDate` via `analyticsFilters` — reconcile with this windowed table.
   const startDate = useMemo(() => getStartDateForRange(dateRange), [dateRange]);
   const windowedRows = useMemo(
     () => filterBranchRowsByWindow(rows, startDate),
@@ -109,9 +128,18 @@ function BranchesViewContent() {
   const { filters, page, setPage, pagedRows, totalPages, handleFiltersChange } =
     useBranchFilterState(sortedRows);
 
+  // Reset pagination when dateRange changes — covers both local toolbar changes
+  // AND cross-tab StorageEvent updates from Dashboard/Sessions.
+  const dateRangeRef = useRef(dateRange);
+  useEffect(() => {
+    if (dateRangeRef.current !== dateRange) {
+      dateRangeRef.current = dateRange;
+      setPage(0);
+    }
+  }, [dateRange, setPage]);
+
   const handleDateRangeChange = (next: DateRange) => {
     setDateRange(next);
-    setPage(0);
   };
 
   const analyticsFilters = useMemo(() => ({ startDate }), [startDate]);
@@ -144,6 +172,7 @@ function BranchesViewContent() {
           onDateRangeChange={handleDateRangeChange}
           onFiltersChange={handleFiltersChange}
           onToggleColumn={toggleColumn}
+          readSource={data?.readSource}
           rows={windowedRows}
           visibleColumns={visibleColumns}
         />
@@ -164,11 +193,14 @@ function BranchesViewContent() {
             cardClassName={DASHBOARD_METRIC_CARD_CLASS_NAME}
             className={CARDS_GRID_CLASS_NAME}
             filters={analyticsFilters}
+            onConnectGitHub={handleConnectGitHub}
             showDelta={dateRange === "30d"}
           />
+          <DesktopConnectStatus state={connectState} variant="list" />
+          <DesktopCloudHydrationStatus rows={data?.items ?? []} />
           {isResolved && banner === "connect-github" ? (
             <div className="rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2">
-              <ConnectGitHubIndicator compact />
+              <ConnectGitHubIndicator compact onConnect={handleConnectGitHub} />
             </div>
           ) : null}
           {isResolved && banner === "net-new" ? (
@@ -194,8 +226,9 @@ function BranchesViewContent() {
 
       {/* Fixed footer — page controls, always visible (8px horizontal padding). */}
       {isResolved && totalPages > 1 ? (
-        <div className="shrink-0 border-t px-2 py-2">
+        <div className="shrink-0 overflow-x-auto border-t px-2 py-2">
           <TablePagination
+            className="min-w-max"
             onPageChange={setPage}
             page={page}
             totalPages={totalPages}
@@ -204,6 +237,45 @@ function BranchesViewContent() {
       ) : null}
     </div>
   );
+}
+
+function DesktopCloudHydrationStatus({ rows }: { rows: WireBranchRow[] }) {
+  const state = resolveDesktopCloudHydrationState(rows);
+  if (!state) {
+    return null;
+  }
+  return <div className={state.className}>{state.message}</div>;
+}
+
+function resolveDesktopCloudHydrationState(rows: WireBranchRow[]): {
+  className: string;
+  message: string;
+} | null {
+  if (
+    rows.some(
+      (row) => row.cloudHydrationStatus === BranchCloudHydrationStatus.Failed
+    )
+  ) {
+    return {
+      className:
+        "rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-900 text-xs",
+      message:
+        "GitHub cloud refresh failed. Local branch data remains visible.",
+    };
+  }
+  if (
+    rows.some(
+      (row) => row.cloudHydrationStatus === BranchCloudHydrationStatus.Stale
+    )
+  ) {
+    return {
+      className:
+        "rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900 text-xs",
+      message:
+        "GitHub cloud refresh failed. Showing the last synced GitHub overlay with local branch data.",
+    };
+  }
+  return null;
 }
 
 const BRANCHES_STATUS_CLASS_NAME =

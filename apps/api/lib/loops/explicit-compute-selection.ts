@@ -1,4 +1,3 @@
-import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { conflictBody } from "@repo/api/src/types/common";
 import type { ComputePreferenceRequiredBody } from "@repo/api/src/types/compute-target";
@@ -7,56 +6,31 @@ import {
   ComputePreferenceRequiredMessage,
   EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
 } from "@repo/api/src/types/compute-target";
-import { parseError } from "@repo/observability/error";
-import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import {
+  type FeatureFlagIdentity,
+  isFeatureFlagEnabledForAnyIdentity,
+} from "@/lib/feature-flag-identity";
 import {
   fetchUserComputePreferences,
   type UserComputePreferences,
 } from "@/lib/loops/compute-target-resolver";
 
-export type ExplicitComputeSelectionIdentity = {
-  userId: string;
-  clerkUserId?: string | null;
-};
-
-function resolveDistinctIds({
-  clerkUserId,
-  userId,
-}: ExplicitComputeSelectionIdentity): string[] {
-  return [
-    ...new Set(
-      [clerkUserId, userId].filter((value): value is string => Boolean(value))
-    ),
-  ];
-}
+export type ExplicitComputeSelectionIdentity = FeatureFlagIdentity;
 
 /**
  * Evaluates the explicit-compute-selection rollout for server-side admission.
  * Missing PostHog configuration, false, null, or thrown evaluation all preserve
  * legacy behavior by returning false.
  */
-export async function isExplicitComputeSelectionRequired(
+export function isExplicitComputeSelectionRequired(
   identity: ExplicitComputeSelectionIdentity
 ): Promise<boolean> {
-  try {
-    for (const distinctId of resolveDistinctIds(identity)) {
-      if (
-        (await isFeatureFlagEnabledForDistinctId(
-          EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
-          distinctId
-        )) === true
-      ) {
-        return true;
-      }
-    }
-    return false;
-  } catch (error) {
-    log.warn("explicit_compute_selection_feature_flag_unavailable", {
-      error: parseError(error),
-    });
-    return false;
-  }
+  return isFeatureFlagEnabledForAnyIdentity(
+    EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+    identity,
+    "explicit_compute_selection_feature_flag_unavailable"
+  );
 }
 
 export type ExplicitComputeSelectionGateResult = {

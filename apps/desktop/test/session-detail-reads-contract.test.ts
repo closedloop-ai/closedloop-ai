@@ -6,20 +6,19 @@ import test from "node:test";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 /**
- * FEA-1791 Phase 3 contract test for the session DETAIL reads after they moved
- * off the raw `SqliteExecutor` handle onto the single `DesktopPrisma` client.
- * `getDetailsById`/`getActiveWithDetails`/`getHistoricalWithDetails`/`getPage`
- * keep their single `sessionDetailsCtes()` aggregate-join (per-session
+ * Contract test for the session DETAIL reads on the single `DesktopPrisma`
+ * client. `getDetailsById`/`getActiveWithDetails`/`getHistoricalWithDetails`/
+ * `getPage` keep their single `sessionDetailsCtes()` aggregate-join (per-session
  * COUNT(agents)/COUNT(events)/SUM(tokens) folded into the row in one query) on
  * `$queryRawUnsafe` — un-typeable AND the performant choice vs. per-table groupBy
- * marshalled to JS; only `attachEstimatedCosts` is converted to typed `findMany`.
- * Like the session/agent/event store contract tests this runs through
+ * marshalled to JS; only `attachEstimatedCosts` uses typed `findMany`. Like the
+ * session/agent/event store contract tests this runs through
  * `openSqliteAgentDatabase` (electron), so it is a CI guard.
  *
  * The existing `sqlite-agent-dashboard-database` suite already pins the
  * per-session counts/token-totals and the `getPage` filter/escape/ordering. This
- * fills the gap it leaves: the CTE counts survive the move onto the one client,
- * and `attachEstimatedCosts` decorates `estimatedCostUsd` typed off that client on
+ * fills the gap it leaves: the CTE counts are correct on the one client, and
+ * `attachEstimatedCosts` decorates `estimatedCostUsd` typed off that client on
  * every detail-read path (by-id, active, historical, page) — including the
  * literal-`%`/`_` escape on the q-search.
  */

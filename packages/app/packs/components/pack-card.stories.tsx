@@ -1,5 +1,6 @@
-import { packs } from "@repo/app/agents/lib/session-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
+import { mockPackViews } from "../lib/pack-view-mock";
+import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PackCard } from "./pack-card";
 
 const meta = {
@@ -7,7 +8,9 @@ const meta = {
   component: PackCard,
   tags: ["autodocs"],
   args: {
-    pack: packs[0],
+    pack: mockPackViews[1],
+    context: createPacksContext(PacksMode.DesktopTeam),
+    onSelect: () => {},
   },
   parameters: {
     layout: "padded",
@@ -18,10 +21,16 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Available: Story = {};
 
-export const Selected: Story = {
+export const Installed: Story = {
   args: {
-    selected: true,
+    pack: mockPackViews[0],
+  },
+};
+
+export const WebAdmin: Story = {
+  args: {
+    context: createPacksContext(PacksMode.WebAdmin),
   },
 };

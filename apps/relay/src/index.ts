@@ -21,6 +21,7 @@ import {
   DesktopAnalyticsAckReason,
 } from "@repo/api/src/types/desktop-analytics";
 import { log } from "@repo/observability/log";
+import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import {
   ConnectionState,
   emitProtocolMetric,
@@ -459,7 +460,7 @@ async function forwardSocketEvent(
     log.error("Vercel socket-event call failed", {
       event,
       targetId,
-      gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
       status,
       responseUrl,
       contentType,
@@ -473,7 +474,7 @@ async function forwardSocketEvent(
     log.error("forwardSocketEvent: expected data.emit to be an array", {
       event,
       targetId,
-      gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
       emit: result.emit,
       errorClass: ErrorClass.Protocol,
     });
@@ -739,11 +740,45 @@ const io = new Server(server, {
 // no state with — and grants no access to — the authenticated command/DB-sync
 // namespace below. Fails closed when RELAY_OTLP_COLLECTOR_URL is unset.
 // ---------------------------------------------------------------------------
+// Keyless telemetry capacity / back-pressure knobs (FEA-1994 / PRD-481 C6).
+// Return undefined when unset/invalid so the ingress module's built-in defaults
+// stay the single source of truth (no default duplicated here).
+function parseOptionalBoundedEnvInt(
+  name: string,
+  min: number
+): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min) {
+    log.warn(`Invalid ${name}, ignoring (using built-in default)`, {
+      value: raw,
+      min,
+    });
+    return undefined;
+  }
+  return value;
+}
+
 registerKeylessTelemetryNamespace(io, {
   collectorUrl: process.env.RELAY_OTLP_COLLECTOR_URL,
   allowPrivateCollector:
     process.env.RELAY_OTLP_ALLOW_PRIVATE_COLLECTOR_URL === "true",
   isProduction: process.env.NODE_ENV === "production",
+  // Aggregate in-flight collector requests (≥1); connection budget (≥1); and
+  // trusted reverse-proxy hops for X-Forwarded-For client-IP derivation (≥0,
+  // set 1 behind the ALB).
+  maxInflightExports: parseOptionalBoundedEnvInt(
+    "RELAY_OTLP_MAX_INFLIGHT_EXPORTS",
+    1
+  ),
+  maxConnections: parseOptionalBoundedEnvInt("RELAY_OTLP_MAX_CONNECTIONS", 1),
+  trustedProxyHops: parseOptionalBoundedEnvInt(
+    "RELAY_OTLP_TRUSTED_PROXY_HOPS",
+    0
+  ),
 });
 
 const namespace = io.of("/desktop-gateway");
@@ -822,14 +857,11 @@ namespace.use((socket, next) => {
         userId: authPayload.userId,
       });
       socket.data.auth = authPayload;
-      log.info(
-        JSON.stringify({
-          category: TelemetryCategory.ConnectionSocketAccepted,
-          timestamp: new Date().toISOString(),
-          socketId: socket.id,
-          organizationId: authPayload.organizationId,
-        })
-      );
+      log.info("Connection socket accepted", {
+        category: TelemetryCategory.ConnectionSocketAccepted,
+        socketId: socket.id,
+        organizationId: authPayload.organizationId,
+      });
       next();
     })
     .catch((error) => {
@@ -887,16 +919,13 @@ function cleanupExistingWorker(
   );
   socketToTarget.delete(existingWorker.socket.id);
   // Emit reconnecting event — a new socket is taking over for an existing target
-  log.info(
-    JSON.stringify({
-      category: TelemetryCategory.ConnectionReconnecting,
-      timestamp: new Date().toISOString(),
-      computeTargetId: targetId,
-      gatewaySessionId: gatewaySessionId ?? null,
-      socketId: socket.id,
-      previousSocketId: existingWorker.socket.id,
-    })
-  );
+  log.info("Connection reconnecting", {
+    category: TelemetryCategory.ConnectionReconnecting,
+    computeTargetId: targetId,
+    gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+    socketId: socket.id,
+    previousSocketId: existingWorker.socket.id,
+  });
   reconnectCount += 1;
   emitProtocolMetric({
     metric: "reconnect_frequency",
@@ -1027,30 +1056,28 @@ function registerWorker(
         }
       })
       .catch((error) => {
-        log.error("Heartbeat failed", { targetId, gatewaySessionId, error });
+        log.error("Heartbeat failed", {
+          targetId,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+          error,
+        });
         const heartbeatFreshness = heartbeatSentAt - lastHeartbeatSuccess;
-        log.warn(
-          JSON.stringify({
-            category: TelemetryCategory.ConnectionStaleHeartbeat,
-            timestamp: new Date().toISOString(),
-            computeTargetId: targetId,
-            gatewaySessionId: gatewaySessionId ?? null,
-            heartbeatFreshness,
-          })
-        );
+        log.warn("Connection stale heartbeat", {
+          category: TelemetryCategory.ConnectionStaleHeartbeat,
+          computeTargetId: targetId,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+          heartbeatFreshness,
+        });
         // Schedule a degraded event if not already pending
         workerContext.degradedTimer ??= setTimeout(() => {
           workerContext.degradedTimer = null;
           const freshness = Date.now() - lastHeartbeatSuccess;
-          log.warn(
-            JSON.stringify({
-              category: TelemetryCategory.ConnectionDegraded,
-              timestamp: new Date().toISOString(),
-              computeTargetId: targetId,
-              gatewaySessionId: gatewaySessionId ?? null,
-              heartbeatFreshness: freshness,
-            })
-          );
+          log.warn("Connection degraded", {
+            category: TelemetryCategory.ConnectionDegraded,
+            computeTargetId: targetId,
+            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+            heartbeatFreshness: freshness,
+          });
           emitConnectionState(
             ConnectionState.Degraded,
             targetId,
@@ -1100,7 +1127,7 @@ function registerWorker(
   log.info("Worker registered", {
     socketId: socket.id,
     targetId,
-    gatewaySessionId,
+    gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
     organizationId: auth.organizationId,
     userId: auth.userId,
   });
@@ -1197,7 +1224,7 @@ namespace.on("connection", (socket) => {
       log.info("desktop.hello processed", {
         socketId: socket.id,
         targetId: result.targetId,
-        gatewaySessionId,
+        gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
         emitCount: result.emit.length,
         events: result.emit.map((e) => e.event),
       });
@@ -1241,7 +1268,7 @@ namespace.on("connection", (socket) => {
     log.info("Forwarding desktop.command.event", {
       socketId: socket.id,
       targetId,
-      gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
       commandId,
       computeTargetId,
     });
@@ -1262,7 +1289,7 @@ namespace.on("connection", (socket) => {
         log.error("Failed forwarding command event", {
           socketId: socket.id,
           targetId,
-          gatewaySessionId,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
           commandId,
           computeTargetId,
           error,
@@ -1293,7 +1320,7 @@ namespace.on("connection", (socket) => {
     log.info("Forwarding desktop.command.ack", {
       socketId: socket.id,
       targetId,
-      gatewaySessionId,
+      gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
       commandId,
       computeTargetId,
     });
@@ -1310,7 +1337,7 @@ namespace.on("connection", (socket) => {
       log.error("Failed forwarding command ack", {
         socketId: socket.id,
         targetId,
-        gatewaySessionId,
+        gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
         commandId,
         computeTargetId,
         error,
@@ -1367,7 +1394,7 @@ namespace.on("connection", (socket) => {
         log.error("Failed forwarding desktop.telemetry", {
           socketId: socket.id,
           targetId,
-          gatewaySessionId,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
           error: err,
         });
       });
@@ -1405,7 +1432,7 @@ namespace.on("connection", (socket) => {
           log.error("Failed forwarding desktop.agent-sessions", {
             socketId: socket.id,
             targetId,
-            gatewaySessionId,
+            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
             error,
           });
           ack?.({
@@ -1448,7 +1475,7 @@ namespace.on("connection", (socket) => {
           log.error("Failed forwarding desktop.analytics", {
             socketId: socket.id,
             targetId,
-            gatewaySessionId,
+            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
             error,
           });
           ack?.({
@@ -1482,7 +1509,7 @@ namespace.on("connection", (socket) => {
       log.error("Failed forwarding presence", {
         socketId: socket.id,
         targetId,
-        gatewaySessionId,
+        gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
         error,
       });
     }
@@ -1544,7 +1571,7 @@ namespace.on("connection", (socket) => {
           log.error("Failed forwarding disconnect", {
             socketId: socket.id,
             targetId,
-            gatewaySessionId,
+            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
             organizationId: auth.organizationId,
             userId: auth.userId,
             errorClass: ErrorClass.Connection,
@@ -1552,19 +1579,16 @@ namespace.on("connection", (socket) => {
           });
         });
 
-        log.info(
-          JSON.stringify({
-            category: TelemetryCategory.ConnectionDisconnected,
-            timestamp: new Date().toISOString(),
-            computeTargetId: targetId,
-            gatewaySessionId: gatewaySessionId ?? null,
-            reason,
-          })
-        );
+        log.info("Connection disconnected", {
+          category: TelemetryCategory.ConnectionDisconnected,
+          computeTargetId: targetId,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+          reason,
+        });
         log.info("Worker socket disconnected", {
           socketId: socket.id,
           targetId,
-          gatewaySessionId,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
           organizationId: auth.organizationId,
           userId: auth.userId,
           reason,

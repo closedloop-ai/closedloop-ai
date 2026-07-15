@@ -46,12 +46,41 @@ import {
   validateKeylessTelemetrySessionRequest,
 } from "@closedloop-ai/shared-platform/keyless-telemetry";
 import { log } from "@repo/observability/log";
-import type { Server } from "socket.io";
+import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
+import type { Server, Socket } from "socket.io";
 import { z } from "zod";
+import { createConcurrencyLimiter } from "./concurrency-limiter";
 import { createRateLimiter } from "./rate-limiter";
 
 /** Per-connection cap on concurrent live sessions (one legit client needs ~1). */
 const MAX_SESSIONS_PER_SOCKET = 8;
+
+/**
+ * Process-wide ceiling on concurrently in-flight relay → collector proxy
+ * requests (FEA-1994 back-pressure core). Bounds outbound sockets, pending
+ * promises, and retained request bodies (≤512 KB each) regardless of fleet
+ * size; exports offered past this ceiling are load-shed with a retryable
+ * `rate_limited` ack rather than queued.
+ */
+const DEFAULT_MAX_INFLIGHT_EXPORTS = 256;
+
+/**
+ * Ceiling on concurrent live `/telemetry` connections (FEA-1994 connection
+ * model). Fences the keyless namespace's connection budget so a keyless
+ * connection storm cannot starve the authenticated `/desktop-gateway` namespace
+ * — both share one Socket.IO engine / Node HTTP server. Headroom over the
+ * 1,400+ fleet target.
+ */
+const DEFAULT_MAX_CONNECTIONS = 3000;
+
+/**
+ * Number of trusted reverse-proxy hops in front of the relay (FEA-1994 IP
+ * tier). `0` (default) uses the immediate TCP peer — correct for direct
+ * connections. Behind the ALB set `1` so the per-IP rate-limit key is the real
+ * client IP from `X-Forwarded-For` instead of the shared LB address (otherwise
+ * the whole fleet collapses into one per-IP bucket at fleet scale).
+ */
+const DEFAULT_TRUSTED_PROXY_HOPS = 0;
 
 /** Minimal session-id extraction schema (relay-internal). */
 const sessionIdSchema = z.object({
@@ -114,11 +143,21 @@ export type KeylessTelemetryConfig = {
   sessionRateLimitPerMinute?: number;
   installRateLimitPerMinute?: number;
   ipRateLimitPerMinute?: number;
+  /** Max concurrently in-flight collector proxy requests (back-pressure). */
+  maxInflightExports?: number;
+  /** Max concurrent live `/telemetry` connections (connection-budget fence). */
+  maxConnections?: number;
+  /** Trusted reverse-proxy hops for `X-Forwarded-For` client-IP derivation. */
+  trustedProxyHops?: number;
 };
 
 export type KeylessTelemetryNamespaceHandle = {
   /** Live session count (in-memory). */
   activeSessions: () => number;
+  /** Live `/telemetry` connection count (in-memory). */
+  activeConnections: () => number;
+  /** Currently in-flight collector proxy requests. */
+  inFlightExports: () => number;
   /** Stop the expiry sweep timer (tests / shutdown). */
   close: () => void;
 };
@@ -309,6 +348,65 @@ function rateLimited(): KeylessTelemetryExportAck {
   };
 }
 
+/**
+ * Fleet-capacity metrics (FEA-1994), emitted through the generic telemetry-
+ * metric pipeline so the Datadog log-to-metric processor and the load test can
+ * observe shedding/rejection without a `@repo/observability` schema change.
+ */
+type KeylessCapacityMetric = {
+  metric:
+    | "keyless_telemetry_connection_rejected"
+    | "keyless_telemetry_export_shed";
+  reason: "at_connection_capacity" | "backpressure";
+  count: 1;
+};
+
+function emitCapacityMetric(metric: KeylessCapacityMetric): void {
+  emitTelemetryMetric(metric);
+}
+
+/** Minimal handshake shape needed to derive the rate-limit client IP. */
+type HandshakeLike = {
+  address?: string;
+  headers: Record<string, string | string[] | undefined>;
+};
+
+/**
+ * Resolve the per-IP rate-limit key for a connection (FEA-1994).
+ *
+ * With `trustedProxyHops <= 0` the immediate TCP peer is used — the only
+ * forge-proof source for a direct connection. With `n > 0` trusted reverse
+ * proxies in front (e.g. the ALB at `n = 1`), the real client IP is the entry
+ * `n` from the right of `X-Forwarded-For` (`parts[len - n]`), since each proxy
+ * appends the address that connected to it. If the header is absent or has
+ * fewer than `n` entries (misconfiguration or a spoof that omits the expected
+ * chain), this falls back to the immediate peer rather than trusting a
+ * client-supplied value.
+ */
+export function deriveClientIp(
+  handshake: HandshakeLike,
+  trustedProxyHops: number
+): string {
+  const peer = handshake.address || "unknown";
+  if (trustedProxyHops <= 0) {
+    return peer;
+  }
+  const raw = handshake.headers["x-forwarded-for"];
+  const joined = Array.isArray(raw) ? raw.join(",") : raw;
+  if (!joined) {
+    return peer;
+  }
+  const parts = joined
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const index = parts.length - trustedProxyHops;
+  if (index < 0 || index >= parts.length) {
+    return peer;
+  }
+  return parts[index] || peer;
+}
+
 export function registerKeylessTelemetryNamespace(
   io: Server,
   config: KeylessTelemetryConfig
@@ -317,6 +415,19 @@ export function registerKeylessTelemetryNamespace(
   const sessionTtlMs = config.sessionTtlMs ?? KEYLESS_TELEMETRY_SESSION_TTL_MS;
   const maxActiveSessions =
     config.maxActiveSessions ?? KEYLESS_TELEMETRY_MAX_ACTIVE_SESSIONS;
+  const maxConnections = config.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
+  const trustedProxyHops = Math.max(
+    0,
+    config.trustedProxyHops ?? DEFAULT_TRUSTED_PROXY_HOPS
+  );
+  const collectorLimiter = createConcurrencyLimiter(
+    config.maxInflightExports ?? DEFAULT_MAX_INFLIGHT_EXPORTS
+  );
+
+  // Live `/telemetry` connection count, fenced at `maxConnections` so a keyless
+  // connection storm cannot exhaust the engine budget the authenticated
+  // namespace shares.
+  let activeConnections = 0;
 
   const collector = resolveCollectorOrigin(config);
   if (!collector.ok) {
@@ -345,12 +456,35 @@ export function registerKeylessTelemetryNamespace(
 
   const namespace = io.of(KEYLESS_TELEMETRY_NAMESPACE);
 
-  namespace.on("connection", (socket) => {
-    // Immediate TCP peer. Behind a proxy/LB this is the proxy's address, so the
-    // IP tier degrades to a coarse global bound there; the per-session and
-    // per-install tiers are the primary per-client bounds. A trusted-proxy
-    // X-Forwarded-For tier is deferred to FEA-1994 (capacity/back-pressure).
-    const ip = socket.handshake.address || "unknown";
+  namespace.on("connection", (socket: Socket) => {
+    // Connection-budget fence (FEA-1994): reject past the cap BEFORE wiring any
+    // handlers or incrementing, so the keyless namespace cannot exhaust the
+    // engine/file-descriptor budget the authenticated namespace shares.
+    if (activeConnections >= maxConnections) {
+      emitCapacityMetric({
+        metric: "keyless_telemetry_connection_rejected",
+        reason: "at_connection_capacity",
+        count: 1,
+      });
+      log.warn("keyless telemetry: at connection capacity, rejecting socket", {
+        activeConnections,
+        maxConnections,
+      });
+      // `disconnect()` (close=false) tears down ONLY this `/telemetry` namespace
+      // socket. Never `disconnect(true)`: the contract lets a client multiplex
+      // `/telemetry` over the same Engine.IO connection as the authenticated
+      // `/desktop-gateway` namespace, and closing the underlying transport would
+      // kill that authenticated session — the exact degradation this fence
+      // exists to prevent.
+      socket.disconnect();
+      return;
+    }
+    activeConnections += 1;
+
+    // Per-IP rate-limit key. With `trustedProxyHops > 0` (e.g. behind the ALB)
+    // this is the real client IP from X-Forwarded-For so each install gets its
+    // own per-IP bucket; otherwise it is the immediate TCP peer (FEA-1994).
+    const ip = deriveClientIp(socket.handshake, trustedProxyHops);
     const ownedSessions = new Set<string>();
 
     socket.on(KEYLESS_TELEMETRY_HANDSHAKE_EVENT, (payload, callback) => {
@@ -486,12 +620,29 @@ export function registerKeylessTelemetryNamespace(
         };
       }
 
-      return await proxyToCollector(
-        collector.origin,
-        envelope.envelope.signal,
-        envelope.envelope.body,
-        fetchImpl
-      );
+      // Back-pressure (FEA-1994): bound concurrently in-flight collector
+      // requests across the whole namespace. Past the ceiling, load-shed with a
+      // retryable `rate_limited` ack — never queue — so aggregate in-flight work
+      // (and thus memory + event-loop time shared with the authenticated path)
+      // stays bounded under a fleet-scale spike.
+      if (!collectorLimiter.tryAcquire()) {
+        emitCapacityMetric({
+          metric: "keyless_telemetry_export_shed",
+          reason: "backpressure",
+          count: 1,
+        });
+        return rateLimited();
+      }
+      try {
+        return await proxyToCollector(
+          collector.origin,
+          envelope.envelope.signal,
+          envelope.envelope.body,
+          fetchImpl
+        );
+      } finally {
+        collectorLimiter.release();
+      }
     };
 
     socket.on(KEYLESS_TELEMETRY_EXPORT_EVENT, (payload, callback) => {
@@ -510,6 +661,7 @@ export function registerKeylessTelemetryNamespace(
     });
 
     socket.on("disconnect", () => {
+      activeConnections = Math.max(0, activeConnections - 1);
       for (const sessionId of ownedSessions) {
         dropSession(sessionId);
       }
@@ -536,6 +688,8 @@ export function registerKeylessTelemetryNamespace(
 
   return {
     activeSessions: () => sessions.size,
+    activeConnections: () => activeConnections,
+    inFlightExports: () => collectorLimiter.inFlight(),
     close: () => clearInterval(sweep),
   };
 }

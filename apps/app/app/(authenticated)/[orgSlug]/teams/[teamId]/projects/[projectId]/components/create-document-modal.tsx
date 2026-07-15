@@ -2,12 +2,15 @@
 
 import type { ComputeTargetConflictBody } from "@repo/api/src/types/compute-target";
 import {
+  type ArtifactStatus,
   type CreateDocumentInput,
   DOCUMENT_STATUS_OPTIONS,
   type Document,
   DocumentStatus,
   DocumentType,
   type DocumentWithProject,
+  FEATURE_STATUS_OPTIONS,
+  fallbackStatusForSubtype,
 } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import {
@@ -17,7 +20,7 @@ import {
 import { useResolvedJobRepos } from "@repo/app/loops/hooks/use-resolved-job-repos";
 import { useProjectsByTeam } from "@repo/app/projects/hooks/use-projects";
 import {
-  DOCUMENT_STATUS_LABELS,
+  ARTIFACT_STATUS_LABELS,
   DOCUMENT_TYPE_BADGE_LABELS,
   DOCUMENT_TYPE_ICONS,
   DOCUMENT_TYPE_LABELS,
@@ -28,6 +31,10 @@ import {
 } from "@repo/app/shared/components/hidden-file-input";
 import { transformApiUserToSelectUser } from "@repo/app/shared/lib/user-utils";
 import { useTeamMembers } from "@repo/app/teams/hooks/use-teams";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Command,
@@ -124,7 +131,10 @@ export function CreateDocumentModal({
 
   // PRD-specific fields
   const [selectedApprover, setSelectedApprover] = useState<User | null>(null);
-  const [status, setStatus] = useState<DocumentStatus>("DRAFT");
+  // Default to the subtype-appropriate status (Features → BACKLOG). PRD-495.
+  const [status, setStatus] = useState<ArtifactStatus>(() =>
+    fallbackStatusForSubtype(documentType)
+  );
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("");
   const [reverseSynthesisLink, setReverseSynthesisLink] = useState("");
@@ -462,9 +472,9 @@ export function CreateDocumentModal({
           />
 
           {error ? (
-            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
-              {error}
-            </div>
+            <Alert variant="error">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           ) : null}
 
           {showProjectSelector ? (
@@ -587,16 +597,19 @@ export function CreateDocumentModal({
               Status
             </Label>
             <Select
-              onValueChange={(v) => setStatus(v as DocumentStatus)}
+              onValueChange={(v) => setStatus(v as ArtifactStatus)}
               value={status}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {DOCUMENT_STATUS_OPTIONS.map((statusOption) => (
+                {(documentType === DocumentType.Feature
+                  ? FEATURE_STATUS_OPTIONS
+                  : DOCUMENT_STATUS_OPTIONS
+                ).map((statusOption) => (
                   <SelectItem key={statusOption} value={statusOption}>
-                    {DOCUMENT_STATUS_LABELS[statusOption]}
+                    {ARTIFACT_STATUS_LABELS[statusOption]}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -789,7 +802,7 @@ function populateFieldsFromSource(
   transformedUsers: User[]
 ): {
   approver: User | null;
-  status: DocumentStatus;
+  status: ArtifactStatus;
 } | null {
   const selectedSource = sources.find((s) => s.id === sourceId);
   if (!selectedSource) {
@@ -808,7 +821,7 @@ function populateFieldsFromSource(
 
 type SourceFieldSetters = {
   setSelectedApprover: (v: User | null) => void;
-  setStatus: (v: DocumentStatus) => void;
+  setStatus: (v: ArtifactStatus) => void;
 };
 
 /**
@@ -1002,7 +1015,7 @@ function buildModalCreateInput(args: {
   fileName: string;
   content: string;
   approverId: string | undefined;
-  status: DocumentStatus;
+  status: ArtifactStatus;
   targetRepo: string;
   targetBranch: string;
   additionalRepos: AdditionalRepoRef[] | undefined;

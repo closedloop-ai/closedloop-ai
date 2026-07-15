@@ -53,6 +53,27 @@ export const PopulatedHierarchyTimeline: Story = {
   },
 };
 
+export const TraceCommentTarget: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
+    session: populatedAgentSessionDetailFixture,
+  },
+};
+
+export const DesktopShellTraceCommentTarget: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
+    session: populatedAgentSessionDetailFixture,
+  },
+  render: (args) => (
+    <div className="flex h-screen min-h-0 flex-1 flex-col overflow-hidden bg-background">
+      <AgentSessionDetailView {...args} />
+    </div>
+  ),
+};
+
 export const PopulatedToolFlowInitialTab: Story = {
   args: {
     backHref: "/sessions",

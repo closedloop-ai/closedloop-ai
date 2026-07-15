@@ -5,14 +5,25 @@ import {
   parseQueryParams,
   successResponse,
 } from "@/lib/route-utils";
-import { getAgentSessionViewerScope } from "../route-helpers";
+import {
+  authorizeAgentSessionTeamScope,
+  getAgentSessionViewerScope,
+} from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { baseAgentSessionQuerySchema } from "../validators";
 
 export const GET = withAnyAuth<
   AgentSessionAnalytics,
   "/agent-sessions/analytics"
->(async ({ user, clerkUserId }, request) => {
+>(async ({ user, clerkOrgId, clerkUserId }, request) => {
+  const { params, errorResponse } = parseQueryParams(
+    request,
+    baseAgentSessionQuerySchema
+  );
+  if (errorResponse) {
+    return errorResponse;
+  }
+
   const viewerScope = await getAgentSessionViewerScope({
     userId: user.id,
     clerkUserId,
@@ -21,12 +32,15 @@ export const GET = withAnyAuth<
     return forbiddenResponse();
   }
 
-  const { params, errorResponse } = parseQueryParams(
-    request,
-    baseAgentSessionQuerySchema
-  );
-  if (errorResponse) {
-    return errorResponse;
+  const teamScopeAllowed = await authorizeAgentSessionTeamScope({
+    organizationId: user.organizationId,
+    userId: user.id,
+    clerkOrgId,
+    clerkUserId,
+    filters: params,
+  });
+  if (!teamScopeAllowed) {
+    return forbiddenResponse();
   }
 
   const analytics = await agentSessionsService.getAnalytics({

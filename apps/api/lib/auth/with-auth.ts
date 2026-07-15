@@ -32,7 +32,7 @@ export type AuthContext = {
   clerkUserId: string;
   clerkOrgId: string;
   orgRole?: string;
-  authMethod: "session" | "api_key";
+  authMethod: "session" | "api_key" | "desktop_session";
   apiKeyScopes?: ApiKeyScope[];
 };
 

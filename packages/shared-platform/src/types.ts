@@ -8,9 +8,9 @@
 /**
  * Engineer routing modes -- determines how gateway requests are dispatched.
  *
- * SINGLE SOURCE OF TRUTH. This package is published (`@closedloop-ai/shared-platform`)
- * so every surface -- web, desktop, CLI -- can depend on it without pulling in the
- * workspace-only `@repo/api` package. `@repo/api/src/types/relay` re-exports this
+ * SINGLE SOURCE OF TRUTH. This is a lightweight, workspace-only leaf
+ * (`@closedloop-ai/shared-platform`) so every surface -- web, desktop, CLI -- can depend
+ * on it without pulling in the heavier `@repo/api` package. `@repo/api/src/types/relay` re-exports this
  * const to preserve the historical in-repo import path; it must NOT redefine the
  * values. Literal values are a persisted, cross-process contract -- do not change
  * them without a migration.

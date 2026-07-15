@@ -197,6 +197,8 @@
 .sd3-pp {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   gap: 6px;
   color: var(--foreground);
   font-size: 12px;
@@ -214,7 +216,7 @@
 
 .sd3-props .prd-props {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   column-gap: 40px;
   row-gap: 2px;
 }
@@ -261,6 +263,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 420px) {
+  .sd3-props .prd-prop {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 2px;
+  }
+
+  .sd3-props .prd-prop-value {
+    width: 100%;
+    margin: 0;
+    padding: 4px 0;
+  }
 }
 
 /* Pull-requests property value. The `.sd3-result-pr`, `.sd3-result-status`, and
@@ -315,16 +331,18 @@
   font-weight: 600;
 }
 
+/* Token-cost split uses the shared design-system chart palette (--chart-*),
+   matching how the Branch timeline colors its series — not bespoke hex. */
 .cb-cache {
-  background: #94a3b8;
+  background: var(--chart-3);
 }
 
 .cb-out {
-  background: #7c5cff;
+  background: var(--chart-2);
 }
 
 .cb-in {
-  background: #0e9997;
+  background: var(--chart-1);
 }
 
 .sd3-actbar {
@@ -349,6 +367,39 @@
 
 .sd3-bars2-wrap {
   position: relative;
+}
+
+/* Read-only "you are here" line shared by the Session and Branch timeline
+   graphs. Non-interactive (clicks pass through to the bars); shows where the
+   reader is once they scroll or click the graph. Geometry is set per surface. */
+.tl-here {
+  position: absolute;
+  z-index: 6;
+  width: 0;
+  border-left: 2px solid color-mix(in oklab, var(--primary) 80%, transparent);
+  pointer-events: none;
+  transform: translateX(-1px);
+}
+
+.tl-here::before {
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--primary);
+  content: "";
+}
+
+.sd3-bars2-wrap .tl-here {
+  top: 0;
+  height: 78px;
+}
+
+.bq-bars-wrap .tl-here {
+  top: 14px;
+  height: 92px;
 }
 
 .sd3-bars2 {
@@ -461,53 +512,6 @@
 
 .sd3-dot.d-r {
   background: var(--destructive);
-}
-
-.sd3-playhead {
-  position: absolute;
-  top: 0;
-  z-index: 7;
-  width: 0;
-  height: 100px;
-  padding: 0;
-  border-top: 0;
-  border-right: 0;
-  border-bottom: 0;
-  border-left: 2px solid var(--foreground);
-  background: transparent;
-  cursor: ew-resize;
-  transform: translateX(-0.5px);
-}
-
-.sd3-playhead::before {
-  position: absolute;
-  top: 0;
-  left: -6px;
-  width: 13px;
-  height: 100px;
-  content: "";
-}
-
-.sd3-playhead.dragging {
-  border-left-color: var(--primary);
-}
-
-.sd3-playhead-grip {
-  position: absolute;
-  top: 0;
-  left: -1px;
-  display: grid;
-  width: 14px;
-  height: 16px;
-  place-items: center;
-  border-radius: 3px;
-  background: var(--foreground);
-  color: var(--background);
-  transform: translateX(-50%);
-}
-
-.sd3-playhead.dragging .sd3-playhead-grip {
-  background: var(--primary);
 }
 
 .sd3-act-axis {
@@ -686,6 +690,52 @@
   background: var(--background);
 }
 
+/* FEA-2479: collapsed comments rail — a slim, always-reachable re-open tab. */
+.sd3-cmts-collapsed {
+  display: flex;
+  height: 100%;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 8px 6px;
+  border-left: 1px solid var(--border);
+  background: var(--background);
+}
+
+.sd3-cmts-reopen {
+  display: flex;
+  height: fit-content;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.sd3-cmts-reopen:hover {
+  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.sd3-cmts-reopen-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+}
+
 .fp-resize {
   position: absolute;
   top: 0;
@@ -803,6 +853,14 @@
   cursor: pointer;
 }
 
+.fp-comment-card {
+  margin: 8px 12px;
+}
+
+.fp-comment-card.is-active {
+  box-shadow: inset 0 0 0 1px oklch(0.65 0.17 85 / 0.4);
+}
+
 .fp-rail {
   position: relative;
   display: flex;
@@ -842,7 +900,9 @@
   visibility: hidden;
 }
 
-.fp-comment:hover .fp-comment-actions {
+.fp-comment:hover .fp-comment-actions,
+.fp-comment:focus-within .fp-comment-actions,
+.fp-comment-actions.is-visible {
   visibility: visible;
 }
 
@@ -896,6 +956,57 @@
   text-wrap: pretty;
 }
 
+.fp-replies {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.fp-reply {
+  display: grid;
+  gap: 3px;
+}
+
+.fp-reply-text {
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.fp-reply-composer {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+}
+
+.fp-reply-composer:focus-within {
+  border-color: color-mix(in oklab, var(--primary) 45%, var(--input-border));
+}
+
+.fp-reply-composer textarea {
+  min-height: 56px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.fp-reply-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
 .fp-comment.is-active .fp-comment-body {
   margin: -4px -6px;
   padding: 4px 6px;
@@ -917,6 +1028,119 @@
   padding-left: 2px;
   color: var(--muted-foreground);
   font-size: 11px;
+}
+
+.fp-composer-hint-only .fp-composer-hint {
+  margin-bottom: 0;
+}
+
+.st {
+  position: relative;
+}
+
+.st-comment-pop {
+  position: absolute;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  font-weight: 600;
+  font-size: 12px;
+  box-shadow: var(--shadow-lg);
+}
+
+.st-comment-compose {
+  width: min(340px, calc(100% - 16px));
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px;
+}
+
+.st-comment-quote {
+  max-height: 90px;
+  overflow: auto;
+  padding-left: 8px;
+  border-left: 2px solid oklch(0.65 0.17 85);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bq-sessions-workspace {
+  min-height: 0;
+  height: 100%;
+}
+
+.bq-sessions-main {
+  width: 100%;
+  max-width: 1000px;
+  padding: 0 20px 16px;
+  margin: 0 auto;
+}
+
+@media (max-width: 900px) {
+  .sd3 {
+    flex-direction: column;
+  }
+
+  .sd3-doc {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .sd3-cmts {
+    width: 100%;
+    min-height: 320px;
+    height: auto;
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .sd3-cmts-collapsed {
+    width: 100%;
+    height: auto;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .sd3-cmts-collapsed .sd3-cmts-reopen {
+    flex-direction: row;
+  }
+
+  .sd3 .fp-resize {
+    display: none;
+  }
+
+  .bq-sessions-workspace {
+    overflow: hidden;
+  }
+
+  .bq-sessions-main {
+    width: 100%;
+  }
+
+  .st-msg {
+    padding-right: 0;
+  }
+
+  .st-bubble {
+    width: 100%;
+  }
+
+  .st-sysline {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
 }
 
 .sd3-cmts .fp-composer-box {
@@ -966,6 +1190,29 @@
   font-size: 13.5px;
   line-height: 1.6;
   text-wrap: pretty;
+}
+
+[data-trace-highlight="row"] .st-text,
+.st-text[data-trace-highlight="row"] {
+  border-radius: 4px;
+  background: oklch(0.82 0.17 85 / 0.14);
+  box-shadow: 0 0 0 1px oklch(0.65 0.17 85 / 0.24);
+}
+
+.st-text-fragment {
+  display: inline;
+}
+
+.st-text-fragment > :first-child,
+.st-text-fragment > :last-child {
+  display: inline;
+  margin-block: 0;
+}
+
+.st-selected-passage {
+  border-radius: 4px;
+  background: oklch(0.82 0.17 85 / 0.2);
+  box-shadow: 0 0 0 1px oklch(0.65 0.17 85 / 0.32);
 }
 
 .st-msg,
@@ -1465,8 +1712,8 @@
 }
 
 /* Files-changed list (Epic F / FEA-1952 — F1). Ported from the Branches Page
-   design handoff (branch-quiet.css). Rows are display-only (the gateway returns
-   filenames only; there is no per-file diff route in this version). */
+   design handoff (branch-quiet.css). Rows open the existing branch-view
+   per-file diff route when live PR files are available. */
 .bq-files {
   display: flex;
   flex-direction: column;
@@ -1482,6 +1729,25 @@
   color: var(--foreground);
 }
 
+.bq-file-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bq-file-button:hover,
+.bq-file-button:focus-visible,
+.bq-file-button[aria-pressed="true"] {
+  background: var(--muted);
+}
+
+.bq-file-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
 .bq-file-ic {
   color: var(--muted-foreground);
   flex: 0 0 auto;
@@ -1494,6 +1760,88 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.bq-file-diff {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.bq-file-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+}
+
+.bq-file-diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.bq-file-diff-close {
+  display: inline-flex;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.bq-file-diff-close:hover,
+.bq-file-diff-close:focus-visible {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.bq-file-diff-close:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.bq-file-diff-pane {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+}
+
+.bq-file-diff-pane-title {
+  border-bottom: 1px solid var(--border);
+  padding: 5px 8px;
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.bq-file-diff-code {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
 }
 
 /* "What was delivered" section (Epic F / FEA-1952). Ported from the Branches
@@ -1795,19 +2143,34 @@
   margin-top: 26px;
 }
 
-/* Combined merged trace (D2): a bounded, self-contained scroll viewport so a
-   timeline scrub scrolls the trace in place rather than the whole branch page
-   (mirrors the Session detail page's `.sd3-scroll`). */
-.bq-trace-scroll {
-  max-height: 70vh;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+/* Tab toggle row (Branch details / Sessions & timeline). It sits above the
+   active tab's scroller so it stays reachable while either tab scrolls. */
+.bq-tabs-sticky {
+  flex: 0 0 auto;
+  top: 0;
+  isolation: isolate;
+  z-index: 30;
+  padding: 16px 0;
+  background: var(--background);
+}
+
+/* PR timeline header (bars → dots → axis): pins to the top of the left timeline
+   scroller while the combined trace scrolls beneath it. A bottom border
+   separates it from the trace. */
+.bq-timeline-sticky {
+  position: sticky;
+  top: 0;
+  isolation: isolate;
+  z-index: 20;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
 }
 
 .bq-act-head {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 16px;
   margin-bottom: 10px;
 }
@@ -1914,52 +2277,11 @@
   );
 }
 
-.bq-bar.conc {
-  border-radius: 3px;
-  box-shadow: 0 0 0 1.5px color-mix(in oklab, #c0762b 60%, transparent);
-}
-
-/* "You are here" playhead scrubber (Epic E / E2), overlaying the timeline */
-.bq-playhead-rail {
-  position: relative;
-  height: 92px;
-  margin-top: 6px;
-}
-
-.bq-playhead {
-  position: absolute;
-  /* Bar hangs from the grip handle (top) down to the bars' baseline — `bottom`
-     clears the time-axis row (`.bq-axis`: 6px margin + ~14px text) so the line
-     sits below the handle, over the graph, rather than above it. */
-  top: 14px;
-  bottom: 22px;
-  width: 0;
-  border: none;
-  border-left: 2px solid var(--foreground);
-  background: transparent;
-  padding: 0;
-  cursor: ew-resize;
-  z-index: 9;
-}
-
-.bq-playhead-grip {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  display: grid;
-  width: 14px;
-  height: 16px;
-  place-items: center;
-  border-radius: 3px;
-  background: var(--foreground);
-  color: var(--background);
-  transform: translateX(-50%);
-}
-
 /* Event-dot rail (Epic E / E3): green/red local outcomes + orange PR comments */
 .bq-drail-wrap {
   position: relative;
-  margin-top: 6px;
+  /* Dots sit just under the bars (the time-axis row follows the dots). */
+  margin-top: 4px;
 }
 
 .bq-drail {
@@ -2047,12 +2369,25 @@
   transform: translateX(-86%);
 }
 
+/* Portaled to <body> with fixed positioning (BranchTipPortal): escapes the
+   sticky toggle/timeline stacking contexts and the page scroller's overflow, so
+   a tall tooltip is never clipped behind the sticky chrome. Overrides the
+   absolute/transform base above. */
+.bq-tip-fixed {
+  position: fixed;
+  bottom: auto;
+  z-index: 70;
+  margin: 0;
+  transform: none;
+}
+
 .bq-tip-h {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 6px;
+  color: var(--foreground);
   font-size: 12px;
 }
 
@@ -2290,31 +2625,11 @@
   font-size: 11px;
 }
 
-/* Composition: overlay the E2 playhead across the E1 timeline without blocking
-   bar clicks — the overlay is click-through; only the handle re-enables it. */
-.bq-playhead-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.bq-playhead-overlay .bq-playhead-rail {
-  position: absolute;
-  inset: 0;
-  height: auto;
-  margin: 0;
-}
-
-.bq-playhead-overlay .bq-playhead {
-  /* Inherit the base top/bottom anchoring; only re-enable the handle's pointer
-     events over the otherwise click-through overlay. */
-  pointer-events: auto;
-}
-
 /* PR timeline header stat cluster (cost / value / wall clock) + time axis */
 .bq-stats {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 16px;
 }
@@ -2333,10 +2648,43 @@
   font-size: 13px;
 }
 
+@media (max-width: 640px) {
+  .bq-act-head {
+    align-items: flex-start;
+    gap: 8px 12px;
+  }
+
+  .bq-act-legend,
+  .bq-stats {
+    flex-basis: 100%;
+  }
+
+  .bq-stats {
+    gap: 6px 12px;
+  }
+}
+
 .bq-axis {
   display: flex;
   justify-content: space-between;
   margin-top: 6px;
   color: var(--muted-foreground);
   font-size: 11px;
+}
+
+/* ── ob-pulse (FEA-3179) ───────────────────────────────────────────────────
+   The soft opacity pulse originally authored for the desktop first-launch
+   onboarding surface (apps/desktop/src/renderer/globals.css). Registered here
+   in the shared @repo/app stylesheet so BOTH surfaces (web app + desktop
+   renderer, which each import this file) can drive the same animation from
+   shared components — e.g. the agents-table "live" activity dot. Reused
+   verbatim; not a new animation. */
+@keyframes ob-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }

@@ -48,6 +48,15 @@ export type RefreshLoopTokenResult =
 
 const inflight = new Map<string, Promise<RefreshLoopTokenResult>>();
 
+// Standalone request timeout for the refresh POST. A TCP-accepted-but-never-
+// answering endpoint would otherwise leave the fetch pending forever, wedging
+// the `inflight` singleflight entry (cleared only in `.finally`) so every later
+// `refreshLoopTokenSingleflight(loopId)` returns the same stuck promise. Uses
+// `AbortSignal.timeout` (a fresh, standalone signal) rather than chaining the
+// caller's abort, preserving AC-002 (a bounded-timeout abort on the original
+// request must not cancel the in-flight refresh).
+const REFRESH_REQUEST_TIMEOUT_MS = 10_000;
+
 // ---------------------------------------------------------------------------
 // Internal: single HTTP refresh attempt
 // ---------------------------------------------------------------------------
@@ -94,6 +103,7 @@ async function attemptRefresh(
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
+      signal: AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -24,6 +24,8 @@ vi.mock("@repo/database", () => {
 vi.mock("@repo/ai/server", () => ({
   generateText: vi.fn(),
   models: { sonnet: "claude-sonnet" },
+  // Use the real implementation so the XML-escaping assertions stay meaningful.
+  escapeXmlClosingTags: (content: string) => content.replaceAll("</", "&lt;/"),
 }));
 
 vi.mock("@/app/documents/document-service", () => ({
@@ -255,6 +257,24 @@ describe("documentMergeService.merge", () => {
     );
   });
 
+  it("throws before calling the LLM when combined content exceeds the token budget", async () => {
+    // ~200k estimated tokens (>4 chars/token heuristic) overflows the input
+    // budget, which must fail loudly rather than let the provider truncate.
+    const oversizedContent = "a".repeat(800_000);
+    mockFindByIdSimple
+      .mockResolvedValueOnce(PRIMARY_DOC)
+      .mockResolvedValueOnce(SECONDARY_DOC);
+    mockGetLatest
+      .mockResolvedValueOnce({ content: oversizedContent })
+      .mockResolvedValueOnce({ content: oversizedContent });
+    mockFindOrgTemplate.mockResolvedValue(null);
+
+    await expect(documentMergeService.merge(...MERGE_ARGS)).rejects.toThrow(
+      "Documents too large to merge"
+    );
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
   it("calls generateText with system prompt and both document contents", async () => {
     setupHappyPath({
       primaryContent: "primary content",
@@ -273,6 +293,9 @@ describe("documentMergeService.merge", () => {
           }),
         ],
         maxOutputTokens: 4096,
+        // Pinned to 0 so the faithfulness-critical merge is deterministic
+        // rather than running at the provider default (~1.0).
+        temperature: 0,
       })
     );
     expect(mockGenerateText).toHaveBeenCalledWith(

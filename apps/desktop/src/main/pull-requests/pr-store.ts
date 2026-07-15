@@ -1,18 +1,15 @@
 /**
  * @file pr-store.ts
- * @description SQLite persistence, extraction, and backfill for captured pull
- * requests. Combines the old pull-request-store.js, pr-extractor.js,
- * pr-parsers.js, and pr-backfill.js into a single first-party ESM module for
- * the design-system dashboard runtime.
+ * @description SQLite persistence and backfill for captured pull requests.
+ * Combines the old pull-request-store.js and pr-backfill.js into a single
+ * first-party ESM module for the design-system dashboard runtime.
  *
- * Schema lives in SQLITE_SCHEMA (sqlite.ts) — no schema creation here.
- * The READ functions run on the single DesktopPrisma client via typed delegates
- * (one raw GROUP BY remains in listPrSessions). FEA-1791: the write path
- * (`upsertPullRequest`) is converted onto that client — it takes a
- * `Prisma.TransactionClient` and runs its COALESCE-preserve UPDATE + INSERT on
- * `$executeRawUnsafe` (a named blocker; see the note below). The remaining
- * backfill/store helpers still use the raw SQLite async query API with
- * positional $N params until their own conversion.
+ * Schema is owned by the Prisma schema + migration runner — no schema creation
+ * here. The READ functions run on the single DesktopPrisma client via typed
+ * delegates (one raw GROUP BY remains in listPrSessions). The write path
+ * (`upsertPullRequest`) takes a `Prisma.TransactionClient` and runs its
+ * COALESCE-preserve UPDATE + INSERT on `$executeRawUnsafe` (not expressible via a
+ * Prisma upsert; see the note below).
  *
  * Part of CLOSEDLOOP engineer GitHub activity capture (FEA-1226).
  */
@@ -23,20 +20,17 @@ import type {
   PrSessionGroup,
   PrStats,
 } from "../../shared/agent-db-contract.js";
-import { isRecord } from "../../shared/type-guards.js";
 import type { Prisma } from "../database/generated/client.js";
-import type { DesktopPrisma } from "../database/prisma-client.js";
+import type { DbHostPrisma } from "../database/prisma-client.js";
 
-// FEA-1791: upsertPullRequest runs inside the importer / lifecycle / sync
-// `$transaction` on the single DesktopPrisma client, so it takes a
-// `Prisma.TransactionClient`; its hand-written COALESCE-preserve UPDATE + the
-// INSERT stay raw on `$executeRawUnsafe` (named blocker — not expressible via a
-// Prisma upsert). The remaining backfill helpers stay on the raw store handle
-// until their own conversion.
+// upsertPullRequest runs inside the importer / lifecycle / sync `$transaction`
+// on the single DesktopPrisma client, so it takes a `Prisma.TransactionClient`;
+// its hand-written COALESCE-preserve UPDATE + the INSERT stay raw on
+// `$executeRawUnsafe` (not expressible via a Prisma upsert).
 //
 // The READ functions run on the single DesktopPrisma client via typed delegates
 // (`artifact`/`sessionArtifactLink` findMany/count/groupBy, using the
-// `artifactLinks`/`artifact` relation filters to express the prior
+// `artifactLinks`/`artifact` relation filters to express the
 // session_artifact_links join). Only the listPrSessions OUTER query stays on
 // `prisma.client.$queryRawUnsafe`: it GROUP BYs link rows while aggregating
 // MAX(observed_at)/MIN(harness) off the joined artifact and pulling session
@@ -63,425 +57,6 @@ function pullRequestId(
     .update(`${harness}|${sessionId}|${prUrl}`)
     .digest("hex")
     .slice(0, 16);
-}
-
-// ---------------------------------------------------------------------------
-// PR URL parsing (from pr-parsers.js)
-// ---------------------------------------------------------------------------
-
-const GITHUB_PR_URL_RE =
-  /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(?!new\b)(\d+)/g;
-
-const FIXTURE_OWNER_RE =
-  /^(?:owner|acme|org|example|test-org|sample|fixtures?|placeholder|repo)$/i;
-
-const PENDING_COMMAND_CAP = 256;
-
-export function isFixtureOwner(owner: string): boolean {
-  return FIXTURE_OWNER_RE.test(owner);
-}
-
-type PrUrlRef = {
-  prUrl: string;
-  prNumber: number;
-  repoFullName: string;
-  owner: string;
-};
-
-export function extractPrUrlsFromText(text: unknown): PrUrlRef[] {
-  if (typeof text !== "string" || text.length === 0) {
-    return [];
-  }
-  const seen = new Set<string>();
-  const refs: PrUrlRef[] = [];
-  for (const match of text.matchAll(GITHUB_PR_URL_RE)) {
-    const owner = match[1];
-    const repo = match[2];
-    const prNumberRaw = match[3];
-    if (!(owner && repo && prNumberRaw)) {
-      continue;
-    }
-    if (isFixtureOwner(owner)) {
-      continue;
-    }
-    const prNumber = Number.parseInt(prNumberRaw, 10);
-    if (!Number.isFinite(prNumber) || prNumber <= 0) {
-      continue;
-    }
-    const prUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}`;
-    if (seen.has(prUrl)) {
-      continue;
-    }
-    seen.add(prUrl);
-    refs.push({ prUrl, prNumber, repoFullName: `${owner}/${repo}`, owner });
-  }
-  return refs;
-}
-
-export function isPrCreateCommand(cmd: unknown): boolean {
-  if (typeof cmd !== "string") {
-    return false;
-  }
-  return /(?:^|[;&|(\n\t])\s*(?:\S+=\S+\s+)*gh\s+pr\s+create(?:$|[\s'")])/.test(
-    cmd
-  );
-}
-
-export function safeParseLine(line: unknown): Record<string, unknown> | null {
-  if (typeof line !== "string") {
-    return null;
-  }
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("{")) {
-    return null;
-  }
-  try {
-    return JSON.parse(trimmed) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Session parser state + line parser (from pr-parsers.js)
-// ---------------------------------------------------------------------------
-
-type SessionParserState = {
-  claudeBashCommands: Map<string, string>;
-  codexCallCommands: Map<string, string>;
-  codexSessionId: string | null;
-};
-
-export function createSessionParserState(): SessionParserState {
-  return {
-    claudeBashCommands: new Map(),
-    codexCallCommands: new Map(),
-    codexSessionId: null,
-  };
-}
-
-function flattenContent(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    const parts: string[] = [];
-    for (const item of value) {
-      if (typeof item === "string") {
-        parts.push(item);
-      } else if (isRecord(item)) {
-        for (const key of ["text", "output", "content", "result"]) {
-          if (typeof item[key] === "string") {
-            parts.push(item[key] as string);
-          }
-        }
-      }
-    }
-    return parts.join("\n");
-  }
-  return "";
-}
-
-function rememberCommand(
-  map: Map<string, string>,
-  key: string,
-  command: string
-): void {
-  map.delete(key);
-  map.set(key, command);
-  if (map.size > PENDING_COMMAND_CAP) {
-    const oldest = map.keys().next().value;
-    if (oldest !== undefined) {
-      map.delete(oldest);
-    }
-  }
-}
-
-function extractCodexCommand(args: unknown): string {
-  if (typeof args !== "string") {
-    return "";
-  }
-  try {
-    const parsed = JSON.parse(args);
-    if (isRecord(parsed) && typeof parsed.cmd === "string") {
-      return parsed.cmd;
-    }
-  } catch {
-    /* arguments not JSON — fall through */
-  }
-  return args;
-}
-
-function extractParsedCmd(parsedCmd: unknown): string {
-  if (!Array.isArray(parsedCmd)) {
-    return "";
-  }
-  return parsedCmd
-    .map((entry: unknown) =>
-      isRecord(entry) && typeof entry.cmd === "string" ? entry.cmd : ""
-    )
-    .filter((c: string) => c.length > 0)
-    .join(" && ");
-}
-
-function extractHeadBranch(command: string): string | null {
-  const match = /--head[=\s]+(\S+)/.exec(command);
-  return match ? match[1] : null;
-}
-
-// ---------------------------------------------------------------------------
-// Per-harness line parsers (from pr-parsers.js)
-// ---------------------------------------------------------------------------
-
-type PrDraft = {
-  prUrl: string;
-  prNumber: number;
-  repoFullName: string;
-  branchName: string | null;
-  headSha: string | null;
-  harness: string;
-  externalSessionId: string;
-  observedAt?: string;
-  title?: string | null;
-};
-
-function loopEvent(
-  parsed: Record<string, unknown>,
-  fallbackSessionId: string
-): PrDraft[] {
-  const prUrl = typeof parsed.prUrl === "string" ? parsed.prUrl : null;
-  if (!prUrl) {
-    return [];
-  }
-  const refs = extractPrUrlsFromText(prUrl);
-  if (refs.length === 0) {
-    return [];
-  }
-  const ref = refs[0];
-  const sessionId =
-    typeof parsed.sessionId === "string" && parsed.sessionId
-      ? parsed.sessionId
-      : fallbackSessionId;
-  return [
-    {
-      prUrl: ref.prUrl,
-      prNumber: ref.prNumber,
-      repoFullName: ref.repoFullName,
-      branchName:
-        typeof parsed.branchName === "string" ? parsed.branchName : null,
-      headSha: typeof parsed.commitSha === "string" ? parsed.commitSha : null,
-      harness: "closedloop-loop",
-      externalSessionId: sessionId,
-    },
-  ];
-}
-
-function claudeEvents(
-  parsed: Record<string, unknown>,
-  fallbackSessionId: string,
-  state: SessionParserState
-): PrDraft[] {
-  const message = isRecord(parsed.message) ? parsed.message : null;
-  const content =
-    message && Array.isArray(message.content) ? message.content : [];
-
-  if (parsed.type === "assistant") {
-    for (const block of content) {
-      if (
-        !isRecord(block) ||
-        block.type !== "tool_use" ||
-        block.name !== "Bash"
-      ) {
-        continue;
-      }
-      const id = typeof block.id === "string" ? block.id : null;
-      const input = isRecord(block.input) ? block.input : null;
-      const command =
-        input && typeof input.command === "string" ? input.command : "";
-      if (id) {
-        rememberCommand(state.claudeBashCommands, id, command);
-      }
-    }
-    return [];
-  }
-
-  const sessionId =
-    typeof parsed.sessionId === "string" && parsed.sessionId
-      ? parsed.sessionId
-      : fallbackSessionId;
-  const events: PrDraft[] = [];
-  for (const block of content) {
-    if (!isRecord(block) || block.type !== "tool_result") {
-      continue;
-    }
-    const toolUseId =
-      typeof block.tool_use_id === "string" ? block.tool_use_id : null;
-    const command = toolUseId
-      ? state.claudeBashCommands.get(toolUseId)
-      : undefined;
-    if (toolUseId) {
-      state.claudeBashCommands.delete(toolUseId);
-    }
-    if (!isPrCreateCommand(command)) {
-      continue;
-    }
-    const body = flattenContent(block.content);
-    for (const ref of extractPrUrlsFromText(body)) {
-      events.push({
-        prUrl: ref.prUrl,
-        prNumber: ref.prNumber,
-        repoFullName: ref.repoFullName,
-        branchName: null,
-        headSha: null,
-        harness: "claude-code",
-        externalSessionId: sessionId,
-      });
-    }
-  }
-  return events;
-}
-
-function codexEventsFor(
-  body: string,
-  command: string,
-  sessionId: string
-): PrDraft[] {
-  const branchName = extractHeadBranch(command);
-  return extractPrUrlsFromText(body).map((ref) => ({
-    prUrl: ref.prUrl,
-    prNumber: ref.prNumber,
-    repoFullName: ref.repoFullName,
-    branchName,
-    headSha: null,
-    harness: "codex",
-    externalSessionId: sessionId,
-  }));
-}
-
-function codexEvents(
-  parsed: Record<string, unknown>,
-  fallbackSessionId: string,
-  state: SessionParserState
-): PrDraft[] {
-  const payload = isRecord(parsed.payload) ? parsed.payload : null;
-  if (!payload) {
-    return [];
-  }
-  const sessionId = state.codexSessionId || fallbackSessionId;
-
-  switch (payload.type) {
-    case "function_call": {
-      const callId =
-        typeof payload.call_id === "string" ? payload.call_id : null;
-      const command = extractCodexCommand(payload.arguments);
-      if (callId) {
-        rememberCommand(state.codexCallCommands, callId, command);
-      }
-      return [];
-    }
-    case "function_call_output": {
-      const callId =
-        typeof payload.call_id === "string" ? payload.call_id : null;
-      const command = callId ? state.codexCallCommands.get(callId) : undefined;
-      if (callId) {
-        state.codexCallCommands.delete(callId);
-      }
-      if (!isPrCreateCommand(command)) {
-        return [];
-      }
-      return codexEventsFor(
-        flattenContent(payload.output),
-        command || "",
-        sessionId
-      );
-    }
-    case "exec_command_end": {
-      const command = extractParsedCmd(payload.parsed_cmd);
-      if (!isPrCreateCommand(command)) {
-        return [];
-      }
-      return codexEventsFor(
-        flattenContent(payload.aggregated_output),
-        command,
-        sessionId
-      );
-    }
-    default:
-      return [];
-  }
-}
-
-export function parseSessionLine(
-  parsed: Record<string, unknown>,
-  fallbackSessionId: string,
-  state: SessionParserState
-): PrDraft[] {
-  if (!isRecord(parsed)) {
-    return [];
-  }
-  switch (parsed.type) {
-    case "pr-link":
-      return loopEvent(parsed, fallbackSessionId);
-    case "assistant":
-    case "user":
-      return claudeEvents(parsed, fallbackSessionId, state);
-    case "event_msg":
-    case "response_item":
-      return codexEvents(parsed, fallbackSessionId, state);
-    case "session_meta": {
-      const payload = isRecord(parsed.payload) ? parsed.payload : null;
-      if (payload && typeof payload.id === "string") {
-        state.codexSessionId = payload.id;
-      }
-      return [];
-    }
-    default:
-      return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Extraction: from pre-read JSONL text (from pr-extractor.js)
-// ---------------------------------------------------------------------------
-
-export function extractPullRequestsFromText(
-  text: string,
-  sessionId: string | null
-): PrDraft[] {
-  if (typeof text !== "string" || text.length === 0) {
-    return [];
-  }
-  const canonicalSessionId = typeof sessionId === "string" ? sessionId : null;
-  const state = createSessionParserState();
-  const observedAt = new Date().toISOString();
-  const out: PrDraft[] = [];
-
-  for (const line of text.split("\n")) {
-    if (!line) {
-      continue;
-    }
-    const parsed = safeParseLine(line);
-    if (!parsed) {
-      continue;
-    }
-    for (const ev of parseSessionLine(
-      parsed,
-      canonicalSessionId || "",
-      state
-    )) {
-      out.push({
-        prUrl: ev.prUrl,
-        prNumber: ev.prNumber,
-        repoFullName: ev.repoFullName,
-        branchName: ev.branchName,
-        headSha: ev.headSha,
-        harness: ev.harness,
-        externalSessionId: canonicalSessionId || ev.externalSessionId,
-        observedAt,
-      });
-    }
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +177,7 @@ function buildPrWhere(opts: {
  * the prior `SELECT sal.session_id AS session_id` / NULL-when-unscoped.
  */
 async function findPrArtifacts(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   opts: PrListFilters = {}
 ): Promise<PrRecord[]> {
   const sessionId = opts.sessionId ?? null;
@@ -640,7 +215,7 @@ async function findPrArtifacts(
 }
 
 export function listPullRequests(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   opts: PrListFilters = {}
 ): Promise<PrRecord[]> {
   const { limit = 100, offset = 0 } = opts;
@@ -653,7 +228,7 @@ export function listPullRequests(
 }
 
 export function countPullRequests(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   opts: Omit<PrListFilters, "limit" | "offset"> = {}
 ): Promise<number> {
   // The `some` relation filter (see buildPrWhere) counts each PR artifact once,
@@ -666,7 +241,7 @@ export function countPullRequests(
  * per distinct value; `repoFullName: { not: null }` drops the NULL group to
  * match SQL `COUNT(DISTINCT …)`, which never counts NULL.
  */
-export async function countRepos(prisma: DesktopPrisma): Promise<number> {
+export async function countRepos(prisma: DbHostPrisma): Promise<number> {
   const groups = await prisma.client.artifact.groupBy({
     by: ["repoFullName"],
     where: { kind: PR_KIND, repoFullName: { not: null } },
@@ -674,7 +249,7 @@ export async function countRepos(prisma: DesktopPrisma): Promise<number> {
   return groups.length;
 }
 
-export async function getPrStats(prisma: DesktopPrisma): Promise<PrStats> {
+export async function getPrStats(prisma: DbHostPrisma): Promise<PrStats> {
   // Three typed counts over the in-process SQLite handle; the prior single raw
   // query only fused them via a correlated subquery for the session count.
   const totalPrs = await prisma.client.artifact.count({
@@ -690,7 +265,7 @@ export async function getPrStats(prisma: DesktopPrisma): Promise<PrStats> {
 // ---------------------------------------------------------------------------
 
 export async function listPrSessions(
-  prisma: DesktopPrisma,
+  prisma: DbHostPrisma,
   opts: { limit?: number; offset?: number } = {}
 ): Promise<PrSessionGroup[]> {
   const { limit = 100, offset = 0 } = opts;
@@ -742,7 +317,7 @@ export async function listPrSessions(
 }
 
 export async function countSessionsWithPullRequests(
-  prisma: DesktopPrisma
+  prisma: DbHostPrisma
 ): Promise<number> {
   // COUNT(DISTINCT session_id) over links to PR artifacts → one groupBy row per
   // distinct session. `session_id` is non-null in the model, so there is no NULL
@@ -755,7 +330,7 @@ export async function countSessionsWithPullRequests(
 }
 
 export async function sessionIdsWithPullRequests(
-  prisma: DesktopPrisma
+  prisma: DbHostPrisma
 ): Promise<{ session_id: string; c: number }[]> {
   // Per-session link counts (the prior `COUNT(*)` per session_id over links to
   // PR artifacts). `_count._all` returns a real JS number through the typed

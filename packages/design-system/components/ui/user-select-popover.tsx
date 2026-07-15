@@ -2,13 +2,13 @@
 
 import * as React from "react";
 import { UserPlusIcon } from "lucide-react";
-import { cn } from "@repo/design-system/lib/utils";
-import { Button } from "@repo/design-system/components/ui/button";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@repo/design-system/components/ui/popover";
+} from "@closedloop-ai/design-system/components/ui/popover";
 import {
   Command,
   CommandEmpty,
@@ -16,12 +16,12 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-} from "@repo/design-system/components/ui/command";
+} from "@closedloop-ai/design-system/components/ui/command";
 import {
   Avatar,
   AvatarFallback,
   AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
+} from "@closedloop-ai/design-system/components/ui/avatar";
 
 export interface User {
   id: string;

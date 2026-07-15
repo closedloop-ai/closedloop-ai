@@ -28,7 +28,7 @@ import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
-import { agentsService } from "@/app/agents/service";
+import { bulkIngestAgents } from "@/app/catalog/service";
 import { getCommitterInfo } from "@/app/documents/document-service";
 import { githubService } from "@/app/integrations/github/service";
 import { isInvalidStatusTransitionError } from "@/app/loops/loop-errors";
@@ -36,6 +36,8 @@ import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { documentWhere } from "@/lib/artifact-adapters";
 import { parseJsonObject } from "@/lib/json-schema";
+import { dispatchLoopCompletedNotification } from "@/lib/loop-notifications";
+import { dispatchLoopCompletedSlackNotification } from "@/lib/loop-slack-notifications";
 import type {
   DesktopUserIntentSignature,
   LaunchContext,
@@ -127,6 +129,7 @@ export async function resolveGitHubToken(
  * the parent left off.
  */
 async function resolveParentLoopInfo(
+  loopId: string,
   parentLoopId: string | null,
   organizationId: string
 ): Promise<
@@ -144,14 +147,15 @@ async function resolveParentLoopInfo(
   }
   const parent = await loopsService.findById(parentLoopId, organizationId);
   if (!parent) {
-    log.warn("[loop-orchestrator] Parent loop not found", { parentLoopId });
+    log.warn("loop.parent_not_found", { loopId, parentLoopId });
     return { kind: "state-unavailable" };
   }
   if (!(parent.s3StateKey || parent.computeTargetId)) {
-    log.warn(
-      "[loop-orchestrator] Parent loop has no s3StateKey or computeTargetId",
-      { parentLoopId }
-    );
+    log.warn("loop.parent_state_unavailable", {
+      loopId,
+      parentLoopId,
+      detail: "Parent loop has no s3StateKey or computeTargetId",
+    });
     return { kind: "state-unavailable" };
   }
   return {
@@ -236,15 +240,12 @@ async function tryScrubSecretsInRacePath(
   try {
     await scrubContextPackSecrets(s3StateKey);
   } catch (scrubError) {
-    log.error(
-      "[loop-orchestrator] Failed to scrub secrets in runner-race path",
-      {
-        loopId,
-        s3StateKey,
-        error:
-          scrubError instanceof Error ? scrubError.message : String(scrubError),
-      }
-    );
+    log.error("loop.secret_scrub_failed", {
+      loopId,
+      s3StateKey,
+      error: scrubError,
+      detail: "Failed to scrub secrets in runner-race path",
+    });
     await recordScrubFailureWarning(loopId, organizationId);
   }
 }
@@ -275,10 +276,12 @@ async function claimOrPersistRunning(
           s3StateKey: s3StateKey ?? undefined,
         });
         await tryScrubSecretsInRacePath(loopId, organizationId, s3StateKey);
-        log.info(
-          "[loop-orchestrator] Loop already RUNNING (runner raced ahead), persisted launch info",
-          { loopId, taskArn }
-        );
+        log.info("loop.launch_info_persisted_after_race", {
+          loopId,
+          taskArn,
+          detail:
+            "Loop already RUNNING (runner raced ahead), persisted launch info",
+        });
         return;
       }
     }
@@ -294,18 +297,15 @@ async function cancelLoopAfterLaunchFailure(
     await loopsService.cancel(loopId, organizationId);
   } catch (cancelError) {
     if (isInvalidStatusTransitionError(cancelError)) {
-      log.warn(
-        "[loop-orchestrator] Cancel-after-launch-failure skipped — loop already in terminal status (cancel-after-complete race)",
-        { loopId }
-      );
+      log.warn("loop.cancel_after_launch_failure_skipped", {
+        loopId,
+        detail: "Loop already in terminal status (cancel-after-complete race)",
+      });
     } else {
-      log.error(
-        "[loop-orchestrator] Failed to cancel loop after launch error",
-        {
-          loopId,
-          cancelError,
-        }
-      );
+      log.error("loop.cancel_after_launch_failure_failed", {
+        loopId,
+        cancelError,
+      });
     }
   }
 }
@@ -343,19 +343,24 @@ async function failLoopWithError(
       if (terminalStatuses.has(err.from)) {
         // Race: another handler already drove the loop to a terminal state.
         // This is a benign race condition -- swallow silently.
-        log.info(
-          "[loop-orchestrator] failLoopWithError: loop already terminal, skipping transition",
-          { loopId, from: err.from }
-        );
+        log.info("loop.fail_already_terminal", {
+          loopId,
+          from: err.from,
+          detail:
+            "failLoopWithError: loop already terminal, skipping transition",
+        });
         return;
       }
       // Non-terminal source status (e.g. PENDING): this indicates a real
       // transition validation issue, not a race. Re-throw so the caller
       // sees the failure.
-      log.error(
-        "[loop-orchestrator] failLoopWithError: unexpected invalid transition from non-terminal status",
-        { loopId, from: err.from, to: LoopStatus.Failed }
-      );
+      log.error("loop.fail_invalid_transition", {
+        loopId,
+        from: err.from,
+        to: LoopStatus.Failed,
+        detail:
+          "failLoopWithError: unexpected invalid transition from non-terminal status",
+      });
       throw err;
     }
     throw err;
@@ -382,14 +387,10 @@ async function recordScrubFailureWarning(
       },
     });
   } catch (auditError) {
-    log.error(
-      "[loop-orchestrator] Failed to persist scrub-failure security warning",
-      {
-        loopId,
-        error:
-          auditError instanceof Error ? auditError.message : String(auditError),
-      }
-    );
+    log.error("loop.scrub_failure_warning_persist_failed", {
+      loopId,
+      error: auditError,
+    });
   }
 }
 
@@ -605,6 +606,7 @@ export async function launchLoop(
   // parent state is unavailable, fail the loop immediately rather than letting
   // the runner start and immediately abort.
   const parentInfo = await resolveParentLoopInfo(
+    loopId,
     loop.parentLoopId,
     organizationId
   );
@@ -613,10 +615,12 @@ export async function launchLoop(
     parentInfo.kind === "state-unavailable"
   ) {
     const timestamp = new Date().toISOString();
-    log.error(
-      "[loop-orchestrator] Pre-dispatch guard: parent state unavailable, failing loop",
-      { loopId, command: loop.command, parentLoopId: loop.parentLoopId }
-    );
+    log.error("loop.pre_dispatch_guard_failed", {
+      loopId,
+      command: loop.command,
+      parentLoopId: loop.parentLoopId,
+      detail: "Pre-dispatch guard: parent state unavailable, failing loop",
+    });
     await failLoopWithError(
       loopId,
       organizationId,
@@ -627,9 +631,13 @@ export async function launchLoop(
     return loopId;
   }
 
-  log.info("[loop-orchestrator] Launching loop", {
+  log.info("loop.launching", {
     loopId,
     command: loop.command,
+    // commandId of the triggering desktop user-intent command (desktop loops
+    // only; undefined for ECS), so the launch log can be stitched to the
+    // browser-signed command that triggered it.
+    commandId: options?.desktopUserIntentSignature?.commandId,
     repo: loop.repo,
     hasDocument: !!loop.documentId,
     hasParent: !!loop.parentLoopId,
@@ -669,17 +677,27 @@ export async function launchLoop(
       result.s3StateKey
     );
 
-    log.info("[loop-orchestrator] Loop launched", {
+    log.info("loop.launched", {
       loopId,
       containerId: result.containerId,
+      // Mirror loop.launching so a launch-success event can be stitched
+      // directly to the triggering desktop user-intent command without a
+      // secondary lookup by loopId (desktop loops only; undefined for ECS).
+      commandId: options?.desktopUserIntentSignature?.commandId,
       computeTargetId: loop.computeTargetId,
     });
 
     return result.containerId;
   } catch (error) {
-    log.error("[loop-orchestrator] Failed to launch loop", {
+    log.error("loop.launch_failed", {
       loopId,
-      error: error instanceof Error ? error.message : "Unknown launch error",
+      error,
+      // Mirror loop.launching / loop.launched so an operator seeing a launch
+      // failure can pivot straight back to the triggering desktop user-intent
+      // command (desktop loops only; undefined for ECS) and compute target,
+      // preserving the command→loop→incident trace.
+      commandId: options?.desktopUserIntentSignature?.commandId,
+      computeTargetId: loop.computeTargetId,
     });
 
     await provider.cleanupOnLaunchFailure(
@@ -716,6 +734,7 @@ export async function buildDesktopLoopExecutionCredentials(input: {
     return { loopId: input.loopId };
   }
   const parentInfo = await resolveParentLoopInfo(
+    input.loopId,
     loop.parentLoopId,
     input.organizationId
   );
@@ -785,7 +804,7 @@ export async function handleLoopEvent(
   event: LoopEvent,
   replayContext?: RunnerReplayContext
 ): Promise<LoopEvent[]> {
-  log.info("[loop-orchestrator] Handling loop event", {
+  log.info("loop.event_handling", {
     loopId,
     eventType: event.type,
   });
@@ -828,16 +847,12 @@ export async function handleLoopEvent(
         try {
           await provider.onStarted(loop);
         } catch (onStartedError) {
-          log.error(
-            "[loop-orchestrator] Provider onStarted hook failed — secrets may still be in S3",
-            {
-              loopId,
-              error:
-                onStartedError instanceof Error
-                  ? onStartedError.message
-                  : String(onStartedError),
-            }
-          );
+          log.error("loop.on_started_hook_failed", {
+            loopId,
+            error: onStartedError,
+            detail:
+              "Provider onStarted hook failed — secrets may still be in S3",
+          });
           await recordScrubFailureWarning(loopId, organizationId);
         }
       }
@@ -985,7 +1000,7 @@ async function ingestBootstrapAgents(
   const bootstrapResult = raw?.bootstrapResult;
   const parsed = BootstrapLoopResultSchema.safeParse(bootstrapResult);
   if (!parsed.success) {
-    log.warn("[loop-orchestrator] Bootstrap artifacts missing or malformed", {
+    log.warn("loop.bootstrap_artifacts_invalid", {
       loopId: loop.id,
       parseErrors: parsed.error.issues.map((i) => i.message),
     });
@@ -999,33 +1014,29 @@ async function ingestBootstrapAgents(
       continue;
     }
     try {
-      const result = await agentsService.bulkIngest(
-        organizationId,
-        loop.userId,
-        {
-          agents: repo.agents.map((a) => ({
-            name: a.name,
-            role: a.role,
-            description: a.description,
-            prompt: a.prompt,
-          })),
-          bootstrapRunId: loop.id,
-          sourceRepo: repo.fullName,
-          criticGates: repo.criticGates ?? undefined,
-        }
-      );
+      const result = await bulkIngestAgents(organizationId, loop.userId, {
+        agents: repo.agents.map((a) => ({
+          name: a.name,
+          role: a.role,
+          description: a.description,
+          prompt: a.prompt,
+        })),
+        bootstrapRunId: loop.id,
+        sourceRepo: repo.fullName,
+        criticGates: repo.criticGates ?? undefined,
+      });
       totalCreated += result.created;
       totalUpdated += result.updated;
     } catch (err) {
-      log.error("[loop-orchestrator] Bootstrap agent ingestion failed", {
+      log.error("loop.bootstrap_ingestion_failed", {
         loopId: loop.id,
         repo: repo.fullName,
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     }
   }
 
-  log.info("[loop-orchestrator] Bootstrap agents ingested", {
+  log.info("loop.bootstrap_agents_ingested", {
     loopId: loop.id,
     totalCreated,
     totalUpdated,
@@ -1287,7 +1298,7 @@ async function handleLoopCompleted(
     loop.status !== LoopStatus.Running &&
     loop.status !== LoopStatus.Claimed
   ) {
-    log.info("[loop-orchestrator] Completed event overriding terminal status", {
+    log.info("loop.completed_overriding_terminal_status", {
       loopId,
       previousStatus: loop.status,
     });
@@ -1312,13 +1323,11 @@ async function handleLoopCompleted(
       loop.status === LoopStatus.Failed ||
       loop.status === LoopStatus.Cancelled);
   if (isOverridingFailure) {
-    log.warn(
-      "[loop-orchestrator] Overriding terminal status to COMPLETED, clearing stale error",
-      {
-        loopId: loop.id,
-        previousStatus: loop.status,
-      }
-    );
+    log.warn("loop.terminal_status_overridden", {
+      loopId: loop.id,
+      previousStatus: loop.status,
+      detail: "Overriding terminal status to COMPLETED, clearing stale error",
+    });
   }
   await loopsService.updateStatus(
     loopId,
@@ -1352,7 +1361,15 @@ async function handleLoopCompleted(
     runner
   );
 
-  log.info("[loop-orchestrator] Loop completed", {
+  // Signal the loop owner via their inbox that their autonomous run finished —
+  // the platform's core value moment is otherwise invisible when they step away.
+  notifyLoopOwnerOfCompletion(loop, organizationId);
+
+  // Also post to the org's connected Slack workspace (if any) so the team's
+  // own channel — not just the global ops channel — sees the ship moment.
+  notifyOrgSlackOfCompletion(loop, organizationId);
+
+  log.info("loop.completed", {
     loopId,
     tokensInput,
     tokensOutput,
@@ -1363,6 +1380,76 @@ async function handleLoopCompleted(
     ...prSession,
   });
   return [event];
+}
+
+/**
+ * Fire-and-forget inbox notification telling a Loop's owner their autonomous
+ * run finished. No-ops when the loop record is absent. Extracted from
+ * handleLoopCompleted so the guard branch stays out of that function's
+ * cognitive-complexity budget. Gating/delivery happens in the dispatcher.
+ */
+function notifyLoopOwnerOfCompletion(
+  loop:
+    | NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+    | null
+    | undefined,
+  organizationId: string
+): void {
+  if (!loop) {
+    return;
+  }
+  dispatchLoopCompletedNotification({
+    userId: loop.userId,
+    organizationId,
+    loopId: loop.id,
+    loopTitle: buildLoopNotificationTitle(loop),
+  });
+}
+
+/**
+ * Fire-and-forget engagement post to the org's connected Slack workspace
+ * announcing that a Loop shipped. No-ops when the loop record is absent;
+ * connection lookup, flag gating, and delivery all happen in the dispatcher.
+ */
+function notifyOrgSlackOfCompletion(
+  loop:
+    | NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+    | null
+    | undefined,
+  organizationId: string
+): void {
+  if (!loop) {
+    return;
+  }
+  dispatchLoopCompletedSlackNotification({
+    organizationId,
+    loopLabel: humanizeLoopCommand(loop.command),
+    projectLabel: loop.repo?.fullName ?? null,
+  });
+}
+
+/**
+ * Humanize a `LoopCommand` for display — e.g. `EXECUTE` → "Execute",
+ * `PLAN_REVIEW` → "Plan Review".
+ */
+function humanizeLoopCommand(command: LoopCommand): string {
+  return command
+    .toLowerCase()
+    .split("_")
+    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(" ");
+}
+
+/**
+ * Build a short, human-readable title for a completed-loop inbox notification.
+ * Loops carry no stored title, so derive one from the command and (when set)
+ * the target repo — e.g. "Execute · acme/widgets".
+ */
+function buildLoopNotificationTitle(
+  loop: NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>
+): string {
+  const label = humanizeLoopCommand(loop.command);
+  return loop.repo?.fullName ? `${label} · ${loop.repo.fullName}` : label;
 }
 
 /**
@@ -1456,7 +1543,7 @@ async function handleLoopError(
       );
     }
 
-    log.info("[loop-orchestrator] Loop cancelled", {
+    log.info("loop.cancelled", {
       loopId,
       reason: event.message,
     });
@@ -1490,7 +1577,7 @@ async function handleLoopError(
       runner
     );
 
-    log.info("[loop-orchestrator] Loop timed out", {
+    log.info("loop.timed_out", {
       loopId,
       message: event.message,
     });
@@ -1500,17 +1587,17 @@ async function handleLoopError(
   // Structured error codes from electron/runner with specific log levels.
   // Both map to LoopStatus.Failed -- no new status enum needed.
   if (event.code === LoopErrorCode.ContextLimitExceeded) {
-    log.warn("[loop-orchestrator] Loop hit context limit", {
+    log.warn("loop.context_limit_exceeded", {
       loopId,
       message: event.message,
     });
   } else if (event.code === LoopErrorCode.NoWorkProduced) {
-    log.error("[loop-orchestrator] Loop produced no work", {
+    log.error("loop.no_work_produced", {
       loopId,
       message: event.message,
     });
   } else if (event.code === LoopErrorCode.PlanStateUnavailable) {
-    log.error("[loop-orchestrator] Loop failed: plan state unavailable", {
+    log.error("loop.plan_state_unavailable", {
       loopId,
       message: event.message,
     });
@@ -1548,7 +1635,7 @@ async function handleLoopError(
     event.code !== LoopErrorCode.ContextLimitExceeded &&
     event.code !== LoopErrorCode.NoWorkProduced
   ) {
-    log.error("[loop-orchestrator] Loop failed", {
+    log.error("loop.failed", {
       loopId,
       errorCode: event.code,
       errorMessage: event.message,
@@ -1622,10 +1709,11 @@ async function handleZeroTokenExecute(
   ]);
 
   if (!loop || terminalStatuses.has(loop.status)) {
-    log.info(
-      "[loop-orchestrator] Skipping NO_WORK_PRODUCED -- loop already terminal",
-      { loopId, status: loop?.status }
-    );
+    log.info("loop.no_work_produced_skipped", {
+      loopId,
+      status: loop?.status,
+      detail: "Skipping NO_WORK_PRODUCED -- loop already terminal",
+    });
     return [];
   }
 
@@ -1646,10 +1734,11 @@ async function handleZeroTokenExecute(
       if (terminalStatuses.has(err.from)) {
         // Race: another handler already drove the loop to a terminal state before
         // we could mark it FAILED. Treat as a no-op rather than surfacing an error.
-        log.info(
-          "[loop-orchestrator] NO_WORK_PRODUCED race to terminal -- skipping error event",
-          { loopId, from: err.from }
-        );
+        log.info("loop.no_work_produced_race_skipped", {
+          loopId,
+          from: err.from,
+          detail: "NO_WORK_PRODUCED race to terminal -- skipping error event",
+        });
         return [];
       }
       // Non-terminal source: unexpected invalid transition, propagate to caller.
@@ -1667,7 +1756,7 @@ async function handleZeroTokenExecute(
     },
   });
 
-  log.error("[loop-orchestrator] EXECUTE loop completed with 0 tokens", {
+  log.error("loop.execute_zero_tokens", {
     loopId,
   });
 

@@ -20,7 +20,13 @@ vi.mock("@repo/collaboration/shared/room-utils", () => {
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  Prisma: { JsonNull: "DbNull" },
+  Prisma: {
+    JsonNull: "DbNull",
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
 }));
 
 import {

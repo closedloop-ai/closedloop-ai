@@ -1,6 +1,8 @@
 import {
+  type ArtifactStatus,
   DocumentStatus,
   type DocumentWithProject,
+  FeatureStatus,
   type FindDocumentsOptions,
 } from "@repo/api/src/types/document";
 import type { MyTasksArtifactFilters } from "./types";
@@ -11,30 +13,50 @@ export const EMPTY_FILTERS: MyTasksArtifactFilters = {
   statuses: [],
 };
 
+/**
+ * Unified My Tasks columns (PRD-495). The board mixes Documents and Features,
+ * which carry disjoint status vocabularies, so each column groups the
+ * equivalent statuses from both. Drag-to-set-status resolves the per-type
+ * target via `columnTargetStatus` in my-tasks-kanban.tsx.
+ */
 export const DISPLAY_GROUPS: {
   key: string;
   label: string;
-  statuses: DocumentStatus[];
+  statuses: ArtifactStatus[];
 }[] = [
   {
-    key: "draft",
-    label: "Draft",
-    statuses: [DocumentStatus.Draft],
+    key: "backlog",
+    label: "Backlog",
+    statuses: [
+      DocumentStatus.Draft,
+      FeatureStatus.Triage,
+      FeatureStatus.Backlog,
+    ],
   },
+  { key: "todo", label: "To Do", statuses: [FeatureStatus.Todo] },
   {
     key: "in_progress",
     label: "In Progress",
-    statuses: [DocumentStatus.InProgress],
+    statuses: [FeatureStatus.InProgress],
   },
   {
     key: "in_review",
     label: "In Review",
     statuses: [DocumentStatus.InReview],
   },
+  {
+    key: "blocked",
+    label: "Blocked / Changes",
+    statuses: [DocumentStatus.ChangesRequested, FeatureStatus.Blocked],
+  },
   { key: "approved", label: "Approved", statuses: [DocumentStatus.Approved] },
   { key: "executed", label: "Executed", statuses: [DocumentStatus.Executed] },
-  { key: "done", label: "Done", statuses: [DocumentStatus.Done] },
-  { key: "obsolete", label: "Obsolete", statuses: [DocumentStatus.Obsolete] },
+  { key: "done", label: "Done", statuses: [FeatureStatus.Done] },
+  {
+    key: "closed",
+    label: "Closed",
+    statuses: [DocumentStatus.Obsolete, FeatureStatus.Canceled],
+  },
 ];
 
 /**

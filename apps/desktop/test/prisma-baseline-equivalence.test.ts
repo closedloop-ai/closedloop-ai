@@ -1,11 +1,11 @@
 /**
  * @file prisma-baseline-equivalence.test.ts
- * @description FEA-1791 / PLN-886 — proves the FROZEN baseline schema
- * (baseline-schema.ts) creates a database structurally identical to running the
- * BASELINE_MIGRATIONS chain, and that re-asserting the baseline DDL on an
- * already-baselined database is a no-op. Together these are the soundness
- * condition for Phase 2 baselining: the runner re-asserts the frozen DDL once,
- * then records BASELINE_MIGRATIONS as applied without executing them.
+ * @description Proves the FROZEN baseline schema (baseline-schema.ts) creates a
+ * database structurally identical to running the BASELINE_MIGRATIONS chain, and
+ * that re-asserting the baseline DDL on an already-baselined database is a no-op.
+ * Together these are the soundness condition for baselining: the runner
+ * re-asserts the frozen DDL once, then records BASELINE_MIGRATIONS as applied
+ * without executing them.
  *
  * Scope is the baseline set only — post-cutover migrations apply normally and
  * are covered by prisma-migrations-agreement.test.ts (migrations ↔ schema.prisma).
@@ -26,9 +26,9 @@ import {
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
 } from "../src/main/database/baseline-schema.js";
 import {
-  openLibsqlDatabase,
+  openMigrationDatabase,
   type SqliteClient,
-} from "../src/main/database/libsql-executor.js";
+} from "../src/main/database/migration-executor.js";
 import { snapshotSchema } from "./helpers/schema-snapshot.js";
 
 const MIGRATIONS_DIR = path.join(
@@ -49,7 +49,7 @@ test.after(async () => {
 async function openDb(): Promise<SqliteClient> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "baseline-equiv-"));
   tempDirs.push(dir);
-  const { db } = await openLibsqlDatabase(path.join(dir, "d.sqlite"));
+  const { db } = await openMigrationDatabase(path.join(dir, "d.sqlite"));
   return db;
 }
 

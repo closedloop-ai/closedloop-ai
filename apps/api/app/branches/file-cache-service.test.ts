@@ -12,7 +12,10 @@ import {
 vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
-  return { withDb: mockWithDb };
+  return {
+    GitHubInstallationStatus: { ACTIVE: "ACTIVE" },
+    withDb: mockWithDb,
+  };
 });
 
 vi.mock("@repo/github", async (importOriginal) => {
@@ -38,7 +41,7 @@ import {
   BranchViewSyncErrorCode,
   BranchViewSyncThrottleReason,
 } from "@repo/api/src/types/branch-view";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   compareBranchFileChangesWithProviderResult,
   GitHubProviderResultStatus,
@@ -82,7 +85,10 @@ describe("refreshBranchFileChangeCache", () => {
           repository: {
             owner: "closedloop-ai",
             name: "symphony-alpha",
-            installation: { installationId: "123456" },
+            installation: {
+              installationId: "123456",
+              status: GitHubInstallationStatus.ACTIVE,
+            },
           },
           syncStatus: BranchSyncStatus.Fresh,
         }),
@@ -135,6 +141,12 @@ describe("refreshBranchFileChangeCache", () => {
         where: {
           artifactId: "branch-artifact-1",
           artifact: { organizationId: "org-1" },
+          repository: {
+            removedAt: null,
+            installation: {
+              status: GitHubInstallationStatus.ACTIVE,
+            },
+          },
         },
       })
     );
@@ -197,6 +209,19 @@ describe("refreshBranchFileChangeCache", () => {
         lastSyncErrorMessage: null,
       },
     });
+  });
+
+  it("does not compare files for tombstoned repositories", async () => {
+    mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
+
+    const result = await refreshBranchFileChangeCache("branch-artifact-1", {
+      organizationId: "org-1",
+    });
+
+    expect(result).toEqual({ ok: false, error: 404 });
+    expect(mockCompareBranchFileChanges).not.toHaveBeenCalled();
+    expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
+    expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
 
   it("treats zero-row self-acquired compare success settlement as a no-op", async () => {

@@ -15,6 +15,11 @@ import {
   useGoogleIntegrationStatus,
 } from "@repo/app/google/hooks/use-google-integration";
 import { uploadToS3 } from "@repo/app/shared/lib/s3-upload";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -142,13 +147,13 @@ function LinkExistingTab({
 
   if (!projectId) {
     return (
-      <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/12 p-3">
-        <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-warning" />
-        <p className="text-sm text-warning-foreground">
+      <Alert variant="warning">
+        <AlertCircleIcon />
+        <AlertDescription>
           This feature is not associated with a project. Assign a project to
           link existing PRDs as context.
-        </p>
-      </div>
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -278,10 +283,10 @@ function UploadFileTab({
         </p>
       </div>
       {uploadError && (
-        <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3">
-          <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-destructive" />
-          <p className="text-destructive text-sm">{uploadError}</p>
-        </div>
+        <Alert variant="error">
+          <AlertCircleIcon />
+          <AlertDescription>{uploadError}</AlertDescription>
+        </Alert>
       )}
       <div className="flex justify-end gap-2">
         <Button onClick={() => onOpenChange(false)} variant="outline">
@@ -455,13 +460,13 @@ function ImportGoogleDocsTab({
       </div>
 
       {!projectId && (
-        <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/12 p-3">
-          <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-warning" />
-          <p className="text-sm text-warning-foreground">
+        <Alert variant="warning">
+          <AlertCircleIcon />
+          <AlertDescription>
             This feature is not associated with a project. Assign a project to
             import documents.
-          </p>
-        </div>
+          </AlertDescription>
+        </Alert>
       )}
 
       {GDRIVE_FOLDER_ID_REGEX.test(debouncedFolderId) && (
@@ -476,14 +481,14 @@ function ImportGoogleDocsTab({
             </div>
           )}
           {!filesLoading && filesError && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3">
-              <AlertCircleIcon className="mt-0.5 h-4 w-4 flex-shrink-0 text-destructive" />
-              <p className="text-destructive text-sm">
+            <Alert variant="error">
+              <AlertCircleIcon />
+              <AlertDescription>
                 {filesQueryError instanceof Error
                   ? filesQueryError.message
                   : "Failed to load files from this folder."}
-              </p>
-            </div>
+              </AlertDescription>
+            </Alert>
           )}
           {!(filesLoading || filesError) && folderFiles.length === 0 && (
             <p className="text-muted-foreground text-sm">
@@ -512,19 +517,21 @@ function ImportGoogleDocsTab({
       )}
 
       {importFailures.length > 0 && (
-        <div className="space-y-1 rounded-md border border-destructive/30 bg-destructive/10 p-3">
-          <p className="font-medium text-destructive text-sm">
+        <Alert variant="error">
+          <AlertTitle>
             Failed to import {importFailures.length} document
             {importFailures.length === 1 ? "" : "s"}:
-          </p>
-          <ul className="ml-4 space-y-1 text-sm">
-            {importFailures.map((failure) => (
-              <li className="text-destructive/80" key={failure.docId}>
-                {failure.docId}: {failure.error}
-              </li>
-            ))}
-          </ul>
-        </div>
+          </AlertTitle>
+          <AlertDescription>
+            <ul className="ml-4 space-y-1">
+              {importFailures.map((failure) => (
+                <li key={failure.docId}>
+                  {failure.docId}: {failure.error}
+                </li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
       )}
 
       <div className="flex justify-end gap-2">

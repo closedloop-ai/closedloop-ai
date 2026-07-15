@@ -1,8 +1,20 @@
-import { GitHubLegacyCommentState, ThreadStatus } from "@repo/database";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+  GitHubSyncResultReason,
+} from "@repo/api/src/types/github-read-model";
+import {
+  GitHubCommentThreadKind,
+  GitHubLegacyCommentState,
+  ThreadStatus,
+} from "@repo/database";
 import { describe, expect, it, vi } from "vitest";
 import {
   findGitHubReviewThreadResolutionProjection,
   GitHubReviewThreadResolutionProjectionStatus,
+  softDeleteGitHubCommentProjection,
+  upsertGitHubIssueCommentThread,
   upsertGitHubReviewCommentThread,
 } from "./github-projection";
 
@@ -297,6 +309,111 @@ describe("upsertGitHubReviewCommentThread", () => {
         }),
       })
     );
+  });
+
+  it("stamps supplied fetch provenance on thread and comment projections", async () => {
+    const tx = makeTx();
+    const observedAt = new Date("2026-07-05T12:00:00.000Z");
+    const expectedProvenance = {
+      fetchCredentialType: GitHubFetchCredentialType.GitHubApp,
+      fetchCredentialOwnerId: null,
+      fetchMechanism: GitHubFetchMechanism.Webhook,
+      fetchTrigger: GitHubFetchTrigger.Webhook,
+      fetchObservedAt: observedAt,
+      fetchResultReason: GitHubSyncResultReason.Success,
+    };
+
+    await upsertGitHubIssueCommentThread(tx as never, {
+      organizationId: "org-1",
+      branchArtifactId: "branch-1",
+      pullRequestDetailId: "pr-1",
+      fetchProvenance: {
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        mechanism: GitHubFetchMechanism.Webhook,
+        trigger: GitHubFetchTrigger.Webhook,
+        observedAt,
+        resultReason: GitHubSyncResultReason.Success,
+      },
+      comment: makeReviewCommentInput(),
+    });
+
+    expect(tx.gitHubCommentThreadProjection.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining(expectedProvenance),
+        update: expect.objectContaining(expectedProvenance),
+      })
+    );
+    expect(tx.gitHubCommentProjection.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining(expectedProvenance),
+        update: expect.objectContaining(expectedProvenance),
+      })
+    );
+  });
+
+  it("stamps supplied fetch provenance on soft-deleted comment and thread projections", async () => {
+    const observedAt = new Date("2026-07-05T12:00:00.000Z");
+    const expectedProvenance = {
+      fetchCredentialType: GitHubFetchCredentialType.GitHubApp,
+      fetchCredentialOwnerId: null,
+      fetchMechanism: GitHubFetchMechanism.Backfill,
+      fetchTrigger: GitHubFetchTrigger.Backfill,
+      fetchObservedAt: observedAt,
+      fetchResultReason: GitHubSyncResultReason.Success,
+    };
+    const tx = {
+      gitHubCommentProjection: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { commentId: "comment-1", threadId: "thread-1" },
+          ]),
+        update: vi.fn(),
+      },
+      comment: {
+        update: vi.fn(),
+      },
+      gitHubCommentThreadProjection: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            threadId: "thread-1",
+            commentProjections: [],
+          },
+        ]),
+        update: vi.fn(),
+      },
+    };
+
+    await softDeleteGitHubCommentProjection(tx as never, {
+      organizationId: "org-1",
+      branchArtifactId: "branch-1",
+      pullRequestDetailId: "pr-1",
+      threadKind: GitHubCommentThreadKind.ISSUE_COMMENT,
+      liveGithubCommentIds: new Set(),
+      deletedAt: observedAt,
+      fetchProvenance: {
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        mechanism: GitHubFetchMechanism.Backfill,
+        trigger: GitHubFetchTrigger.Backfill,
+        observedAt,
+        resultReason: GitHubSyncResultReason.Success,
+      },
+    });
+
+    expect(tx.gitHubCommentProjection.update).toHaveBeenCalledWith({
+      where: { commentId: "comment-1" },
+      data: {
+        githubDeletedAt: observedAt,
+        ...expectedProvenance,
+      },
+    });
+    expect(tx.gitHubCommentThreadProjection.update).toHaveBeenCalledWith({
+      where: { threadId: "thread-1" },
+      data: {
+        deletedAt: observedAt,
+        ...expectedProvenance,
+      },
+    });
   });
 });
 

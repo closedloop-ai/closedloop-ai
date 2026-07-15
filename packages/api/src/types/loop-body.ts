@@ -1,8 +1,9 @@
 import type {
   CodeEvaluationContext,
+  ContextPackAgent,
+  ContextPackRepoConfig,
   ContextPackSupportingArtifact,
 } from "@closedloop-ai/loops-api/context-pack";
-import type { ContextPackAgent, ContextPackRepoConfig } from "./agent";
 import type { HarnessType } from "./compute-target";
 import type { ContextPackAttachment } from "./context-attachment";
 import type { AdditionalRepoRef } from "./loop";

@@ -8,7 +8,7 @@ import {
   BranchViewSyncThrottleReason,
 } from "@repo/api/src/types/branch-view";
 import { Result, Status } from "@repo/api/src/types/result";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   compareBranchFileChangesWithProviderResult,
   type GitHubChangedFile,
@@ -63,6 +63,12 @@ export async function refreshBranchFileChangeCache(
       where: {
         artifactId: branchArtifactId,
         artifact: { organizationId: options.organizationId },
+        repository: {
+          removedAt: null,
+          installation: {
+            status: GitHubInstallationStatus.ACTIVE,
+          },
+        },
       },
       select: {
         artifactId: true,
@@ -77,7 +83,7 @@ export async function refreshBranchFileChangeCache(
           select: {
             owner: true,
             name: true,
-            installation: { select: { installationId: true } },
+            installation: { select: { installationId: true, status: true } },
           },
         },
       },
@@ -85,6 +91,14 @@ export async function refreshBranchFileChangeCache(
   );
 
   if (!branch) {
+    return Result.err(Status.NotFound);
+  }
+  // Non-App branch (PRD-510 D2/FR8): no installation-repo, so there is no GitHub
+  // compare source to refresh the file-change cache from. Treat as not found.
+  // (The query's `repository` relation filter already excludes these branches;
+  // this guard also narrows the optional relation for the compare call below.)
+  const repository = branch.repository;
+  if (!repository) {
     return Result.err(Status.NotFound);
   }
   if (!(branch.baseBranch && branch.headSha)) {
@@ -126,9 +140,9 @@ export async function refreshBranchFileChangeCache(
   }
 
   const filesResult = await compareBranchFileChangesWithProviderResult(
-    branch.repository.installation.installationId,
-    branch.repository.owner,
-    branch.repository.name,
+    repository.installation.installationId,
+    repository.owner,
+    repository.name,
     baseBranch,
     headSha
   );

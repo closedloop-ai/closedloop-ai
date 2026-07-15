@@ -1,4 +1,4 @@
-import { DATA_REVISION } from "../collectors/data-revision.js";
+import { DATA_REVISION } from "../collectors/engine/data-revision.js";
 import type { Prisma, PrismaClient } from "../database/generated/client.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
 import {

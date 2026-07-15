@@ -1,0 +1,12 @@
+-- CreateIndex
+-- The insights "Me" scope (apps/api/app/insights/service.ts `artifactScope`)
+-- filters Artifact rows by `{ organization_id, created_by_id }` — directly and
+-- through relation joins on branchArtifact/artifact across eight queries
+-- (fetchMergedPrs, countMergedPrs, countOpenedPrs, fetchBranchesWithoutPrBuckets,
+-- countReviewBacklog, fetchReviews, fetchReviewQueueBuckets, and the review
+-- throughput aggregate). The artifacts table has several composite indexes
+-- leading with organization_id, but none include created_by_id, so each scoped
+-- lookup falls back to a sequential scan or a partial match against a wider
+-- composite index. Add a composite index so the (organization_id, created_by_id)
+-- predicate is served by an index seek.
+CREATE INDEX "artifacts_organization_id_created_by_id_idx" ON "artifacts"("organization_id", "created_by_id");

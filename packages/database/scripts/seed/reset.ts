@@ -55,6 +55,9 @@ export type ResetScope = {
   githubInstallationIds: string[];
   githubRepositoryIds: string[];
   agentIds: string[];
+  // CatalogItem supersedes Agent (T-21.1): org-scoped catalog items (source='org_custom').
+  // Curated/global items (organizationId IS NULL or source='curated') are never reset.
+  catalogItemIds: string[];
 };
 
 export type ResetVerificationSnapshot = {
@@ -170,6 +173,7 @@ function mergeResetScopes(left: ResetScope, right: ResetScope): ResetScope {
       right.githubRepositoryIds
     ),
     agentIds: mergeIds(left.agentIds, right.agentIds),
+    catalogItemIds: mergeIds(left.catalogItemIds, right.catalogItemIds),
   };
 }
 
@@ -202,6 +206,7 @@ async function collectResetScope(
     tags,
     githubInstallations,
     agents,
+    catalogItems,
   ] = await Promise.all([
     prisma.project.findMany({
       where: { organizationId },
@@ -227,6 +232,13 @@ async function collectResetScope(
       select: { id: true },
     }),
     prisma.agent.findMany({ where: { organizationId }, select: { id: true } }),
+    // Collect only org-custom CatalogItems (source='org_custom') for this org.
+    // Curated/global items (organizationId IS NULL or source!='org_custom') are
+    // never org-reset — they are read-only ClosedLoop-managed records.
+    prisma.catalogItem.findMany({
+      where: { organizationId, source: "org_custom" },
+      select: { id: true },
+    }),
   ]);
 
   const projectIds = projects.map(({ id }) => id);
@@ -238,6 +250,7 @@ async function collectResetScope(
   const tagIds = tags.map(({ id }) => id);
   const githubInstallationIds = githubInstallations.map(({ id }) => id);
   const agentIds = agents.map(({ id }) => id);
+  const catalogItemIds = catalogItems.map(({ id }) => id);
 
   const [
     documentDetails,
@@ -295,6 +308,7 @@ async function collectResetScope(
     githubInstallationIds,
     githubRepositoryIds: githubRepositories.map(({ id }) => id),
     agentIds,
+    catalogItemIds,
   };
 }
 
@@ -624,6 +638,19 @@ async function deleteResettableRows(
   );
   await deleteAndRecord(counts, "Agent", () =>
     prisma.agent.deleteMany({ where: { organizationId } })
+  );
+  // CatalogItem supersedes Agent (T-21.1). Delete org-custom CatalogItemVersions
+  // first (child), then CatalogItems (parent). Curated/global items are excluded
+  // from the scope collection (source='org_custom' filter in collectResetScope).
+  await deleteAndRecord(counts, "CatalogItemVersion", () =>
+    prisma.catalogItemVersion.deleteMany({
+      where: { catalogItemId: { in: scope.catalogItemIds } },
+    })
+  );
+  await deleteAndRecord(counts, "CatalogItem", () =>
+    prisma.catalogItem.deleteMany({
+      where: { id: { in: scope.catalogItemIds } },
+    })
   );
   await deleteAndRecord(counts, "RepoBootstrapConfig", () =>
     prisma.repoBootstrapConfig.deleteMany({ where: { organizationId } })
@@ -983,6 +1010,19 @@ async function getResetModelCounts(
       }),
     },
     { name: "Agent", query: prisma.agent.count({ where: { organizationId } }) },
+    // CatalogItem supersedes Agent (T-21.1): count org-custom items for this org.
+    {
+      name: "CatalogItemVersion",
+      query: prisma.catalogItemVersion.count({
+        where: { catalogItemId: { in: scope.catalogItemIds } },
+      }),
+    },
+    {
+      name: "CatalogItem",
+      query: prisma.catalogItem.count({
+        where: { id: { in: scope.catalogItemIds } },
+      }),
+    },
     {
       name: "RepoBootstrapConfig",
       query: prisma.repoBootstrapConfig.count({ where: { organizationId } }),

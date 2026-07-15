@@ -7,6 +7,7 @@ import {
   PACKAGED_UPDATE_NOT_DOWNLOADED_MESSAGE,
   toPackagedUpdateStatusPayload,
 } from "../src/main/packaged-update-state.js";
+import { PackagedUpdateInstallBlockedReason } from "../src/shared/packaged-update-install-blocked-reason.js";
 
 describe("packaged update readiness state", () => {
   test("available and downloading states are not installable", () => {
@@ -78,6 +79,68 @@ describe("packaged update readiness state", () => {
       updateAvailable: false,
       readyToInstall: false,
       error: "download failed",
+    });
+  });
+
+  test("blocked install reason is included only for read-only install blocks", () => {
+    const blocked = mergePackagedUpdateState(
+      createInitialPackagedUpdateState(),
+      {
+        status: "error",
+        available: true,
+        downloaded: false,
+        error: "move the app",
+        installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+      }
+    );
+
+    assert.deepEqual(toPackagedUpdateStatusPayload(blocked), {
+      status: "error",
+      updateAvailable: true,
+      readyToInstall: false,
+      error: "move the app",
+      installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+    });
+  });
+
+  test("later non-blocked transitions clear a stale blocked install reason", () => {
+    const blocked = mergePackagedUpdateState(
+      createInitialPackagedUpdateState(),
+      {
+        status: "error",
+        available: true,
+        downloaded: false,
+        error: "move the app",
+        installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+      }
+    );
+    const genericError = mergePackagedUpdateState(blocked, {
+      status: "error",
+      available: false,
+      downloaded: false,
+      error: "download failed",
+    });
+    const downloaded = mergePackagedUpdateState(blocked, {
+      status: "downloaded",
+      available: true,
+      downloaded: true,
+      error: undefined,
+      percent: 100,
+      version: "0.14.29",
+    });
+
+    assert.deepEqual(toPackagedUpdateStatusPayload(genericError), {
+      status: "error",
+      updateAvailable: false,
+      readyToInstall: false,
+      error: "download failed",
+    });
+    assert.deepEqual(toPackagedUpdateStatusPayload(downloaded), {
+      status: "downloaded",
+      updateAvailable: true,
+      readyToInstall: true,
+      version: "0.14.29",
+      percent: 100,
     });
   });
 });

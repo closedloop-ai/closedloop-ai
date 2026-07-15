@@ -1,22 +1,15 @@
 import {
-  ActivityIcon,
   BarChart3Icon,
   BotIcon,
   ClipboardListIcon,
-  CopyCheckIcon,
   GitBranchIcon,
-  GitPullRequestIcon,
   HistoryIcon,
   InboxIcon,
   LayoutDashboardIcon,
   type LucideIcon,
-  PackageIcon,
   SettingsIcon,
   ShieldIcon,
-  SparklesIcon,
   StethoscopeIcon,
-  WorkflowIcon,
-  WrenchIcon,
 } from "lucide-react";
 import { NavId } from "./route-table";
 
@@ -43,12 +36,6 @@ export const NAV_ENTRIES: NavEntry[] = [
     section: "main",
   },
   {
-    id: NavId.Kanban,
-    label: "My Issues",
-    icon: CopyCheckIcon,
-    section: "main",
-  },
-  {
     id: NavId.Sessions,
     label: "Sessions",
     icon: HistoryIcon,
@@ -61,10 +48,10 @@ export const NAV_ENTRIES: NavEntry[] = [
     section: "artifacts",
   },
   {
-    id: NavId.Activity,
-    label: "Activity",
-    icon: ActivityIcon,
-    section: "labs",
+    id: NavId.Agents,
+    label: "Agents",
+    icon: BotIcon,
+    section: "artifacts",
   },
   {
     id: NavId.Insights,
@@ -72,23 +59,7 @@ export const NAV_ENTRIES: NavEntry[] = [
     icon: BarChart3Icon,
     section: "labs",
   },
-  {
-    id: NavId.Workflows,
-    label: "Workflows",
-    icon: WorkflowIcon,
-    section: "labs",
-  },
-  { id: NavId.Packs, label: "Packs", icon: PackageIcon, section: "labs" },
-  { id: NavId.Skills, label: "Skills", icon: SparklesIcon, section: "labs" },
-  { id: NavId.Tools, label: "Tools", icon: WrenchIcon, section: "labs" },
-  { id: NavId.Subagents, label: "SubAgents", icon: BotIcon, section: "labs" },
   { id: NavId.Plans, label: "Plans", icon: ClipboardListIcon, section: "labs" },
-  {
-    id: NavId.PullRequests,
-    label: "Pull Requests",
-    icon: GitPullRequestIcon,
-    section: "labs",
-  },
   {
     id: NavId.Approvals,
     label: "Approvals",
@@ -139,11 +110,17 @@ export function navEntryFor(id: NavId): NavEntry | undefined {
  */
 export const FOCUS_MODE = true;
 
-/** Nav ids shown in the top-level group while FOCUS_MODE is on. */
+/**
+ * Nav ids shown in the top-level group while FOCUS_MODE is on. Agents is a
+ * top-level focus page (FEA-2923, Mike-approved focus-mode exception) rather
+ * than folding into Labs; its declared `section` above stays "artifacts" for
+ * when FOCUS_MODE is off.
+ */
 const FOCUSED_NAV_IDS: readonly NavId[] = [
   NavId.Dashboard,
   NavId.Sessions,
   NavId.Branches,
+  NavId.Agents,
 ];
 
 /**

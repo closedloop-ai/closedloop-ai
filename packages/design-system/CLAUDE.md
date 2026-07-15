@@ -1,8 +1,8 @@
 # @closedloop-ai/design-system
 
-Generic component library (Shadcn/Tailwind), consumed as `@repo/design-system`
-by the web apps and as `@closedloop-ai/design-system` (workspace dist) by the
-desktop renderer.
+Generic component library (Shadcn/Tailwind), consumed as `@closedloop-ai/design-system`
+from source — transpiled by Next in the web apps and bundled by Vite in the
+desktop renderer. There is no build step (no `tsup`, no `dist`).
 
 ## Scope rule (IMPORTANT)
 
@@ -40,8 +40,10 @@ the reverse. Don't add new domain types or new domain components here.
 
 ## Adding a module
 
-Every new module needs, in the same change:
-1. An entry in `tsup.config.ts` (the desktop resolves built `dist/` output).
-2. An `exports` block in `package.json` (copy an existing
-   import/require/default triple).
-3. A Storybook story in `apps/storybook/stories/`.
+The package is consumed from source and has no `exports` map, so a new module is
+importable at its source path as soon as the file exists — e.g.
+`@closedloop-ai/design-system/components/ui/<name>` resolves to
+`components/ui/<name>.tsx`. No `tsup.config.ts` entry and no `package.json`
+`exports` block are needed. The only companion a new module still needs in the
+same change:
+1. A Storybook story in `apps/storybook/stories/`.

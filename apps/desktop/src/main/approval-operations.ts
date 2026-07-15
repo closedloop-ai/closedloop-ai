@@ -4,6 +4,10 @@
  */
 
 import {
+  GITHUB_RESYNC_NUDGE_OPERATION_ID,
+  GITHUB_RESYNC_NUDGE_PATH,
+} from "@repo/api/src/types/github-dirty-scope";
+import {
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID,
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH,
   BROWSER_COMMAND_KEY_REVOKE_OPERATION_ID,
@@ -43,6 +47,7 @@ export const SUPPORTED_OPERATION_IDS = [
   "desktop_security_upgrade",
   "binary_paths_settings",
   "update_and_restart",
+  GITHUB_RESYNC_NUDGE_OPERATION_ID,
   BROWSER_COMMAND_KEY_REVOKE_OPERATION_ID,
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID,
 ] as const;
@@ -134,6 +139,9 @@ export function resolveOperationId(pathname: string): OperationId | null {
   }
   if (pathname === "/api/gateway/git/branch-worktree") {
     return "git_branch_worktree";
+  }
+  if (pathname === GITHUB_RESYNC_NUDGE_PATH) {
+    return GITHUB_RESYNC_NUDGE_OPERATION_ID;
   }
   if (
     pathname === "/api/gateway/git/local-changes" ||

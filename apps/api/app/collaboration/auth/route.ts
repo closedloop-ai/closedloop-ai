@@ -2,7 +2,6 @@ import type { User } from "@repo/api/src/types/user";
 import { authenticate } from "@repo/collaboration/server/auth";
 import { parseDocumentRoomId } from "@repo/collaboration/shared/room-utils";
 import { getConsistentColor } from "@repo/collaboration/shared/user-colors";
-import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
@@ -36,7 +35,7 @@ export async function POST(request: Request): Promise<Response> {
       const { room } = authenticateValidator.parse(await request.json());
       roomId = room;
     } catch (error) {
-      log.error("Invalid request body", { error: parseError(error) });
+      log.error("Invalid request body", { error });
       return new Response("Invalid request body", { status: 400 });
     }
 
@@ -48,7 +47,7 @@ export async function POST(request: Request): Promise<Response> {
           return new Response("Forbidden", { status: 403 });
         }
       } catch (error) {
-        log.error("Invalid room ID", { error: parseError(error) });
+        log.error("Invalid room ID", { error });
         return new Response("Invalid room ID", { status: 400 });
       }
     }
@@ -70,7 +69,7 @@ export async function POST(request: Request): Promise<Response> {
 
     return new Response(token, { status });
   } catch (error) {
-    log.error("Collaboration auth error", { error: parseError(error) });
+    log.error("Collaboration auth error", { error });
     return new Response("Unable to authenticate", { status: 500 });
   }
 }

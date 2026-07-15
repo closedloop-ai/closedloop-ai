@@ -6,21 +6,21 @@ import {
   BROWSER_COMMAND_KEY_TARGET_CONTEXT_MISMATCH_REASON,
 } from "../shared/contracts.js";
 import { normalizeCommandKeyFingerprint } from "./authorized-command-key-store.js";
-import type {
-  DesktopCommandAckEvent,
-  DesktopCommandEvent,
-  DesktopCommandStreamEvent,
-} from "./cloud-protocol.js";
+import type { DesktopCommandEvent } from "./cloud-protocol.js";
 import {
   type ActiveCommandKeyTargetContext,
   browserCommandKeyTargetContextMatches,
   parseBrowserCommandKeyCommandTargetContext,
 } from "./command-key-target-context.js";
+import {
+  type ReservedCommandAckPayload as CommandAckPayload,
+  type ReservedCommandEventPayload as CommandEventPayload,
+  classifyReservedCommand,
+  type ReservedCommandMatch,
+  rejectReservedCommand,
+} from "./reserved-command-handler.js";
 
-export type BrowserCommandKeyApprovalRequestMatch =
-  | "match"
-  | "mismatch"
-  | "not_reserved";
+export type BrowserCommandKeyApprovalRequestMatch = ReservedCommandMatch;
 
 /**
  * Identifies the reserved server-control command that asks Desktop to surface
@@ -29,18 +29,11 @@ export type BrowserCommandKeyApprovalRequestMatch =
 export function classifyBrowserCommandKeyApprovalRequestCommand(
   command: Pick<DesktopCommandEvent, "method" | "operationId" | "path">
 ): BrowserCommandKeyApprovalRequestMatch {
-  const referencesReservedCommand =
-    command.operationId === BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID ||
-    command.path === BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH;
-  if (!referencesReservedCommand) {
-    return "not_reserved";
-  }
-  return command.operationId ===
-    BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID &&
-    command.path === BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH &&
-    command.method === BROWSER_COMMAND_KEY_APPROVAL_REQUEST_METHOD
-    ? "match"
-    : "mismatch";
+  return classifyReservedCommand(command, {
+    method: BROWSER_COMMAND_KEY_APPROVAL_REQUEST_METHOD,
+    operationId: BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID,
+    path: BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH,
+  });
 }
 
 export type BrowserCommandKeyApprovalRequestBody =
@@ -49,15 +42,6 @@ export type BrowserCommandKeyApprovalRequestBody =
       ok: false;
       reason: typeof BROWSER_COMMAND_KEY_APPROVAL_REQUEST_INVALID_REASON;
     };
-
-type CommandAckPayload = Pick<
-  DesktopCommandAckEvent,
-  "commandId" | "accepted" | "state" | "reason"
->;
-type CommandEventPayload = Pick<
-  DesktopCommandStreamEvent,
-  "commandId" | "sequence" | "eventType" | "data"
->;
 
 export type BrowserCommandKeyApprovalRequestHandlerOptions = {
   notifyPendingKeys: (fingerprint: string) => Promise<void> | void;
@@ -97,16 +81,7 @@ export function handleBrowserCommandKeyApprovalRequestCommand(
 ): void {
   const parsed = parseBrowserCommandKeyApprovalRequestBody(command.body);
   if (!parsed.ok) {
-    options.log?.(
-      "warn",
-      `Rejected browser command key approval request ${command.commandId}: ${parsed.reason}`
-    );
-    options.sendCommandAck({
-      commandId: command.commandId,
-      accepted: false,
-      state: "failed",
-      reason: parsed.reason,
-    });
+    rejectBrowserCommandKeyApprovalRequest(command, options, parsed.reason);
     return;
   }
 
@@ -114,16 +89,11 @@ export function handleBrowserCommandKeyApprovalRequestCommand(
     command.body
   );
   if (commandTargetContext.kind === "invalid") {
-    options.log?.(
-      "warn",
-      `Rejected browser command key approval request ${command.commandId}: ${BROWSER_COMMAND_KEY_APPROVAL_REQUEST_INVALID_REASON}`
+    rejectBrowserCommandKeyApprovalRequest(
+      command,
+      options,
+      BROWSER_COMMAND_KEY_APPROVAL_REQUEST_INVALID_REASON
     );
-    options.sendCommandAck({
-      commandId: command.commandId,
-      accepted: false,
-      state: "failed",
-      reason: BROWSER_COMMAND_KEY_APPROVAL_REQUEST_INVALID_REASON,
-    });
     return;
   }
   if (
@@ -133,16 +103,11 @@ export function handleBrowserCommandKeyApprovalRequestCommand(
       activeContext: options.getActiveTargetContext?.(),
     })
   ) {
-    options.log?.(
-      "warn",
-      `Rejected browser command key approval request ${command.commandId}: ${BROWSER_COMMAND_KEY_TARGET_CONTEXT_MISMATCH_REASON}`
+    rejectBrowserCommandKeyApprovalRequest(
+      command,
+      options,
+      BROWSER_COMMAND_KEY_TARGET_CONTEXT_MISMATCH_REASON
     );
-    options.sendCommandAck({
-      commandId: command.commandId,
-      accepted: false,
-      state: "failed",
-      reason: BROWSER_COMMAND_KEY_TARGET_CONTEXT_MISMATCH_REASON,
-    });
     return;
   }
 
@@ -176,5 +141,18 @@ export function handleBrowserCommandKeyApprovalRequestCommand(
         `Browser command key approval request notification failed ${command.commandId}: ${message}`
       );
     }
+  );
+}
+
+function rejectBrowserCommandKeyApprovalRequest(
+  command: DesktopCommandEvent,
+  options: BrowserCommandKeyApprovalRequestHandlerOptions,
+  reason: string
+): void {
+  rejectReservedCommand(
+    command,
+    options,
+    "browser command key approval request",
+    reason
   );
 }

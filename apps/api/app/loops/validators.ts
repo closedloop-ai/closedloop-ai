@@ -194,6 +194,18 @@ export const listLoopEventsQueryValidator = z.object({
 });
 
 /**
+ * Query validator for the incremental (keyset) events poll. `since`/`sinceId`
+ * are the `storedAt` (ISO-8601) and row id of the newest event the client
+ * already holds — the composite `(createdAt, id)` cursor. The route returns only
+ * events strictly after that cursor, capped at `limit` per request.
+ */
+export const listLoopEventsSinceQueryValidator = z.object({
+  since: z.string().datetime(),
+  sinceId: z.string().uuid(),
+  limit: z.coerce.number().min(1).max(500).default(500),
+});
+
+/**
  * Event types accepted by the manual-events route.
  * Manual loops support a subset of event types — no "started" (loop starts
  * in RUNNING) and no "tool_call" / "artifact_created" (those are runner-only).

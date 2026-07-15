@@ -14,7 +14,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { HarnessCollector, NormalizedSession } from "../types.js";
+import type { BatchHarnessCollector, NormalizedSession } from "../types.js";
 import {
   getOpenCodeDbPath,
   getOpenCodeDbWatchFiles,
@@ -24,8 +24,20 @@ import { loadSessionsFromDb } from "./opencode-parser.js";
 
 export function createOpencodeCollector(opts?: {
   fingerprintPath?: string;
-}): HarnessCollector {
+  /**
+   * FEA-2648: override for the OpenCode data directory (the folder holding
+   * `opencode.db` + its WAL/SHM siblings). Golden mode points it at a staged
+   * dossier dir. Every path-dependent helper derives from it; omitted = the
+   * live `getOpenCodeHome()` layout, unchanged.
+   */
+  dataDir?: string;
+}): BatchHarnessCollector {
   const fingerprintPath = opts?.fingerprintPath;
+  const resolveHome = (): string => opts?.dataDir ?? getOpenCodeHome();
+  const resolveDbPath = (): string =>
+    opts?.dataDir
+      ? path.join(opts.dataDir, "opencode.db")
+      : getOpenCodeDbPath();
   let lastFingerprint: string | null = null;
   let seeded = false;
 
@@ -61,7 +73,7 @@ export function createOpencodeCollector(opts?: {
   }
 
   function fingerprintDbFiles(): string {
-    const home = getOpenCodeHome();
+    const home = resolveHome();
     const parts: string[] = [];
     for (const name of getOpenCodeDbWatchFiles()) {
       try {
@@ -80,7 +92,7 @@ export function createOpencodeCollector(opts?: {
     batch: true,
 
     watchRoots(): string[] {
-      return [getOpenCodeHome()];
+      return [resolveHome()];
     },
 
     watchMatch(filename: string): boolean {
@@ -90,12 +102,12 @@ export function createOpencodeCollector(opts?: {
     },
 
     sourcePathsForWatchEvent(): string[] {
-      return [getOpenCodeDbPath()];
+      return [resolveDbPath()];
     },
 
     listSources(): string[] {
       ensureSeeded();
-      const dbPath = getOpenCodeDbPath();
+      const dbPath = resolveDbPath();
       if (!fs.existsSync(dbPath)) {
         return [];
       }
@@ -145,7 +157,7 @@ export function createOpencodeCollector(opts?: {
      * opencode sessions even when the underlying DB hasn't changed.
      */
     listSourcesForRebuild(): string[] {
-      const dbPath = getOpenCodeDbPath();
+      const dbPath = resolveDbPath();
       if (!fs.existsSync(dbPath)) {
         return [];
       }

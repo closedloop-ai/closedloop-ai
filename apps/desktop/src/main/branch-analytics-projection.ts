@@ -6,6 +6,7 @@ import {
   BranchStatus,
   BranchViewerScope,
 } from "@repo/api/src/types/branch";
+import { median } from "@repo/api/src/utils/math";
 
 /**
  * Desktop main-side branch analytics projection (FEA-1948 / Epic B B6).
@@ -13,10 +14,20 @@ import {
  * Like the usage projector, the surface-agnostic derivations in `@repo/app`
  * aren't reachable under the main process's `nodenext` resolution, so the KPI
  * math lives here. Net-new metrics that the local corpus CAN compute (merge
- * rate; total AI spend; active-branch count; median PR size and LOC/$ once
- * FEA-1899 populates lines-changed) are `available`; metrics that genuinely need
- * GitHub (active/merged PR counts, time-to-merge, lead time) are `gated` so the
+ * rate; total AI spend; active-branch count; active/merged PR counts; median PR
+ * size and LOC/$ once FEA-1899 populates lines-changed) are `available`; metrics
+ * that genuinely need GitHub timing (time-to-merge, lead time) are `gated` so the
  * cards render the connect-GitHub affordance rather than a fabricated number.
+ *
+ * `activePrCount` (branches whose captured PR state is OPEN) and `mergedCount`
+ * (branches whose status is merged) are computed here from the same local
+ * `pr_state`/branch-status rows the web producer uses
+ * (`apps/api/app/branches/branch-read-service.ts` `getBranchAnalytics`), so the
+ * ONE shared BranchAnalytics card (`packages/app/branches/components/
+ * branches-summary-cards.tsx`) shows a real number on both surfaces rather than a
+ * number on the web and a connect-GitHub "—" on desktop for the same metric
+ * (FEA-2950). These counts do NOT need GitHub enrichment — the desktop already
+ * derives `mergeRate` and `activeBranchCount` from these same local rows.
  */
 
 function available(value: number): BranchKpi {
@@ -54,17 +65,10 @@ function pricedKpi(value: number | null): BranchKpi {
   return available(value);
 }
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 0) {
-    return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
-  }
-  return sorted[mid] ?? 0;
-}
-
 /** A branch carries FEA-1899 LOC enrichment once BOTH line counts have landed. */
-export function isLocEnrichedRow(row: BranchRow): boolean {
+export function isLocEnrichedRow(
+  row: BranchRow
+): row is BranchRow & { additions: number; deletions: number } {
   return row.additions != null && row.deletions != null;
 }
 
@@ -160,35 +164,41 @@ export function projectBranchAnalytics(
   items: BranchRow[],
   spend: BranchSpendInput
 ): BranchAnalytics {
-  // Merge rate = merged / opened, computed from local PR lifecycle. Multi-PR
-  // branches are excluded (their lifecycle is ambiguous — the row only carries
-  // the latest PR's state), matching the median-PR-size exclusion below.
-  const withPr = items.filter(
-    (row) => row.prState != null && !row.multiPrWarning
+  // Merge rate = merged / decided, computed from local PR lifecycle. FEA-2942:
+  // the denominator is DECIDED branches (PR MERGED or CLOSED), NOT every branch
+  // that has a PR — a still-open PR has no terminal outcome yet, so counting it
+  // against the rate conflates "not merged yet" with "won't merge" and
+  // understates the number (the Insights "Merge rate" KPI has the same fix).
+  // Multi-PR branches are excluded (their lifecycle is ambiguous — the row only
+  // carries the latest PR's state), matching the median-PR-size exclusion below.
+  const decided = items.filter(
+    (row) =>
+      (row.prState === "MERGED" || row.prState === "CLOSED") &&
+      !row.multiPrWarning
   );
   const merged = items.filter(
     (row) => row.prState === "MERGED" && !row.multiPrWarning
   );
   const mergeRate =
-    withPr.length > 0
-      ? available((merged.length / withPr.length) * 100)
+    decided.length > 0
+      ? available((merged.length / decided.length) * 100)
       : unavailable();
 
-  // Median PR size over MERGED, single-PR branches — matching the delivery
-  // dashboard's data treatment (`apps/api/app/insights/service.ts` getDelivery,
-  // the "pr-size" KPI). That side maps every merged PR's line total through
-  // `?? 0`, so a merged branch with no LOC enrichment counts as a 0-line PR and
-  // is INCLUDED in the median rather than excluded; the KPI is therefore
-  // available whenever any single-PR branch has merged. We mirror that here so
-  // the two surfaces report the same metric (FEA-2159): drop the
-  // enrichment gate and fold a missing line count in as 0. Multi-PR branches
-  // stay excluded (ambiguous lifecycle — the row carries only the latest PR's
-  // state), matching the merge-rate exclusion above.
+  // Median PR size over ALL MERGED, single-PR branches. Mirrors the delivery
+  // dashboard (`apps/api/app/insights/service.ts` `getDelivery`), which medians
+  // over every merged PR and folds a missing line total in as 0
+  // (`(additions ?? 0) + (deletions ?? 0)`) rather than excluding un-enriched
+  // rows — so a merged branch with no LOC on either its own or the PR artifact
+  // still contributes (as 0) and the card is available whenever merged
+  // single-PR branches exist (FEA-2159). Multi-PR branches stay excluded
+  // (ambiguous lifecycle — the row only carries the latest PR's state), matching
+  // the merge-rate set. The KPI is unavailable only when there are zero merged
+  // single-PR branches (empty `sizes`), preserving the empty-source contract.
   const sizes = items
     .filter((row) => row.status === BranchStatus.Merged && !row.multiPrWarning)
     .map((row) => (row.additions ?? 0) + (row.deletions ?? 0));
   const medianPrSize =
-    sizes.length > 0 ? available(median(sizes)) : unavailable();
+    sizes.length > 0 ? available(median(sizes) ?? 0) : unavailable();
 
   // Net LOC per dollar — needs LOC enrichment AND priced cost. The numerator (net
   // LOC) is summed over LOC-enriched branches; the denominator
@@ -229,13 +239,33 @@ export function projectBranchAnalytics(
         )
       : unavailable();
 
+  // Active-PR and merged counts — computed LOCALLY from the same captured
+  // `pr_state`/branch-status rows the web producer uses (FEA-2950), so the shared
+  // BranchAnalytics card shows a real number on both surfaces instead of a real
+  // number on the web and a connect-GitHub "—" on desktop. `activePrCount` counts
+  // branches whose captured PR state is OPEN (distinct from `activeBranchCount`,
+  // which counts branch STATUS ≠ merged/closed — a branch with no PR or a draft PR
+  // is an active branch but not an active PR); `mergedCount` reuses the very same
+  // `merged` array that feeds `mergeRate`'s numerator (FEA-2997), so the "Merged
+  // PRs" count and the rate's numerator can never disagree — both are merged,
+  // single-PR branches (`prState === "MERGED" && !multiPrWarning`), sharing the
+  // multi-PR ambiguous-lifecycle exclusion. Neither needs GitHub enrichment. An
+  // empty corpus is unavailable (matching the other count KPIs), never a
+  // fabricated 0.
+  const activePrCount =
+    items.length > 0
+      ? available(items.filter((row) => row.prState === "OPEN").length)
+      : unavailable();
+  const mergedCount =
+    items.length > 0 ? available(merged.length) : unavailable();
+
   return {
     viewerScope: BranchViewerScope.Self,
     medianPrSize,
     mergeRate,
     medianTimeToMergeMs: gated(),
-    activePrCount: gated(),
-    mergedCount: gated(),
+    activePrCount,
+    mergedCount,
     leadTimeForChangeMs: gated(),
     locPerDollar,
     totalSpendUsd,

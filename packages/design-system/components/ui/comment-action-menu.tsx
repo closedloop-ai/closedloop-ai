@@ -1,13 +1,13 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import { toast } from "@repo/design-system/components/ui/sonner";
+} from "@closedloop-ai/design-system/components/ui/dropdown-menu";
+import { toast } from "@closedloop-ai/design-system/components/ui/sonner";
 import {
   CheckCheck,
   Copy,

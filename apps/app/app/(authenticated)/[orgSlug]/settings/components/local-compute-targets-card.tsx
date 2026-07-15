@@ -25,7 +25,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { Link } from "@repo/navigation/link";
 import { useIsFetching, useQuery } from "@tanstack/react-query";
 import { KeyRound, Laptop, Loader2, ShieldAlert, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
 import { env } from "@/env";
 import {
@@ -51,6 +51,7 @@ import {
   healthCheckOptions,
 } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { buildHealthCheckErrorResponse } from "@/lib/system-check/health-check-error-response";
 import { SettingsActionPanel } from "./settings-action-panel";
 import { UpdateAndRestartButton } from "./update-and-restart-button";
 
@@ -107,6 +108,7 @@ function ComputeTargetSystemCheckSection({
   const {
     data: healthCheckData,
     dataUpdatedAt,
+    error: healthCheckError,
     refetch: refetchHealthCheck,
   } = useQuery({
     ...healthCheckOptions(healthCheckTargetKey, expectedMcpUrl, {
@@ -131,21 +133,28 @@ function ComputeTargetSystemCheckSection({
     await refetchHealthCheck();
   };
 
+  const effectiveHealthCheckData = useMemo(
+    () =>
+      healthCheckError
+        ? buildHealthCheckErrorResponse(healthCheckError)
+        : healthCheckData,
+    [healthCheckData, healthCheckError]
+  );
   const renderableChecks = getRenderableHealthChecks(
-    healthCheckData,
+    effectiveHealthCheckData,
     expectedMcpUrl
   );
   const failureCount = getFailureCount(renderableChecks);
-  const hasHealthCheckResult = healthCheckData !== undefined;
+  const hasHealthCheckResult = effectiveHealthCheckData !== undefined;
 
   return (
     <DesignSystemComputeTargetSystemCheck
       actionDisabled={!canRunHealthCheck || isHealthCheckFetching}
       checkedAtLabel={
-        hasHealthCheckResult ? formatLastChecked(dataUpdatedAt) : undefined
+        healthCheckData ? formatLastChecked(dataUpdatedAt) : undefined
       }
       content={
-        healthCheckData ? (
+        effectiveHealthCheckData ? (
           <SystemCheckResults checks={renderableChecks} />
         ) : undefined
       }

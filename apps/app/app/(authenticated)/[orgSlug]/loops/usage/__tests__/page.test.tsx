@@ -1,79 +1,59 @@
-import { ApiError } from "@repo/app/shared/api/api-error";
+/**
+ * Route-gate tests for the Loops Usage page.
+ *
+ * Verifies that the `/[orgSlug]/loops/usage` route itself is gated by the
+ * `loops-usage-page` feature flag (FEA-2713) — not just the Usage link on the
+ * parent Loops page — so a user with the flag off cannot deep-link directly
+ * into the Usage Dashboard.
+ */
+
+import { LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LoopUsagePage from "../page";
 
-const { useLoopUsageMock } = vi.hoisted(() => ({
-  useLoopUsageMock: vi.fn(),
+// Control variable — updated per test to simulate the flag state.
+let featureFlagEnabled = false;
+
+vi.mock("@repo/analytics/components/feature-flagged", () => ({
+  FeatureFlagged: ({
+    flag,
+    children,
+  }: {
+    flag: string;
+    children: ReactNode;
+  }) => (
+    <div data-feature-flag={flag}>{featureFlagEnabled ? children : null}</div>
+  ),
 }));
 
-vi.mock("@repo/app/loops/hooks/use-loops", () => ({
-  useLoopUsage: useLoopUsageMock,
+vi.mock("../page-client", () => ({
+  default: () => <div data-testid="loop-usage-dashboard" />,
 }));
 
-function mockUsageResult(
-  overrides: Partial<ReturnType<typeof useLoopUsageMock>>
-) {
-  useLoopUsageMock.mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    error: null,
-    ...overrides,
-  });
-}
-
-describe("LoopUsagePage error states", () => {
+describe("LoopUsagePage route gate", () => {
   beforeEach(() => {
-    useLoopUsageMock.mockReset();
+    vi.clearAllMocks();
   });
 
-  it("renders a permission-specific message when the API returns 403", () => {
-    mockUsageResult({
-      isError: true,
-      error: new ApiError("Forbidden", 403),
-    });
+  it("renders the dashboard behind the loops-usage-page feature flag when enabled", () => {
+    featureFlagEnabled = true;
 
     render(<LoopUsagePage />);
 
-    expect(screen.getByTestId("usage-error")).toBeInTheDocument();
     expect(
-      screen.getByText("You don't have access to usage data")
-    ).toBeInTheDocument();
-    // The zero-filled summary grid must NOT render on error.
-    expect(screen.queryByTestId("usage-summary-grid")).not.toBeInTheDocument();
+      screen.getByTestId("loop-usage-dashboard").closest("[data-feature-flag]")
+    ).toHaveAttribute("data-feature-flag", LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY);
   });
 
-  it("renders a generic failure message for non-permission errors", () => {
-    mockUsageResult({
-      isError: true,
-      error: new ApiError("Server error", 500),
-    });
+  it("does not render the dashboard when the flag is disabled (direct-route denial)", () => {
+    featureFlagEnabled = false;
 
     render(<LoopUsagePage />);
 
-    expect(screen.getByTestId("usage-error")).toBeInTheDocument();
-    expect(screen.getByText("Failed to load usage data")).toBeInTheDocument();
-    expect(screen.queryByTestId("usage-summary-grid")).not.toBeInTheDocument();
-  });
-
-  it("renders the summary grid when data loads successfully", () => {
-    mockUsageResult({
-      data: {
-        totalLoops: 0,
-        totalTokensInput: 0,
-        totalTokensOutput: 0,
-        totalCacheCreationTokens: 0,
-        totalCacheReadTokens: 0,
-        totalEstimatedCost: 0,
-        byCommand: [],
-        byUser: [],
-      },
-    });
-
-    render(<LoopUsagePage />);
-
-    expect(screen.getByTestId("usage-summary-grid")).toBeInTheDocument();
-    expect(screen.queryByTestId("usage-error")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("loop-usage-dashboard")
+    ).not.toBeInTheDocument();
   });
 });

@@ -19,6 +19,17 @@ export type HookData = {
   [key: string]: unknown;
 };
 
+/**
+ * The harness that POSTs live hook events. Attribution is route-owned (the
+ * listener sets it from the request path), never payload-chosen. Codex hooks
+ * were removed (PRD-431), so Claude is the only harness that emits hooks today —
+ * a single-member union that keeps the hook write path (`processEvent` /
+ * `handleHook`) statically narrow. This is intentionally NOT the broader
+ * `Harness`: the importer/collector path handles all five harnesses, but the
+ * hook path only ever sees "claude".
+ */
+export type HookHarness = "claude";
+
 /** Cumulative per-model token counts from the current transcript segment. */
 export type TokenUsageCounts = {
   input: number;
@@ -48,11 +59,11 @@ export type ImportResult = {
   /** True when the importer failed before the session was durably handled. */
   failed?: boolean;
   /**
-   * FEA-1791: true when the session was durably handled but at least one
-   * (tolerated) record group failed to commit, so the import is partial. The
-   * collector must NOT mark the source seen — it should re-import next pass to
-   * retry the failed group (each group is idempotent, so committed groups
-   * converge). Unlike `failed`, this does not halt the rest of the source.
+   * True when the session was durably handled but at least one (tolerated)
+   * record group failed to commit, so the import is partial. The collector must
+   * NOT mark the source seen — it should re-import next pass to retry the failed
+   * group (each group is idempotent, so committed groups converge). Unlike
+   * `failed`, this does not halt the rest of the source.
    */
   incomplete?: boolean;
 };

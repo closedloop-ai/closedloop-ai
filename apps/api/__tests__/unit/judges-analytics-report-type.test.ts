@@ -6,6 +6,12 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
@@ -31,6 +37,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
       prompt: {
         findMany: vi.fn().mockResolvedValue([]),
       },
+      $queryRaw: vi.fn().mockResolvedValue([]),
       judgeScore: { findMany: judgeScoreFindMany },
       artifact: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -63,19 +70,17 @@ describe("judgesAnalyticsService reportType scoping", () => {
   it("maps judge descriptions from latest prompt version", async () => {
     const mockDb = {
       prompt: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            name: "clarity-judge",
-            description: "Old clarity description",
-            version: 1,
-          },
-          {
-            name: "clarity-judge",
-            description: "Latest clarity description",
-            version: 2,
-          },
-        ]),
+        findMany: vi.fn().mockResolvedValue([]),
       },
+      // getJudgeDescriptionByPromptName now selects the latest version per name
+      // in SQL via DISTINCT ON, so the raw query returns one row per name.
+      $queryRaw: vi.fn().mockResolvedValue([
+        {
+          name: "clarity-judge",
+          description: "Latest clarity description",
+          version: 2,
+        },
+      ]),
       judgeScore: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -178,31 +183,31 @@ describe("judgesAnalyticsService reportType scoping", () => {
   it("keeps prompt route identity separate from metric display in collision rows", async () => {
     const mockDb = {
       prompt: {
-        findMany: vi
-          .fn()
-          .mockResolvedValueOnce([
-            {
-              name: "judge-alpha",
-              description: "Judge alpha description",
-              version: 1,
-            },
-            {
-              name: "judge-beta",
-              description: "Judge beta description",
-              version: 1,
-            },
-          ])
-          .mockResolvedValueOnce([
-            {
-              id: "prompt-1",
-              description: "Judge alpha description",
-            },
-            {
-              id: "prompt-2",
-              description: "Judge beta description",
-            },
-          ]),
+        // descriptionById lookup by promptId (getJudgeDescriptionByPromptName
+        // now issues a separate $queryRaw, mocked below).
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "prompt-1",
+            description: "Judge alpha description",
+          },
+          {
+            id: "prompt-2",
+            description: "Judge beta description",
+          },
+        ]),
       },
+      $queryRaw: vi.fn().mockResolvedValue([
+        {
+          name: "judge-alpha",
+          description: "Judge alpha description",
+          version: 1,
+        },
+        {
+          name: "judge-beta",
+          description: "Judge beta description",
+          version: 1,
+        },
+      ]),
       judgeScore: {
         findMany: vi.fn().mockResolvedValue([
           {

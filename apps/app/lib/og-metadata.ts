@@ -1,6 +1,5 @@
-import type { DocumentStatus } from "@repo/api/src/types/document";
 import { DocumentType } from "@repo/api/src/types/document";
-import { DOCUMENT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import { ARTIFACT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import type { Metadata } from "next";
 import { env } from "@/env";
 
@@ -104,9 +103,7 @@ const handlers: OgHandler[] = [
         return FALLBACK_METADATA;
       }
       const description =
-        DOCUMENT_STATUS_LABELS[data.status as DocumentStatus] ??
-        data.status ??
-        "Feature";
+        ARTIFACT_STATUS_LABELS[data.status] ?? data.status ?? "Feature";
       return makeMetadata(data.title, `Feature — ${description}`);
     },
   },

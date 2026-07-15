@@ -60,6 +60,8 @@ export type TokenCostResult = {
   costUsd: number | null;
   inputCostUsd: number | null;
   outputCostUsd: number | null;
+  cacheReadCostUsd: number | null;
+  cacheWriteCostUsd: number | null;
   /** null when priced; otherwise the not-priced reason. */
   reason: TokenCostNotPricedReason | null;
 };
@@ -87,6 +89,8 @@ function notPriced(
     costUsd: null,
     inputCostUsd: null,
     outputCostUsd: null,
+    cacheReadCostUsd: null,
+    cacheWriteCostUsd: null,
     reason,
   };
 }
@@ -126,6 +130,66 @@ export function buildUsage(counts: Counts): {
     cache_read_tokens: counts.cacheRead,
     cache_write_tokens: counts.cacheWrite,
   };
+}
+
+type CacheCostSplit = {
+  inputCostUsd: number;
+  cacheReadCostUsd: number | null;
+  cacheWriteCostUsd: number | null;
+};
+
+function isolateCacheCosts(
+  fullResult: NonNullable<PriceCalculationResult>,
+  counts: Counts,
+  model: string,
+  options: { timestamp: Date } | undefined
+): CacheCostSplit {
+  let cacheReadCostUsd: number | null = 0;
+  let cacheWriteCostUsd: number | null = 0;
+  try {
+    if (counts.cacheRead > 0) {
+      const noCacheRead = calcPrice(
+        buildUsage({ ...counts, cacheRead: 0 }),
+        model,
+        options
+      );
+      if (noCacheRead) {
+        cacheReadCostUsd = Math.max(
+          0,
+          fullResult.input_price - noCacheRead.input_price
+        );
+      }
+    }
+    if (counts.cacheWrite > 0) {
+      const noCacheWrite = calcPrice(
+        buildUsage({ ...counts, cacheWrite: 0 }),
+        model,
+        options
+      );
+      if (noCacheWrite) {
+        cacheWriteCostUsd = Math.max(
+          0,
+          fullResult.input_price - noCacheWrite.input_price
+        );
+      }
+    }
+    return {
+      inputCostUsd: Math.max(
+        0,
+        fullResult.input_price -
+          (cacheReadCostUsd ?? 0) -
+          (cacheWriteCostUsd ?? 0)
+      ),
+      cacheReadCostUsd,
+      cacheWriteCostUsd,
+    };
+  } catch {
+    return {
+      inputCostUsd: fullResult.input_price,
+      cacheReadCostUsd: null,
+      cacheWriteCostUsd: null,
+    };
+  }
 }
 
 /**
@@ -168,12 +232,23 @@ export function computeTokenCost(input: TokenCostInput): TokenCostResult {
     return notPriced(TokenCostNotPricedReason.NoMatch, providerId);
   }
 
+  const cacheSplit =
+    counts.cacheRead > 0 || counts.cacheWrite > 0
+      ? isolateCacheCosts(result, counts, model, options)
+      : {
+          inputCostUsd: result.input_price,
+          cacheReadCostUsd: 0,
+          cacheWriteCostUsd: 0,
+        };
+
   return {
     priced: true,
     provider: result.provider?.id ?? providerId,
     costUsd: result.total_price,
-    inputCostUsd: result.input_price,
+    inputCostUsd: cacheSplit.inputCostUsd,
     outputCostUsd: result.output_price,
+    cacheReadCostUsd: cacheSplit.cacheReadCostUsd,
+    cacheWriteCostUsd: cacheSplit.cacheWriteCostUsd,
     reason: null,
   };
 }

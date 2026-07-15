@@ -1,4 +1,5 @@
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import { isDesktopSessionToken } from "@repo/auth/desktop-session-jwt";
 import { auth, getAuth, verifyToken } from "@repo/auth/server";
 import { ApiKeySource } from "@repo/database";
 import { waitUntil } from "@vercel/functions";
@@ -10,6 +11,7 @@ import {
   getDesktopManagedPopRequestFailure,
   resolveDesktopManagedPopMode,
 } from "./desktop-managed-pop";
+import { resolveDesktopSessionContext } from "./desktop-session-auth";
 import { resolveOrgHeader } from "./resolve-org-header";
 
 type ResolvedAuthContext = {
@@ -36,6 +38,20 @@ export async function resolveAnyAuthContext(
       request,
       requiredScopes: options?.requiredScopes ?? ["read"],
     });
+  }
+
+  // Desktop access tokens are preclassified by their non-secret `typ` header and
+  // short-circuit here: a desktop-typed token that fails verification resolves
+  // to null and MUST NOT fall through to Clerk verification (FEA-2217 contract).
+  if (token && isDesktopSessionToken(token)) {
+    const desktopContext = await resolveDesktopSessionContext(token);
+    if (!desktopContext) {
+      return null;
+    }
+    return {
+      organizationId: desktopContext.organizationId,
+      userId: desktopContext.user.id,
+    };
   }
 
   const requestContext = await resolveClerkRequestContext(request);

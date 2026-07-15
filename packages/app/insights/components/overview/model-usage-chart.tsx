@@ -1,3 +1,5 @@
+"use client";
+
 import type { TimeSeries } from "@repo/api/src/types/insights";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { TimeSeriesAreaChart } from "@repo/design-system/components/ui/time-series-area-chart";
@@ -7,9 +9,15 @@ import {
 } from "@repo/design-system/components/ui/toggle-group";
 import { BoxIcon, LayersIcon } from "lucide-react";
 import { useMemo, useState } from "react";
+import { metricAllowsFractions, metricValueFormatter } from "../../lib/format";
 import { SectionHeader } from "./section-header";
 
 type Grouping = "model" | "provider";
+
+// USD spend formatter (FEA-2331): the model series is estimated cost, not tokens.
+const formatSpend = metricValueFormatter("cost");
+// Spend is sub-dollar-capable, so the y-axis needs fractional ticks.
+const SPEND_ALLOWS_DECIMALS = metricAllowsFractions("cost");
 
 const GROUPINGS: { key: Grouping; label: string; Icon: typeof LayersIcon }[] = [
   { key: "model", label: "By model", Icon: LayersIcon },
@@ -58,9 +66,11 @@ function groupByProvider(series: TimeSeries): TimeSeries {
 }
 
 /**
- * "Model Usage Over Time" — the shared stacked time-series chart fed by the
- * Agents insights (`modelUsageOverTime`), with a By model / By provider toggle
- * that re-aggregates the model series into providers client-side.
+ * "Model Spend Over Time" — the shared stacked time-series chart fed by the
+ * Agents insights (`modelUsageOverTime`, now estimated USD spend), with a By
+ * model / By provider toggle that re-aggregates the model series into providers
+ * client-side. FEA-2331: spend is cache-neutral, so it reflects where the money
+ * actually goes (raw token counts understate cache-heavy harnesses).
  */
 export function ModelUsageChart({
   series,
@@ -80,6 +90,7 @@ export function ModelUsageChart({
       <SectionHeader
         actions={
           <ToggleGroup
+            aria-label="Grouping"
             onValueChange={(next) => {
               if (next) {
                 setGrouping(next as Grouping);
@@ -97,15 +108,17 @@ export function ModelUsageChart({
             ))}
           </ToggleGroup>
         }
-        description="Daily token usage by model"
-        title="Model Usage Over Time"
+        description="Daily estimated spend by model"
+        title="Model Spend Over Time"
       />
       <div className="min-h-0 flex-1">
         {chart ? (
           <TimeSeriesAreaChart
-            emptyMessage="No model usage in range yet"
+            allowDecimals={SPEND_ALLOWS_DECIMALS}
+            emptyMessage="No model spend in range yet"
             points={chart.points}
             series={chart.series}
+            valueFormatter={formatSpend}
           />
         ) : (
           <Skeleton className="h-full w-full" />

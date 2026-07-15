@@ -1,19 +1,27 @@
 import { DocumentType } from "@repo/api/src/types/document";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
   log: { error: vi.fn(), info: vi.fn() },
 }));
 
-vi.mock("@/env", () => ({
-  env: {
+const mockEnv = vi.hoisted(
+  (): { NEXT_PUBLIC_API_URL: string; SERVER_API_URL?: string } => ({
     NEXT_PUBLIC_API_URL: "http://localhost:3002",
-  },
+  })
+);
+
+vi.mock("@/env", () => ({
+  env: mockEnv,
 }));
 
 // Mock fetch globally
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "window"
+);
 
 // Import after mocks are set up
 const { fetchBatchMeta } = await import("../fetch-batch-meta");
@@ -21,6 +29,16 @@ const { fetchBatchMeta } = await import("../fetch-batch-meta");
 describe("fetchBatchMeta", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockEnv.NEXT_PUBLIC_API_URL = "http://localhost:3002";
+    Reflect.deleteProperty(mockEnv, "SERVER_API_URL");
+  });
+
+  afterEach(() => {
+    if (originalWindowDescriptor) {
+      Object.defineProperty(globalThis, "window", originalWindowDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
   });
 
   describe("token guard", () => {
@@ -49,6 +67,23 @@ describe("fetchBatchMeta", () => {
 
       expect(mockFetch).toHaveBeenCalledWith(
         "http://localhost:3002/documents/batch-meta?slugs=prd-abc,plan-xyz",
+        expect.any(Object)
+      );
+    });
+
+    it("uses the server-only API URL for server-side requests", async () => {
+      mockEnv.SERVER_API_URL = "http://api:3002";
+      stubServerContext();
+      const getToken = vi.fn().mockResolvedValue("test-token");
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValueOnce({ success: true, data: {} }),
+      });
+
+      await fetchBatchMeta(["prd-abc"], getToken);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://api:3002/documents/batch-meta?slugs=prd-abc",
         expect.any(Object)
       );
     });
@@ -152,3 +187,7 @@ describe("fetchBatchMeta", () => {
     });
   });
 });
+
+function stubServerContext() {
+  Reflect.deleteProperty(globalThis, "window");
+}

@@ -107,6 +107,56 @@ describe("buildAgentCoachingTips", () => {
       false
     );
   });
+
+  // FEA-2430: "today" is the LOCAL calendar day. Fixtures below are built from
+  // LOCAL date components so the assertions hold under any host timezone —
+  // vitest workers share a process, so a module-level TZ pin is not safe here
+  // (the main-process node:test suites carry the pinned-TZ coverage).
+  it("clears a tip acted on late the same LOCAL evening (FEA-2430)", () => {
+    const feedback: AgentCoachingFeedbackEvent[] = [
+      {
+        action: "action_clicked",
+        actionId: "draft-command-wrapper",
+        category: "token_efficiency",
+        createdAt: new Date(2026, 5, 18, 23, 15).toISOString(),
+        tipId: "shell-probe-reusable-skill",
+      },
+    ];
+
+    const tips = buildAgentCoachingTips(
+      makeInput({ feedback, generatedAt: new Date(2026, 5, 18, 23, 45) })
+    );
+
+    expect(tips.some((tip) => tip.id === "shell-probe-reusable-skill")).toBe(
+      false
+    );
+  });
+
+  it("treats details opened the previous LOCAL evening as prior-day interest (FEA-2430)", () => {
+    // 23:30 local vs 00:30 local straddle LOCAL midnight (different local
+    // days) but on a negative-UTC-offset host they share a UTC day — under the
+    // old UTC day key this feedback was skipped as "today" and produced no
+    // follow-up.
+    const feedback: AgentCoachingFeedbackEvent[] = [
+      {
+        action: "details_opened",
+        category: "token_efficiency",
+        createdAt: new Date(2026, 5, 17, 23, 30).toISOString(),
+        tipId: "shell-probe-reusable-skill",
+      },
+    ];
+
+    const tips = buildAgentCoachingTips(
+      makeInput({ feedback, generatedAt: new Date(2026, 5, 18, 0, 30) })
+    );
+    const tokenTip = tips.find(
+      (tip) => tip.id === "shell-probe-reusable-skill"
+    );
+
+    expect(tokenTip?.body).toContain(
+      "You opened details on this coaching area before"
+    );
+  });
 });
 
 function makeInput(
@@ -141,6 +191,7 @@ function makeAnalytics(): AnalyticsData {
       totalCacheWriteTokens: 0,
       totalInputTokens: 120_000,
       totalOutputTokens: 30_000,
+      windowDays: 30,
     },
     toolUsage: [
       { count: 80, toolName: "Bash" },

@@ -3,8 +3,11 @@ import type {
   AgentSessionDetail,
   AgentSessionListResponse,
   AgentSessionUsageSummary,
+  AgentSessionViewerScope,
 } from "@repo/api/src/types/agent-session";
+import { ReadSource } from "@repo/api/src/types/read-source";
 import { buildSearchParams } from "../../shared/lib/format-utils";
+import { withReadSource } from "../../shared/lib/read-source";
 
 /**
  * Query filters shared by the agent-session reads. Canonical home for the type
@@ -21,7 +24,17 @@ export type AgentSessionQueryFilters = {
   statuses?: string[];
   userIds?: string[];
   repositories?: string[];
+  /** Multi-select harness/model facets (options derived from the usage summary). */
+  harnesses?: string[];
+  models?: string[];
+  /** Autonomy-tier ids ("high"/"mixed"/"guided"/"unknown") and cost-bucket ids. */
+  autonomyTiers?: string[];
+  costBuckets?: string[];
+  /** Change-presence ids ("has_changes"/"no_changes") and PR-association ids ("has_pr"/"no_pr"). */
+  changePresence?: string[];
+  prAssociation?: string[];
   search?: string;
+  viewerScope?: AgentSessionViewerScope;
   teamId?: string;
   projectId?: string;
   limit?: number;
@@ -81,8 +94,17 @@ export function createHttpAgentSessionsDataSource(
 ): AgentSessionsDataSource {
   return {
     scope: "http",
-    list: (filters) =>
-      api.get<AgentSessionListResponse>(withQuery("/agent-sessions", filters)),
+    // FEA-3120: stamp the read-source at the boundary. The HTTP source always
+    // reads synced cloud state, so it is `cloud` unless the backend already
+    // annotated the envelope with a more specific source — we never overwrite an
+    // explicit server value.
+    list: async (filters) =>
+      withReadSource(
+        await api.get<AgentSessionListResponse>(
+          withQuery("/agent-sessions", filters)
+        ),
+        ReadSource.Cloud
+      ),
     detail: (id) => api.get<AgentSessionDetail>(`/agent-sessions/${id}`),
     usage: (filters) =>
       api.get<AgentSessionUsageSummary>(

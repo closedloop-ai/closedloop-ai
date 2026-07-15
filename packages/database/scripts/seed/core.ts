@@ -3,6 +3,7 @@ import {
   ArtifactSubtype,
   ArtifactType,
   DocumentStatus,
+  FeatureStatus,
   GitHubInstallationStatus,
   Priority,
   ProjectStatus,
@@ -367,43 +368,40 @@ async function seedArtifacts(
     name: string;
     slug: string;
     subtype: ArtifactSubtype;
-    status: DocumentStatus;
+    // Documents and Features have disjoint status vocabularies (PRD-495).
+    status: DocumentStatus | FeatureStatus;
     // When set this doc is a TEMPLATE for the given subtype.
     templateForType?: ArtifactSubtype;
     projectIndex: number;
   };
 
-  const allStatuses = Object.values(DocumentStatus);
+  const documentStatuses = Object.values(DocumentStatus);
+  const featureStatuses = Object.values(FeatureStatus);
 
-  // Regular (non-template) document definitions — one per DocumentStatus,
-  // distributed across subtypes so every status is represented.
-  const subtypeForStatusIndex: ArtifactSubtype[] = [
+  // Regular (non-template) Document definitions — one per DocumentStatus,
+  // distributed across the Document subtypes (PRD / IMPLEMENTATION_PLAN) so
+  // every Document status is represented. FEATURE rows are seeded separately
+  // below with the Feature vocabulary.
+  const documentSubtypes: ArtifactSubtype[] = [
     ArtifactSubtype.PRD,
     ArtifactSubtype.IMPLEMENTATION_PLAN,
-    ArtifactSubtype.FEATURE,
-    ArtifactSubtype.PRD,
-    ArtifactSubtype.IMPLEMENTATION_PLAN,
-    ArtifactSubtype.FEATURE,
-    ArtifactSubtype.PRD,
   ];
 
-  const documentDefinitions: DocumentArtifactDefinition[] = allStatuses.map(
-    (status, i) => ({
+  const documentDefinitions: DocumentArtifactDefinition[] =
+    documentStatuses.map((status, i) => ({
       key: `artifact:document:${organizationId}:status-${status.toLowerCase()}`,
       name: `Seed Document (${status})`,
       slug: `seed-doc-${status.toLowerCase().replace(/_/g, "-")}`,
-      subtype: subtypeForStatusIndex[i],
+      subtype: documentSubtypes[i % documentSubtypes.length],
       status,
       templateForType: undefined,
       projectIndex: i,
-    })
-  );
+    }));
 
-  // Feature-specific document definitions — one per DocumentStatus (AC-005).
-  // These are dedicated FEATURE subtype artifacts covering every status value
-  // so the seed data reliably exercises Feature document rendering across all
-  // possible states.
-  const featureDefinitions: DocumentArtifactDefinition[] = allStatuses.map(
+  // Feature-specific definitions — one per FeatureStatus (AC-005). Dedicated
+  // FEATURE subtype artifacts covering every Feature status value so the seed
+  // reliably exercises Feature rendering across all delivery-lifecycle states.
+  const featureDefinitions: DocumentArtifactDefinition[] = featureStatuses.map(
     (status, i) => ({
       key: `artifact:feature:${organizationId}:status-${status.toLowerCase()}`,
       name: `Seed Feature (${status})`,
@@ -411,7 +409,7 @@ async function seedArtifacts(
       subtype: ArtifactSubtype.FEATURE,
       status,
       templateForType: undefined,
-      projectIndex: i + allStatuses.length,
+      projectIndex: i + documentStatuses.length,
     })
   );
 
@@ -460,9 +458,10 @@ async function seedArtifacts(
         return base;
       }
       const scaledIndex = index - baseDocumentDefinitions.length;
-      const status = allStatuses[index % allStatuses.length];
-      const subtype =
-        subtypeForStatusIndex[index % subtypeForStatusIndex.length];
+      // Scaled filler rows are Documents (PRD/IMPLEMENTATION_PLAN) carrying the
+      // Document status vocabulary (PRD-495).
+      const status = documentStatuses[index % documentStatuses.length];
+      const subtype = documentSubtypes[index % documentSubtypes.length];
       return {
         key: `artifact:document:${organizationId}:scaled-${index + 1}`,
         name: `Scaled Seed Document ${index + 1}`,
@@ -588,7 +587,11 @@ async function seedArtifacts(
           createdById: userId,
           branch: {
             create: {
+              // FR13: write-once org copy from the parent Artifact; D2 identity
+              // via normalized repositoryFullName (matches the seed repo).
+              organizationId,
               repositoryId: githubRepositoryId,
+              repositoryFullName: "seed-org/seed-repo",
               branchName: "seed/feature-branch",
               baseBranch: "main",
             },

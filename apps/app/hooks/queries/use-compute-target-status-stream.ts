@@ -8,8 +8,12 @@ import { useEffect } from "react";
 import { resolveApiUrl } from "@/hooks/use-api-client";
 import { computeTargetKeys } from "./compute-target-query-keys";
 
-const MAX_RECONNECT_ATTEMPTS = 3;
+const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_BASE_DELAY_MS = 2000;
+// Cap the exponential backoff (2s, 4s, 8s, … capped at 30s) so a raised
+// attempt budget doesn't balloon the delay. Mirrors the chat stream reconnect
+// in use-stream-dispatch.ts.
+const RECONNECT_MAX_DELAY_MS = 30_000;
 
 /** Read SSE body and invalidate the compute-targets cache on each data frame. */
 async function readStatusStream(
@@ -47,8 +51,9 @@ async function openStatusStream(
   token: string | null,
   signal: AbortSignal,
   queryClient: QueryClient,
-  isCancelled: () => boolean
-): Promise<boolean> {
+  isCancelled: () => boolean,
+  onOpen: () => void
+): Promise<void> {
   const url = `${resolveApiUrl()}/compute-targets/status-stream`;
   const response = await fetch(url, {
     headers: {
@@ -59,11 +64,15 @@ async function openStatusStream(
   });
 
   if (!(response.ok && response.body)) {
-    return false;
+    return;
   }
 
+  // Connection established. Reset the reconnect budget now — not only on a
+  // clean stream end — so a long-lived stream that later drops mid-read is
+  // counted as a fresh failure rather than exhausting the budget for good.
+  onOpen();
+
   await readStatusStream(response.body, queryClient, isCancelled);
-  return true;
 }
 
 /**
@@ -95,7 +104,10 @@ export function useComputeTargetStatusStream(enabled = true) {
         return;
       }
       reconnectAttempts += 1;
-      const delay = RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1);
+      const delay = Math.min(
+        RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
+        RECONNECT_MAX_DELAY_MS
+      );
       reconnectTimer = setTimeout(connect, delay);
     };
 
@@ -112,16 +124,18 @@ export function useComputeTargetStatusStream(enabled = true) {
           if (cancelled) {
             return;
           }
-          const ok = await openStatusStream(
+          await openStatusStream(
             token,
             abortController!.signal,
             queryClient,
-            isCancelled
+            isCancelled,
+            () => {
+              // Reset the moment the connection opens so a brief relay/API
+              // outage that drops a live stream mid-read doesn't exhaust the
+              // reconnect budget and freeze the online indicator.
+              reconnectAttempts = 0;
+            }
           );
-          if (ok) {
-            // Stream connected and ended naturally — reset counter and reconnect
-            reconnectAttempts = 0;
-          }
           if (!cancelled) {
             scheduleReconnect();
           }

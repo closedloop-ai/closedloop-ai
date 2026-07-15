@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/data-revision.js";
+import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
 import { deterministicEventId } from "../src/main/database/deterministic-event-id.js";
 import type { PrismaClient } from "../src/main/database/generated/client.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
@@ -263,19 +263,15 @@ test("OTel token usage overwrites transcript rows, including all-zero totals, an
       },
     ]);
 
-    const analytics = await db.dashboard.getTokenAnalytics();
+    // FEA-2345: getTokenAnalytics reads from token_events, not token_usage.
+    // OTel writes to token_usage only — token_events has no rows for this
+    // session, so the analytics payload is empty (the OTel transient gap).
+    const analytics = await db.dashboard.getTokenAnalytics(new Date(NOW));
     assert.equal(analytics.totalInputTokens, 0);
     assert.equal(analytics.totalOutputTokens, 0);
     assert.equal(analytics.totalCacheReadTokens, 0);
     assert.equal(analytics.totalCacheWriteTokens, 0);
-    assert.deepEqual(analytics.byModel, [
-      {
-        model: MODEL,
-        inputTokens: 0,
-        outputTokens: 0,
-        sessions: 1,
-      },
-    ]);
+    assert.deepEqual(analytics.byModel, []);
   } finally {
     await cleanup();
   }

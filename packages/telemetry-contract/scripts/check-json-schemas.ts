@@ -6,7 +6,9 @@ import { TelemetryTextMaxLength } from "../src/schema-primitives";
 import {
   appPayload,
   genAiPayload,
+  ipcPayload,
   permissionPayload,
+  spanEnvelopePayload,
   spanPayload,
   syncPayload,
 } from "../src/test-fixtures";
@@ -61,6 +63,9 @@ const schemaChecks: SchemaCheck[] = [
         payload: {
           [TelemetryAttribute.AppInstallationId]: maxUnicodeText(
             TelemetryTextMaxLength.AppInstallationId
+          ),
+          [TelemetryAttribute.AppOrganizationId]: maxUnicodeText(
+            TelemetryTextMaxLength.AppOrganizationId
           ),
           [TelemetryAttribute.DeploymentEnvironmentName]: maxUnicodeText(
             TelemetryTextMaxLength.DeploymentEnvironmentName
@@ -121,6 +126,20 @@ const schemaChecks: SchemaCheck[] = [
           [TelemetryAttribute.AppInstallationId]: overflowUnicodeText(
             TelemetryTextMaxLength.AppInstallationId
           ),
+        }),
+      },
+      {
+        name: "organization id above Unicode maximum",
+        payload: appPayload({
+          [TelemetryAttribute.AppOrganizationId]: overflowUnicodeText(
+            TelemetryTextMaxLength.AppOrganizationId
+          ),
+        }),
+      },
+      {
+        name: "control character organization id",
+        payload: appPayload({
+          [TelemetryAttribute.AppOrganizationId]: "org\nid",
         }),
       },
       {
@@ -268,6 +287,10 @@ const schemaChecks: SchemaCheck[] = [
           [TelemetryAttribute.DurationMs]: 1,
           "http.request.body.size": 10,
         },
+      },
+      {
+        name: "span envelope is not accepted by flat span schema",
+        payload: spanEnvelopePayload(),
       },
       {
         name: "full URL path",
@@ -545,6 +568,65 @@ const schemaChecks: SchemaCheck[] = [
         name: "wrong type permission source",
         payload: permissionPayload({
           [TelemetryAttribute.GenAiPermissionSource]: true,
+        }),
+      },
+    ],
+  },
+  {
+    path: "dist/schemas/ipc.schema.json",
+    id: "https://closedloop.ai/schemas/telemetry-contract/ipc/v0.1.schema.json",
+    validPayloads: [
+      {
+        name: "all ipc fields with error type",
+        payload: ipcPayload({
+          [TelemetryAttribute.IpcOperation]: "usage",
+          [TelemetryAttribute.ErrorType]: "DesktopMigrationError",
+        }),
+      },
+      {
+        name: "ipc without optional error type",
+        payload: ipcPayload(),
+      },
+    ],
+    invalidPayloads: [
+      {
+        name: "unknown ipc attribute",
+        payload: ipcPayload({ "ipc.duration_ns": 1 }),
+      },
+      {
+        name: "missing required ipc operation",
+        // The four core dimensions without the required `ipc.operation`.
+        payload: {
+          [TelemetryAttribute.DurationMs]: 42,
+          [TelemetryAttribute.IpcPayloadBytes]: 2048,
+          [TelemetryAttribute.IpcResultCount]: 25,
+          [TelemetryAttribute.IpcSessionCount]: 1280,
+        },
+      },
+      {
+        name: "wrong ipc operation",
+        payload: ipcPayload({ [TelemetryAttribute.IpcOperation]: "analytics" }),
+      },
+      {
+        name: "over-cap ipc duration",
+        payload: ipcPayload({ [TelemetryAttribute.DurationMs]: 86_400_001 }),
+      },
+      {
+        name: "negative ipc payload bytes",
+        payload: ipcPayload({ [TelemetryAttribute.IpcPayloadBytes]: -1 }),
+      },
+      {
+        name: "fractional ipc result count",
+        payload: ipcPayload({ [TelemetryAttribute.IpcResultCount]: 2.5 }),
+      },
+      {
+        name: "empty ipc error type",
+        payload: ipcPayload({ [TelemetryAttribute.ErrorType]: "" }),
+      },
+      {
+        name: "control-character ipc error type",
+        payload: ipcPayload({
+          [TelemetryAttribute.ErrorType]: "bad\u0001type",
         }),
       },
     ],

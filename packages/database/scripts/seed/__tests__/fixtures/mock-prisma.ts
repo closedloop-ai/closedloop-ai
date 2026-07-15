@@ -161,6 +161,9 @@ export function createMockPrisma(): PrismaClient {
     agent: createMockDelegate(),
     agentVersion: createMockDelegate(),
     repoBootstrapConfig: createMockDelegate(),
+    // CatalogItem supersedes Agent (T-21.1)
+    catalogItem: createMockDelegate(),
+    catalogItemVersion: createMockDelegate(),
   } as unknown as PrismaClient;
 
   return mock;

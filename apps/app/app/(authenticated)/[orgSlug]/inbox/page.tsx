@@ -2,6 +2,7 @@
 
 import { ClientSideSuspense } from "@liveblocks/react/suspense";
 import { AssignmentNotification } from "@repo/collaboration/client/assignment-notification";
+import { AwaitingInputNotification } from "@repo/collaboration/client/awaiting-input-notification";
 import {
   useInboxNotifications,
   useMarkAllInboxNotificationsAsRead,
@@ -12,6 +13,7 @@ import {
   InboxNotificationList,
 } from "@repo/collaboration/client/inbox";
 import { useLiveblocksAvailability } from "@repo/collaboration/client/liveblocks-error-boundary";
+import { LoopCompletedNotification } from "@repo/collaboration/client/loop-completed-notification";
 import { Button } from "@repo/design-system/components/ui/button";
 import { CheckCheckIcon, InboxIcon } from "lucide-react";
 import { Header } from "@/app/(authenticated)/components/header";
@@ -65,6 +67,8 @@ function InboxContent() {
             key={notification.id}
             kinds={{
               $assignment: AssignmentNotification,
+              $loopCompleted: LoopCompletedNotification,
+              $awaitingInput: AwaitingInputNotification,
             }}
           />
         ))}

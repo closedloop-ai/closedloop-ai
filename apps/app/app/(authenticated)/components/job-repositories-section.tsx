@@ -8,6 +8,10 @@ import {
   type UseResolvedJobReposResult,
 } from "@repo/app/loops/hooks/use-resolved-job-repos";
 import type { TeamRepoWithTeamId } from "@repo/app/teams/hooks/use-team-repositories-union";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
   Collapsible,
@@ -285,10 +289,12 @@ function JobRepositoriesSectionInner({
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-2 pt-2">
         {droppedSeedPrimary && seedPrimary ? (
-          <p className="rounded-md border border-warning/40 bg-warning/12 p-2 text-warning-foreground text-xs">
-            <strong>{seedPrimary.fullName}</strong> isn't in this team's
-            repositories. Pick a primary below to launch.
-          </p>
+          <Alert variant="warning">
+            <AlertDescription>
+              <strong>{seedPrimary.fullName}</strong> isn't in this team's
+              repositories. Pick a primary below to launch.
+            </AlertDescription>
+          </Alert>
         ) : null}
         <RadioGroup onValueChange={handleTogglePrimary} value={primaryId ?? ""}>
           <ul className="space-y-2">

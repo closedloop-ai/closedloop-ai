@@ -13,10 +13,8 @@ import type {
   ComputeTarget,
 } from "@repo/api/src/types/compute-target";
 import { COMMAND_SIGNING_CAPABILITY_KEY } from "@repo/api/src/types/compute-target";
-import { bytesToBase64 } from "./crypto-utils";
+import { bytesToBase64, bytesToBase64Url } from "./crypto-utils";
 import { getStoredBrowserSigningKey } from "./key-store";
-
-const BASE64_PADDING_REGEX = /=+$/;
 
 /**
  * Minimal compute-target capability view needed for browser-side signing.
@@ -91,10 +89,7 @@ async function sha256Base64Url(value: string): Promise<string> {
     "SHA-256",
     new TextEncoder().encode(value)
   );
-  return bytesToBase64(new Uint8Array(digest))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(BASE64_PADDING_REGEX, "");
+  return bytesToBase64Url(new Uint8Array(digest));
 }
 
 function createUuidV7(): BrowserSignedCommandId {

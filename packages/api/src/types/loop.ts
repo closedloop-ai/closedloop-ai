@@ -15,7 +15,7 @@ import {
   parseExecutionResultFile as parseExecutionResultFileFromLoopsApi,
   RepoExecutionResultSchema as RepoExecutionResultSchemaValue,
 } from "@closedloop-ai/loops-api/execution-result";
-import { TokensByModel } from "@closedloop-ai/loops-api/tokens";
+import type { TokensByModel } from "@closedloop-ai/loops-api/tokens";
 import type { z } from "zod";
 import type { ArtifactSubtype } from "./artifact";
 import { ArtifactType } from "./artifact";
@@ -54,6 +54,7 @@ export type {
   LoopEventsPaginatedResponse,
   LoopEventTokensCleared,
   LoopEventToolCall,
+  StoredLoopEvent,
 } from "@closedloop-ai/loops-api/events";
 export { LoopEventType } from "@closedloop-ai/loops-api/events";
 export type {
@@ -177,6 +178,15 @@ export type LoopDetail = Omit<LoopWithUser, "additionalRepos"> & {
 export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
 
 export const MAX_ADDITIONAL_REPOS = 5;
+
+/**
+ * PostHog flag gating the dark-launched `request_prd_changes` ("Amend PRD")
+ * run-loop command. Shared so the PRD editor (which hides the menu item) and
+ * the run-loop API route (which must fail closed before dispatch) agree on a
+ * single key. See FEA-2925.
+ */
+export const PRD_REQUEST_CHANGES_FEATURE_FLAG_KEY =
+  "prd-request-changes" as const;
 
 export const INHERITANCE_ANCESTOR_MAX_DEPTH = 3;
 

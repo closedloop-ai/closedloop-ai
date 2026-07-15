@@ -2,8 +2,9 @@
  * Live files-changed read (Epic F / FEA-1952 — F1).
  *
  * Consumes the `GET /api/gateway/git/pr/files?owner=&repo=&number=` route
- * (returns `{ files: [{ filename, additions, deletions }] }` — per-file LOC from
- * the PR's own GitHub data) via `window.fetch` → the engineer fetch interceptor.
+ * (returns `{ files: [{ filename, additions, deletions, status?,
+ * previous_filename? }] }` — per-file LOC from the PR's own GitHub data) via
+ * `window.fetch` → the engineer fetch interceptor.
  * The result is held ONLY in the React Query overlay cache and is NEVER
  * persisted: `BranchRow.filesChanged`/`additions`/`deletions` from the
  * data-source port stay `null`.
@@ -29,6 +30,8 @@ export type LivePrFilesIdentity = PrIdentity;
 /** One changed file with its PR-sourced additions/deletions. */
 export type LivePrFile = {
   path: string;
+  previousPath?: string;
+  status?: string;
   additions: number;
   deletions: number;
 };
@@ -46,6 +49,8 @@ const fileEntrySchema = z.object({
   filename: z.string(),
   additions: z.number(),
   deletions: z.number(),
+  status: z.string().optional(),
+  previous_filename: z.string().optional(),
 });
 const filesEnvelopeSchema = z.object({ files: z.array(fileEntrySchema) });
 const errorEnvelopeSchema = z.object({ error: z.string() }).partial();
@@ -99,6 +104,8 @@ export function livePrFilesOptions(identity: LivePrFilesIdentity | null) {
       const { files } = filesEnvelopeSchema.parse(await response.json());
       const mapped = files.map((file) => ({
         path: file.filename,
+        previousPath: file.previous_filename,
+        status: file.status,
         additions: file.additions,
         deletions: file.deletions,
       }));

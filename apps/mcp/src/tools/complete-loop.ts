@@ -25,11 +25,13 @@ export function registerCompleteLoop(
         "- summary: what was accomplished in 1-2 sentences\n" +
         "- prUrl: the pull request URL (if one was created)\n" +
         "- branchName: the git branch used\n\n" +
-        "After completing the loop, update the linked document's status via update-document (IN_REVIEW if a PR is open, DONE if merged).",
+        "After completing the loop, update the linked document's status via update-document — for a Feature: IN_REVIEW if a PR is open, DONE if merged; for a Document (PRD/Plan): IN_REVIEW while under review, APPROVED once signed off.",
       inputSchema: {
         loopId: z.string().describe("Loop UUID returned by create-loop"),
         prUrl: z
           .string()
+          .url()
+          .max(2048)
           .optional()
           .describe("URL of the pull request created for this work"),
         branchName: z

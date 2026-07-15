@@ -57,4 +57,13 @@ describe("getNotificationEntityPath", () => {
       })
     ).toBe("/teams/team-1/projects/proj-2");
   });
+
+  it("routes loops to /loops/<loopId>", () => {
+    expect(
+      getNotificationEntityPath({
+        kind: NotificationEntityKind.Loop,
+        loopId: "loop-9",
+      })
+    ).toBe("/loops/loop-9");
+  });
 });

@@ -2,7 +2,6 @@ import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/internal/relay/socket-event/route";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
-import { isDesktopCommandEventType } from "@/lib/desktop-gateway-wire";
 import {
   INTERNAL_SECRET,
   makeEnvelope,
@@ -156,35 +155,5 @@ describe("POST /internal/relay/socket-event — desktop.command.event sequence_g
         resumeFromSequence: { "cmd-1": 0 },
       })
     );
-  });
-});
-
-describe("DesktopCommandEventType values", () => {
-  it("accepts 'status' as a valid DesktopCommandEventType", () => {
-    expect(isDesktopCommandEventType("status")).toBe(true);
-  });
-
-  it("accepts 'chunk' as a valid DesktopCommandEventType", () => {
-    expect(isDesktopCommandEventType("chunk")).toBe(true);
-  });
-
-  it("accepts 'result' as a valid DesktopCommandEventType", () => {
-    expect(isDesktopCommandEventType("result")).toBe(true);
-  });
-
-  it("accepts 'error' as a valid DesktopCommandEventType", () => {
-    expect(isDesktopCommandEventType("error")).toBe(true);
-  });
-
-  it("accepts 'done' as a valid DesktopCommandEventType", () => {
-    expect(isDesktopCommandEventType("done")).toBe(true);
-  });
-
-  it("rejects unknown values as invalid DesktopCommandEventType", () => {
-    expect(isDesktopCommandEventType("unknown")).toBe(false);
-    expect(isDesktopCommandEventType("progress")).toBe(false);
-    expect(isDesktopCommandEventType(null)).toBe(false);
-    expect(isDesktopCommandEventType(undefined)).toBe(false);
-    expect(isDesktopCommandEventType(42)).toBe(false);
   });
 });

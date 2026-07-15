@@ -9,13 +9,13 @@ import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
 import { RotateCwIcon, ShieldCheckIcon, SparklesIcon } from "lucide-react";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   type BranchActorColorDomain,
   buildActorColorDomain,
   deriveActorsFromSessions,
 } from "../lib/branch-actor-domain";
-import { type BurstSpan, computeBurstSpans } from "../lib/branch-burst-spans";
+import { computeBurstSpans } from "../lib/branch-burst-spans";
 import {
   fractionOf,
   type TimeRange,
@@ -50,6 +50,21 @@ export type BranchPrSessionSwimlaneProps = {
   className?: string;
 };
 
+/**
+ * A burst with its ISO endpoints pre-parsed to epoch ms once (in the memoized
+ * `buildLanes`), so the per-scrub render path positions segments with plain
+ * arithmetic instead of re-`Date.parse`-ing every burst on every playhead move
+ * (PLN-1148 Phase 4).
+ */
+type LaneBurst = {
+  startT: string;
+  endT: string;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  isResumption: boolean;
+};
+
 type SwimlaneLane = {
   sessionId: string;
   label: string;
@@ -57,13 +72,9 @@ type SwimlaneLane = {
   color: string;
   isCi: boolean;
   isResumed: boolean;
-  bursts: BurstSpan[];
+  bursts: LaneBurst[];
   activeMs: number;
 };
-
-function burstMs(span: BurstSpan): number {
-  return Math.max(0, Date.parse(span.endT) - Date.parse(span.startT));
-}
 
 /** A session's actor: its captured `sessionstart` name, else harness, else null. */
 function resolveLaneActor(
@@ -104,10 +115,21 @@ function buildLanes(
   const lanes = sessions.map((session): SwimlaneLane => {
     const meta = startActorBySession.get(session.sessionId);
     const actor = resolveLaneActor(meta?.name ?? null, session.harness);
-    const bursts = computeBurstSpans({
+    const bursts: LaneBurst[] = computeBurstSpans({
       startedAt: session.startedAt,
       endedAt: session.endedAt,
       items: itemsBySession.get(session.sessionId) ?? [],
+    }).map((burst) => {
+      const startMs = Date.parse(burst.startT);
+      const endMs = Date.parse(burst.endT);
+      return {
+        startT: burst.startT,
+        endT: burst.endT,
+        startMs,
+        endMs,
+        durationMs: Math.max(0, endMs - startMs),
+        isResumption: burst.isResumption,
+      };
     });
     return {
       sessionId: session.sessionId,
@@ -118,7 +140,7 @@ function buildLanes(
       isResumed:
         meta?.isResumed === true || bursts.some((burst) => burst.isResumption),
       bursts,
-      activeMs: bursts.reduce((sum, burst) => sum + burstMs(burst), 0),
+      activeMs: bursts.reduce((sum, burst) => sum + burst.durationMs, 0),
     };
   });
 
@@ -137,7 +159,7 @@ function buildLanes(
   return { lanes, axis: timeRange(starts, ends) };
 }
 
-export function BranchPrSessionSwimlane({
+export const BranchPrSessionSwimlane = memo(function BranchPrSessionSwimlane({
   detail,
   actorDomain,
   range,
@@ -193,7 +215,7 @@ export function BranchPrSessionSwimlane({
       ))}
     </section>
   );
-}
+});
 
 function SwimlaneRow({
   lane,
@@ -206,40 +228,24 @@ function SwimlaneRow({
   playheadPercent: number | null;
   onScrubTimestamp?: (t: string) => void;
 }) {
-  const first = lane.bursts[0];
-  const last = lane.bursts.at(-1);
-  const extent =
-    axis && first && last
-      ? {
-          left: fractionOf(axis, Date.parse(first.startT)) * 100,
-          right: fractionOf(axis, Date.parse(last.endT)) * 100,
-        }
-      : null;
-
-  return (
-    <div className="bq-lane">
-      <div className="bq-lane-id">
-        <span
-          className="bq-aico"
-          style={{ color: lane.color, borderColor: lane.color }}
-        >
-          {lane.isCi ? (
-            <ShieldCheckIcon size={11} />
-          ) : (
-            <SparklesIcon size={11} />
-          )}
-        </span>
-        <span className="bq-lane-name">{lane.label}</span>
-        {lane.sub ? <span className="bq-lane-sub">{lane.sub}</span> : null}
-        {lane.isCi ? <span className="bq-lane-tag">CI</span> : null}
-        {lane.isResumed ? (
-          <span className="bq-lane-resumed">
-            <RotateCwIcon size={8} />
-            resumed
-          </span>
-        ) : null}
-      </div>
-      <div className="bq-lane-track">
+  // The lane's static content (its extent band + active-burst buttons) depends
+  // only on the lane and the shared axis — never on the playhead. Memoize it so
+  // a scrub, which changes only `playheadPercent`, reuses these elements and
+  // React updates just the playhead line instead of rebuilding every burst
+  // button on every pointer move (PLN-1148 Phase 4). Positions read the burst's
+  // pre-parsed ms, so there's no `Date.parse` on this path.
+  const track = useMemo(() => {
+    const first = lane.bursts[0];
+    const last = lane.bursts.at(-1);
+    const extent =
+      axis && first && last
+        ? {
+            left: fractionOf(axis, first.startMs) * 100,
+            right: fractionOf(axis, last.endMs) * 100,
+          }
+        : null;
+    return (
+      <>
         {extent ? (
           <span
             className="bq-lane-extent"
@@ -251,8 +257,8 @@ function SwimlaneRow({
         ) : null}
         {axis
           ? lane.bursts.map((burst) => {
-              const left = fractionOf(axis, Date.parse(burst.startT)) * 100;
-              const right = fractionOf(axis, Date.parse(burst.endT)) * 100;
+              const left = fractionOf(axis, burst.startMs) * 100;
+              const right = fractionOf(axis, burst.endMs) * 100;
               return (
                 <button
                   aria-label={`${lane.label} active burst`}
@@ -264,12 +270,41 @@ function SwimlaneRow({
                     width: `${Math.max(0.6, right - left)}%`,
                     background: lane.color,
                   }}
-                  title={`Active · ${formatDurationMs(burstMs(burst))}`}
+                  title={`Active · ${formatDurationMs(burst.durationMs)}`}
                   type="button"
                 />
               );
             })
           : null}
+      </>
+    );
+  }, [lane, axis, onScrubTimestamp]);
+
+  return (
+    <div className="bq-lane">
+      <div className="bq-lane-id">
+        <span
+          className="bq-aico"
+          style={{ color: lane.color, borderColor: lane.color }}
+        >
+          {lane.isCi ? (
+            <ShieldCheckIcon aria-hidden size={11} />
+          ) : (
+            <SparklesIcon aria-hidden size={11} />
+          )}
+        </span>
+        <span className="bq-lane-name">{lane.label}</span>
+        {lane.sub ? <span className="bq-lane-sub">{lane.sub}</span> : null}
+        {lane.isCi ? <span className="bq-lane-tag">CI</span> : null}
+        {lane.isResumed ? (
+          <span className="bq-lane-resumed">
+            <RotateCwIcon aria-hidden size={8} />
+            resumed
+          </span>
+        ) : null}
+      </div>
+      <div className="bq-lane-track">
+        {track}
         {playheadPercent == null ? null : (
           <span
             className="bq-lane-playhead"

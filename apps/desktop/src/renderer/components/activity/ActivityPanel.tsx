@@ -54,7 +54,11 @@ export function ActivityPanel() {
   }, [load]);
 
   const handleClear = async () => {
-    await window.desktopApi.clearActivityEvents();
+    try {
+      await window.desktopApi.clearActivityEvents();
+    } catch {
+      /* reload will pick up current state */
+    }
     await load();
   };
 

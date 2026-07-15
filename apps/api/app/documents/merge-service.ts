@@ -1,4 +1,4 @@
-import { generateText, models } from "@repo/ai/server";
+import { escapeXmlClosingTags, generateText, models } from "@repo/ai/server";
 import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { withDb } from "@repo/database";
@@ -24,14 +24,6 @@ Guidelines:
 - Maintain coherent flow and consistent formatting throughout the merged document.
 - If a template is provided, use it to guide the structure of the merged output.
 - Output only the merged document content with no preamble, explanation, or commentary.`;
-
-/**
- * Escape XML closing tags inside content so that document data can't break
- * out of its enclosing XML tag and inject directives.
- */
-function escapeXmlClosingTags(content: string): string {
-  return content.replaceAll("</", "&lt;/");
-}
 
 /**
  * Build the user prompt for the LLM merge operation. Wraps content in XML
@@ -65,6 +57,72 @@ Please merge the primary and secondary artifacts into a single unified document.
   return prompt;
 }
 
+/** Reserved output budget for the merge completion. */
+const MERGE_MAX_OUTPUT_TOKENS = 4096;
+
+/**
+ * Sampling temperature for the merge completion.
+ *
+ * Pinned to `0` (rather than the provider default of ~1.0) so the merge is as
+ * deterministic and faithful as the model allows. Merging is a faithfulness-
+ * critical combine of two existing documents, not a creative generation:
+ * high randomness invites paraphrasing, omission, or hallucination instead of
+ * preserving the source content verbatim. There is no benefit to sampling
+ * diversity here and every reason to minimise run-to-run drift.
+ */
+const MERGE_TEMPERATURE = 0;
+
+/**
+ * Context window (in tokens) of `models.sonnet`. Estimated input tokens plus
+ * the reserved output budget must stay within this window.
+ */
+const MERGE_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
+
+/**
+ * Safety margin (in tokens) that absorbs token-estimate error and fixed
+ * per-request overhead, so the guard fails before the provider's real limit is
+ * reached rather than after it silently truncates the prompt.
+ */
+const MERGE_TOKEN_SAFETY_MARGIN = 8192;
+
+/**
+ * Maximum estimated input tokens (system + user prompt) allowed for one merge.
+ */
+const MERGE_MAX_INPUT_TOKENS =
+  MERGE_MODEL_CONTEXT_WINDOW_TOKENS -
+  MERGE_MAX_OUTPUT_TOKENS -
+  MERGE_TOKEN_SAFETY_MARGIN;
+
+/** Average characters per token for ASCII/Latin text. */
+const ASCII_CHARS_PER_TOKEN = 4;
+
+/**
+ * Rough token-count estimate for a piece of text, deliberately biased to
+ * over-count so the guard rejects borderline input rather than letting the
+ * provider silently truncate it (paired with {@link MERGE_TOKEN_SAFETY_MARGIN}).
+ *
+ * The naive `length / 4` heuristic holds for ASCII/Latin prose but badly
+ * under-counts CJK, emoji, and symbol/code-heavy markdown, where a single
+ * code point often costs one or more model tokens — such inputs could pass a
+ * character-derived threshold yet still overflow the context window. To stay on
+ * the pessimistic side without a provider round-trip, count ASCII code points at
+ * ~4/token and every non-ASCII code point as a whole token (an upper bound for
+ * the dense scripts above). Iterating by code point keeps astral characters
+ * (e.g. emoji) from being double-counted as surrogate pairs.
+ */
+function estimateTokenCount(text: string): number {
+  let asciiChars = 0;
+  let nonAsciiChars = 0;
+  for (const char of text) {
+    if ((char.codePointAt(0) ?? 0) < 128) {
+      asciiChars += 1;
+    } else {
+      nonAsciiChars += 1;
+    }
+  }
+  return Math.ceil(asciiChars / ASCII_CHARS_PER_TOKEN) + nonAsciiChars;
+}
+
 /**
  * Document merge service. Owns the LLM-driven merge of two documents into a
  * single unified document, plus deletion of the secondary artifact.
@@ -76,9 +134,10 @@ export const documentMergeService = {
    *
    * Returns `Result.err(Status.NotFound)` when either artifact is missing or
    * the primary's detail row has been deleted mid-merge. Throws on caller
-   * misuse (cross-project merge, TEMPLATE involved) or when the LLM returns
-   * empty content — those are unrecoverable invariants/upstream errors that
-   * the route maps to 400/500.
+   * misuse (cross-project merge, TEMPLATE involved, combined content too large
+   * to merge within the model's context window) or when the LLM returns empty
+   * content — those are unrecoverable invariants/upstream errors that the route
+   * maps to 400/500.
    */
   async merge(
     primaryDocumentId: string,
@@ -130,20 +189,41 @@ export const documentMergeService = {
       }
     }
 
+    const userPrompt = buildMergeUserPrompt(
+      primaryContent,
+      secondaryContent,
+      templateContent
+    );
+
+    // Bound input before hitting the provider: two large documents can exceed
+    // the model's context window and get silently truncated, producing a
+    // corrupted merge. Fail loudly instead of shipping a partial merge.
+    //
+    // NOTE: this throws (route maps it to 400 via TOO_LARGE_ERROR_RE) rather
+    // than returning Result.err, to stay uniform with the same-project and
+    // TEMPLATE caller-misuse guards above. A follow-up should migrate all three
+    // to typed Result errors together; doing only this one would fragment the
+    // three paths, and Result<T, StatusCode> carries no message, so it would
+    // also drop the descriptive client error these throws currently surface.
+    const estimatedInputTokens =
+      estimateTokenCount(MERGE_SYSTEM_PROMPT) + estimateTokenCount(userPrompt);
+    if (estimatedInputTokens > MERGE_MAX_INPUT_TOKENS) {
+      throw new Error(
+        `Documents too large to merge: estimated ${estimatedInputTokens} input tokens exceeds the ${MERGE_MAX_INPUT_TOKENS}-token budget`
+      );
+    }
+
     const result = await generateText({
       model: models.sonnet,
       system: MERGE_SYSTEM_PROMPT,
       messages: [
         {
           role: "user",
-          content: buildMergeUserPrompt(
-            primaryContent,
-            secondaryContent,
-            templateContent
-          ),
+          content: userPrompt,
         },
       ],
-      maxOutputTokens: 4096,
+      maxOutputTokens: MERGE_MAX_OUTPUT_TOKENS,
+      temperature: MERGE_TEMPERATURE,
     });
 
     const mergedContent = result.text;

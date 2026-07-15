@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import {
   findWorkflowJournals,
   scanWorkflowJournal,
-} from "../src/main/collectors/codex-workflow-scanner.js";
+} from "../src/main/collectors/parsing/codex-workflow-scanner.js";
+import {
+  cleanupTempDirs,
+  makeTempDir,
+} from "./normalized-session-test-utils.js";
 
 const LARGE_CACHE_READ_TOKENS = 2_192_635_647;
+
+afterEach(cleanupTempDirs);
 
 test("findWorkflowJournals returns empty for non-existent directory", () => {
   const result = findWorkflowJournals("/nonexistent/dir");
@@ -16,7 +21,7 @@ test("findWorkflowJournals returns empty for non-existent directory", () => {
 });
 
 test("findWorkflowJournals finds workflow-*.jsonl files", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "wf-"));
+  const dir = makeTempDir("wf-");
   writeFileSync(path.join(dir, "workflow-abc123.jsonl"), "", "utf8");
   writeFileSync(path.join(dir, "rollout-session.jsonl"), "", "utf8");
   writeFileSync(path.join(dir, "workflow-xyz789.jsonl"), "", "utf8");
@@ -27,7 +32,7 @@ test("findWorkflowJournals finds workflow-*.jsonl files", () => {
 });
 
 test("findWorkflowJournals ignores non-workflow jsonl and non-jsonl files", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "wf-"));
+  const dir = makeTempDir("wf-");
   writeFileSync(path.join(dir, "workflow-test.jsonl"), "", "utf8");
   writeFileSync(path.join(dir, "other.log"), "", "utf8");
   writeFileSync(path.join(dir, "data.txt"), "", "utf8");
@@ -43,11 +48,14 @@ test("scanWorkflowJournal returns empty for invalid file", async () => {
     totalOutput: 0,
     totalCacheRead: 0,
     totalCacheWrite: 0,
+    totalLines: 0,
+    malformedLines: 0,
+    truncatedFinalLine: false,
   });
 });
 
 test("scanWorkflowJournal extracts token usage entries", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "wf-"));
+  const dir = makeTempDir("wf-");
   const fp = path.join(dir, "workflow-test.jsonl");
   writeFileSync(
     fp,
@@ -82,10 +90,71 @@ test("scanWorkflowJournal extracts token usage entries", async () => {
   assert.equal(result.totalOutput, 150);
   assert.equal(result.totalCacheRead, 20);
   assert.equal(result.totalCacheWrite, 10);
+  // FEA-2972: parse-quality counts every non-blank line (2 usage + 1 heartbeat);
+  // none are malformed and the final line is valid JSON.
+  assert.equal(result.totalLines, 3);
+  assert.equal(result.malformedLines, 0);
+  assert.equal(result.truncatedFinalLine, false);
+});
+
+test("scanWorkflowJournal counts a malformed mid-journal line", async () => {
+  const dir = makeTempDir("wf-");
+  const fp = path.join(dir, "workflow-malformed.jsonl");
+  writeFileSync(
+    fp,
+    [
+      JSON.stringify({
+        type: "usage",
+        model: "gpt-4",
+        tokens_input: 100,
+        tokens_output: 50,
+      }),
+      "{not valid json",
+      JSON.stringify({
+        type: "usage",
+        model: "gpt-4",
+        tokens_input: 200,
+        tokens_output: 100,
+      }),
+    ].join("\n"),
+    "utf8"
+  );
+  const result = await scanWorkflowJournal(fp);
+  // FEA-2972: the corrupt line drops its inner-agent tokens but is surfaced as a
+  // malformed line rather than a silent, clean-looking parse.
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.totalInput, 300);
+  assert.equal(result.totalLines, 3);
+  assert.equal(result.malformedLines, 1);
+  assert.equal(result.truncatedFinalLine, false);
+});
+
+test("scanWorkflowJournal flags a truncated final line", async () => {
+  const dir = makeTempDir("wf-");
+  const fp = path.join(dir, "workflow-truncated.jsonl");
+  writeFileSync(
+    fp,
+    [
+      JSON.stringify({
+        type: "usage",
+        model: "gpt-4",
+        tokens_input: 100,
+        tokens_output: 50,
+      }),
+      '{"type":"usage","model":"gpt-4","tokens_inp',
+    ].join("\n"),
+    "utf8"
+  );
+  const result = await scanWorkflowJournal(fp);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.totalLines, 2);
+  assert.equal(result.malformedLines, 1);
+  // A malformed FINAL line is the benign shape of a live/interrupted write.
+  assert.equal(result.truncatedFinalLine, true);
 });
 
 test("scanWorkflowJournal preserves large token counters exactly", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "wf-"));
+  const dir = makeTempDir("wf-");
   const fp = path.join(dir, "workflow-large.jsonl");
   writeFileSync(
     fp,
@@ -109,7 +178,7 @@ test("scanWorkflowJournal preserves large token counters exactly", async () => {
 });
 
 test("scanWorkflowJournal rejects unsafe token counters", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "wf-"));
+  const dir = makeTempDir("wf-");
   const fp = path.join(dir, "workflow-unsafe.jsonl");
   writeFileSync(
     fp,
@@ -125,8 +194,66 @@ test("scanWorkflowJournal rejects unsafe token counters", async () => {
   await assert.rejects(() => scanWorkflowJournal(fp));
 });
 
+test("scanWorkflowJournal counts a mid-file malformed line (FEA-2979)", async () => {
+  const dir = makeTempDir("wf-");
+  const fp = path.join(dir, "workflow-corrupt.jsonl");
+  writeFileSync(
+    fp,
+    [
+      JSON.stringify({
+        type: "usage",
+        model: "gpt-4",
+        tokens_input: 100,
+        tokens_output: 50,
+      }),
+      // Malformed line BEFORE the final line: real corruption, silently drops
+      // that inner-agent turn's token usage.
+      '{"type":"usage","model":"gpt-4","tokens_input',
+      JSON.stringify({
+        type: "usage",
+        model: "gpt-4",
+        tokens_input: 200,
+        tokens_output: 100,
+      }),
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const result = await scanWorkflowJournal(fp);
+  // Two valid token records folded; the malformed line is surfaced, not swallowed.
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.totalInput, 300);
+  assert.equal(result.totalLines, 3);
+  assert.equal(result.malformedLines, 1);
+  assert.equal(result.truncatedFinalLine, false);
+});
+
+test("scanWorkflowJournal flags a truncated final line as benign (FEA-2979)", async () => {
+  const dir = makeTempDir("wf-");
+  const fp = path.join(dir, "workflow-truncated.jsonl");
+  writeFileSync(
+    fp,
+    [
+      JSON.stringify({
+        type: "usage",
+        model: "gpt-4",
+        tokens_input: 100,
+        tokens_output: 50,
+      }),
+      // Trailing malformed line: the benign shape of a live/interrupted write.
+      '{"type":"usage","model":"gpt-4","tokens_input',
+    ].join("\n"),
+    "utf8"
+  );
+  const result = await scanWorkflowJournal(fp);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.totalLines, 2);
+  assert.equal(result.malformedLines, 1);
+  assert.equal(result.truncatedFinalLine, true);
+});
+
 test("scanWorkflowJournal handles nested usage object", async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "wf-"));
+  const dir = makeTempDir("wf-");
   const fp = path.join(dir, "workflow-nested.jsonl");
   writeFileSync(
     fp,

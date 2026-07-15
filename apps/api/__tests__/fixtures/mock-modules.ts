@@ -50,6 +50,12 @@ export function createDatabaseMockModule(
         strings,
         values,
       }),
+      join: (values: unknown[], separator = ",") => ({
+        separator,
+        strings: [""],
+        values,
+      }),
+      empty: { strings: [""], values: [] },
     },
     ...overrides,
   };

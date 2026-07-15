@@ -1,26 +1,28 @@
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { useSidebar } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
+import { Link } from "@repo/navigation/link";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import {
-  NAV_SECTION_LABELS,
-  navEntryFor,
-  navSectionFor,
-} from "../../navigation/nav-config";
-import type { NavId } from "../../navigation/route-table";
+import { Fragment } from "react";
 import { isMacOS } from "../../platform";
 
-type TopbarProps = {
-  navId: NavId;
+/**
+ * One breadcrumb segment. A segment with an `href` renders as a navigation link
+ * (parent segments, e.g. "Sessions" on a session detail page); the final
+ * segment is always rendered as the current page and carries `aria-current`.
+ */
+export type TopbarBreadcrumb = {
+  label: string;
+  href?: string;
 };
 
-export function Topbar({ navId }: TopbarProps) {
+type TopbarProps = {
+  breadcrumbs: TopbarBreadcrumb[];
+};
+
+export function Topbar({ breadcrumbs }: TopbarProps) {
   const { state, toggleSidebar } = useSidebar();
   const collapsed = state === "collapsed";
-  const entry = navEntryFor(navId);
-  const section = navSectionFor(navId);
-  const sectionLabel = section ? NAV_SECTION_LABELS[section] : null;
-  const label = entry?.label ?? navId;
   const isMac = isMacOS();
 
   // On macOS the title bar is hidden and the window drags from app-region:drag
@@ -37,6 +39,7 @@ export function Topbar({ navId }: TopbarProps) {
       )}
     >
       <Button
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         className="app-region-no-drag text-[var(--muted-foreground)]"
         onClick={toggleSidebar}
         size="icon-sm"
@@ -56,25 +59,62 @@ export function Topbar({ navId }: TopbarProps) {
           "you are here" cue, without competing with each page's own in-body
           <h1> (pages that render a PageShell title own the page heading;
           Sessions/Branches intentionally rely on this breadcrumb for their
-          page name). */}
+          page name). Parent segments (e.g. "Sessions" on a session detail
+          page) link back to their list, mirroring the web app's breadcrumb. */}
       <nav
         aria-label="Breadcrumb"
-        className="flex min-w-0 items-center gap-2 text-sm"
+        className="app-region-no-drag flex min-w-0 items-center gap-2 text-sm"
       >
-        {sectionLabel && (
-          <>
-            <span className="shrink-0 text-[var(--muted-foreground)]">
-              {sectionLabel}
-            </span>
-            <span className="shrink-0 text-[var(--muted-foreground)]">/</span>
-          </>
-        )}
-        <span aria-current="page" className="truncate font-medium">
-          {label}
-        </span>
+        {breadcrumbs.map((crumb, index) => (
+          <Fragment key={crumb.href ?? crumb.label}>
+            {index > 0 && (
+              <span className="shrink-0 text-[var(--muted-foreground)]">/</span>
+            )}
+            <BreadcrumbSegment
+              crumb={crumb}
+              isLast={index === breadcrumbs.length - 1}
+            />
+          </Fragment>
+        ))}
       </nav>
 
       <div className="flex-1" />
     </header>
+  );
+}
+
+/**
+ * One breadcrumb segment: the final segment is the current page (aria-current),
+ * a non-final segment with an href is a link back to its list, and a non-final
+ * segment without an href (a nav section label) is plain muted text.
+ */
+function BreadcrumbSegment({
+  crumb,
+  isLast,
+}: {
+  crumb: TopbarBreadcrumb;
+  isLast: boolean;
+}) {
+  if (isLast) {
+    return (
+      <span aria-current="page" className="truncate font-medium">
+        {crumb.label}
+      </span>
+    );
+  }
+  if (crumb.href) {
+    return (
+      <Link
+        className="shrink-0 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+        href={crumb.href}
+      >
+        {crumb.label}
+      </Link>
+    );
+  }
+  return (
+    <span className="shrink-0 text-[var(--muted-foreground)]">
+      {crumb.label}
+    </span>
   );
 }

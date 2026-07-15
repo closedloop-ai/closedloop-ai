@@ -19,6 +19,7 @@
 import type { ToolItem } from "./agent-session.js";
 import type { ChecksStatus, ReviewDecision } from "./branch-checks.js";
 import type { GitHubPRState } from "./github.js";
+import type { ReadSource } from "./read-source.js";
 
 // --- Shared enums (const-object + value-type, mirroring the agent-session enums) ---
 
@@ -80,6 +81,185 @@ export const BranchKpiState = {
 export type BranchKpiState =
   (typeof BranchKpiState)[keyof typeof BranchKpiState];
 
+/**
+ * Consumer-visible data state for cloud Branches rows. Optional on DTOs so
+ * older local/desktop producers remain wire-compatible.
+ */
+export const BranchDataState = {
+  Ready: "ready",
+  AwaitingSync: "awaiting_sync",
+  NotPresent: "not_present",
+  NoSessions: "no_sessions",
+} as const;
+export type BranchDataState =
+  (typeof BranchDataState)[keyof typeof BranchDataState];
+
+export const BranchRefreshStatus = {
+  Refreshed: "refreshed",
+  Stale: "stale",
+  NotApplicable: "not_applicable",
+  Retryable: "retryable",
+  Failed: "failed",
+} as const;
+export type BranchRefreshStatus =
+  (typeof BranchRefreshStatus)[keyof typeof BranchRefreshStatus];
+
+export const BranchRefreshReason = {
+  AlreadyRefreshing: "already_refreshing",
+  BudgetExhausted: "budget_exhausted",
+  GitHubIdentityExpired: "github_identity_expired",
+  GitHubIdentityInsufficientScope: "github_identity_insufficient_scope",
+  GitHubIdentityRequired: "github_identity_required",
+  GuardedWriteFailed: "guarded_write_failed",
+  InvalidBranchId: "invalid_branch_id",
+  NoCurrentPullRequest: "no_current_pull_request",
+  NotFound: "not_found",
+  ProviderRateLimited: "provider_rate_limited",
+  ProviderUnavailable: "provider_unavailable",
+} as const;
+export type BranchRefreshReason =
+  (typeof BranchRefreshReason)[keyof typeof BranchRefreshReason];
+
+export const BranchCloudHydrationStatus = {
+  NotConnected: "not_connected",
+  Fresh: "fresh",
+  Stale: "stale",
+  Failed: "failed",
+} as const;
+export type BranchCloudHydrationStatus =
+  (typeof BranchCloudHydrationStatus)[keyof typeof BranchCloudHydrationStatus];
+
+export const BranchCommentsState = {
+  UnsyncedUnknown: "unsynced_unknown",
+  Populated: "populated",
+  SyncedEmpty: "synced_empty",
+  ProviderError: "provider_error",
+  StaleMixed: "stale_mixed",
+  OverLimitTruncated: "over_limit_truncated",
+  ForbiddenMismatch: "forbidden_mismatch",
+} as const;
+export type BranchCommentsState =
+  (typeof BranchCommentsState)[keyof typeof BranchCommentsState];
+
+export const BranchCommentsFailureReason = {
+  RateLimit: "rate_limit",
+  SecondaryLimit: "secondary_limit",
+  Timeout: "timeout",
+  Auth: "auth",
+  NotFound: "not_found",
+  ForbiddenMismatch: "forbidden_mismatch",
+  ProviderUnavailable: "provider_unavailable",
+  ProviderError: "provider_error",
+} as const;
+export type BranchCommentsFailureReason =
+  (typeof BranchCommentsFailureReason)[keyof typeof BranchCommentsFailureReason];
+
+export const BranchCommentsBudget = {
+  MaxComments: 100,
+  PageSize: 50,
+  MaxBodyBytes: 16 * 1024,
+  MaxResponseBytes: 512 * 1024,
+} as const;
+
+export const BranchPrCommentKind = {
+  Issue: "issue",
+  Review: "review",
+  ReviewReply: "review_reply",
+} as const;
+export type BranchPrCommentKind =
+  (typeof BranchPrCommentKind)[keyof typeof BranchPrCommentKind];
+
+export type BranchPrCommentAuthor = {
+  login: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+};
+
+export type BranchPrCommentBudget = {
+  maxComments: number;
+  pageSize: number;
+  maxBodyBytes: number;
+  maxResponseBytes: number;
+  providerTruncated: boolean;
+  responseTruncated: boolean;
+  omittedComments: number;
+  bodyTruncatedCount: number;
+};
+
+export type BranchPrComment = {
+  id: string;
+  providerNodeId: string | null;
+  providerCommentId: string | null;
+  kind: BranchPrCommentKind;
+  threadId: string | null;
+  inReplyToId: string | null;
+  path: string | null;
+  line: number | null;
+  resolved: boolean | null;
+  author: BranchPrCommentAuthor;
+  body: string;
+  createdAt: string;
+  updatedAt: string | null;
+  providerUrl: string | null;
+  stale: boolean;
+  bodyTruncated: boolean;
+};
+
+export type BranchPrCommentsResponse = {
+  branchId: string;
+  state: BranchCommentsState;
+  failureReason?: BranchCommentsFailureReason;
+  comments: BranchPrComment[];
+  budget: BranchPrCommentBudget;
+  providerProofedAt: string | null;
+  stale: boolean;
+  mixedProjection: boolean;
+  prNumber: number | null;
+  prUrl: string | null;
+};
+
+/** Trim a PR comment body to the shared comments byte budget. */
+export function trimBranchPrCommentBody(body: string): {
+  body: string;
+  truncated: boolean;
+} {
+  if (byteLength(body) <= BranchCommentsBudget.MaxBodyBytes) {
+    return { body, truncated: false };
+  }
+  let next = body;
+  while (
+    next.length > 0 &&
+    byteLength(next) > BranchCommentsBudget.MaxBodyBytes
+  ) {
+    next = next.slice(0, -1);
+  }
+  return { body: next, truncated: true };
+}
+
+/** Enforce the shared serialized response budget for PR comments responses. */
+export function fitBranchPrCommentsResponseBudget(
+  response: BranchPrCommentsResponse
+): BranchPrCommentsResponse {
+  const next = { ...response, comments: [...response.comments] };
+  while (
+    next.comments.length > 0 &&
+    byteLength(JSON.stringify(next)) > BranchCommentsBudget.MaxResponseBytes
+  ) {
+    next.comments.pop();
+    next.budget.responseTruncated = true;
+    next.budget.omittedComments += 1;
+  }
+  if (next.budget.responseTruncated) {
+    next.state = BranchCommentsState.OverLimitTruncated;
+  }
+  return next;
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
 // --- Branch-id encode/decode (single owner: A1; B1 produces, D1 parses, C2/C3 route) ---
 
 const BRANCH_ID_DELIMITER = "::";
@@ -88,7 +268,8 @@ const BRANCH_ID_DELIMITER = "::";
  * "owner/name" form (always slash-bearing), so the slash-free sentinel never
  * collides with a captured repo and round-trips back to null on decode.
  */
-const LOCAL_REPO_SENTINEL = "local";
+/** Repo segment used in encoded branch ids when no repository identity exists. */
+export const LOCAL_REPO_SENTINEL = "local";
 
 function safeDecodeComponent(value: string): string {
   try {
@@ -135,6 +316,33 @@ export function decodeBranchId(id: string): {
   };
 }
 
+const LEADING_SLASHES_RE = /^\/+/;
+const TRAILING_SLASHES_RE = /\/+$/;
+
+/**
+ * Canonical normalizer for a repository full name (PRD-510 D2). The single owner
+ * used by every branch/commit producer so the identity key
+ * `(organizationId, repositoryFullName, branchName)` is byte-identical across the
+ * desktop-sync and GitHub-webhook lanes regardless of GitHub App installation.
+ *
+ * Operates on an already-extracted `owner/name` string — it does NOT parse a
+ * remote URL (the desktop's URL→owner/name extraction is a separate concern).
+ * Normalization: trim surrounding whitespace, strip a trailing `.git`, strip
+ * leading/trailing slashes, and lowercase (GitHub owners/repos are
+ * case-insensitive). Idempotent — normalizing an already-normalized name is a
+ * no-op, so it is safe to apply defensively at every write and read site.
+ */
+export function normalizeRepoFullName(fullName: string): string {
+  let next = fullName
+    .trim()
+    .replace(LEADING_SLASHES_RE, "")
+    .replace(TRAILING_SLASHES_RE, "");
+  if (next.toLowerCase().endsWith(".git")) {
+    next = next.slice(0, -".git".length);
+  }
+  return next.replace(TRAILING_SLASHES_RE, "").toLowerCase();
+}
+
 // --- QUERY FILTERS (shared by the list/usage/analytics reads) ---
 
 /**
@@ -147,10 +355,11 @@ export type BranchQueryFilters = {
   startDate?: string; // ISO; trailing-window lower bound for usage/analytics
   endDate?: string; // ISO
   repo?: string; // repoFullName "owner/name" OR short name; serving matches both
-  owner?: string; // branch owner (actor) filter
+  owner?: string; // branch owner (actor) filter; not all producers/routes support it
   status?: string; // BranchStatus value
   search?: string; // free-text over branchName / repo / prTitle
-  // Cloud-only dimensions — IGNORED by the local source, honored by REST.
+  // Cloud-only dimensions — ignored by the local source; REST routes reject
+  // unsupported dimensions until their downstream predicates are implemented.
   userId?: string;
   teamId?: string;
   projectId?: string;
@@ -190,8 +399,11 @@ export type BranchRow = {
   additions: number | null;
   /** enrichment `lines_removed`; NULL = unavailable. */
   deletions: number | null;
-  /** Fetched LIVE, NEVER persisted; NULL on list (and on detail in v1). */
+  /** Persisted branch/PR artifact LOC when enriched; NULL when unavailable. */
   filesChanged: number | null;
+  /** Optional desktop cloud overlay status; omitted by older/local-only producers. */
+  cloudHydrationStatus?: BranchCloudHydrationStatus;
+  cloudHydrationFailure?: string;
   /** Derived; NULL when no token_usage rows. */
   estimatedCostUsd: number | null;
   /**
@@ -203,6 +415,8 @@ export type BranchRow = {
   lastActivityAt: string;
   /** Sessions via session_artifact_links (targetKind=branch). */
   sessionIds: readonly string[];
+  /** Cloud/API state derivation; omitted by older local producers. */
+  dataState?: BranchDataState;
 };
 
 export type BranchListResponse = {
@@ -210,6 +424,16 @@ export type BranchListResponse = {
   total: number;
   /** Local source always "self". */
   viewerScope: BranchViewerScope;
+  hasMore?: boolean;
+  /**
+   * FEA-3120: which store produced these rows — `local` (desktop SQLite via IPC),
+   * `cloud` (synced cloud state via `apps/api`), or `fallback` (degraded/empty
+   * best-effort, e.g. a failed cloud read that resolved to an empty list).
+   * Populated at the read boundary in each data source, not by the DB query.
+   * Optional so older/wire producers stay compatible; consumers treat an absent
+   * value as "unknown source" and render nothing rather than guess.
+   */
+  readSource?: ReadSource;
 };
 
 // --- DETAIL ---
@@ -326,6 +550,32 @@ export type BranchCommit = {
 };
 
 /**
+ * One idle gap (≥ the merged-trace idle threshold) between two consecutive
+ * captured activity instants on the branch — the hatched gaps of the lead-time
+ * waterfall.
+ */
+export type BranchIdleSpan = {
+  startT: string;
+  endT: string;
+  gapMs: number;
+};
+
+/**
+ * Lightweight work/idle activity summary for the lead-time waterfall (PLN-1148
+ * Phase 2). Derived server-side from the captured event instants — which survive
+ * the light (`omitEventData`) hydration — so the DEFAULT branch-detail view can
+ * chart work-vs-idle WITHOUT loading the full `mergedTrace` (the events-heavy
+ * trace is fetched lazily only when the Sessions & timeline tab opens). The
+ * waterfall builds its track from `firstActivityT` → `max(lastActivityT,
+ * mergedAt)` with `idleSpans` hatched.
+ */
+export type BranchLeadTimeActivity = {
+  firstActivityT: string | null;
+  lastActivityT: string | null;
+  idleSpans: readonly BranchIdleSpan[];
+};
+
+/**
  * Surface detail type. Renamed from the contract's `BranchDetail` to avoid the
  * `artifact.ts:134` collision (a different, unrelated branch-artifact type).
  */
@@ -342,8 +592,16 @@ export type BranchPageDetail = BranchRow & {
   /** Real commits on the branch, oldest-first — the rail's per-commit dots (PRD-486). */
   commits: BranchCommit[];
   sessions: BranchSession[];
-  /** Cross-session interleaved trace incl. sessionstart + idle. */
+  /**
+   * Cross-session interleaved trace incl. sessionstart + idle. PLN-1148 Phase 2:
+   * the detail endpoint no longer ships this (always `[]`); it is fetched lazily
+   * via the dedicated trace endpoint when the Sessions & timeline tab opens, and
+   * the tab merges it back in. The lightweight `leadTime` summary below covers the
+   * default view's only trace need (the lead-time waterfall).
+   */
   mergedTrace: MergedTraceItem[];
+  /** Work/idle activity summary for the lead-time waterfall (no trace needed). */
+  leadTime: BranchLeadTimeActivity;
   /** length>1 sets multiPrWarning and gates KPIs. */
   linkedPrNumbers: readonly number[];
   /** Closedloop artifacts derived from the branch-name slug (slug only). */
@@ -412,10 +670,11 @@ export type BranchKpi = {
 export type BranchAnalytics = {
   viewerScope: BranchViewerScope;
   /**
-   * median (additions+deletions) of MERGED, single-PR branches (LOCAL). A
-   * branch with no LOC enrichment counts as 0 lines (`(additions ?? 0) +
-   * (deletions ?? 0)`) and is INCLUDED, mirroring the delivery dashboard's
-   * `?? 0` inclusion so the two surfaces report the same metric (FEA-2159).
+   * median `(additions ?? 0) + (deletions ?? 0)` over ALL MERGED, single-PR
+   * branches (LOCAL). A missing line total folds in as 0 rather than excluding
+   * the branch, matching the delivery dashboard (`getDelivery`); multi-PR
+   * branches are excluded (ambiguous lifecycle). Unavailable only when no merged
+   * single-PR branch exists (FEA-2159).
    */
   medianPrSize: BranchKpi;
   /** merged / opened over window (GATED until PR enrichment). */
@@ -445,4 +704,18 @@ export type BranchAnalytics = {
     reworkPct: number | null;
     state: BranchKpiState;
   };
+};
+
+export type BranchTraceResponse = {
+  branchId: string;
+  viewerScope: BranchViewerScope;
+  items: MergedTraceItem[];
+  hasMore: boolean;
+};
+
+export type BranchRefreshResponse = {
+  branch: BranchPageDetail | null;
+  status: BranchRefreshStatus;
+  reason?: BranchRefreshReason;
+  retryAfterSeconds?: number;
 };

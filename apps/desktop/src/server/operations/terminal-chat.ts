@@ -132,10 +132,22 @@ async function streamClaude(
   expectedMcpUrl: string | undefined,
   getClaudeShellEnv: ClaudeCodeShellEnvProvider
 ): Promise<void> {
-  const streamState = createStreamState(async (sessionId) => {
+  // Serialize every chat-history write started while streaming (session-id
+  // capture, auth-challenge reset, assistant content) into one chain that
+  // finish() drains before the stream resolves. A fire-and-forget save here can
+  // otherwise outlive the request and race the caller (a renderer reload, or
+  // tmpdir cleanup in tests).
+  let historySaveChain: Promise<void> = Promise.resolve();
+  const persistHistory = (): void => {
+    historySaveChain = historySaveChain
+      .catch(() => undefined)
+      .then(() => saveChatHistory(symphonyDir, history));
+  };
+
+  const streamState = createStreamState((sessionId) => {
     if (!history.claudeSessionId) {
       history.claudeSessionId = sessionId;
-      await saveChatHistory(symphonyDir, history);
+      persistHistory();
     }
   });
 
@@ -168,8 +180,12 @@ async function streamClaude(
           timestamp: new Date().toISOString(),
           mode: "claude",
         });
-        await saveChatHistory(symphonyDir, history);
+        persistHistory();
       }
+
+      // Drain every queued chat-history write (session-id capture, auth reset,
+      // assistant content) so none can outlive the stream.
+      await historySaveChain.catch(() => undefined);
 
       writeEvent(response, { type: "done" });
       response.end();
@@ -212,7 +228,7 @@ async function streamClaude(
             history.claudeSessionId
           ) {
             history.claudeSessionId = undefined;
-            void saveChatHistory(symphonyDir, history);
+            persistHistory();
           }
           writeEvent(response, {
             type: "result",

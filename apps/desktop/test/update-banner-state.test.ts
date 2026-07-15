@@ -4,10 +4,13 @@ import {
   INITIAL_UPDATE_BANNER_STATE,
   isUpdateApplyEnabled,
   isUpdateBannerVisible,
+  isUpdateInstallBlocked,
   reduceUpdateAvailableEvent,
   reduceUpdateStatusEvent,
+  UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE,
   updateBannerMessage,
 } from "../src/renderer/components/update-banner-state.js";
+import { PackagedUpdateInstallBlockedReason } from "../src/shared/packaged-update-install-blocked-reason.js";
 
 // FEA-1497: behavior guards for the React UpdateBanner's decision logic.
 // PR #264 replaced the old inline-JS update banner; the renderer no longer
@@ -90,6 +93,39 @@ describe("update banner state (desktop:update-status / desktop:update-available)
     assert.match(updateBannerMessage(next), /download failed/);
   });
 
+  test("read-only install block shows a friendly warning and disables apply", () => {
+    const next = reduceUpdateStatusEvent(INITIAL_UPDATE_BANNER_STATE, {
+      status: "error",
+      updateAvailable: true,
+      readyToInstall: true,
+      error: "should not be shown",
+      installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+    });
+
+    assert.equal(isUpdateBannerVisible(next), true);
+    assert.equal(isUpdateInstallBlocked(next), true);
+    assert.equal(isUpdateApplyEnabled(next), false);
+    assert.equal(
+      updateBannerMessage(next),
+      UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE
+    );
+    assert.doesNotMatch(updateBannerMessage(next), /Update error:/);
+  });
+
+  test("unknown install block reasons fall back to the generic error treatment", () => {
+    const next = reduceUpdateStatusEvent(INITIAL_UPDATE_BANNER_STATE, {
+      status: "error",
+      updateAvailable: true,
+      readyToInstall: false,
+      error: "download failed",
+      installBlockedReason: "future-reason",
+    });
+
+    assert.equal(isUpdateInstallBlocked(next), false);
+    assert.equal(next.installBlockedReason, undefined);
+    assert.equal(updateBannerMessage(next), "Update error: download failed");
+  });
+
   test("malformed update-status payloads are ignored (untrusted boundary)", () => {
     const base = reduceUpdateStatusEvent(INITIAL_UPDATE_BANNER_STATE, {
       status: "downloaded",
@@ -128,6 +164,63 @@ describe("update banner state (desktop:update-status / desktop:update-available)
     });
     assert.equal(afterNudge.status, "downloaded");
     assert.equal(isUpdateApplyEnabled(afterNudge), true);
+  });
+
+  test("update-available nudge never regresses a read-only install block", () => {
+    const blocked = reduceUpdateStatusEvent(INITIAL_UPDATE_BANNER_STATE, {
+      status: "error",
+      updateAvailable: true,
+      readyToInstall: false,
+      version: "0.14.30",
+      error: "move the app",
+      installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+    });
+    const afterNudge = reduceUpdateAvailableEvent(blocked, {
+      updateAvailable: true,
+      version: "0.14.31",
+      readyToInstall: false,
+    });
+
+    assert.equal(afterNudge.status, "error");
+    assert.equal(isUpdateInstallBlocked(afterNudge), true);
+    assert.equal(isUpdateApplyEnabled(afterNudge), false);
+    assert.equal(afterNudge.version, "0.14.31");
+    assert.equal(
+      updateBannerMessage(afterNudge),
+      UPDATE_INSTALL_BLOCKED_BANNER_MESSAGE
+    );
+  });
+
+  test("later update-status payloads clear a stale read-only install block", () => {
+    const blocked = reduceUpdateStatusEvent(INITIAL_UPDATE_BANNER_STATE, {
+      status: "error",
+      updateAvailable: true,
+      readyToInstall: false,
+      version: "0.14.30",
+      error: "move the app",
+      installBlockedReason: PackagedUpdateInstallBlockedReason.ReadOnlyVolume,
+    });
+    const genericError = reduceUpdateStatusEvent(blocked, {
+      status: "error",
+      updateAvailable: false,
+      readyToInstall: false,
+      error: "download failed",
+    });
+    const downloaded = reduceUpdateStatusEvent(blocked, {
+      status: "downloaded",
+      updateAvailable: true,
+      readyToInstall: true,
+      version: "0.14.31",
+    });
+
+    assert.equal(isUpdateInstallBlocked(genericError), false);
+    assert.equal(
+      updateBannerMessage(genericError),
+      "Update error: download failed"
+    );
+    assert.equal(isUpdateInstallBlocked(downloaded), false);
+    assert.equal(isUpdateApplyEnabled(downloaded), true);
+    assert.match(updateBannerMessage(downloaded), /0\.14\.31/);
   });
 
   test("update-available with updateAvailable falsey is a no-op", () => {

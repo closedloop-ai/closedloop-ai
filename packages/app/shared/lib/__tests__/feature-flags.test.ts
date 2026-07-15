@@ -9,14 +9,15 @@ import {
 const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 describe("ArtifactFlag.BranchDetail", () => {
-  it("is the kebab-case `branch-detail-page` PostHog key", () => {
+  it("retains the legacy kebab-case `branch-detail-page` key", () => {
     expect(ArtifactFlag.BranchDetail).toBe("branch-detail-page");
     expect(ArtifactFlag.BranchDetail).toMatch(KEBAB_CASE);
   });
 
-  it("gates independently of the branches-nav list flag", () => {
-    // The `-page` suffix keeps the detail route distinct from the list nav, so
-    // the two surfaces roll out on separate schedules.
+  it("is distinct from the provisioned branches-nav rollout flag", () => {
+    // `branch-detail-page` remains available for compatibility, but the web
+    // Branches surface uses the provisioned `branches-nav` flag for list and
+    // detail access.
     expect(ArtifactFlag.BranchDetail).not.toBe(ArtifactFlag.Branches);
     expect(ArtifactFlag.Branches).toBe("branches-nav");
   });

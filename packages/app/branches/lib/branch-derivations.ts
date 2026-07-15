@@ -10,6 +10,7 @@ import {
   BranchViewerScope,
   type MergedTraceItem,
 } from "@repo/api/src/types/branch";
+import { median } from "@repo/api/src/utils/math";
 
 /**
  * Pure, surface-agnostic Branches derivations (PLN-983 / Epic A — A3).
@@ -18,9 +19,7 @@ import {
  * renderer composition: NO electron / window / DB / `apps/*` imports. Token cost
  * is delegated to `computeTokenCost` (genai-cost, FEA-1718) — pricing is NEVER
  * reimplemented. Functions degrade to `null` on missing inputs (never throw,
- * never coerce a missing value to 0) — with ONE documented exception:
- * `medianPrSize` folds a missing line count in as a 0-line PR to match the
- * delivery dashboard's `?? 0` inclusion (FEA-2159; see its docstring).
+ * never coerce a missing value to 0).
  *
  * A3 owns the EXACT contract signatures here, implemented (not stubbed),
  * including `buildVsReworkSplit` and `activeIdleSpans`. Epic D ADDS only
@@ -198,13 +197,13 @@ export function leadTimeForChange(args: {
 }
 
 /**
- * Median PR size (additions + deletions) over MERGED, single-PR branches.
- * A branch with no LOC enrichment counts as a 0-line PR (`(additions ?? 0) +
- * (deletions ?? 0)`) and is INCLUDED, mirroring the delivery dashboard's `?? 0`
- * inclusion (`apps/api/app/insights/service.ts` getDelivery) so the Branches
- * list page and the dashboard report the same metric (FEA-2159). Multi-PR
- * branches stay excluded (ambiguous lifecycle). `null` only when no merged
- * single-PR branch qualifies.
+ * Median PR size (additions + deletions) over MERGED, single-PR branches with
+ * both LOC fields populated. Multi-PR branches and rows missing LOC are
+ * excluded — mirroring the delivery dashboard, which medians enriched PR LOC and
+ * excludes un-enriched PRs (it never folds a missing size in as 0). The branch
+ * `additions`/`deletions` are sourced from the merged PR artifact's enrichment
+ * upstream (FEA-2159), so a branch whose own artifact is un-enriched still
+ * carries its real PR size here. `null` when none qualify.
  */
 export function medianPrSize(
   branches: {
@@ -216,23 +215,17 @@ export function medianPrSize(
 ): number | null {
   const sizes: number[] = [];
   for (const branch of branches) {
-    if (branch.status !== "merged" || branch.multiPrWarning) {
+    if (
+      branch.status !== "merged" ||
+      branch.multiPrWarning ||
+      branch.additions == null ||
+      branch.deletions == null
+    ) {
       continue;
     }
-    sizes.push((branch.additions ?? 0) + (branch.deletions ?? 0));
+    sizes.push(branch.additions + branch.deletions);
   }
   return median(sizes);
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) {
-    return null;
-  }
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[mid - 1] + sorted[mid]) / 2
-    : sorted[mid];
 }
 
 /**

@@ -1,10 +1,21 @@
-import { cn } from "@repo/design-system/lib/utils";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { AnalyticsHeatmapWeek } from "../types";
 
 type ActivityHeatmapProps = {
   weeks: AnalyticsHeatmapWeek[];
   className?: string;
+  /**
+   * Formats a cell's value for its day tooltip. Defaults to a plain event
+   * count (e.g. "1,024 events") so the primitive stays product-agnostic;
+   * callers whose cells carry another unit (currency, tokens, …) pass their
+   * own formatter.
+   */
+  valueFormatter?: (count: number) => string;
 };
+
+function formatEventCount(count: number): string {
+  return `${count.toLocaleString()} events`;
+}
 
 function cellColor(count: number, max: number) {
   if (count === 0) {
@@ -33,6 +44,7 @@ function cellColor(count: number, max: number) {
 export function ActivityHeatmap({
   weeks,
   className,
+  valueFormatter = formatEventCount,
 }: ActivityHeatmapProps) {
   const maxCount = Math.max(
     1,
@@ -103,7 +115,7 @@ export function ActivityHeatmap({
                   height: 13,
                   backgroundColor: cellColor(cell.count, maxCount),
                 }}
-                title={`${cell.date}: ${cell.count.toLocaleString()} events`}
+                title={`${cell.date}: ${valueFormatter(cell.count)}`}
               />
             ))}
           </div>
