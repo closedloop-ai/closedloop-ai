@@ -1,24 +1,27 @@
-# Community-edition desktop release.
+# Builds and packages the desktop app from this repository and publishes a macOS
+# .dmg to this repository's Releases.
 #
-# Adapted from upstream (symphony-alpha) desktop-release.yml, rewritten to be
-# self-contained for the public repo. Removed from the upstream version:
-#   - the `desktop-packaging/validated` commit-status gate + tag-minting +
-#     precheck/preflight (internal FEA-1935/1936 machinery and scripts/deploy/*.ts
-#     that are not part of the community edition),
-#   - Turbo remote cache (TURBO_TOKEN / TURBO_TEAM),
-#   - Slack notifications (symphony-slack-notify action + SLACK_* secrets).
-# Apple signing/notarization is OPTIONAL: builds run unsigned/ad-hoc by default,
-# and sign only when the APPLE_* / CSC_* repo secrets are configured.
+# Apple signing and notarization are OPTIONAL. With no Apple credentials
+# configured the build is ad-hoc signed, so you can build and run the app from
+# source without an Apple Developer account. Set the APPLE_* / CSC_* repository
+# secrets to produce a signed, notarized build instead.
 #
-# Cut a release by dispatching this workflow (it reads the version from
-# apps/desktop/package.json) or by pushing a `desktop-v*` tag.
+# The workflow is self-contained: no private actions, no shared build cache, and
+# no notification secrets, so it runs in a fork as-is.
+#
+# Cut a release by dispatching this workflow. It reads the version from
+# apps/desktop/package.json.
+#
+# Dispatch-only by design — please don't add a tag trigger. The `desktop-v*`
+# tags in this repository mark the official signed builds that ClosedLoop
+# distributes. Those are produced by a separate release pipeline and attached to
+# a Release here so they can be downloaded without a GitHub account; they are
+# not built from this repository's tree at that tag. Building on a tag push
+# would therefore produce a different artifact than the tag claims.
 name: Release Desktop
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "desktop-v*"
 
 concurrency:
   group: release-desktop-${{ github.ref }}
@@ -49,9 +52,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Version comes from apps/desktop/package.json (the community edition does
-      # not mint version tags the way upstream does). On a desktop-v* tag push
-      # the tag should match; on manual dispatch the package.json value wins.
+      # The version comes from apps/desktop/package.json, which is the source of
+      # truth for builds cut here. It is not expected to match the `desktop-v*`
+      # tag of an official signed release — those come from a separate pipeline
+      # (see the header comment).
       - name: Resolve release version
         id: version
         run: |
