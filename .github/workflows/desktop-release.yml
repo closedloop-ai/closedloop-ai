@@ -12,12 +12,13 @@
 # Cut a release by dispatching this workflow. It reads the version from
 # apps/desktop/package.json.
 #
-# Dispatch-only by design — please don't add a tag trigger. The `desktop-v*`
-# tags in this repository mark the official signed builds that ClosedLoop
-# distributes. Those are produced by a separate release pipeline and attached to
-# a Release here so they can be downloaded without a GitHub account; they are
-# not built from this repository's tree at that tag. Building on a tag push
-# would therefore produce a different artifact than the tag claims.
+# Dispatch-only by design; do not add a tag trigger. The `desktop-v*` tags in
+# this repository mark the official signed builds ClosedLoop distributes: those
+# are built and signed by ClosedLoop's release pipeline and attached to a Release
+# here so they can be downloaded without a GitHub account. Such a tag names the
+# version of that build, not a commit in this repository's tree, so a tag-push
+# build would publish a different artifact under a tag that already means
+# something else.
 name: Release Desktop
 
 on:
