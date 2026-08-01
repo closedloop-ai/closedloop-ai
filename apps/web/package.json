@@ -30,7 +30,7 @@
     "import-in-the-middle": "^3.0.1",
     "lucide-react": "^0.556.0",
     "next": "catalog:",
-    "react": "19.2.5",
+    "react": "19.2.8",
     "react-dom": "19.2.5",
     "require-in-the-middle": "8.0.1",
     "sharp": "^0.34.5",
@@ -40,7 +40,7 @@
     "@repo/typescript-config": "workspace:*",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3"
