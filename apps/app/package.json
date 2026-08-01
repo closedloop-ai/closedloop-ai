@@ -43,7 +43,7 @@
     "@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*",
     "@repo/webhooks": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
-    "@tanstack/react-query": "^5.90.20",
+    "@tanstack/react-query": "^5.101.4",
     "@tiptap/core": "~3.22.3",
     "@tiptap/pm": "~3.22.3",
     "@tiptap/react": "~3.22.3",
