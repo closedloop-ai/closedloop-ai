@@ -8,7 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@linear/sdk": "^29.0.0",
+    "@linear/sdk": "^88.3.0",
     "@repo/ai": "workspace:*",
     "@repo/observability": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
