@@ -861,6 +861,109 @@ test("clampSessionsForWorkerResponse trims an oversized session to a valid respo
   assert.ok(clamped[0] !== undefined && clamped[0].messages.length < 5000);
 });
 
+test("clampSessionsForWorkerResponse bounds oversized unknown payloads to a valid response", () => {
+  // Raw, the session is rejected by the response schema — the failure operators
+  // saw in the wild ("sessions.0.toolUses.N.input:custom:Invalid input").
+  assert.equal(
+    historicalParseWorkerResponseSchema.safeParse({
+      type: HistoricalParseWorkerResponseType.Parsed,
+      requestId: "historical-parse-1",
+      sessions: [makeUnboundedPayloadSession("unbounded-payloads")],
+    }).success,
+    false
+  );
+
+  // Clamped, the same session yields a response that validates.
+  const clamped = clampSessionsForWorkerResponse([
+    makeUnboundedPayloadSession("unbounded-payloads"),
+  ]);
+  const result = historicalParseWorkerResponseSchema.safeParse({
+    type: HistoricalParseWorkerResponseType.Parsed,
+    requestId: "historical-parse-1",
+    sessions: clamped,
+  });
+
+  assert.equal(result.success, true);
+  // Every tool use survives with degraded payloads instead of failing the job.
+  const [session] = clamped;
+  assert.equal(session?.toolUses.length, 3);
+  const clampedContent = (session?.toolUses[0]?.input as { content: string })
+    .content;
+  assert.ok(
+    Buffer.byteLength(clampedContent) <=
+      HistoricalParseWorkerLimits.maxLongTextLength
+  );
+  assert.ok(clampedContent.startsWith("xxx"));
+  assert.ok(
+    Array.isArray(session?.toolUses[1]?.output) &&
+      session.toolUses[1].output.length <=
+        HistoricalParseWorkerLimits.maxUnknownArrayItems
+  );
+  // In-bounds fields on the same tool uses pass through untouched.
+  assert.equal(session?.toolUses[1]?.name, "Bash");
+});
+
+test("createHistoricalParseWorkerParsedResponse keeps sessions with oversized unknown payloads", () => {
+  const response = createHistoricalParseWorkerParsedResponse(
+    "historical-parse-1",
+    [makeUnboundedPayloadSession("unbounded-payloads")]
+  );
+
+  assert.equal(response.type, HistoricalParseWorkerResponseType.Parsed);
+});
+
+function makeUnboundedPayloadSession(sessionId: string): NormalizedSession {
+  const session = makeSession(sessionId);
+  const overLongText = "x".repeat(
+    HistoricalParseWorkerLimits.maxLongTextLength + 1
+  );
+  let overDeepValue: unknown = "leaf";
+  for (let i = 0; i <= HistoricalParseWorkerLimits.maxUnknownDepth + 1; i++) {
+    overDeepValue = { nested: overDeepValue };
+  }
+  session.toolUses = [
+    {
+      name: "Write",
+      timestamp: "2026-06-07T12:00:00.000Z",
+      input: { content: overLongText },
+    },
+    {
+      name: "Bash",
+      timestamp: "2026-06-07T12:00:01.000Z",
+      input: overDeepValue,
+      output: Array.from(
+        { length: HistoricalParseWorkerLimits.maxUnknownArrayItems + 1 },
+        (_, index) => index
+      ),
+    },
+    {
+      name: "Read",
+      timestamp: "2026-06-07T12:00:02.000Z",
+      input: Object.fromEntries(
+        Array.from(
+          { length: HistoricalParseWorkerLimits.maxUnknownObjectKeys + 1 },
+          (_, index) => [`key-${index}`, index]
+        )
+      ),
+    },
+  ];
+  session.subagents = [
+    {
+      id: "agent-1",
+      name: "Researcher",
+      toolUses: [
+        {
+          name: "Read",
+          timestamp: "2026-06-07T12:00:30.000Z",
+          input: { content: overLongText },
+        },
+      ],
+      metadata: { elapsedMs: Number.POSITIVE_INFINITY },
+    },
+  ];
+  return session;
+}
+
 function makeAggregateHeavySession(sessionId: string): NormalizedSession {
   const session = makeSession(sessionId);
   session.messages = Array.from({ length: 5000 }, () => ({
