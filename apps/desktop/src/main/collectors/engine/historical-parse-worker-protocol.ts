@@ -1,7 +1,11 @@
 import { truncateUtf8 } from "@closedloop-ai/loops-api/observability";
 import { z } from "zod";
 import { safeStorageTokenCountSchema } from "../../token-counts.js";
-import { HarnessValues, type NormalizedSession } from "../types.js";
+import {
+  HarnessValues,
+  type NormalizedSession,
+  type NormalizedToolUse,
+} from "../types.js";
 
 export const HistoricalParseWorkerLimits = {
   maxWorkerSessionsPerSource: 50_000,
@@ -500,7 +504,12 @@ export function createHistoricalParseWorkerFailedResponse(
 export function clampSessionsForWorkerResponse(
   sessions: NormalizedSession[]
 ): NormalizedSession[] {
-  const limited = sessions.slice(0, MAX_WORKER_SESSIONS_PER_SOURCE);
+  // Bound unknown payload content before trimming array lengths — the response
+  // schema enforces both, and `sliceSessionArrays` alone leaves an oversized
+  // tool input in place (see clampSessionUnknownValues).
+  const limited = sessions
+    .slice(0, MAX_WORKER_SESSIONS_PER_SOURCE)
+    .map((session) => clampSessionUnknownValues(session));
   let limit: number = MAX_SESSION_ARRAY_ITEMS;
   let working = limited.map((session) => sliceSessionArrays(session, limit));
   // Halve the per-array limit until the response-wide item + text budgets fit.
@@ -559,6 +568,122 @@ function sliceSessionArrays(
     }));
   }
   return sliced;
+}
+
+/** Replaces payloads the bounded-unknown validator would reject outright. */
+const TRUNCATED_UNKNOWN_VALUE = "[truncated]";
+
+/**
+ * Bound every schema-`unknown` payload (tool-use input/output, subagent
+ * metadata, teams/compactions/usageExtras entries) to the limits
+ * `isBoundedUnknownValue` enforces. `sliceSessionArrays` only trims array
+ * lengths, so without this pass a single oversized tool input (e.g. a >2MB
+ * Write payload in a transcript) fails response validation and the whole
+ * parse job degrades to a Failed envelope — the source is dropped and
+ * re-parsed on every collector cycle instead of ingesting with truncated
+ * detail.
+ */
+function clampSessionUnknownValues(
+  session: NormalizedSession
+): NormalizedSession {
+  const clamped: NormalizedSession = {
+    ...session,
+    teams: session.teams.map((item) => clampUnknownValue(item, 0)),
+    toolUses: session.toolUses.map((toolUse) =>
+      clampToolUseUnknownValues(toolUse)
+    ),
+    compactions: session.compactions.map((item) => clampUnknownValue(item, 0)),
+    usageExtras: {
+      ...session.usageExtras,
+      service_tiers: session.usageExtras.service_tiers.map((item) =>
+        clampUnknownValue(item, 0)
+      ),
+      speeds: session.usageExtras.speeds.map((item) =>
+        clampUnknownValue(item, 0)
+      ),
+      inference_geos: session.usageExtras.inference_geos.map((item) =>
+        clampUnknownValue(item, 0)
+      ),
+    },
+  };
+  if (session.subagents) {
+    clamped.subagents = session.subagents.map((subagent) => ({
+      ...subagent,
+      toolUses: subagent.toolUses?.map((toolUse) =>
+        clampToolUseUnknownValues(toolUse)
+      ),
+      metadata: subagent.metadata
+        ? Object.fromEntries(
+            Object.entries(subagent.metadata).map(([key, item]) => [
+              key,
+              clampUnknownValue(item, 0),
+            ])
+          )
+        : undefined,
+    }));
+  }
+  return clamped;
+}
+
+function clampToolUseUnknownValues(
+  toolUse: NormalizedToolUse
+): NormalizedToolUse {
+  const input =
+    toolUse.input === undefined
+      ? undefined
+      : clampUnknownValue(toolUse.input, 0);
+  const output =
+    toolUse.output === undefined
+      ? undefined
+      : clampUnknownValue(toolUse.output, 0);
+  if (input === toolUse.input && output === toolUse.output) {
+    return toolUse;
+  }
+  return { ...toolUse, input, output };
+}
+
+/**
+ * Degrade an out-of-bounds unknown value to the nearest in-bounds shape:
+ * oversized strings truncate, oversized arrays/objects drop trailing entries,
+ * non-finite numbers become null, and containers at the depth cap (whose
+ * children the validator rejects wholesale) collapse to a marker string.
+ * Already-bounded values return by reference.
+ */
+function clampUnknownValue(value: unknown, depth: number): unknown {
+  if (isBoundedUnknownValue(value, depth)) {
+    return value;
+  }
+  if (typeof value === "number") {
+    // Only a non-finite number fails the bounded check above.
+    return null;
+  }
+  if (typeof value === "string") {
+    return truncateUtf8(value, MAX_LONG_TEXT_LENGTH);
+  }
+  if (Array.isArray(value)) {
+    if (depth >= MAX_UNKNOWN_DEPTH) {
+      return TRUNCATED_UNKNOWN_VALUE;
+    }
+    return value
+      .slice(0, MAX_UNKNOWN_ARRAY_ITEMS)
+      .map((item) => clampUnknownValue(item, depth + 1));
+  }
+  if (isPlainRecord(value)) {
+    if (depth >= MAX_UNKNOWN_DEPTH) {
+      return TRUNCATED_UNKNOWN_VALUE;
+    }
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, MAX_UNKNOWN_OBJECT_KEYS)
+        .map(([key, item]) => [
+          key.slice(0, MAX_SHORT_TEXT_LENGTH),
+          clampUnknownValue(item, depth + 1),
+        ])
+    );
+  }
+  // null/boolean/finite numbers are always bounded; anything else (bigint,
+  // function, class instance) has no bounded representation.
+  return TRUNCATED_UNKNOWN_VALUE;
 }
 
 /**
