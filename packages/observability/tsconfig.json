@@ -4,6 +4,7 @@
     "paths": {
       "@repo/api/*": ["../api/*"],
       "@closedloop-ai/loops-api/*": ["../loops-api/src/*"],
+      "@repo/loops-api/*": ["../loops-api/src/*"],
       "@closedloop-ai/telemetry-contract/*": ["../telemetry-contract/src/*"]
     }
   },

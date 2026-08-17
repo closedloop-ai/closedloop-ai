@@ -15,6 +15,7 @@
       // exports map points at dist/, which is not built in CI typecheck.
       // FEA-1512 (design system as live workspace dependency) supersedes this.
       "@closedloop-ai/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@repo/loops-api/*": ["../../packages/loops-api/src/*"],
       "@repo/*": ["../../packages/*"]
     }
   },

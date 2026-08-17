@@ -8,7 +8,9 @@
       // stay unresolvable here — the sandbox isolation boundary
       // (docs/design/prototype-sandbox.md) is structural, not a convention.
       "@closedloop-ai/design-system": ["../../packages/design-system"],
-      "@closedloop-ai/design-system/*": ["../../packages/design-system/*"]
+      "@repo/design-system": ["../../packages/design-system"],
+      "@closedloop-ai/design-system/*": ["../../packages/design-system/*"],
+      "@repo/design-system/*": ["../../packages/design-system/*"],
     }
   },
   "include": [
