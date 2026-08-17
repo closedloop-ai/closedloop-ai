@@ -19,13 +19,13 @@ vi.mock("@/app/branches/branch-service", async () => {
   };
 });
 
+import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
 import { Result, Status } from "@repo/api/src/types/result";
 import { GitHubInstallationStatus, LoopStatus } from "@repo/database";
-import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import {
   branchService,
   SourceArtifactTargetRepoAuthorizationProvenance,

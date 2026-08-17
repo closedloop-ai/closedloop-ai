@@ -23,6 +23,7 @@
  * (ISS-4477).
  */
 
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import type { GenerationStatus } from "@repo/api/src/types/document";
 import {
   Empty,
@@ -33,7 +34,6 @@ import {
   EmptyTitle,
 } from "@repo/design-system/components/ui/empty";
 import { cn } from "@repo/design-system/lib/utils";
-import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { Link } from "@repo/navigation/link";
 import { ArrowRightIcon, Loader2Icon } from "lucide-react";
 import { loopCommandLabels } from "../../shared/components/status-badge";

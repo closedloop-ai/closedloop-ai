@@ -1,3 +1,4 @@
+import { TooltipProvider } from "@closedloop-ai/design-system/components/ui/tooltip";
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
 import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
@@ -10,7 +11,6 @@ import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced
 import { SESSION_STATUS_SYNC_BADGE_TEST_ID } from "@repo/app/agents/lib/session-sync-presentation";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { stubContainerWidthPx } from "@repo/app/test/mocks/container-width";
-import { TooltipProvider } from "@closedloop-ai/design-system/components/ui/tooltip";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen, waitFor } from "@testing-library/react";

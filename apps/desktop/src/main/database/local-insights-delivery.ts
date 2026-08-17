@@ -8,8 +8,6 @@
  * and the KPI/chart derivation over them.
  */
 
-import { ssotMergeRateFromCounts } from "@repo/api/src/insights/delivery-kpis/parity";
-import { median } from "@repo/api/src/utils/math";
 import type { DeliveryInsightsResponse } from "@closedloop-ai/loops-api/insights";
 import {
   COST_KPI_SUB,
@@ -20,6 +18,8 @@ import {
   pctDelta,
   ttmHistogram,
 } from "@closedloop-ai/loops-api/insights";
+import { ssotMergeRateFromCounts } from "@repo/api/src/insights/delivery-kpis/parity";
+import { median } from "@repo/api/src/utils/math";
 import { PrState } from "../enrichment/types.js";
 import {
   createdArtifactLinksSubquery,

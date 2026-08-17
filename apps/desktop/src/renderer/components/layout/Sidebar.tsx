@@ -1,10 +1,3 @@
-import { AgentsNavBadge } from "@repo/app/agents/components/agents-nav-badge";
-import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
-import { SessionLimitsNav } from "@repo/app/session-limits/components/session-limits-nav";
-import { SessionLimitsStatus } from "@repo/app/session-limits/types";
-import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { getUserNamePart } from "@repo/app/shared/lib/user-utils";
 import {
   Avatar,
   AvatarFallback,
@@ -28,6 +21,13 @@ import {
 } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { SidebarCollapsibleSection } from "@closedloop-ai/design-system/components/ui/sidebar-collapsible-section";
 import { ThemeSubmenu } from "@closedloop-ai/design-system/components/ui/theme-submenu";
+import { AgentsNavBadge } from "@repo/app/agents/components/agents-nav-badge";
+import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
+import { SessionLimitsNav } from "@repo/app/session-limits/components/session-limits-nav";
+import { SessionLimitsStatus } from "@repo/app/session-limits/types";
+import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { getUserNamePart } from "@repo/app/shared/lib/user-utils";
 import { Link } from "@repo/navigation/link";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";

@@ -64,13 +64,13 @@ vi.mock("@/lib/desktop-gateway-wire", async () =>
 
 // --- Imports (after mocks) ---
 
+import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import {
   COMMAND_SIGNING_CAPABILITY_KEY,
   COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
 } from "@repo/api/src/types/compute-target";
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import { log } from "@repo/observability/log";
 import {
   stubDefaultCreateCommand,

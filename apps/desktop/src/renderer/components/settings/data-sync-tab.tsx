@@ -1,6 +1,3 @@
-import { DataSyncLevelCard } from "@repo/app/shared/components/data-sync-level-card";
-import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { findDataSyncLevelCopy } from "@repo/app/shared/lib/data-sync-copy";
 import {
   Alert,
   AlertDescription,
@@ -13,6 +10,9 @@ import {
   RadioGroupItem,
 } from "@closedloop-ai/design-system/components/ui/radio-group";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
+import { DataSyncLevelCard } from "@repo/app/shared/components/data-sync-level-card";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { findDataSyncLevelCopy } from "@repo/app/shared/lib/data-sync-copy";
 import { CheckIcon, ShieldAlertIcon } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { DataSyncLevel } from "../../../shared/contracts";

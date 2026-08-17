@@ -10,8 +10,8 @@
  * and `tile-catalog.ts` had grown to the 1,000-line ceiling carrying both.
  */
 
-import { DonutSliceTexture } from "@repo/design-system/components/ui/donut-slice-textures";
 import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
+import { DonutSliceTexture } from "@repo/design-system/components/ui/donut-slice-textures";
 
 /**
  * Semantic colours for the {@link SpendOutcome} split (ISS-4463).

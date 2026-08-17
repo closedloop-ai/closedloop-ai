@@ -1,6 +1,6 @@
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { AgentSessionState } from "@repo/api/src/types/agent-session";
 import { LossClass, ModelVerdict } from "@repo/api/src/types/session-analytics";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { describe, expect, it } from "vitest";
 import {
   foldBehavioralCauses,

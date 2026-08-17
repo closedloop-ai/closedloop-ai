@@ -1,4 +1,9 @@
 import {
+  type InsightsPeriod,
+  SPEND_OUTCOME_ORDER,
+  SpendOutcome,
+} from "@closedloop-ai/loops-api/insights";
+import {
   type ModelRightSizingRow,
   ModelVerdict,
   type RecoverableWasteEstimate,
@@ -6,11 +11,6 @@ import {
   type TokenOpsWasteInsightsResponse,
   TokenOpsWidget,
 } from "@repo/api/src/types/session-analytics";
-import {
-  type InsightsPeriod,
-  SPEND_OUTCOME_ORDER,
-  SpendOutcome,
-} from "@closedloop-ai/loops-api/insights";
 import { createDbFanoutLimiter } from "@/lib/db-fanout";
 import {
   type InsightsScopeContext,

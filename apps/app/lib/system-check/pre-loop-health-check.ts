@@ -1,7 +1,7 @@
 "use client";
 
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { isFailingRequiredCheck } from "@closedloop-ai/loops-api/compute-target";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import type {
   CheckResult,
   HealthCheckResponse,

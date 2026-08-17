@@ -10,12 +10,12 @@
  * file that proves the gate.
  */
 
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { InsightsSection } from "@repo/api/src/types/insights";
 import { INSIGHTS_SPEND_OUTCOME_FLAG_KEY } from "@repo/api/src/types/insights-spend-outcome-flag";
 import { DONUT_SLICE_SEPARATOR_COLOR } from "@repo/design-system/components/ui/donut-chart";
 import { DonutSliceTexture } from "@repo/design-system/components/ui/donut-slice-textures";
 import { ACTIVITY_HEATMAP_EMPTY_LEVEL_COLOR } from "@repo/design-system/components/ui/primitives/activity-heatmap-colors";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { describe, expect, it } from "vitest";
 import {
   A11yTheme,

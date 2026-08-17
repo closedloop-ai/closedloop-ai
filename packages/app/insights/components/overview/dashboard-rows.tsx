@@ -1,3 +1,4 @@
+import { isDeltaCapped } from "@closedloop-ai/loops-api/insights";
 import type {
   ActivityHeatmap,
   AgentPipelineGraphData,
@@ -30,7 +31,6 @@ import type {
 import { isKpiTile } from "@repo/app/insights/lib/tile-catalog";
 import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { isDeltaCapped } from "@closedloop-ai/loops-api/insights";
 import type { ReactNode } from "react";
 import { AutonomyTrendChart } from "./autonomy-trend-chart";
 import {

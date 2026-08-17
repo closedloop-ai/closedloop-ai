@@ -13,13 +13,13 @@
  * mostly unconfirmed usage rendered as definite out-of-pocket cost.
  */
 
+import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
-import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { SessionSummaryDeltas } from "../../../lib/session-summary-deltas";

@@ -1,4 +1,7 @@
-import { Alert, AlertTitle } from "@closedloop-ai/design-system/components/ui/alert";
+import {
+  Alert,
+  AlertTitle,
+} from "@closedloop-ai/design-system/components/ui/alert";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { Progress } from "@closedloop-ai/design-system/components/ui/progress";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";

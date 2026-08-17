@@ -14,15 +14,16 @@
  * and two from `@repo/api/src/types/github` — none of which was used anywhere
  * else in the origin file.
  */
-import {
-  GITHUB_PR_STATE_LABELS,
-  GitHubPRState,
-} from "@repo/api/src/types/github";
+
 import type {
   CategoryBucket,
   InsightsTileAvailabilityMap,
 } from "@closedloop-ai/loops-api/insights";
 import { InsightsTileAvailabilityState } from "@closedloop-ai/loops-api/insights";
+import {
+  GITHUB_PR_STATE_LABELS,
+  GitHubPRState,
+} from "@repo/api/src/types/github";
 
 // FEA-3455: real PR-state distribution for the local Delivery `prByState`
 // chart. Mirrors cloud's `mergedStateBuckets` (service.ts): every counted PR is

@@ -1,8 +1,9 @@
 // Sibling-slice import (insights → branches): the branch-detail headline cards
 // render this very same chip, so their reason sentence has to keep the same noun
 // (ISS-4995 review). Pinning it here is what stops the two surfaces drifting.
-import { BRANCH_NO_BASELINE_REASON } from "@repo/app/branches/lib/branch-headline-copy";
+
 import { KpiDeltaBasis } from "@closedloop-ai/loops-api/insights";
+import { BRANCH_NO_BASELINE_REASON } from "@repo/app/branches/lib/branch-headline-copy";
 import { describe, expect, it } from "vitest";
 import {
   NO_COMPARISON_CHIP_LABEL,

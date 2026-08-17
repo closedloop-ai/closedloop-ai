@@ -1,6 +1,7 @@
 // The real row catalog drives how many row bodies the ready state renders — keep
 // it unmocked so the "renders every row" assertion stays honest if rows change.
 
+import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import { InsightsScope, InsightsSection } from "@repo/api/src/types/insights";
 import { REFRESHING_ONSET_MS } from "@repo/app/insights/components/overview/dashboard-refreshing";
@@ -14,7 +15,6 @@ import type { TileDescriptor } from "@repo/app/insights/lib/tile-catalog";
 import { getTile } from "@repo/app/insights/lib/tile-catalog";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

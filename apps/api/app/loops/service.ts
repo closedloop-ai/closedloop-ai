@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
+import type {
+  HeartbeatResult,
+  RunnerTokenIssue,
+} from "@closedloop-ai/loops-api/token-refresh";
 import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { HarnessType } from "@repo/api/src/types/compute-target";
@@ -37,11 +42,6 @@ import {
   type LoopRunnerTokenIssueResult,
 } from "@repo/auth/loop-runner-jwt";
 import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
-import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
-import type {
-  HeartbeatResult,
-  RunnerTokenIssue,
-} from "@closedloop-ai/loops-api/token-refresh";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";

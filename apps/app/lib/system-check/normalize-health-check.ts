@@ -1,9 +1,9 @@
-import type { CheckResult } from "@repo/api/src/types/compute-target";
-import { CheckSeverity } from "@repo/api/src/types/compute-target";
 import {
   APP_VERSION_CHECK_ID,
   APP_VERSION_CHECK_LABEL,
 } from "@closedloop-ai/loops-api/compute-target";
+import type { CheckResult } from "@repo/api/src/types/compute-target";
+import { CheckSeverity } from "@repo/api/src/types/compute-target";
 
 /**
  * Client-side normalization of gateway check rows (ISS-5369).

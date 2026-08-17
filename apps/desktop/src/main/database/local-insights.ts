@@ -1,8 +1,3 @@
-import {
-  AGENT_FAILED_STATUS_TERMS,
-  AGENT_SUCCESS_STATUS_TERMS,
-} from "@repo/api/src/agent-session-status";
-import { labelize } from "@repo/api/src/utils/string";
 import type {
   AgentPipelineEdge,
   AgentPipelineNode,
@@ -12,7 +7,16 @@ import type {
   KpiStat,
   UtilizationInsightsResponse,
 } from "@closedloop-ai/loops-api/insights";
-import { InsightsSection, KpiFormat, kpi } from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsSection,
+  KpiFormat,
+  kpi,
+} from "@closedloop-ai/loops-api/insights";
+import {
+  AGENT_FAILED_STATUS_TERMS,
+  AGENT_SUCCESS_STATUS_TERMS,
+} from "@repo/api/src/agent-session-status";
+import { labelize } from "@repo/api/src/utils/string";
 import { addStorageTokenCounts } from "../cost/token-counts.js";
 import { PrState } from "../enrichment/types.js";
 import {

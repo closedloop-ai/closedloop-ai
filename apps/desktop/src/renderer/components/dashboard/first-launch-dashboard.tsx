@@ -1,3 +1,6 @@
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
+import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import type { InsightsGitHubProvenance } from "@repo/api/src/types/insights";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
@@ -21,9 +24,6 @@ import {
   resolveMissingSourceTileAvailability,
 } from "@repo/app/insights/lib/tile-availability";
 import type { TileDescriptor } from "@repo/app/insights/lib/tile-catalog";
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { useQueryClient } from "@tanstack/react-query";
 import { LayersIcon, RefreshCwIcon } from "lucide-react";
 import {

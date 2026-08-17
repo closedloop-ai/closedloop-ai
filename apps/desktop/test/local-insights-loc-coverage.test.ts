@@ -17,7 +17,10 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import { openTestPrisma, type RawDb } from "./prisma-test-utils.js";
 

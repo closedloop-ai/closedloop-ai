@@ -1,5 +1,3 @@
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
@@ -10,6 +8,8 @@ import {
 } from "@closedloop-ai/design-system/components/ui/card";
 import { Checkbox } from "@closedloop-ai/design-system/components/ui/checkbox";
 import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { ActivityIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";

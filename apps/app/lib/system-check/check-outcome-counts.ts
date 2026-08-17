@@ -1,9 +1,9 @@
-import type { CheckResult } from "@repo/api/src/types/compute-target";
 import {
   CheckSeverity,
   isFailingRequiredCheck,
   resolveCheckSeverity,
 } from "@closedloop-ai/loops-api/compute-target";
+import type { CheckResult } from "@repo/api/src/types/compute-target";
 
 /**
  * How many System Check rows BLOCK a command, and how many are merely findings.

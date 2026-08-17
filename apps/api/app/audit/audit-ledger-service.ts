@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import {
   AUDIT_ACTOR_TYPES,
   AUDIT_EMPTY_CHAIN_HEAD,
@@ -7,7 +8,6 @@ import {
   type AuditChainHead,
 } from "@repo/api/src/types/audit";
 import { Prisma, type TransactionClient, withDb } from "@repo/database";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { z } from "zod";
 
 /**

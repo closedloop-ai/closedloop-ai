@@ -25,7 +25,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
-import { LoopArtifactFile, LoopArtifactType } from "@closedloop-ai/loops-api/artifacts";
+import {
+  LoopArtifactFile,
+  LoopArtifactType,
+} from "@closedloop-ai/loops-api/artifacts";
 import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import {

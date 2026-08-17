@@ -14,6 +14,17 @@
  * this component assumes it is allowed to run.
  */
 
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@closedloop-ai/design-system/components/ui/empty";
+import { ScrollArea } from "@closedloop-ai/design-system/components/ui/scroll-area";
+import type { User as AssigneeOption } from "@closedloop-ai/design-system/components/ui/user-select-popover";
 import {
   type ProjectOption,
   projectSelectionValue,
@@ -26,17 +37,6 @@ import type {
   CascadeStep,
   HarnessName,
 } from "@repo/crewd/model";
-import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@closedloop-ai/design-system/components/ui/empty";
-import { ScrollArea } from "@closedloop-ai/design-system/components/ui/scroll-area";
-import type { User as AssigneeOption } from "@closedloop-ai/design-system/components/ui/user-select-popover";
 import { CircleCheckIcon, ShieldAlertIcon, UploadIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";

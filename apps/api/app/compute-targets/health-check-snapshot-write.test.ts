@@ -1,9 +1,9 @@
+import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import {
   HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
   HealthCheckRepairAction,
   PluginUpdateOutcome,
 } from "@repo/api/src/types/compute-target";
-import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**

@@ -1,3 +1,7 @@
+import {
+  SidebarInset,
+  SidebarProvider,
+} from "@closedloop-ai/design-system/components/ui/sidebar";
 import type { BranchCommentsControl } from "@repo/app/branches/components/branch-detail-page";
 import { BranchCommentsToggle } from "@repo/app/branches/components/comments/branch-comments-toggle";
 import { useBranchCommentsControl } from "@repo/app/branches/components/comments/use-branch-comments-control";
@@ -10,10 +14,6 @@ import {
   NAV_FROM_PARAM,
   resolveNavReferrerSurface,
 } from "@repo/app/shared/lib/nav-referrer";
-import {
-  SidebarInset,
-  SidebarProvider,
-} from "@closedloop-ai/design-system/components/ui/sidebar";
 import { parsePath } from "@repo/navigation/href-store";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { useNavigation } from "@repo/navigation/use-navigation";

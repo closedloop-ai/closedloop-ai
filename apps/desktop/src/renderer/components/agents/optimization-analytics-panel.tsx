@@ -17,13 +17,13 @@
  *   - other    → model trend only
  */
 
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
+import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import type {
   ComponentModelTrendResponse,
   SkillLoadedResponse,
   SubagentFrequencyResponse,
 } from "@repo/api/src/types/agent-component";
-import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
-import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import { useEffect, useState } from "react";
 
 /** Trailing window used for all trend/frequency queries. */

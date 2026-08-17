@@ -1,3 +1,6 @@
+import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
+import { TablePaginationFooter } from "@closedloop-ai/design-system/components/ui/table-pagination-footer";
+import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { costFilterIncludesUnknown } from "@repo/api/src/agent-session-filters";
 import { SessionsRecoveryAction } from "@repo/app/agents/components/sessions/sessions-recovery-action";
 import { SessionsSummaryCards } from "@repo/app/agents/components/sessions/sessions-summary-cards";
@@ -28,9 +31,6 @@ import {
   dateRangeToLookbackDays,
   getStableUtcDateWindowForRange,
 } from "@repo/app/shared/lib/format-utils";
-import type { SortDirection } from "@closedloop-ai/design-system/components/ui/sortable-column-header";
-import { TablePaginationFooter } from "@closedloop-ai/design-system/components/ui/table-pagination-footer";
-import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Profiler, useCallback, useEffect, useRef, useState } from "react";

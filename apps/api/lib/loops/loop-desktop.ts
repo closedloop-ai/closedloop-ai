@@ -3,6 +3,7 @@
  * to the electron harness via the desktop gateway.
  */
 
+import type { LoopBranchMaterializationEnvelope } from "@closedloop-ai/loops-api/desktop-request";
 import {
   CURRENT_DESKTOP_API_NAMESPACE,
   rewriteDesktopApiPath,
@@ -15,7 +16,6 @@ import type {
 } from "@repo/api/src/types/compute-target";
 import type { AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import type { LoopBody } from "@repo/api/src/types/loop-body";
-import type { LoopBranchMaterializationEnvelope } from "@closedloop-ai/loops-api/desktop-request";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";

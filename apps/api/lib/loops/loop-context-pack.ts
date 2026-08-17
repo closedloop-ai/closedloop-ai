@@ -6,15 +6,15 @@
  * artifacts to include.
  */
 
-import { DocumentType } from "@repo/api/src/types/document";
-import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/api/src/types/loop";
 import type {
   CodeEvaluationContext,
   ContextPackAgent,
   ContextPackAttachment,
   ContextPackRepoConfig,
 } from "@closedloop-ai/loops-api/context-pack";
+import { DocumentType } from "@repo/api/src/types/document";
+import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import type { LimitFunction } from "p-limit";
 import { listAgentsForContextPack } from "@/app/catalog/service";

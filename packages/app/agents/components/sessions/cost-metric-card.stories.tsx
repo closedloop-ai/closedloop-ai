@@ -1,9 +1,9 @@
+import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import {
   SummaryCardRow,
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
 import { WithUnifiedDeltaPill } from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
-import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   COST_METRIC_CARD_LABEL,

@@ -29,11 +29,11 @@
  * sync while the view is mounted.
  */
 
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
 import { AgentDetail } from "@repo/app/agents/components/workspace/agent-detail";
 import { useAgentComponentDetail } from "@repo/app/agents/hooks/use-agent-component-detail";
 import { isLocallyInstallable } from "@repo/app/agents/lib/component-meta";
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { CheckIcon, DownloadIcon, Loader2Icon } from "lucide-react";
 import { useCallback, useState } from "react";
 import { HARNESS_AUTO } from "../../../shared/install-run-contract";

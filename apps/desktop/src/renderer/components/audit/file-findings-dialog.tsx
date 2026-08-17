@@ -14,10 +14,7 @@
  * the selected count, the project/assignee sources, and the confirm handler are
  * owned by the parent view.
  */
-import {
-  type ProjectOption,
-  ProjectSelectPopover,
-} from "@repo/app/projects/components/project-select-popover";
+
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,6 +28,10 @@ import {
 import { Label } from "@closedloop-ai/design-system/components/ui/label";
 import type { User as AssigneeOption } from "@closedloop-ai/design-system/components/ui/user-select-popover";
 import { UserSelectPopover } from "@closedloop-ai/design-system/components/ui/user-select-popover";
+import {
+  type ProjectOption,
+  ProjectSelectPopover,
+} from "@repo/app/projects/components/project-select-popover";
 import { AUDIT_DOCS_DARWIN_TAG } from "../../../shared/audit-contract";
 
 /** Trigger ids so each `<Label htmlFor>` points at its picker's combobox. */

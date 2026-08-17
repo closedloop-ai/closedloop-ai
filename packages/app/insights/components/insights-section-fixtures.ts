@@ -8,6 +8,11 @@
  * convention already used by `agents/components/session-list-fixtures.ts`.
  */
 
+import {
+  SPEND_OUTCOME_LABELS_WITH_RUNNING,
+  SPEND_OUTCOME_ORDER_WITH_RUNNING,
+  SpendOutcome,
+} from "@closedloop-ai/loops-api/insights";
 import type {
   AgentsInsightsResponse,
   CategoryBucket,
@@ -16,11 +21,6 @@ import type {
 } from "@repo/api/src/types/insights";
 import { InsightsSection, KpiFormat } from "@repo/api/src/types/insights";
 import { InsightsKpiKey } from "@repo/app/insights/lib/kpi-polarity";
-import {
-  SPEND_OUTCOME_LABELS_WITH_RUNNING,
-  SPEND_OUTCOME_ORDER_WITH_RUNNING,
-  SpendOutcome,
-} from "@closedloop-ai/loops-api/insights";
 import type { InsightsSectionData } from "./tile-content";
 
 /**

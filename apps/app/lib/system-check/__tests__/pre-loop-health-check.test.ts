@@ -1,5 +1,5 @@
-import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { describe, expect, it } from "vitest";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";

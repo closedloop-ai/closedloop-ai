@@ -1,18 +1,18 @@
 "use client";
 
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@repo/design-system/components/ui/tooltip";
-import { cn } from "@repo/design-system/lib/utils";
-import {
   type CheckResult,
   CheckSeverity,
   isIndeterminateCheckSeverity,
   PluginUpdateOutcome,
   resolveCheckSeverity,
 } from "@closedloop-ai/loops-api/compute-target";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   AlertTriangle,
   CheckCircle2,

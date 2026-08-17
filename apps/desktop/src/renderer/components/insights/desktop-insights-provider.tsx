@@ -1,3 +1,13 @@
+import type {
+  AgentsInsightsResponse,
+  DeliveryInsightsResponse,
+  InsightsPeriod,
+  UtilizationInsightsResponse,
+} from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsScope,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
 import {
   type InsightsGitHubProvenance,
@@ -22,13 +32,6 @@ import {
   resolveInsightsTileAvailability,
 } from "@repo/app/insights/lib/tile-availability";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
-import type {
-  AgentsInsightsResponse,
-  DeliveryInsightsResponse,
-  InsightsPeriod,
-  UtilizationInsightsResponse,
-} from "@closedloop-ai/loops-api/insights";
-import { InsightsScope, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,

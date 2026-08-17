@@ -1,3 +1,4 @@
+import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
 import type {
   CheckResult,
@@ -8,7 +9,6 @@ import {
   HealthCheckRepairAction,
   PluginUpdateOutcome,
 } from "@repo/api/src/types/compute-target";
-import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 

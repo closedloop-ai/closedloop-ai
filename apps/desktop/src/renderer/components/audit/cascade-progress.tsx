@@ -16,8 +16,8 @@
  * on this branch, so this is the clean, self-contained equivalent.
  */
 
-import type { CascadeAttempt, HarnessName } from "@repo/crewd/model";
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
+import type { CascadeAttempt, HarnessName } from "@repo/crewd/model";
 import {
   CheckCircle2Icon,
   CircleDashedIcon,

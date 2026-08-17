@@ -13,10 +13,10 @@
  * sidebar is an unmounted offcanvas sheet.
  */
 
+import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { DataSyncLevelValue } from "@repo/app/shared/lib/data-sync-copy";
-import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import {

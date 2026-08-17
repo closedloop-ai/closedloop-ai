@@ -4,10 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
+import {
   ArtifactRefMethod,
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 // FEA-3132: the heatmap/autonomy reads now GROUP BY the materialized

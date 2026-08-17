@@ -1,6 +1,6 @@
+import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import { KpiFormat } from "@repo/api/src/types/insights";
 import { formatCurrencyWhole } from "@repo/app/shared/lib/format-utils";
-import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import { describe, expect, it } from "vitest";
 import {
   formatDelta,

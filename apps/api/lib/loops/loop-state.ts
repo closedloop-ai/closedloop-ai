@@ -9,9 +9,9 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 import { INTELLIGENT_TIERING_STORAGE_CLASS } from "@repo/aws";
 import { getAwsCredentials } from "@repo/aws/credentials";
-import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 import { log } from "@repo/observability/log";
 
 /**

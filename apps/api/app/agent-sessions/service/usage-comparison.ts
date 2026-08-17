@@ -33,13 +33,13 @@
 // strictly no worse than the two-request status quo (which resolved two cohorts
 // anyway) and the common, non-cost-sensitive path resolves none at all.
 
+import { pctDelta } from "@closedloop-ai/loops-api/insights";
 import type {
   AgentSessionUsageComparison,
   AgentSessionUsageComparisonDeltas,
 } from "@repo/api/src/types/agent-session-usage-comparison";
 import { AgentSessionComparisonMetric } from "@repo/api/src/types/agent-session-usage-comparison";
 import { withDb } from "@repo/database";
-import { pctDelta } from "@closedloop-ai/loops-api/insights";
 import { toNumber } from "@/lib/prisma-number";
 import type { SessionUsageInput } from "./records";
 import { computeSessionCostSplit } from "./usage-cost-split";

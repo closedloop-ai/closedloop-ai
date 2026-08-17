@@ -1,5 +1,3 @@
-import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Popover,
@@ -7,6 +5,8 @@ import {
   PopoverContent,
 } from "@closedloop-ai/design-system/components/ui/popover";
 import { useSidebar } from "@closedloop-ai/design-system/components/ui/sidebar";
+import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   createContext,
   type ReactNode,

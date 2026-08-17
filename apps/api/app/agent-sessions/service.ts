@@ -1,3 +1,4 @@
+import { formatCurrency } from "@closedloop-ai/loops-api/currency";
 import { resolveSessionQuality } from "@repo/api/src/agent-session-filters";
 import {
   buildUserColor,
@@ -30,7 +31,6 @@ import {
   projectAgentSessionTimelineEvents,
   projectAgentSessionTurnItems,
 } from "@repo/lib/sessions/agent-session-detail-projection";
-import { formatCurrency } from "@closedloop-ai/loops-api/currency";
 import {
   aggregateArtifactUsageByTargetShare,
   aggregateSessionAttributionLenses,

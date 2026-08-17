@@ -15,10 +15,10 @@
  * real: the descriptor, `InsightsChartContent`, and `DonutChart` itself.
  */
 
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import type { CategoryBucket } from "@repo/api/src/types/insights";
 import { InsightsSection } from "@repo/api/src/types/insights";
 import { donutSliceMarkColor } from "@repo/design-system/components/ui/donut-slice-textures";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { render } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";

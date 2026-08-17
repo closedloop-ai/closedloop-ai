@@ -1,5 +1,5 @@
-import type { TransactionClient } from "@repo/database";
 import { LoopEventType } from "@closedloop-ai/loops-api/events";
+import type { TransactionClient } from "@repo/database";
 
 /**
  * Revoke the active runner token, delete all runner token refresh records for a

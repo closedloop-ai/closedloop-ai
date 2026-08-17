@@ -1,3 +1,8 @@
+import {
+  Alert,
+  AlertDescription,
+} from "@closedloop-ai/design-system/components/ui/alert";
+import { Card } from "@closedloop-ai/design-system/components/ui/card";
 import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
 import { AccountSetupFlow } from "@repo/app/onboarding/components/account-setup-flow";
 import {
@@ -5,11 +10,6 @@ import {
   AuthMethods,
 } from "@repo/app/onboarding/components/auth-methods";
 import type { SyncConsentLevel } from "@repo/app/onboarding/components/sync-consent";
-import {
-  Alert,
-  AlertDescription,
-} from "@closedloop-ai/design-system/components/ui/alert";
-import { Card } from "@closedloop-ai/design-system/components/ui/card";
 import { AlertCircle } from "lucide-react";
 import { type ReactNode, useCallback, useReducer, useState } from "react";
 import type { DataSyncLevel } from "../../../shared/contracts";

@@ -3,20 +3,10 @@
   "compilerOptions": {
     "ignoreDeprecations": "6.0",
     "paths": {
-      "@repo/*": [
-        "../*"
-      ],
-      "@closedloop-ai/design-system/*": [
-        "./*"
-      ]
+      "@repo/*": ["../*"],
+      "@closedloop-ai/design-system/*": ["./*"]
     }
   },
-  "include": [
-    "**/*.ts",
-    "**/*.tsx"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist"
-  ]
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "dist"]
 }

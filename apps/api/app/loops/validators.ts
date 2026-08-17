@@ -1,3 +1,16 @@
+import {
+  LoopCommandSchema,
+  LoopStatusSchema,
+} from "@closedloop-ai/loops-api/commands";
+import {
+  LoopEventCompletedSchema,
+  LoopEventErrorSchema,
+  LoopEventOutputSchema,
+  LoopEventSupportBundleUploadedSchema,
+  LoopEventType,
+  LoopEventTypeSchema,
+  RunnerLoopEventTypeSchema,
+} from "@closedloop-ai/loops-api/events";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { HarnessType } from "@repo/api/src/types/compute-target";
 import type { LoopEvent } from "@repo/api/src/types/loop";
@@ -8,16 +21,6 @@ import {
   MAX_CONTEXT_REFS,
   ManualLoopEventType,
 } from "@repo/api/src/types/loop";
-import { LoopCommandSchema, LoopStatusSchema } from "@closedloop-ai/loops-api/commands";
-import {
-  LoopEventCompletedSchema,
-  LoopEventErrorSchema,
-  LoopEventOutputSchema,
-  LoopEventSupportBundleUploadedSchema,
-  LoopEventType,
-  LoopEventTypeSchema,
-  RunnerLoopEventTypeSchema,
-} from "@closedloop-ai/loops-api/events";
 import { z } from "zod";
 import { uuidOrSlug } from "@/lib/identifier-utils";
 import {

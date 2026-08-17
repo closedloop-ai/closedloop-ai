@@ -1,4 +1,3 @@
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   Alert,
   AlertDescription,
@@ -11,6 +10,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@closedloop-ai/design-system/components/ui/tabs";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DiagnosticsData } from "../../../shared/diagnostics-contract";
 import { DESKTOP_OPENCODE_WITHHELD_DIAGNOSTICS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";

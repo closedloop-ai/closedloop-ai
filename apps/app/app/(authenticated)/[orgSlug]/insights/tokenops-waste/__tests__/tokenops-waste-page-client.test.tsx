@@ -1,9 +1,9 @@
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import {
   ModelVerdict,
   type TokenOpsWasteInsightsResponse,
   TokenOpsWidget,
 } from "@repo/api/src/types/session-analytics";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 

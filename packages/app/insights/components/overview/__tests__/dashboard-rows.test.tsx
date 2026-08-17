@@ -1,3 +1,4 @@
+import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import type { KpiStat } from "@repo/api/src/types/insights";
 import { InsightsSection, KpiFormat } from "@repo/api/src/types/insights";
@@ -8,7 +9,6 @@ import {
 } from "@repo/app/agents/components/sessions/cost-metric-card";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";

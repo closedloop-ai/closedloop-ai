@@ -13,8 +13,8 @@
  * route and assert on the observable signal.
  */
 
-import { HealthCheckRepairAction } from "@repo/api/src/types/compute-target";
 import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
+import { HealthCheckRepairAction } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HEALTH_CHECK_SNAPSHOT_MAX_BYTES } from "@/app/compute-targets/validators";
 import type { AuthContext } from "@/lib/auth/with-auth";

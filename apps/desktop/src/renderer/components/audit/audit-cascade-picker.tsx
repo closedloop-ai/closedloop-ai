@@ -22,12 +22,6 @@
  * main process falls back accordingly, so this never breaks an older payload.
  */
 
-import {
-  AVAILABLE_MODELS,
-  type CascadeStep,
-  DEFAULT_MODEL,
-  HarnessName,
-} from "@repo/crewd/model";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { Checkbox } from "@closedloop-ai/design-system/components/ui/checkbox";
 import { Label } from "@closedloop-ai/design-system/components/ui/label";
@@ -38,6 +32,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@closedloop-ai/design-system/components/ui/select";
+import {
+  AVAILABLE_MODELS,
+  type CascadeStep,
+  DEFAULT_MODEL,
+  HarnessName,
+} from "@repo/crewd/model";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 
 /** Every harness the cascade can drive, in canonical display order. */

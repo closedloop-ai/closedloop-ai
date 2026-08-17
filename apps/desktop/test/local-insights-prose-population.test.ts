@@ -11,10 +11,13 @@ import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import test from "node:test";
 import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
+import {
   ArtifactRefMethod,
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import { openInsightsDb } from "./local-insights-test-helpers.js";
 

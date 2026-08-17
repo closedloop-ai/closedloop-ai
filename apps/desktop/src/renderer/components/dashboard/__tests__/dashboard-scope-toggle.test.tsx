@@ -1,6 +1,6 @@
+import { InsightsScope } from "@closedloop-ai/loops-api/insights";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { InsightsScope } from "@closedloop-ai/loops-api/insights";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

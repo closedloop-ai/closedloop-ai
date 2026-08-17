@@ -1,5 +1,5 @@
-import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { resolveFriendlyError } from "@closedloop-ai/loops-api/friendly-error";
+import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 import { LoopStatusBadge } from "./loop-status-badge";

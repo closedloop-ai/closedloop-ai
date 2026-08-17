@@ -13,7 +13,6 @@
  * the parent view.
  */
 
-import { AuditScope, type CascadeStep } from "@repo/crewd/model";
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { Label } from "@closedloop-ai/design-system/components/ui/label";
@@ -24,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@closedloop-ai/design-system/components/ui/select";
+import { AuditScope, type CascadeStep } from "@repo/crewd/model";
 import { FolderOpenIcon, PlayIcon, ShieldAlertIcon } from "lucide-react";
 import {
   AUDIT_SCOPE_META,

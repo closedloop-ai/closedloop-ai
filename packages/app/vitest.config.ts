@@ -24,7 +24,10 @@ export default defineConfig({
       // `@repo/cost/genai-cost`, which the catch-all would resolve to a
       // nonexistent `packages/cost/genai-cost`.
       "@repo/cost": path.resolve(import.meta.dirname, "../cost/src"),
-      "@closedloop-ai/loops-api": path.resolve(import.meta.dirname, "../loops-api/src"),
+      "@closedloop-ai/loops-api": path.resolve(
+        import.meta.dirname,
+        "../loops-api/src"
+      ),
       "@repo/shared-platform": path.resolve(
         import.meta.dirname,
         "../shared-platform/src"

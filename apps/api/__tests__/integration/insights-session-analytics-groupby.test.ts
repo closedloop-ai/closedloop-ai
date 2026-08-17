@@ -28,6 +28,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import {
   AgentSessionState,
   SessionTraceThrottleSourceType,
@@ -36,7 +37,6 @@ import { InsightsScope } from "@repo/api/src/types/insights";
 import { LossClass } from "@repo/api/src/types/session-analytics";
 import { ArtifactType, Prisma, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import { describe, expect, it } from "vitest";
 import { fetchLostWork } from "@/app/insights/lost-work";
 import {

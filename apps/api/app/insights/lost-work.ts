@@ -1,3 +1,4 @@
+import type { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import {
   BEHAVIORAL_CAUSE_LABELS,
   FAILURE_THROTTLE_SOURCE_LABELS,
@@ -11,7 +12,6 @@ import {
   type LostWorkTrendPoint,
   LostWorkWidget,
 } from "@repo/api/src/types/session-analytics";
-import type { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import { createDbFanoutLimiter } from "@/lib/db-fanout";
 import { eachDayKey } from "./lib/daily-buckets";
 import {

@@ -1,9 +1,9 @@
+import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import type { CheckResult } from "@repo/api/src/types/compute-target";
 import {
   CLAUDE_CLI_CHECK_ID,
   CODEX_CLI_CHECK_ID,
 } from "@repo/api/src/types/compute-target";
-import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import { describe, expect, it } from "vitest";
 import { getCheckOutcomeCounts } from "../check-outcome-counts";
 

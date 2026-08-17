@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { after, test } from "node:test";
+import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { TOOL_INVOCATION_EVENT_TYPE } from "../src/main/database/dashboard-queries.js";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";

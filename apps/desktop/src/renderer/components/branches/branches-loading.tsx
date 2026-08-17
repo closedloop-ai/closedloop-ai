@@ -1,5 +1,5 @@
-import { SummaryCardRow } from "@repo/app/shared/components/summary-card-row";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
+import { SummaryCardRow } from "@repo/app/shared/components/summary-card-row";
 
 // The skeleton must reflow exactly as the live strip does, so it mounts the SAME
 // `SummaryCardRow` with the SAME `wrapBelow` that `branches-view.tsx` passes

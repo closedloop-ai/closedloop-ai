@@ -1,8 +1,8 @@
+import { isFailingRequiredCheck } from "@closedloop-ai/loops-api/compute-target";
 import type {
   ComputeTargetHealthCheckSnapshot,
   HealthCheckResponse,
 } from "@repo/api/src/types/compute-target";
-import { isFailingRequiredCheck } from "@closedloop-ai/loops-api/compute-target";
 
 /**
  * The stored System Check snapshot row, and the mapping between it and the

@@ -1,14 +1,14 @@
 import {
+  type LoopBranchMaterializationEntry,
+  type LoopBranchMaterializationEnvelope,
+  LoopBranchMaterializationRole,
+} from "@closedloop-ai/loops-api/desktop-request";
+import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
 import { Result, Status } from "@repo/api/src/types/result";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
-import {
-  type LoopBranchMaterializationEntry,
-  type LoopBranchMaterializationEnvelope,
-  LoopBranchMaterializationRole,
-} from "@closedloop-ai/loops-api/desktop-request";
 import { z } from "zod";
 import {
   branchService,

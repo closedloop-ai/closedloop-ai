@@ -1,4 +1,12 @@
 import {
+  COST_KPI_SUB,
+  comparableKpi,
+  kpi,
+  lifespanHistogram,
+  pctDelta,
+  ttmHistogram,
+} from "@closedloop-ai/loops-api/insights";
+import {
   AGENT_FAILED_STATUS_TERMS,
   AGENT_SUCCESS_STATUS_TERMS,
 } from "@repo/api/src/agent-session-status";
@@ -26,14 +34,6 @@ import {
 import { median } from "@repo/api/src/utils/math";
 import { labelize } from "@repo/api/src/utils/string";
 import { GitHubPRState, Prisma, ReviewDecision, withDb } from "@repo/database";
-import {
-  COST_KPI_SUB,
-  comparableKpi,
-  kpi,
-  lifespanHistogram,
-  pctDelta,
-  ttmHistogram,
-} from "@closedloop-ai/loops-api/insights";
 import { log } from "@repo/observability/log";
 import { fetchAgentsSpendBreakdowns } from "@/app/insights/agents-spend";
 import {

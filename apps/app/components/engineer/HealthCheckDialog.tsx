@@ -1,6 +1,12 @@
 "use client";
 
 import {
+  CheckSeverity,
+  HealthCheckRepairStepStatus,
+  isFailingRequiredCheck,
+  resolveCheckSeverity,
+} from "@closedloop-ai/loops-api/compute-target";
+import {
   isRepairControlVisible,
   SystemCheckRepairButton,
   SystemCheckRepairPanel,
@@ -16,12 +22,6 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { cn } from "@repo/design-system/lib/utils";
-import {
-  CheckSeverity,
-  HealthCheckRepairStepStatus,
-  isFailingRequiredCheck,
-  resolveCheckSeverity,
-} from "@closedloop-ai/loops-api/compute-target";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,

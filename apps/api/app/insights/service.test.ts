@@ -7,6 +7,7 @@
  * (cross-org isolation).
  */
 
+import { COST_KPI_SUB } from "@closedloop-ai/loops-api/insights";
 import { GitHubPRState as ApiGitHubPRState } from "@repo/api/src/types/github";
 import {
   InsightsGitHubProvenanceState,
@@ -16,7 +17,6 @@ import {
   KpiFormat,
 } from "@repo/api/src/types/insights";
 import { median } from "@repo/api/src/utils/math";
-import { COST_KPI_SUB } from "@closedloop-ai/loops-api/insights";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () =>

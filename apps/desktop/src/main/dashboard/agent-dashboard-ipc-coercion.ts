@@ -8,7 +8,6 @@
  * runtime share one definition of each; every coercion rule is unchanged.
  */
 
-import { branchSelectedPullRequestQuerySchema } from "@repo/api/src/types/branch-associated-pull-request";
 import {
   INSIGHTS_PERIOD_OPTIONS,
   INSIGHTS_SECTION_OPTIONS,
@@ -17,6 +16,7 @@ import {
   type InsightsSection,
   InsightsSection as InsightsSectionValues,
 } from "@closedloop-ai/loops-api/insights";
+import { branchSelectedPullRequestQuerySchema } from "@repo/api/src/types/branch-associated-pull-request";
 import type {
   DashboardListWindow,
   SessionPageRequest,

@@ -32,13 +32,19 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(here, "src/renderer"),
-      "@closedloop-ai/design-system": path.resolve(here, "../../packages/design-system"),
+      "@closedloop-ai/design-system": path.resolve(
+        here,
+        "../../packages/design-system"
+      ),
       // `@closedloop-ai/loops-api/*` exports now resolve to `src/` directly; this alias
       // is kept as an explicit source pin (mirrors the design-system alias
       // above) for renderer components that import loops-api directly (e.g.
       // first-launch-dashboard).
       "@repo/cost": path.resolve(here, "../../packages/cost/src"),
-      "@closedloop-ai/loops-api": path.resolve(here, "../../packages/loops-api/src"),
+      "@closedloop-ai/loops-api": path.resolve(
+        here,
+        "../../packages/loops-api/src"
+      ),
       "@repo/api": path.resolve(here, "../../packages/api"),
       "@repo/app": path.resolve(here, "../../packages/app"),
       // FEA-2717: `@repo/app`'s session-detail transcript panel deep-imports the

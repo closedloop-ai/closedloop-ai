@@ -5,6 +5,7 @@
  * validation, boot replacement, and replay-safe live append behavior.
  */
 import { createHash } from "node:crypto";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import {
   TokenCostBasis,
   TokenCostCompleteness,
@@ -17,7 +18,6 @@ import {
   tokenEventTransportIdSchema,
   tokenSourceIdentitySchema,
 } from "@repo/api/src/types/token-cost-provenance";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { z } from "zod";
 import type { NormalizedTokenRecord } from "../collectors/types.js";
 import { EVENT_INSERT_PARAM_CAP } from "./db-constants.js";

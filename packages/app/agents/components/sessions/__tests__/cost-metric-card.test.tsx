@@ -1,3 +1,4 @@
+import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import { WithUnifiedDeltaPill } from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
 import {
   formatCurrencyWhole,
@@ -9,7 +10,6 @@ import {
   deltaPillGeometryClass,
   MetricDeltaTreatment,
 } from "@repo/design-system/components/ui/primitives/metric-polarity";
-import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {

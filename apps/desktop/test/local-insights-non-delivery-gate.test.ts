@@ -19,13 +19,16 @@
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { after, test } from "node:test";
+import type { DeliveryInsightsResponse } from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import type { DeliveryInsightsResponse } from "@closedloop-ai/loops-api/insights";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { createSqliteDashboardQueries } from "../src/main/database/dashboard-queries.js";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import {

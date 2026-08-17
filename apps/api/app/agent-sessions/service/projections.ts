@@ -1,5 +1,6 @@
 // Record→DTO projection helpers for agent-session list/detail surfaces.
 
+import { formatCurrency } from "@closedloop-ai/loops-api/currency";
 import { buildUserColor } from "@repo/api/src/agent-session-user-color";
 import type {
   ActivityBucket,
@@ -41,7 +42,6 @@ import {
   LOC_SOURCE_GIT,
 } from "@repo/api/src/utils/session-loc";
 import { deriveAgentSessionFallbackState } from "@repo/lib/sessions/agent-session-detail-projection";
-import { formatCurrency } from "@closedloop-ai/loops-api/currency";
 import { z } from "zod";
 import {
   activityBucketSchema,

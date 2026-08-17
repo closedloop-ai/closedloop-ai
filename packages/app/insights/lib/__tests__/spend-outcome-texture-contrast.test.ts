@@ -15,11 +15,11 @@
  * strings the product actually ships rather than a restated copy of them.
  */
 
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import {
   DONUT_SLICE_TEXTURE_MARK_COLOR,
   isTexturedSlice,
 } from "@repo/design-system/components/ui/donut-slice-textures";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { describe, expect, it } from "vitest";
 import {
   A11yTheme,

@@ -1,6 +1,6 @@
+import { SECRET_VALUE_PATTERN } from "@closedloop-ai/loops-api/secret-value-pattern";
 import type { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
-import { SECRET_VALUE_PATTERN } from "@closedloop-ai/loops-api/secret-value-pattern";
 
 export type DesktopExceptionTelemetryInput = {
   error: unknown;

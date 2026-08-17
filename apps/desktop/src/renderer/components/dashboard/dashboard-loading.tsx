@@ -1,6 +1,6 @@
-import { clampPercent } from "@repo/api/src/utils/math";
 import { Progress } from "@closedloop-ai/design-system/components/ui/progress";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
+import { clampPercent } from "@repo/api/src/utils/math";
 
 /**
  * Dashboard loading treatment for the post-import analytics phase: the

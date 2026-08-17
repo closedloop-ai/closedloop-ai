@@ -20,8 +20,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { median } from "@repo/api/src/utils/math";
 import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
+import { median } from "@repo/api/src/utils/math";
 import {
   assertCorpusExpectationsWritable,
   CorpusExpectationsStatus,

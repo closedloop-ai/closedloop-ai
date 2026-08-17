@@ -42,8 +42,8 @@
  * one summary row that points at the Plugins view.
  */
 
-import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HARNESS_AUTO } from "../../shared/install-run-contract";
 import { normalizePackId } from "../../shared/normalize-pack-id";

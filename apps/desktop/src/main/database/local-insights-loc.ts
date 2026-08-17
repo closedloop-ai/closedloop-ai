@@ -23,7 +23,7 @@
  *   size is unknown. When NOTHING is sized the sum is vacuously 0, and the KLOC
  *   total is UNKNOWN rather than a real zero.
  */
-import { median, round } from "@repo/api/src/utils/math";
+
 import type { KpiStat } from "@closedloop-ai/loops-api/insights";
 import {
   comparableKpi,
@@ -32,6 +32,7 @@ import {
   SizeCoveragePopulation,
   withSizeCoverage,
 } from "@closedloop-ai/loops-api/insights";
+import { median, round } from "@repo/api/src/utils/math";
 import { numberOrZero as num } from "./db-helpers.js";
 
 /** One captured-PR LOC row, as the current-window projection selects it. */

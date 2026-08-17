@@ -10,13 +10,13 @@
  * by the one `sessionScopeSql` helper in the composition root.
  */
 
-import type { CategoryBucket } from "@repo/api/src/types/insights";
-import { Prisma, withDb } from "@repo/database";
 import {
   SPEND_OUTCOME_LABELS_WITH_RUNNING,
   SPEND_OUTCOME_ORDER_WITH_RUNNING,
   SpendOutcome,
 } from "@closedloop-ai/loops-api/insights";
+import type { CategoryBucket } from "@repo/api/src/types/insights";
+import { Prisma, withDb } from "@repo/database";
 
 // DB-summed token columns for the KPI row + token-distribution donut, over the
 // selected period. Replaces materializing every token row to reduce in JS.

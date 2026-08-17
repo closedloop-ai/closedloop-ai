@@ -10,9 +10,9 @@
  * silently broke it once already, so it is pinned here.
  */
 
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import type { CategoryBucket } from "@repo/api/src/types/insights";
 import { InsightsSection } from "@repo/api/src/types/insights";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { describe, expect, it } from "vitest";
 import { getTile } from "../../lib/tile-catalog";
 import {

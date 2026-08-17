@@ -1,4 +1,8 @@
 import {
+  outcomeForEndsWithError,
+  SpendOutcome,
+} from "@closedloop-ai/loops-api/insights";
+import {
   AgentSessionState,
   SessionTraceThrottleSourceType,
 } from "@repo/api/src/types/agent-session";
@@ -6,10 +10,6 @@ import {
   BehavioralCause,
   LossClass,
 } from "@repo/api/src/types/session-analytics";
-import {
-  outcomeForEndsWithError,
-  SpendOutcome,
-} from "@closedloop-ai/loops-api/insights";
 
 /**
  * The single place a session is classified for BOTH session-analytics

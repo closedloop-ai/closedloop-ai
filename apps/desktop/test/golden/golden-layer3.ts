@@ -47,13 +47,13 @@ import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { median } from "@repo/api/src/utils/math";
 import {
   InsightsPeriod,
   InsightsSection,
   lifespanHistogram,
   ttmHistogram,
 } from "@closedloop-ai/loops-api/insights";
+import { median } from "@repo/api/src/utils/math";
 import { parse as parseYaml } from "yaml";
 import {
   type BranchKeyRow,

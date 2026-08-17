@@ -1,9 +1,9 @@
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopCommandLabel } from "@repo/app/shared/components/status-badge";
 import { badgeVariants } from "@repo/design-system/components/ui/badge";
 import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
 import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import { TONE } from "@repo/design-system/components/ui/types";
-import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 

@@ -1,5 +1,5 @@
-import { githubKeys } from "@repo/app/github/hooks/use-github-integration";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { githubKeys } from "@repo/app/github/hooks/use-github-integration";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import {

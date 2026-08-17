@@ -1,10 +1,5 @@
 "use client";
 
-import { ISSUE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
-import { Badge } from "@repo/design-system/components/ui/badge";
-import type { ToneLabelVariant } from "@repo/design-system/components/ui/tone-label";
-import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
-import { cn } from "@repo/design-system/lib/utils";
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
 import { Priority } from "@closedloop-ai/loops-api/common";
 import { DocumentStatus, IssueStatus } from "@closedloop-ai/loops-api/document";
@@ -17,6 +12,11 @@ import {
   type LoopEventType as LoopEventTypeType,
 } from "@closedloop-ai/loops-api/events";
 import { resolveFriendlyError } from "@closedloop-ai/loops-api/friendly-error";
+import { ISSUE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import type { ToneLabelVariant } from "@repo/design-system/components/ui/tone-label";
+import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
+import { cn } from "@repo/design-system/lib/utils";
 
 type StatusBadgeProps = {
   status: string;

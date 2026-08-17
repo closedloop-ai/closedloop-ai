@@ -1,9 +1,9 @@
+import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import { InsightsScope } from "@repo/api/src/types/insights";
 import {
   LostWorkWidget,
   TokenOpsWidget,
 } from "@repo/api/src/types/session-analytics";
-import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**

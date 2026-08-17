@@ -1,10 +1,10 @@
 import path from "node:path";
-import { HEALTH_CHECK_REPAIR_PATH } from "@repo/api/src/types/compute-target";
 import {
   HealthCheckRepairAction,
   type HealthCheckRepairStep,
   HealthCheckRepairStepStatus,
 } from "@closedloop-ai/loops-api/compute-target";
+import { HEALTH_CHECK_REPAIR_PATH } from "@repo/api/src/types/compute-target";
 import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";

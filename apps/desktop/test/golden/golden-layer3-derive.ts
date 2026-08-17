@@ -28,13 +28,14 @@
  * SQL comparisons, the yaml `reference_now` guard) and the Date (every
  * `now?: Date` query parameter).
  */
+
+import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import {
   AGENT_FAILED_STATUS_TERMS,
   AGENT_SUCCESS_STATUS_TERMS,
 } from "@repo/api/src/agent-session-status";
 import { ssotMergeRateFromCounts } from "@repo/api/src/insights/delivery-kpis/parity";
 import { PROSE_MENTION_REF_METHODS } from "@repo/api/src/types/session-artifact-link";
-import { InsightsPeriod } from "@closedloop-ai/loops-api/insights";
 import type {
   Harness,
   NormalizedSession,

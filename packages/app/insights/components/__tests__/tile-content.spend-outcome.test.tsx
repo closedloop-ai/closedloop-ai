@@ -11,10 +11,10 @@
  *    on the generic index palette and an undenominated ring.
  */
 
+import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import type { CategoryBucket } from "@repo/api/src/types/insights";
 import { InsightsSection } from "@repo/api/src/types/insights";
 import type { CategoryDatum } from "@repo/design-system/components/ui/category-bar-chart";
-import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SPEND_OUTCOME_ZERO_MESSAGE } from "../../lib/spend-outcome-palette";

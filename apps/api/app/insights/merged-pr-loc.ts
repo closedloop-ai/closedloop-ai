@@ -30,14 +30,15 @@
  * the cohesive LOC logic and its focused tests live together and that file
  * shrinks. Mirrors the Branches read service's `branch-loc.ts` split.
  */
-import type { KpiStat } from "@repo/api/src/types/insights";
-import { median, round } from "@repo/api/src/utils/math";
+
 import {
   KpiFormat,
   kpi,
   SizeCoveragePopulation,
   withSizeCoverage,
 } from "@closedloop-ai/loops-api/insights";
+import type { KpiStat } from "@repo/api/src/types/insights";
+import { median, round } from "@repo/api/src/utils/math";
 
 /**
  * The projection fields this module needs to identify one merged PR.

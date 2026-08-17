@@ -1,4 +1,5 @@
 import os from "node:os";
+import { formatCurrency } from "@closedloop-ai/loops-api/currency";
 import { ERROR_EVENT_PATTERN } from "@repo/api/src/agent-session-events";
 import {
   isExhaustiveCostFilter,
@@ -18,7 +19,6 @@ import { klocFromLines } from "@repo/api/src/utils/kloc";
 import { locPerDollarFromLines } from "@repo/api/src/utils/loc-per-dollar";
 import { SessionPrLifecycleStatus } from "@repo/lib/session-trace/derivation";
 import { deriveAgentSessionFallbackState } from "@repo/lib/sessions/agent-session-detail-projection";
-import { formatCurrency } from "@closedloop-ai/loops-api/currency";
 import {
   emptySharedAgentSessionsAnalytics,
   emptySharedAgentSessionsListResponse,

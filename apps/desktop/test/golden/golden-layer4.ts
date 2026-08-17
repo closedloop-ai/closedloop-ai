@@ -35,7 +35,10 @@ import type {
   DeliveryInsightsResponse,
   UtilizationInsightsResponse,
 } from "@closedloop-ai/loops-api/insights";
-import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
+import {
+  InsightsPeriod,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
 import type { NormalizedSession } from "../../src/main/collectors/types.js";
 import { formatLocalDayKey } from "../../src/main/database/db-helpers.js";
 import {

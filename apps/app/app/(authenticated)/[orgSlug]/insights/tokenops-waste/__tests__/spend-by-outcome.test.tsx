@@ -1,9 +1,9 @@
-import type { SpendOutcomeRow } from "@repo/api/src/types/session-analytics";
 import {
   SPEND_OUTCOME_LABELS,
   SPEND_OUTCOME_ORDER,
   SpendOutcome,
 } from "@closedloop-ai/loops-api/insights";
+import type { SpendOutcomeRow } from "@repo/api/src/types/session-analytics";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { SpendByOutcome } from "../components/spend-by-outcome";

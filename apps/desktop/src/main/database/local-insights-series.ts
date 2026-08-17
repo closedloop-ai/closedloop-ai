@@ -7,7 +7,10 @@
  * consume. Everything here is a pure function of its rows plus a `Range` — no
  * database access.
  */
-import type { TimeSeries, TimeSeriesSeries } from "@closedloop-ai/loops-api/insights";
+import type {
+  TimeSeries,
+  TimeSeriesSeries,
+} from "@closedloop-ai/loops-api/insights";
 import { numberOrZero as num } from "./db-helpers.js";
 import { eachDay, type Range } from "./local-insights-range.js";
 import { allocateRoundedUsdValues } from "./usd-allocation.js";

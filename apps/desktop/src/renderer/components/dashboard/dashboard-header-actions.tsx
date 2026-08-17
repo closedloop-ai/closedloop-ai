@@ -1,8 +1,8 @@
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import type { InsightsScope } from "@closedloop-ai/loops-api/insights";
 import { DashboardRefreshingIndicator } from "@repo/app/insights/components/overview/dashboard-refreshing";
 import { DateRangeFilter } from "@repo/app/shared/components/date-range-filter";
 import type { DateRange } from "@repo/app/shared/lib/format-utils";
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import type { InsightsScope } from "@closedloop-ai/loops-api/insights";
 import { CompassIcon } from "lucide-react";
 import { DashboardCutoverStatus } from "./dashboard-cutover-status";
 import { DashboardReadSourceBadge } from "./dashboard-read-source-badge";

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   CreateDesktopCommandInput,
@@ -12,7 +13,6 @@ import {
   isTerminalStatus,
 } from "@repo/api/src/types/compute-target";
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { log } from "@repo/observability/log";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
 import { FilterToken } from "@repo/observability/telemetry/filter-tokens";

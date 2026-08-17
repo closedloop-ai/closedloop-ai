@@ -1,11 +1,11 @@
-import {
-  OTHER_MODEL_PROVIDER,
-  providerOf,
-} from "@repo/app/insights/lib/model-provider";
 import type {
   AgentsInsightsResponse,
   CategoryBucket,
 } from "@closedloop-ai/loops-api/insights";
+import {
+  OTHER_MODEL_PROVIDER,
+  providerOf,
+} from "@repo/app/insights/lib/model-provider";
 import { CpuIcon, LayersIcon, TerminalIcon } from "lucide-react";
 import { harnessDisplayLabel } from "../../import-splash/import-splash-state";
 import type { TourStep, TourSummaryChip, TourSummaryRow } from "./tour";

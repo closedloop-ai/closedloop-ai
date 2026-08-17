@@ -1,3 +1,7 @@
+import {
+  ExecutionResultFileSchema,
+  ExecutionResultV2Schema,
+} from "@closedloop-ai/loops-api/execution-result";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
@@ -7,10 +11,6 @@ import {
 } from "@repo/api/src/types/loop";
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
-import {
-  ExecutionResultFileSchema,
-  ExecutionResultV2Schema,
-} from "@closedloop-ai/loops-api/execution-result";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import {

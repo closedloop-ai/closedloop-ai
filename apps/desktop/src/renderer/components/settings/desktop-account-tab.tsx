@@ -1,10 +1,3 @@
-import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
-import {
-  type AuthMethod,
-  AuthMethods,
-} from "@repo/app/onboarding/components/auth-methods";
-import { ConnectGitHubPrompt } from "@repo/app/onboarding/components/connect-github-prompt";
-import { getUserNamePart } from "@repo/app/shared/lib/user-utils";
 import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
@@ -13,6 +6,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@closedloop-ai/design-system/components/ui/card";
+import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
+import {
+  type AuthMethod,
+  AuthMethods,
+} from "@repo/app/onboarding/components/auth-methods";
+import { ConnectGitHubPrompt } from "@repo/app/onboarding/components/connect-github-prompt";
+import { getUserNamePart } from "@repo/app/shared/lib/user-utils";
 import { useState } from "react";
 import { useDesktopAuth } from "../../shared-agent-sessions/desktop-auth-provider";
 import {

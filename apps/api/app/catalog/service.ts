@@ -1,5 +1,9 @@
 import "server-only";
 
+import type {
+  ContextPackAgent,
+  ContextPackRepoConfig,
+} from "@closedloop-ai/loops-api/context-pack";
 import { catalogTargetKindToComponentKind } from "@repo/api/src/catalog-component-kind";
 import {
   type CatalogItemDto,
@@ -23,10 +27,6 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
-import type {
-  ContextPackAgent,
-  ContextPackRepoConfig,
-} from "@closedloop-ai/loops-api/context-pack";
 import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
 import { registerDefinitionVersion } from "@/app/definition-registry/service";

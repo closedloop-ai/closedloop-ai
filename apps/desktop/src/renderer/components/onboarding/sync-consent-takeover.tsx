@@ -1,9 +1,4 @@
 import {
-  DEFAULT_TAKEOVER_SYNC_LEVEL,
-  type SyncConsentLevel,
-  SyncLevelOptions,
-} from "@repo/app/onboarding/components/sync-consent";
-import {
   Alert,
   AlertDescription,
 } from "@closedloop-ai/design-system/components/ui/alert";
@@ -16,6 +11,11 @@ import {
   AlertDialogTitle,
 } from "@closedloop-ai/design-system/components/ui/alert-dialog";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import {
+  DEFAULT_TAKEOVER_SYNC_LEVEL,
+  type SyncConsentLevel,
+  SyncLevelOptions,
+} from "@repo/app/onboarding/components/sync-consent";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useState } from "react";
 

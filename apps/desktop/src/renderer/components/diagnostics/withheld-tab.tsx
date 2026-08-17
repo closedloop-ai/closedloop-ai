@@ -1,4 +1,3 @@
-import { formatDateTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import {
   Alert,
   AlertDescription,
@@ -19,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@closedloop-ai/design-system/components/ui/table";
+import { formatDateTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import type {
   DiagnosticsWithheldRow,
   DiagnosticsWithheldScan,

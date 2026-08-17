@@ -1,8 +1,8 @@
+import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import {
   HealthCheckRepairAction,
   PluginUpdateOutcome,
 } from "@repo/api/src/types/compute-target";
-import { CheckSeverity } from "@closedloop-ai/loops-api/compute-target";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { GUARDED_CHECK_FIELDS } from "./health-check-dropped-fields";

@@ -1,3 +1,4 @@
+import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import {
   type KpiFormat,
   KpiFormat as KpiFormatValues,
@@ -7,7 +8,6 @@ import {
   formatCurrencyTileValue,
   KPI_NO_VALUE as SHARED_KPI_NO_VALUE,
 } from "@repo/app/shared/lib/format-utils";
-import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 
 /**
  * Re-exported from the shared SSOT (`shared/lib/format-utils`) so existing

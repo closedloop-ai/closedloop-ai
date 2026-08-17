@@ -1,13 +1,13 @@
-import type { SyncConsentLevel } from "@repo/app/onboarding/components/sync-consent";
-import {
-  DataSyncLevelValue,
-  findDataSyncLevelCopy,
-} from "@repo/app/shared/lib/data-sync-copy";
 import { Card } from "@closedloop-ai/design-system/components/ui/card";
 import {
   Progress,
   ProgressTone,
 } from "@closedloop-ai/design-system/components/ui/progress";
+import type { SyncConsentLevel } from "@repo/app/onboarding/components/sync-consent";
+import {
+  DataSyncLevelValue,
+  findDataSyncLevelCopy,
+} from "@repo/app/shared/lib/data-sync-copy";
 import { CheckIcon, EyeOffIcon, TriangleAlertIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {

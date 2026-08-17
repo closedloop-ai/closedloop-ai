@@ -10,9 +10,10 @@
  * Both flag branches are asserted. Flag off is the shipped product default, and
  * a gate that accidentally always fired would pass a guest-only suite.
  */
+
+import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import {

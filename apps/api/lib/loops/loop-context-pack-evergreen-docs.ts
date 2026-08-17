@@ -11,9 +11,9 @@
  * Split out of loop-context-pack.ts to keep that module under the line ceiling.
  */
 
+import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
-import type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 import { log } from "@repo/observability/log";
 import type { LimitFunction } from "p-limit";
 import { artifactLinksService } from "@/app/artifact-links/service";

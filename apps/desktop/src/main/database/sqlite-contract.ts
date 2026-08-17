@@ -11,8 +11,7 @@
  * The one value import is `createWriteQueue`, used solely as
  * `ReturnType<typeof createWriteQueue>`.
  */
-import type { TaskUpsert } from "@repo/crewd";
-import type { RunRecord, ScheduledTask } from "@repo/crewd/model";
+
 import type {
   AgentsInsightsResponse,
   DeliveryInsightsResponse,
@@ -20,6 +19,8 @@ import type {
   InsightsSection,
   UtilizationInsightsResponse,
 } from "@closedloop-ai/loops-api/insights";
+import type { TaskUpsert } from "@repo/crewd";
+import type { RunRecord, ScheduledTask } from "@repo/crewd/model";
 import type {
   AgentHierarchyNode,
   AgentRow,

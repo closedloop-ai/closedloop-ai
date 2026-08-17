@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
 import { PullRequestState } from "@repo/api/src/types/document";
 import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
@@ -12,7 +13,6 @@ import {
   SessionTraceCorrectionKind,
   SessionTracePhaseSourceType,
 } from "@repo/lib/session-trace/derivation";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { SESSION_PAYLOAD_BYTE_CAP } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { resolveTokenUsageCostUsd } from "../src/main/agent-sync/agent-session-token-cost-resolution.js";

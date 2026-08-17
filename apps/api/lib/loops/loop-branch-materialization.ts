@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
-import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import {
   type LoopBranchMaterializationEntry,
   type LoopBranchMaterializationEnvelope,
@@ -11,6 +9,8 @@ import {
   getMultiRepoPolicy,
   PeerWriteMode,
 } from "@closedloop-ai/loops-api/multi-repo-policy";
+import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
+import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
 import { z } from "zod";
 
 type BranchRepoRef = {

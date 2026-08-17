@@ -1,10 +1,10 @@
+import { TooltipProvider } from "@closedloop-ai/design-system/components/ui/tooltip";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
 import { useBranchList } from "@repo/app/branches/hooks/use-branches";
 import { canonicalBranchListResponseFixture } from "@repo/app/branches/test-fixtures/canonical-branch-projection";
 import { ReadSourceBadge } from "@repo/app/shared/components/read-source-badge";
-import { TooltipProvider } from "@closedloop-ai/design-system/components/ui/tooltip";
 import { onlineManager } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

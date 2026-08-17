@@ -17,8 +17,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
 import { InsightsSection } from "@closedloop-ai/loops-api/insights";
+import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
 import {
   createSqliteDashboardQueries,
   TOOL_INVOCATION_EVENT_TYPE,

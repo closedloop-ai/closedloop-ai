@@ -6,6 +6,7 @@
  * itself has zero `if (loop.computeTargetId)` branching.
  */
 
+import type { LoopBranchMaterializationEnvelope } from "@closedloop-ai/loops-api/desktop-request";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import type { HarnessType } from "@repo/api/src/types/compute-target";
 import type {
@@ -13,7 +14,6 @@ import type {
   Loop,
   LoopCommand,
 } from "@repo/api/src/types/loop";
-import type { LoopBranchMaterializationEnvelope } from "@closedloop-ai/loops-api/desktop-request";
 import type { LoopCommandHandler } from "./loop-commands/loop-command-handler";
 import type { ContextPack } from "./loop-state";
 

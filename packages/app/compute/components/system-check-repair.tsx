@@ -1,15 +1,15 @@
 "use client";
 
 import {
+  type HealthCheckRepairStep,
+  HealthCheckRepairStepStatus,
+} from "@closedloop-ai/loops-api/compute-target";
+import {
   Alert,
   AlertDescription,
 } from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import { cn } from "@repo/design-system/lib/utils";
-import {
-  type HealthCheckRepairStep,
-  HealthCheckRepairStepStatus,
-} from "@closedloop-ai/loops-api/compute-target";
 import { AlertCircle, Loader2, Wrench } from "lucide-react";
 import {
   SystemCheckStatusBadge,

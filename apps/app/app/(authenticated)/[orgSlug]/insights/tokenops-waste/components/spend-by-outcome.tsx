@@ -1,15 +1,15 @@
 "use client";
 
-import type { SpendOutcomeRow } from "@repo/api/src/types/session-analytics";
-import { Section } from "@repo/design-system/components/ui/layout/section";
-import { SegmentedBar } from "@repo/design-system/components/ui/primitives/segmented-bar";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
   type ClassifiedSpendOutcome,
   SPEND_OUTCOME_LABELS,
   SPEND_OUTCOME_ORDER,
   SpendOutcome,
 } from "@closedloop-ai/loops-api/insights";
+import type { SpendOutcomeRow } from "@repo/api/src/types/session-analytics";
+import { Section } from "@repo/design-system/components/ui/layout/section";
+import { SegmentedBar } from "@repo/design-system/components/ui/primitives/segmented-bar";
+import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
   formatSessions,
   formatUsd,

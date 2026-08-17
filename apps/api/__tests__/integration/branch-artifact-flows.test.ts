@@ -1,4 +1,6 @@
 // biome-ignore-all lint/suspicious/noMisplacedAssertion: Integration helpers assert from callbacks invoked by tests.
+
+import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import {
   BranchBaseBranchSource,
   BranchFileCacheStatus,
@@ -45,7 +47,6 @@ import {
 import { keys } from "@repo/database/keys";
 import type * as GitHubModule from "@repo/github";
 import { GitHubProviderResultStatus } from "@repo/github";
-import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as postPullRequestAlias } from "@/app/artifact-links/pull-requests/route";

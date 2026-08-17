@@ -1,3 +1,4 @@
+import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import {
   KpiDeltaPlaceholder,
@@ -20,7 +21,6 @@ import {
   MetricDeltaTreatment,
   MetricPolarity,
 } from "@repo/design-system/components/ui/primitives/metric-polarity";
-import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 import type { SessionSummaryDeltas } from "../../lib/session-summary-deltas";

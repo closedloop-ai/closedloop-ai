@@ -4,8 +4,8 @@
  * the six-step tour that shipped before, or the gate has leaked.
  */
 
-import { Harness } from "@repo/lib/harness/types";
 import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
+import { Harness } from "@repo/lib/harness/types";
 import { describe, expect, it } from "vitest";
 import { buildTourSteps } from "../build-tour-steps";
 import type { TourStep, TourSummaryRow } from "../tour";

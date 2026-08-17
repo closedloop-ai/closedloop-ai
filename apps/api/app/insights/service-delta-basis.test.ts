@@ -28,8 +28,8 @@
  * the `noExcessiveLinesPerFile` grandfather list (shrink-only).
  */
 
-import { InsightsPeriod, InsightsScope } from "@repo/api/src/types/insights";
 import { KpiDeltaBasis, type KpiStat } from "@closedloop-ai/loops-api/insights";
+import { InsightsPeriod, InsightsScope } from "@repo/api/src/types/insights";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () =>

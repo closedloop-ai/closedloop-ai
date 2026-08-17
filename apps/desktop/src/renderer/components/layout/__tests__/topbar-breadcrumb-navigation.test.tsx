@@ -11,9 +11,10 @@
  * guard. Uses the component (agent) breadcrumb shape, complementing the
  * app-shell coverage of the session and branch crumbs.
  */
+
+import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { fireEvent, render, screen, within } from "@testing-library/react";
